@@ -1,0 +1,23 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "dist",
+    "baseUrl": ".",
+    "paths": {
+      "@dispatch/core": ["packages/core/src/index.ts"],
+      "@dispatch/db": ["packages/db/src/index.ts"],
+      "@dispatch/provider-fake": ["packages/provider-fake/src/index.ts"],
+      "@dispatch/sdk": ["packages/sdk/src/index.ts"]
+    }
+  }
+}

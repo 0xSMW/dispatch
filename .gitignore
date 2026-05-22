@@ -1,0 +1,15 @@
+.DS_Store
+*.log
+*.swp
+.env
+.terraform/
+*.tfstate
+*.tfstate.*
+.playwright-cli/
+output/
+.data/
+.turbo/
+coverage/
+dist/
+node_modules/
+.dispatch/
