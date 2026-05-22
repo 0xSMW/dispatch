@@ -1,0 +1,336 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Dispatch Local API",
+    "version": "0.1.0"
+  },
+  "servers": [
+    {
+      "url": "http://localhost:3100"
+    }
+  ],
+  "security": [
+    {
+      "bearerAuth": []
+    }
+  ],
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    },
+    "schemas": {
+      "Error": {
+        "type": "object",
+        "required": ["name", "statusCode", "message", "request_id"],
+        "properties": {
+          "name": { "type": "string" },
+          "statusCode": { "type": "integer" },
+          "message": { "type": "string" },
+          "request_id": { "type": "string" }
+        }
+      },
+      "SendInput": {
+        "type": "object",
+        "required": ["from", "to"],
+        "properties": {
+          "from": { "type": "string", "format": "email" },
+          "to": {
+            "oneOf": [
+              { "type": "string", "format": "email" },
+              { "type": "array", "items": { "type": "string", "format": "email" } }
+            ]
+          },
+          "cc": {
+            "oneOf": [
+              { "type": "string", "format": "email" },
+              { "type": "array", "items": { "type": "string", "format": "email" } }
+            ]
+          },
+          "bcc": {
+            "oneOf": [
+              { "type": "string", "format": "email" },
+              { "type": "array", "items": { "type": "string", "format": "email" } }
+            ]
+          },
+          "subject": { "type": "string" },
+          "html": { "type": "string" },
+          "text": { "type": "string" },
+          "template": { "type": "string" },
+          "variables": { "type": "object", "additionalProperties": true },
+          "headers": { "type": "object", "additionalProperties": true },
+          "tags": { "type": "object", "additionalProperties": true },
+          "scheduled_at": { "type": "string", "format": "date-time" },
+          "attachments": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["filename", "content"],
+              "properties": {
+                "filename": { "type": "string" },
+                "content": { "type": "string" },
+                "content_type": { "type": "string" },
+                "content_id": { "type": "string" },
+                "disposition": { "type": "string", "enum": ["attachment", "inline"] }
+              }
+            }
+          }
+        }
+      },
+      "Email": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "string" },
+          "request_id": { "type": "string" },
+          "from": { "type": "string" },
+          "subject": { "type": "string" },
+          "status": { "type": "string" },
+          "scheduled_at": { "type": ["string", "null"], "format": "date-time" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "to": { "type": "array", "items": { "type": "string" } }
+        }
+      },
+      "List": {
+        "type": "object",
+        "required": ["object", "data", "has_more"],
+        "properties": {
+          "object": { "type": "string", "const": "list" },
+          "data": { "type": "array", "items": { "type": "object" } },
+          "has_more": { "type": "boolean" },
+          "request_id": { "type": "string" }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/health": {
+      "get": {
+        "security": [],
+        "responses": {
+          "200": { "description": "Healthy" }
+        }
+      }
+    },
+    "/v1/setup": {
+      "get": {
+        "security": [],
+        "responses": {
+          "200": { "description": "Seeded local setup" }
+        }
+      }
+    },
+    "/v1/api-keys": {
+      "get": { "responses": { "200": { "description": "API keys" } } },
+      "post": { "responses": { "200": { "description": "Created API key" } } }
+    },
+    "/v1/sessions": {
+      "get": { "responses": { "200": { "description": "Sessions" } } },
+      "post": { "security": [], "responses": { "200": { "description": "Created session" } } }
+    },
+    "/v1/me": {
+      "get": { "responses": { "200": { "description": "Current identity" } } }
+    },
+    "/v1/users": {
+      "get": { "responses": { "200": { "description": "Users" } } },
+      "post": { "responses": { "200": { "description": "Created user" } } }
+    },
+    "/v1/roles": {
+      "get": { "responses": { "200": { "description": "Roles" } } },
+      "post": { "responses": { "200": { "description": "Created role" } } }
+    },
+    "/v1/memberships": {
+      "get": { "responses": { "200": { "description": "Memberships" } } },
+      "post": { "responses": { "200": { "description": "Created membership" } } }
+    },
+    "/v1/audit-logs": {
+      "get": { "responses": { "200": { "description": "Audit logs" } } }
+    },
+    "/v1/api-keys/{id}": {
+      "delete": {
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Revoked API key" } }
+      }
+    },
+    "/v1/domains": {
+      "get": { "responses": { "200": { "description": "Domains" } } },
+      "post": { "responses": { "200": { "description": "Created domain" } } }
+    },
+    "/v1/domains/{id}": {
+      "get": { "responses": { "200": { "description": "Domain" } } },
+      "patch": { "responses": { "200": { "description": "Updated domain" } } },
+      "delete": { "responses": { "200": { "description": "Deleted domain" } } },
+      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }]
+    },
+    "/v1/domains/{id}/verify": {
+      "post": {
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Verified domain" } }
+      }
+    },
+    "/v1/domains/{id}/doctor": {
+      "get": {
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Domain checks" } }
+      }
+    },
+    "/v1/emails": {
+      "get": {
+        "responses": { "200": { "description": "Emails", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/List" } } } } }
+      },
+      "post": {
+        "parameters": [{ "name": "Idempotency-Key", "in": "header", "schema": { "type": "string" } }],
+        "requestBody": { "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SendInput" } } } },
+        "responses": { "202": { "description": "Accepted email" } }
+      }
+    },
+    "/v1/emails/batch": {
+      "post": {
+        "parameters": [{ "name": "Idempotency-Key", "in": "header", "schema": { "type": "string" } }],
+        "responses": { "202": { "description": "Accepted batch" } }
+      }
+    },
+    "/v1/email-jobs": {
+      "get": { "responses": { "200": { "description": "Send jobs" } } }
+    },
+    "/v1/email-jobs/{id}": {
+      "get": {
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Send job" } }
+      }
+    },
+    "/v1/emails/{id}": {
+      "get": {
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Email detail" } }
+      },
+      "patch": {
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Updated queued or scheduled email" } }
+      }
+    },
+    "/v1/emails/{id}/cancel": {
+      "post": {
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Cancelled queued or scheduled email" } }
+      }
+    },
+    "/v1/emails/{id}/retry": {
+      "post": {
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Queued retry job" } }
+      }
+    },
+    "/v1/templates": {
+      "get": { "responses": { "200": { "description": "Templates" } } },
+      "post": { "responses": { "200": { "description": "Created template" } } }
+    },
+    "/v1/contacts": {
+      "get": { "responses": { "200": { "description": "Contacts" } } },
+      "post": { "responses": { "200": { "description": "Created contact" } } }
+    },
+    "/v1/suppressions": {
+      "get": { "responses": { "200": { "description": "Suppressions" } } },
+      "post": { "responses": { "200": { "description": "Suppressed recipient" } } }
+    },
+    "/v1/topics": {
+      "get": { "responses": { "200": { "description": "Topics" } } },
+      "post": { "responses": { "200": { "description": "Created topic" } } }
+    },
+    "/v1/segments": {
+      "get": { "responses": { "200": { "description": "Segments" } } },
+      "post": { "responses": { "200": { "description": "Created segment" } } }
+    },
+    "/v1/segments/{id}/contacts/{contact_id}": {
+      "delete": {
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "contact_id", "in": "path", "required": true, "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Removed segment contact" } }
+      }
+    },
+    "/v1/broadcasts": {
+      "get": { "responses": { "200": { "description": "Broadcasts" } } },
+      "post": { "responses": { "200": { "description": "Created broadcast" } } }
+    },
+    "/v1/broadcasts/{id}/pause": {
+      "post": {
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Paused broadcast" } }
+      }
+    },
+    "/v1/broadcasts/{id}/resume": {
+      "post": {
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Resumed broadcast" } }
+      }
+    },
+    "/v1/broadcasts/{id}/cancel": {
+      "post": {
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Cancelled broadcast" } }
+      }
+    },
+    "/v1/broadcasts/{id}/clone": {
+      "post": {
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Cloned broadcast draft" } }
+      }
+    },
+    "/v1/events": {
+      "get": { "responses": { "200": { "description": "Custom events" } } },
+      "post": { "responses": { "200": { "description": "Created custom event" } } }
+    },
+    "/v1/events/{id}": {
+      "get": {
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Custom event" } }
+      },
+      "patch": {
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Updated custom event" } }
+      },
+      "delete": {
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Deleted custom event" } }
+      }
+    },
+    "/v1/automations": {
+      "get": { "responses": { "200": { "description": "Automations" } } },
+      "post": { "responses": { "200": { "description": "Created automation" } } }
+    },
+    "/v1/automations/{id}/stop": {
+      "post": {
+        "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+        "responses": { "200": { "description": "Stopped automation and active runs" } }
+      }
+    },
+    "/v1/received-emails": {
+      "get": { "responses": { "200": { "description": "Received emails" } } }
+    },
+    "/v1/received-emails/simulate": {
+      "post": { "responses": { "200": { "description": "Simulated received email" } } }
+    },
+    "/v1/webhooks": {
+      "get": { "responses": { "200": { "description": "Webhooks" } } },
+      "post": { "responses": { "200": { "description": "Created webhook" } } }
+    },
+    "/v1/logs": {
+      "get": { "responses": { "200": { "description": "API logs" } } }
+    },
+    "/v1/logs/export": {
+      "get": { "responses": { "200": { "description": "Exported API logs" } } }
+    },
+    "/v1/timeline": {
+      "get": { "responses": { "200": { "description": "Unified local timeline" } } }
+    },
+    "/v1/usage": {
+      "get": { "responses": { "200": { "description": "Usage counters" } } }
+    },
+    "/v1/system": {
+      "get": { "responses": { "200": { "description": "Local system health" } } }
+    }
+  }
+}
