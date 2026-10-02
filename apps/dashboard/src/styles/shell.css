@@ -1,0 +1,39 @@
+/* The shell's own panels: the API reference drawer and the shortcut list. */
+
+.apiCall {
+  display: grid;
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-light);
+}
+
+.apiCallHead {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.shortcutList {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.shortcutRow {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.shortcutRow dt {
+  color: var(--text-muted);
+}
+
+.shortcutRow dd {
+  display: flex;
+  gap: 4px;
+  margin: 0;
+}

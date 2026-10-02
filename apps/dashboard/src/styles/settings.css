@@ -1,0 +1,113 @@
+/* Settings pages: team, usage, SMTP, brand, and the unsubscribe page. */
+
+.settingsSplit {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 420px);
+  gap: 18px;
+  align-items: start;
+}
+
+.colorField {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.colorField input[type="color"] {
+  width: 44px;
+  min-width: 44px;
+  height: 36px;
+  padding: 2px;
+  border: 1px solid var(--border-input);
+  border-radius: 6px;
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.colorField input[type="text"] {
+  flex: 1;
+}
+
+.brandSample {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-raised);
+}
+
+/* --brand and --brand-text carry the tenant's color, which is data rather than a theme token. */
+.brandSample .sampleButton {
+  border-color: var(--brand);
+  background: var(--brand);
+  color: var(--brand-text);
+  cursor: default;
+}
+
+.brandSample .sampleButton:hover:not(:disabled) {
+  border-color: var(--brand);
+  background: var(--brand);
+}
+
+.previewFrame {
+  display: grid;
+  gap: 8px;
+}
+
+.previewFrame .emailFrame {
+  min-height: 480px;
+}
+
+.previewHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.note {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+@media (max-width: 1100px) {
+  .settingsSplit {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* The 24-hour quota bar on the usage page. The fill width is computed from the data. */
+.meter {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+}
+
+.meter > span {
+  display: block;
+  height: 100%;
+  background: var(--primary);
+}
+
+.meter.warning > span {
+  background: var(--warning);
+}
+
+.meter.danger > span {
+  background: var(--danger);
+}

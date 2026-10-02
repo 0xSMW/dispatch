@@ -1,0 +1,234 @@
+/* Audience pages: contacts, contact detail, properties, segments, topics, and the CSV import. */
+
+.statStrip {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0;
+}
+
+.statStrip.five {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.stat {
+  display: grid;
+  gap: 4px;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.stat dt {
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.stat dd {
+  margin: 0;
+  color: var(--text);
+  font-size: 22px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.searchNote {
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.chipList {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.tagChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 2px 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-raised);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.tagChip.plain {
+  padding-right: 10px;
+}
+
+.checkList {
+  display: grid;
+  gap: 6px;
+  max-height: 220px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  border: 0;
+}
+
+.checkList legend {
+  margin-bottom: 6px;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.topicRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.topicRow:last-child {
+  border-bottom: 0;
+}
+
+.topicRow small {
+  display: block;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.importSteps {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin: 0 0 4px;
+  padding: 0;
+  color: var(--text-dim);
+  font-size: 13px;
+  list-style: none;
+}
+
+.importSteps li.active {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.importSteps li.done {
+  color: var(--primary);
+}
+
+.mapTable {
+  display: grid;
+  gap: 8px;
+}
+
+.mapRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 120px;
+  gap: 8px;
+  align-items: center;
+}
+
+.mapRow.head {
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.mapRow .check {
+  min-width: 0;
+}
+
+.mapRow .check span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.progress {
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--surface-raised);
+}
+
+.progressFill {
+  height: 100%;
+  background: var(--primary);
+  transition: width 0.3s ease;
+}
+
+.reviewList {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.reviewList li {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-light);
+}
+
+.reviewList li span:first-child {
+  color: var(--text-muted);
+}
+
+.splitLayout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  gap: 18px;
+  align-items: start;
+}
+
+.previewPane {
+  display: grid;
+  gap: 8px;
+  padding: 16px;
+  border: 1px dashed var(--border-input);
+  border-radius: 12px;
+  background: var(--bg);
+}
+
+.previewPane .publicCard {
+  max-width: none;
+}
+
+.previewLabel {
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.activityType {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+@media (max-width: 1100px) {
+  .splitLayout {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 720px) {
+  .statStrip,
+  .statStrip.five {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mapRow {
+    grid-template-columns: 1fr;
+  }
+}

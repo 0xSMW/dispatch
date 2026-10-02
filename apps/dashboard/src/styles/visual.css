@@ -1,0 +1,100 @@
+/* Visual editing in the template and broadcast editors. */
+
+.sourceBar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sourceBar .tabs {
+  border-bottom: 0;
+}
+
+.sourceBar .segmented {
+  margin-bottom: 4px;
+}
+
+.sourceBody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+.sourceBody > :last-child {
+  flex: 1;
+}
+
+.sourceNote {
+  margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--warning-border);
+  border-radius: 6px;
+  background: var(--warning-subtle);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.visual {
+  display: grid;
+  gap: 8px;
+  min-height: 460px;
+}
+
+.visualCheck {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+/* The canvas is a white page with dark text in both themes, like the preview frame. */
+.visualCanvas {
+  min-height: 460px;
+  max-height: 75vh;
+  overflow: auto;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #ffffff;
+  color: #18181b;
+  /* The email's own markup is shown here, in the dashboard page. These keep it inside this box:
+     a fixed or absolute element in the email cannot cover the rest of the app. */
+  position: relative;
+  contain: layout paint;
+  isolation: isolate;
+}
+
+.visualCanvas.checking {
+  visibility: hidden;
+}
+
+.visualDoc,
+.visualDoc .tiptap {
+  min-height: 420px;
+  outline: none;
+}
+
+.visualDoc .tiptap:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 4px;
+}
+
+/* The package's menus read these variables. They are set on the root because the bubble menu and
+   slash command can render outside the canvas. `html:root` outranks the package's own `:root`. */
+html:root {
+  --re-bg: var(--surface-raised);
+  --re-bg-active: var(--surface);
+  --re-border: var(--border);
+  --re-separator: var(--border);
+  --re-text: var(--text);
+  --re-text-muted: var(--text-muted);
+  --re-hover: var(--surface);
+  --re-active: var(--primary-subtle);
+  --re-pressed: var(--primary-subtle);
+  --re-shadow: var(--shadow);
+  --re-radius: var(--radius);
+  --re-danger: var(--danger);
+  --re-danger-hover: var(--danger-subtle);
+}

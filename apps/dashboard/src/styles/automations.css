@@ -1,0 +1,297 @@
+/* Automations: the list builder, its run view, and the events tab. */
+
+.builder {
+  display: grid;
+  gap: 12px;
+  max-width: 860px;
+}
+
+.builderName {
+  max-width: 420px;
+}
+
+.saveState {
+  font-size: 13px;
+}
+
+.notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--info-border);
+  border-radius: var(--radius);
+  background: var(--info-subtle);
+  color: var(--text);
+}
+
+.notice span {
+  flex: 1;
+}
+
+.notice.warning {
+  border-color: var(--warning-border);
+  background: var(--warning-subtle);
+}
+
+.errorText {
+  color: var(--danger);
+}
+
+/* Step list */
+
+.stepList {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stepItem {
+  display: grid;
+  gap: 0;
+}
+
+.stepCard {
+  display: grid;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.stepCard.tint.success {
+  border-color: var(--primary-border);
+  box-shadow: inset 3px 0 0 var(--primary);
+}
+
+.stepCard.tint.danger {
+  border-color: var(--danger-border);
+  box-shadow: inset 3px 0 0 var(--danger);
+}
+
+.stepCard.tint.warning {
+  border-color: var(--warning-border);
+  box-shadow: inset 3px 0 0 var(--warning);
+}
+
+.stepCard.tint.info {
+  border-color: var(--info-border);
+  box-shadow: inset 3px 0 0 var(--info);
+}
+
+.stepCard.skipped {
+  background: var(--bg);
+}
+
+.stepHeader {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.stepTitle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.stepTitle .mono {
+  font-size: 12px;
+}
+
+.stepTimes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.stepTimes dt {
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.stepTimes dd {
+  margin: 2px 0 0;
+}
+
+.stepEnd {
+  padding: 8px 0 0 14px;
+  font-size: 13px;
+}
+
+/* The connector and "+" between steps */
+
+.addStep {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  padding: 6px 0;
+}
+
+.addStep::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  border-left: 1px solid var(--border);
+}
+
+.addStep .menu {
+  position: relative;
+}
+
+.addStep.end {
+  justify-content: flex-start;
+}
+
+.addStep.end::before {
+  display: none;
+}
+
+button.addStepButton {
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--surface);
+}
+
+/* Branches sit side by side under their step and stack on narrow screens. */
+
+.branches {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 8px;
+  padding-left: 16px;
+  border-left: 1px solid var(--border);
+}
+
+.branch {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  min-width: 0;
+}
+
+.branchLabel {
+  width: fit-content;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-raised);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.branch.condition_met .branchLabel,
+.branch.event_received .branchLabel {
+  border-color: var(--primary-border);
+  background: var(--primary-subtle);
+  color: var(--primary);
+}
+
+.branch.condition_not_met .branchLabel,
+.branch.timeout .branchLabel {
+  border-color: var(--warning-border);
+  background: var(--warning-subtle);
+  color: var(--warning);
+}
+
+/* Rule editor */
+
+.ruleEditor {
+  display: grid;
+  gap: 10px;
+}
+
+.ruleEditor > .field {
+  max-width: 260px;
+}
+
+.ruleEditor.nested {
+  padding: 10px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+}
+
+.ruleChild {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.ruleChild > :first-child {
+  flex: 1;
+  min-width: 0;
+}
+
+.ruleRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr) minmax(0, 0.8fr) minmax(0, 1fr);
+  gap: 8px;
+  align-items: end;
+}
+
+/* Events tab */
+
+.schemaChips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.schemaChip {
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-raised);
+  font-size: 12px;
+}
+
+.schemaRows {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.schemaRows legend {
+  margin-bottom: 6px;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.schemaRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+
+@media (max-width: 720px) {
+  .branches,
+  .ruleRow,
+  .stepTimes {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* The Metrics tab reuses the audience stat strip; this is the count under each share. */
+.stat dd.statNote {
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 400;
+}

@@ -1,0 +1,370 @@
+// @vitest-environment jsdom
+// HTML with placeholders goes through @react-email/editor and
+// comes back with every placeholder intact, or the guard keeps the user in Code mode.
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { useState } from "react";
+import { Link } from "react-router-dom";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { h, signIn } from "../../testing";
+import { LeaveGuard, Source, type Flush } from "./editor";
+import { template } from "./fixtures";
+import { tokens, unsafePaste } from "./guard";
+import { api, calls, list, renderAt } from "./harness";
+import { TemplateEditor } from "./TemplateEditor";
+import Visual from "./Visual";
+
+type Editor = { commands: { focus: (at: "end") => boolean; insertContent: (value: string) => boolean } };
+
+// jsdom has no layout. ProseMirror and the package's bubble menu measure the selection, so they get empty boxes.
+beforeAll(() => {
+  const box = { x: 0, y: 0, top: 0, left: 0, right: 0, bottom: 0, width: 0, height: 0, toJSON: () => ({}) };
+  Range.prototype.getClientRects = () => [] as unknown as DOMRectList;
+  Range.prototype.getBoundingClientRect = () => box as DOMRect;
+  document.elementFromPoint = () => null;
+});
+
+afterEach(() => {
+  cleanup();
+  sessionStorage.clear();
+  vi.unstubAllGlobals();
+});
+
+/** The TipTap editor behind the visual canvas. TipTap puts it on its root element. */
+async function editor(): Promise<Editor> {
+  const root = await waitFor(() => {
+    const element = document.querySelector(".visualCanvas:not(.checking) .tiptap");
+    if (!element) throw new Error("The visual editor is not ready.");
+    return element as Element & { editor: Editor };
+  });
+  return root.editor;
+}
+
+/** Types at the end of the document, the way a user would. */
+async function type(value: string) {
+  const current = await editor();
+  act(() => {
+    current.commands.focus("end");
+    current.commands.insertContent(value);
+  });
+}
+
+/**
+ * Loads `html` into the visual editor, makes one edit, and returns what the editor wrote, or the reason
+ * it refused. Hand-written HTML only opens as a conversion the user agreed to, so `convert` is on
+ * unless a test turns it off.
+ */
+async function roundTrip(html: string, convert = true) {
+  const onHtml = vi.fn();
+  const onReject = vi.fn();
+  render(h(Visual, { html, convert, onHtml, onReject }));
+  await waitFor(() => expect(onReject.mock.calls.length + (document.querySelector(".visualCanvas:not(.checking) .tiptap") ? 1 : 0)).toBe(1), {
+    timeout: 3000,
+  });
+  if (onReject.mock.calls.length > 0) return { rejected: String(onReject.mock.calls[0]![0]), convertible: Boolean(onReject.mock.calls[0]![1]), html: null };
+  await type(" Edited");
+  await waitFor(() => expect(onHtml).toHaveBeenCalled());
+  return { rejected: null, convertible: false, html: String(onHtml.mock.calls.at(-1)![0]) };
+}
+
+describe("round trip through @react-email/editor", () => {
+  const kept: Record<string, string> = {
+    "a placeholder": "<p>Hi {{{FIRST_NAME}}}, welcome.</p>",
+    "a placeholder with a fallback": "<p>Hi {{{FIRST_NAME|there}}},</p>",
+    "an if block inside a paragraph": "<p>Hello {{{#if VIP}}}gold member{{{/if}}}</p>",
+    "an if block around paragraphs": "<p>Intro</p>{{{#if VIP}}}<p>Members only</p>{{{/if}}}<p>Outro</p>",
+    "an unless block": "<p>{{{#unless PAID}}}Your invoice is due.{{{/unless}}}</p>",
+    "an each block around paragraphs": "<p>{{{#each ITEMS}}}</p><p>{{{name}}}: {{{price}}}</p><p>{{{/each}}}</p>",
+    "a placeholder as the whole href (react-email issue 3247)": '<p><a href="{{{URL}}}">Open</a></p>',
+    "a placeholder inside an href query": '<p><a href="https://acme.test/track?id={{{ID}}}&amp;ref=mail">Track</a></p>',
+    "a placeholder with a URL fallback in an href": '<p><a href="{{{URL|https://acme.test}}}">Open</a></p>',
+    "the unsubscribe placeholder in an href": '<p><a href="{{{RESEND_UNSUBSCRIBE_URL}}}">Unsubscribe</a></p>',
+    "a placeholder as an image src": '<p>Logo</p><img src="{{{LOGO_URL}}}" alt="Logo">',
+  };
+
+  for (const [name, html] of Object.entries(kept)) {
+    it(`keeps ${name}`, async () => {
+      const out = await roundTrip(html);
+      expect(out.rejected).toBeNull();
+      expect(out.html).toContain("Edited");
+      for (const token of tokens(html)) expect(tokens(out.html)).toContain(token);
+      expect(tokens(out.html)).toEqual(tokens(html));
+    });
+  }
+
+  it("writes the href placeholder back verbatim", async () => {
+    const out = await roundTrip('<p><a href="{{{URL}}}">Open</a></p>');
+    expect(out.html).toContain('href="{{{URL}}}"');
+  });
+
+  it("refuses a loop between list items", async () => {
+    const out = await roundTrip("<ul>{{{#each ITEMS}}}<li>{{{name}}}</li>{{{/each}}}</ul>");
+    expect(out.rejected).toBe("{{{#each ITEMS}}} sits between list items or table rows, which visual mode cannot keep.");
+  });
+
+  it("refuses a library template, which keeps placeholders in style attributes", async () => {
+    const library = JSON.parse(readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../../../../../packages/templates/library.json"), "utf8")) as {
+      templates: Array<{ slug: string; html: string }>;
+    };
+    const welcome = library.templates.find((item) => item.slug === "welcome")!;
+    const out = await roundTrip(welcome.html);
+    expect(out.rejected).toMatch(/^Visual mode would change placeholders \d+, such as \{\{\{/);
+  });
+
+  it("writes nothing until the user edits", async () => {
+    const onHtml = vi.fn();
+    render(h(Visual, { html: "<p>Hi {{{NAME}}}</p>", convert: true, onHtml, onReject: vi.fn() }));
+    await editor();
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(onHtml).not.toHaveBeenCalled();
+  });
+});
+
+describe("what visual mode opens", () => {
+  const count = (html: string | null, tag: string) => (html ?? "").split(`<${tag}`).length - 1;
+
+  it("refuses hand-written HTML until the user agrees to a conversion", async () => {
+    const out = await roundTrip('<center><font color="#ff0000">Hi {{{NAME}}}</font></center>', false);
+    expect(out.rejected).toMatch(/^Visual mode would rebuild this HTML in its own layout/);
+    // Nothing would be lost but formatting, so the page may offer to convert.
+    expect(out.convertible).toBe(true);
+  });
+
+  it("opens its own output with no conversion, and a second visit adds nothing to it", async () => {
+    const first = await roundTrip("<p>Hi {{{NAME}}}</p>");
+    cleanup();
+    const second = await roundTrip(first.html!, false);
+    expect(second.rejected).toBeNull();
+    cleanup();
+    const third = await roundTrip(second.html!, false);
+    expect(third.rejected).toBeNull();
+    // Each visit used to wrap the email in one more container table.
+    expect([count(first.html, "table"), count(second.html, "table"), count(third.html, "table")]).toEqual([2, 2, 2]);
+    expect(tokens(third.html)).toEqual(["{{{NAME}}}"]);
+    expect(third.html).toContain("Edited Edited Edited");
+  });
+
+  it("opens an empty template", async () => {
+    const out = await roundTrip("", false);
+    expect(out.rejected).toBeNull();
+    expect(out.html).toContain("Edited");
+  });
+
+  it("refuses text that would come back as a live placeholder", async () => {
+    const out = await roundTrip("<p>Type &#123;&#123;&#123;NAME&#125;&#125;&#125; to personalize</p>");
+    expect(out.rejected).toBe("Visual mode would turn text into the placeholder {{{NAME}}}.");
+    expect(out.convertible).toBe(false);
+  });
+
+  it("keeps the selection when an image file is pasted, and writes nothing", async () => {
+    const onHtml = vi.fn();
+    render(h(Visual, { html: '<p>Keep this sentence.</p><img src="{{{LOGO_URL}}}" alt="Logo">', convert: true, onHtml, onReject: vi.fn() }));
+    const current = (await editor()) as Editor & { commands: { selectAll: () => boolean }; getHTML: () => string };
+    const before = current.getHTML();
+    act(() => void current.commands.selectAll());
+    const file = new File(["png"], "photo.png", { type: "image/png" });
+    const target = document.querySelector(".tiptap")!;
+    // fireEvent returns false when the event's default was prevented.
+    expect(fireEvent.paste(target, { clipboardData: { files: [file], getData: () => "" } })).toBe(false);
+    expect(fireEvent.drop(target, { dataTransfer: { files: [file], getData: () => "" } })).toBe(false);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(current.getHTML()).toBe(before);
+    expect(onHtml).not.toHaveBeenCalled();
+  });
+
+  it("refuses pasted HTML that carries a data image or a script link", async () => {
+    render(h(Visual, { html: "", onHtml: vi.fn(), onReject: vi.fn() }));
+    await editor();
+    const target = document.querySelector(".tiptap")!;
+    const current = (await editor()) as Editor & { getHTML: () => string };
+    const before = current.getHTML();
+    const paste = (markup: string) => fireEvent.paste(target, { clipboardData: { files: [], getData: (type: string) => (type === "text/html" ? markup : "") } });
+    paste('<p>Hi</p><img src="data:image/png;base64,AAAA">');
+    paste('<p><a href="javascript:alert(1)">x</a></p>');
+    expect(current.getHTML()).toBe(before);
+    expect(unsafePaste('<p><a href="https://acme.test">ok</a> and <img src="https://acme.test/a.png"></p>')).toBe(false);
+  });
+
+  it("writes nothing from a read-only editor, whatever its menus let through", async () => {
+    const onHtml = vi.fn();
+    render(h(Visual, { html: "<p>Sent already</p>", convert: true, editable: false, onHtml, onReject: vi.fn() }));
+    await type(" changed");
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(onHtml).not.toHaveBeenCalled();
+  });
+});
+
+/** Source with its HTML in state, like the editors keep it in the draft. */
+function Harness({ initial, onHtml }: { initial: string; onHtml?: (value: string) => void }) {
+  const [html, setHtml] = useState(initial);
+  return h(Source, {
+    html,
+    text: "",
+    onHtml: (value: string) => {
+      setHtml(value);
+      onHtml?.(value);
+    },
+    onText: () => undefined,
+  });
+}
+
+describe("Source mode switch", () => {
+  it("starts in Code and switches to Visual and back", async () => {
+    const onHtml = vi.fn();
+    render(h(Harness, { initial: "", onHtml }));
+    expect(screen.getByRole("button", { name: "Code" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByLabelText("HTML")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Visual" }));
+    expect(screen.getByRole("button", { name: "Visual" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.queryByLabelText("HTML")).toBeNull();
+    await type("Hi {{{NAME}}} there");
+    await waitFor(() => expect(onHtml).toHaveBeenCalled());
+
+    fireEvent.click(screen.getByRole("button", { name: "Code" }));
+    const area = (await screen.findByLabelText("HTML")) as HTMLTextAreaElement;
+    expect(area.value).toContain("Hi {{{NAME}}} there");
+  });
+
+  it("hands over the last edit before Code takes over, so typing in Code is not overwritten", async () => {
+    render(h(Harness, { initial: "" }));
+    fireEvent.click(screen.getByRole("button", { name: "Visual" }));
+    await type("From visual");
+    // Straight away, inside the quarter second the editor waits before it writes.
+    fireEvent.click(screen.getByRole("button", { name: "Code" }));
+    const area = (await screen.findByLabelText("HTML")) as HTMLTextAreaElement;
+    expect(area.value).toContain("From visual");
+    fireEvent.change(area, { target: { value: "<p>Typed in code</p>" } });
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect((screen.getByLabelText("HTML") as HTMLTextAreaElement).value).toBe("<p>Typed in code</p>");
+  });
+
+  it("tells the page an edit is waiting until the draft has it", async () => {
+    const flushRef: { current: Flush | null } = { current: null };
+    const onHtml = vi.fn();
+    function Page() {
+      const [html, setHtml] = useState("");
+      const write = (value: string) => {
+        setHtml(value);
+        onHtml(value);
+      };
+      return h(Source, { html, text: "", onHtml: write, onText: () => undefined, flushRef });
+    }
+    render(h(Page));
+    expect(flushRef.current!.waiting()).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Visual" }));
+    await type("Not saved yet");
+    // Inside the quarter second: the draft has heard nothing, so it does not read as dirty.
+    expect(onHtml).not.toHaveBeenCalled();
+    expect(flushRef.current!.waiting()).toBe(true);
+    await act(() => flushRef.current!());
+    expect(onHtml).toHaveBeenCalled();
+    expect(flushRef.current!.waiting()).toBe(false);
+  });
+
+  it("stops a leave while an edit is waiting, though the draft is clean", async () => {
+    let waiting = true;
+    const page = h("div", null, h(Link, { to: "/elsewhere" }, "Away"), h(LeaveGuard, { when: false, pending: () => waiting }));
+    const router = renderAt("/here", [{ path: "/here", element: page }]);
+    fireEvent.click(screen.getByRole("link", { name: "Away" }));
+    expect(await screen.findByText("Leave without saving?")).toBeTruthy();
+    expect(router.state.location.pathname).toBe("/here");
+    fireEvent.click(screen.getByRole("button", { name: /^Stay/ }));
+
+    waiting = false;
+    fireEvent.click(screen.getByRole("link", { name: "Away" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/elsewhere"));
+  });
+
+  it("offers to convert hand-written HTML, and opens it only after the user confirms", async () => {
+    const onHtml = vi.fn();
+    render(h(Harness, { initial: "<p>Hi {{{NAME}}}</p>", onHtml }));
+    fireEvent.click(screen.getByRole("button", { name: "Visual" }));
+    expect(await screen.findByText(/Visual mode would rebuild this HTML in its own layout/, undefined, { timeout: 3000 })).toBeTruthy();
+    expect(screen.getByLabelText("HTML")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Convert to visual" }));
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.textContent).toContain("Every placeholder, link, and image is kept");
+    fireEvent.click(within(dialog).getByRole("button", { name: /^Convert/ }));
+    await type(" there");
+    await waitFor(() => expect(onHtml).toHaveBeenCalled());
+    expect(tokens(String(onHtml.mock.calls.at(-1)![0]))).toEqual(["{{{NAME}}}"]);
+  });
+
+  it("does not offer visual mode for a read-only broadcast", () => {
+    render(h(Source, { html: "<p>Sent</p>", text: "", onHtml: () => undefined, onText: () => undefined, disabled: true }));
+    expect(screen.queryByRole("button", { name: "Visual" })).toBeNull();
+    expect((screen.getByLabelText("HTML") as HTMLTextAreaElement).disabled).toBe(true);
+  });
+
+  it("will not load HTML that could cover the dashboard or carry a script link", () => {
+    for (const [html, reason] of [
+      ['<div style="position:fixed;top:0;left:0;z-index:99999">Session expired</div>', /places content over the page/],
+      ['<p><a href="java\nscript:alert(1)">x</a></p>', /does not open the link javascript:alert/],
+      ['<p><img src="data:image/png;base64,AAAA"></p>', /holds an image as data/],
+    ] as const) {
+      render(h(Harness, { initial: html }));
+      fireEvent.click(screen.getByRole("button", { name: "Visual" }));
+      expect(screen.getByText(reason)).toBeTruthy();
+      expect(screen.getByLabelText("HTML")).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Convert to visual" })).toBeNull();
+      cleanup();
+    }
+  });
+
+  it("keeps the user in Code and says why when the round trip would lose a placeholder", async () => {
+    // The library templates link their logo like this. The editor's image block cannot carry a link.
+    const html = '<p>Hi</p><a href="{{{PRODUCT_URL}}}"><img src="{{{LOGO_URL}}}" alt="Logo"></a>';
+    render(h(Harness, { initial: html }));
+    fireEvent.click(screen.getByRole("button", { name: "Visual" }));
+    expect(await screen.findByText("Visual mode would change the placeholder {{{PRODUCT_URL}}}.", undefined, { timeout: 3000 })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Code" }).getAttribute("aria-pressed")).toBe("true");
+    expect((screen.getByLabelText("HTML") as HTMLTextAreaElement).value).toBe(html);
+    // A placeholder would be lost, so no conversion is offered.
+    expect(screen.queryByRole("button", { name: "Convert to visual" })).toBeNull();
+  });
+
+  it("refuses a loop between list items without loading the editor", () => {
+    render(h(Harness, { initial: "<ul>{{{#each ITEMS}}}<li>{{{name}}}</li>{{{/each}}}</ul>" }));
+    fireEvent.click(screen.getByRole("button", { name: "Visual" }));
+    expect(screen.getByText("{{{#each ITEMS}}} sits between list items or table rows, which visual mode cannot keep.")).toBeTruthy();
+    expect(screen.getByLabelText("HTML")).toBeTruthy();
+  });
+
+  it("hides the switch on the plain text tab", async () => {
+    render(h(Harness, { initial: "<p>Hi</p>" }));
+    fireEvent.click(screen.getByRole("tab", { name: "Plain text" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Visual" })).toBeNull());
+  });
+});
+
+describe("TemplateEditor in Visual mode", () => {
+  beforeEach(() => signIn());
+
+  it("puts a visual edit into the draft's HTML, the preview, and the autosave", async () => {
+    const fetch = api({
+      "GET /templates/tpl_1": template(),
+      "GET /brand": { object: "brand", product_name: "Acme" },
+      "GET /templates/tpl_1/versions": list([]),
+      "PATCH /templates/tpl_1": (_url: URL, init: RequestInit) => ({ body: { ...template(), ...JSON.parse(String(init.body)) } }),
+    });
+    renderAt("/templates/tpl_1/editor", [{ path: "/templates/:id/editor", element: h(TemplateEditor) }]);
+    // The fixture's HTML was written by hand, so visual mode asks before it rebuilds it.
+    fireEvent.click(await screen.findByRole("button", { name: "Visual" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Convert to visual" }, { timeout: 3000 }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /^Convert/ }));
+    await type(" Thanks.");
+
+    await waitFor(() => expect(screen.getByText("Unsaved changes")).toBeTruthy());
+    const srcdoc = document.querySelector("iframe")?.getAttribute("srcdoc") ?? "";
+    expect(srcdoc).toContain("Thanks.");
+
+    await waitFor(() => expect(calls(fetch, "PATCH /templates/tpl_1")).toHaveLength(1), { timeout: 4000 });
+    const body = calls(fetch, "PATCH /templates/tpl_1")[0]!.body as { html: string };
+    expect(body.html).toContain("Thanks.");
+    expect(tokens(body.html)).toEqual(["{{{NAME}}}", "{{{PLAN}}}"]);
+  });
+});

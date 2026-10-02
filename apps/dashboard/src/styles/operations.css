@@ -1,0 +1,292 @@
+/* Emails, domains, API keys, webhooks, and logs pages. Tokens come from styles.css, so both themes work. */
+
+.page h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.grow {
+  flex: 1;
+  margin: 0;
+}
+
+.wrapText {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.fileChip {
+  gap: 6px;
+  padding: 2px 8px;
+  color: var(--text);
+  font-size: 13px;
+  text-decoration: none;
+}
+
+a.fileChip:hover {
+  border-color: var(--border-input);
+  text-decoration: none;
+}
+
+/* Desktop and phone preview toggle */
+
+.segmented {
+  display: inline-flex;
+  justify-self: start;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-raised);
+}
+
+.segmented button.active {
+  background: var(--surface);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+/* Bounce, suppression, and error banner */
+
+.problem {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--danger-border);
+  border-radius: var(--radius);
+  background: var(--danger-subtle);
+  color: var(--text);
+}
+
+.problem > svg {
+  flex: none;
+  color: var(--danger);
+}
+
+.problem > span {
+  flex: 1;
+  min-width: 200px;
+}
+
+/* Insights tab */
+
+.insights {
+  display: grid;
+  gap: 18px;
+}
+
+.insightList {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.insight {
+  display: grid;
+  gap: 2px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.insight.danger {
+  border-left-color: var(--danger);
+}
+
+.insight.warning {
+  border-left-color: var(--warning);
+}
+
+.insight.success {
+  border-left-color: var(--primary);
+}
+
+/* Add domain */
+
+.stepper {
+  display: flex;
+  gap: 24px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+  color: var(--text-dim);
+}
+
+.stepper li {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  counter-increment: step;
+}
+
+.stepper li::before {
+  content: counter(step);
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border-input);
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.stepper li.current {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.stepper li.current::before {
+  border-color: var(--primary);
+  color: var(--primary);
+}
+
+.stepper li.done {
+  color: var(--primary);
+}
+
+.stepper li.done::before {
+  content: "✓";
+  border-color: var(--primary-border);
+  background: var(--primary-subtle);
+}
+
+.advanced {
+  display: grid;
+  gap: 12px;
+}
+
+.advanced summary {
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.tip {
+  display: flex;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--info-border);
+  border-radius: var(--radius);
+  background: var(--info-subtle);
+}
+
+.tip svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--info);
+}
+
+.tip p {
+  margin: 0;
+}
+
+/* DNS records */
+
+.recordGroups {
+  display: grid;
+  gap: 18px;
+}
+
+.recordGroup {
+  display: grid;
+  gap: 8px;
+}
+
+.recordGroupHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.recordGroupControl {
+  margin-left: auto;
+}
+
+.recordValue {
+  display: grid;
+  gap: 4px;
+  max-width: 420px;
+}
+
+.wrongValue .chip {
+  border-color: var(--danger);
+  text-decoration: underline wavy var(--danger);
+  text-underline-offset: 3px;
+}
+
+.config {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 24px;
+}
+
+.config .inlineForm {
+  align-items: end;
+}
+
+/* Webhooks */
+
+.eventPicker {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.eventPicker legend {
+  margin-bottom: 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.eventPickerBar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.eventPickerBar .searchBox {
+  flex: 1;
+}
+
+.deliveries {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.selectedText {
+  color: var(--primary);
+  font-weight: 600;
+}
+
+/* Logs */
+
+.paramInput {
+  width: 160px;
+}
+
+@media (max-width: 900px) {
+  .deliveries {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
