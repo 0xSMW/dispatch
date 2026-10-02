@@ -1,5 +1,5 @@
 {
-  "name": "@dispatchmail/provider-fake",
+  "name": "@dispatchmail/provider-ses",
   "version": "0.1.0",
   "type": "module",
   "main": "dist/index.js",
@@ -14,9 +14,13 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@dispatchmail/core": "workspace:*"
+    "@aws-sdk/client-route-53": "^3.716.0",
+    "@aws-sdk/client-sesv2": "^3.716.0",
+    "@dispatchmail/core": "workspace:*",
+    "nodemailer": "^7.0.5"
   },
   "devDependencies": {
+    "@types/nodemailer": "^6.4.17",
     "typescript": "^5.8.3"
   }
 }

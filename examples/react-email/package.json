@@ -1,0 +1,20 @@
+{
+  "name": "@dispatchmail/example-react-email",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@dispatchmail/sdk": "workspace:*",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "react-email": "^6.11.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.6",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "send": "tsx send.ts"
+  }
+}

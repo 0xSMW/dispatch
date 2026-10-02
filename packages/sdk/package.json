@@ -1,5 +1,5 @@
 {
-  "name": "@dispatch/sdk",
+  "name": "@dispatchmail/sdk",
   "version": "0.1.0",
   "type": "module",
   "main": "dist/index.js",
@@ -13,10 +13,31 @@
     "lint": "tsc -p tsconfig.json --noEmit",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
-  "dependencies": {
-    "@dispatch/core": "workspace:*"
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "main": "dist/index.js",
+    "types": "dist/index.d.ts",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      }
+    }
+  },
+  "peerDependencies": {
+    "@react-email/render": ">=2.0.0",
+    "react-email": ">=6.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@react-email/render": { "optional": true },
+    "react-email": { "optional": true }
   },
   "devDependencies": {
+    "@dispatchmail/core": "workspace:*",
+    "@react-email/render": "^2.0.0",
+    "react-email": "^6.0.0",
     "typescript": "^5.8.3"
   }
 }

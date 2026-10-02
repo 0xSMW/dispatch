@@ -1,28 +1,27 @@
 {
-  "name": "@dispatchmail/worker",
+  "name": "@dispatchmail/smtp",
   "version": "0.1.0",
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "check": "pnpm typecheck",
-    "dev": "tsx watch src/worker.ts",
+    "dev": "tsx watch src/smtp.ts",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "start": "tsx src/worker.ts",
+    "start": "tsx src/smtp.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@aws-sdk/client-sqs": "^3.1144.0",
     "@dispatchmail/core": "workspace:*",
     "@dispatchmail/db": "workspace:*",
-    "@dispatchmail/provider-fake": "workspace:*",
-    "@dispatchmail/provider-ses": "workspace:*",
     "@dispatchmail/storage": "workspace:*",
-    "csv-parse": "^7.0.3",
     "dotenv": "^16.5.0",
-    "postal-mime": "^4.0.2"
+    "ioredis": "^5.6.1",
+    "postal-mime": "^4.0.2",
+    "smtp-server": "^3.19.16"
   },
   "devDependencies": {
     "@types/node": "^22.15.29",
+    "@types/smtp-server": "^3.5.13",
     "tsx": "^4.19.4",
     "typescript": "^5.8.3"
   }

@@ -1,11 +1,12 @@
 {
-  "name": "@dispatch/core",
+  "name": "@dispatchmail/core",
   "version": "0.1.0",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./env": "./src/env.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -14,9 +15,12 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "dotenv": "^16.5.0",
+    "undici": "^7.30.0",
     "zod": "^3.25.42"
   },
   "devDependencies": {
+    "standardwebhooks": "^1.1.1",
     "typescript": "^5.8.3"
   }
 }

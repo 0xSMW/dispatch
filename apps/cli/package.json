@@ -1,6 +1,6 @@
 {
-  "name": "@dispatch/cli",
-  "version": "0.1.0",
+  "name": "@dispatchmail/cli",
+  "version": "0.2.0",
   "type": "module",
   "bin": {
     "dispatch": "src/cli.ts"
@@ -9,13 +9,19 @@
     "build": "tsc -p tsconfig.json",
     "check": "pnpm typecheck",
     "dev": "tsx src/cli.ts",
+    "docs": "tsx ../../scripts/cli-docs.ts",
     "lint": "tsc -p tsconfig.json --noEmit",
     "start": "tsx src/cli.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@dispatch/sdk": "workspace:*",
-    "dotenv": "^16.5.0"
+    "@clack/prompts": "^1.8.1",
+    "@commander-js/extra-typings": "^15.0.0",
+    "@dispatchmail/sdk": "workspace:*",
+    "commander": "^15.0.0",
+    "dotenv": "^16.5.0",
+    "esbuild": "^0.25.12",
+    "picocolors": "^1.1.1"
   },
   "devDependencies": {
     "@types/node": "^22.15.29",

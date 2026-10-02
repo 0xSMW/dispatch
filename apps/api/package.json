@@ -1,5 +1,5 @@
 {
-  "name": "@dispatch/api",
+  "name": "@dispatchmail/api",
   "version": "0.1.0",
   "type": "module",
   "scripts": {
@@ -11,9 +11,13 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@dispatch/core": "workspace:*",
-    "@dispatch/db": "workspace:*",
+    "@dispatchmail/core": "workspace:*",
+    "@dispatchmail/db": "workspace:*",
+    "@dispatchmail/provider-ses": "workspace:*",
+    "@dispatchmail/storage": "workspace:*",
     "@fastify/cors": "^10.1.0",
+    "@fastify/multipart": "^10.1.2",
+    "chrono-node": "^2.10.1",
     "dotenv": "^16.5.0",
     "fastify": "^5.3.3",
     "ioredis": "^5.6.1"

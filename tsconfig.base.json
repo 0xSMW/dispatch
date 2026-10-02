@@ -14,10 +14,12 @@
     "outDir": "dist",
     "baseUrl": ".",
     "paths": {
-      "@dispatch/core": ["packages/core/src/index.ts"],
-      "@dispatch/db": ["packages/db/src/index.ts"],
-      "@dispatch/provider-fake": ["packages/provider-fake/src/index.ts"],
-      "@dispatch/sdk": ["packages/sdk/src/index.ts"]
+      "@dispatchmail/core": ["packages/core/src/index.ts"],
+      "@dispatchmail/db": ["packages/db/src/index.ts"],
+      "@dispatchmail/provider-fake": ["packages/provider-fake/src/index.ts"],
+      "@dispatchmail/provider-ses": ["packages/provider-ses/src/index.ts"],
+      "@dispatchmail/sdk": ["packages/sdk/src/index.ts"],
+      "@dispatchmail/storage": ["packages/storage/src/index.ts"]
     }
   }
 }

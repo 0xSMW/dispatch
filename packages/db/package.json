@@ -1,5 +1,5 @@
 {
-  "name": "@dispatch/db",
+  "name": "@dispatchmail/db",
   "version": "0.1.0",
   "type": "module",
   "main": "dist/index.js",
@@ -13,14 +13,17 @@
     "lint": "tsc -p tsconfig.json --noEmit",
     "migrate": "tsx src/migrate.ts",
     "seed": "tsx src/seed.ts",
+    "bootstrap": "tsx src/bootstrap.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@dispatch/core": "workspace:*",
+    "@dispatchmail/core": "workspace:*",
     "dotenv": "^16.5.0",
+    "html-to-text": "^10.0.1",
     "pg": "^8.16.0"
   },
   "devDependencies": {
+    "@types/html-to-text": "^9.0.4",
     "@types/pg": "^8.15.2",
     "tsx": "^4.19.4",
     "typescript": "^5.8.3"
