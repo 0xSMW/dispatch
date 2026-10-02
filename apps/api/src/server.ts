@@ -1,62 +1,129 @@
-import "dotenv/config";
+import "@dispatchmail/core/env";
 import cors from "@fastify/cors";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, relative, resolve } from "node:path";
+import { realpathSync } from "node:fs";
+import { Readable } from "node:stream";
+import { pathToFileURL } from "node:url";
 import {
   ApiError,
-  automationSchema,
-  automationUpdateSchema,
-  batchSchema,
-  broadcastSchema,
-  broadcastUpdateSchema,
-  contactSchema,
-  contactUpdateSchema,
-  customEventSchema,
-  customEventUpdateSchema,
+  brandContext,
+  brandSchema,
+  brandTextColor,
+  type BrandRecord,
+  batchEnvelopeSchema,
   domainSchema,
+  domainUpdateSchema,
   emailUpdateSchema,
+  decrypt,
+  encrypt,
+  encrypted,
+  type EventType,
   hash,
   id,
   inboundSchema,
   keyHash,
   keySchema,
+  keyUpdateSchema,
   list,
+  makeWebhookSecret,
   makeKey,
-  membershipSchema,
   normalizeWebhookUrl,
-  prepareTracking,
   renderSchema,
   renderTemplate,
   requestId,
-  roleSchema,
-  roleUpdateSchema,
-  sendSchema,
-  segmentContactSchema,
-  segmentSchema,
-  segmentUpdateSchema,
-  sessionSchema,
+  requireSecret,
+  assertRealProvider,
+  requireUrl,
+  shareSchema,
   stableHash,
-  subscriptionSchema,
-  suppressionSchema,
-  topicSchema,
-  topicUpdateSchema,
-  userSchema,
-  userUpdateSchema,
   templateSchema,
   templateUpdateSchema,
   templateVersionSchema,
   toArray,
-  webhookSchema
-} from "@dispatch/core";
-import { connect, tx } from "@dispatch/db";
+  webhookDeliveryStatus,
+  webhookSchema,
+  webhookUpdateSchema,
+} from "@dispatchmail/core";
+import {
+  acceptBatch,
+  acceptEmail,
+  appendEvent,
+  applyHtmlFormat,
+  attachmentsFromInbound,
+  claimIdempotency,
+  clearBrandCache,
+  emailDetail,
+  emit,
+  ingestReceived,
+  connect,
+  fanoutEvent,
+  findBy,
+  incrementUsage,
+  emailMetrics,
+  paginate,
+  parseMetricsQuery,
+  addTemplateVersion,
+  createTemplate,
+  loadBrand,
+  listTemplateVersions,
+  publishTemplate,
+  publishedTemplate,
+  retrackEmail,
+  textFromHtml,
+  templateDetail,
+  templateFrom,
+  templateSelect,
+  updateTemplateMeta,
+  type TemplateRecord,
+  type TemplateWrite,
+  softDelete,
+  tx,
+  upsertContact,
+  type AcceptEmailContext,
+  type PagingParams,
+} from "@dispatchmail/db";
 import Fastify, { FastifyReply, FastifyRequest } from "fastify";
 import { Redis } from "ioredis";
+import { checkRecords, createIdentity, createSesProvider, deleteIdentity, dnsRecords, nodeResolvers, publishRoute53, route53Client, sesClient } from "@dispatchmail/provider-ses";
+import { contentDisposition, createStorage, readSignedFile, signedUrlTtl } from "@dispatchmail/storage";
+import { registerAudience } from "./audience.js";
+import { registerAutomations } from "./automations.js";
+import { registerEvents } from "./events.js";
+import { emailWhere, type EmailQuery } from "./emails.js";
+import { domainWhere, receivedWhere, templateWhere, type DomainQuery, type ReceivedQuery, type TemplateQuery } from "./filters.js";
+import { registerImports } from "./imports.js";
+import { registerInsights } from "./insights.js";
+import { registerLinks } from "./links.js";
+import { permitted, presentKey, readOnly, registerPlatform, type KeyRow } from "./platform.js";
+import { rateKey, rateLimitValue, sessionRateKey, sessionRateLimitValue, signins } from "./rate.js";
+import { registerBroadcasts } from "./broadcasts.js";
+import { registerUnsubscribe } from "./unsubscribe.js";
+import {
+  installLibraryTemplate,
+  libraryEntry,
+  listLibrary,
+  loadLibrary,
+  previewLibrary,
+} from "./library.js";
+import { hideLinks, hostOnly, jsonbParams, logBodies, logWhere, presentLog, responseText, type LogQuery, type StoredLog } from "./logs.js";
+import { presentDomain, presentEmail, presentWebhook, type DomainRow, type EmailRow, type WebhookRecord } from "./present.js";
+import {
+  listWebhookEvents,
+  presentStoredWebhook,
+  queueWebhookReplay,
+  rotateWebhookSecret,
+  webhookEventAttempts,
+  webhookEventDetail,
+} from "./webhooks.js";
+import { presentTemplate, presentVersion, templateContentChanged } from "./templates.js";
+import { scheduleAt, withSchedule } from "./schedule.js";
+import { loadSharedEmail, readShareToken, shareExpiry, shareToken } from "./share.js";
 
 type Auth = {
   tenant_id: string;
   api_key_id: string;
   scope: "full" | "send";
+  domain_name?: string | null;
   user_id?: string;
   session_id?: string;
   permissions?: string[];
@@ -67,6 +134,7 @@ declare module "fastify" {
     request_id: string;
     started_at: number;
     auth?: Auth;
+    response_text?: string | null;
   }
 }
 
@@ -75,6 +143,8 @@ type ApiKeyRow = {
   tenant_id: string;
   hash: string;
   scope: "full" | "send";
+  domain_id: string | null;
+  domain_name: string | null;
   last_used_at: string | null;
 };
 
@@ -88,6 +158,8 @@ type LogRecord = {
   status: number;
   latency_ms: number;
   api_key_id: string | null;
+  request_body: unknown;
+  response_body: unknown;
 };
 
 type AuditRecord = {
@@ -104,20 +176,42 @@ type AuditRecord = {
 const db = connect();
 const redis = new Redis(process.env.REDIS_URL ?? "redis://localhost:6379", {
   lazyConnect: true,
-  maxRetriesPerRequest: 1
+  maxRetriesPerRequest: 1,
 });
-const pepper = process.env.API_KEY_PEPPER ?? "dev-pepper-change-before-deploy";
-const storageRoot = process.env.STORAGE_DIR ?? ".dispatch/storage";
-const publicUrl = process.env.PUBLIC_URL ?? "http://localhost:3100";
+const pepper = requireSecret("API_KEY_PEPPER");
+const storage = createStorage();
+const appSecret = requireSecret("APP_SECRET");
+const publicUrl = requireUrl("PUBLIC_URL", "http://localhost:3100");
+requireUrl("APP_URL", "http://localhost:5173");
 const bodyLimit = Number(process.env.MAX_BODY_BYTES ?? 50 * 1024 * 1024);
 const authCacheTtlMs = Number(process.env.AUTH_CACHE_TTL_MS ?? 5_000);
 const domainCacheTtlMs = Number(process.env.DOMAIN_CACHE_TTL_MS ?? 5_000);
-const app = Fastify({ logger: true, bodyLimit });
+// Sealed tokens in paths (/unsubscribe/:token, /shared/:token) run past Fastify's default 100 characters.
+const app = Fastify({
+  // The request log must not hold the tokens in public URLs: a token is the whole credential there.
+  logger: {
+    serializers: {
+      req(request: { method?: string; url?: string }) {
+        return { method: request.method, url: redactPath(request.url ?? "") };
+      },
+    },
+  },
+  bodyLimit,
+  maxParamLength: 1024,
+  // Behind a load balancer the client address is in X-Forwarded-For. TRUST_PROXY says how far
+  // to trust it: a hop count ("1"), or a list of proxy addresses or ranges. Unset, the socket
+  // address is used, which behind a proxy is the proxy itself and puts every caller of the
+  // public routes into one rate-limit bucket.
+  trustProxy: trustProxy(),
+});
 const apiKeyCache = new Map<string, { row: ApiKeyRow; expires_at: number }>();
 const domainCache = new Map<string, number>();
 const logQueue: LogRecord[] = [];
 const auditQueue: AuditRecord[] = [];
-const usageDeltas = new Map<string, { tenant_id: string; name: string; amount: number }>();
+const usageDeltas = new Map<
+  string,
+  { tenant_id: string; name: string; amount: number }
+>();
 let telemetryFlushPromise: Promise<void> | null = null;
 
 assertProductionConfig();
@@ -126,36 +220,93 @@ await app.register(cors, {
   origin(origin, callback) {
     callback(null, allowedOrigin(origin));
   },
-  allowedHeaders: ["authorization", "content-type", "idempotency-key", "x-request-id"],
-  methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"]
+  allowedHeaders: [
+    "authorization",
+    "content-type",
+    "idempotency-key",
+    "x-batch-validation",
+    "x-request-id",
+  ],
+  methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
 });
 
-setInterval(() => {
-  void flushTelemetry();
-}, Number(process.env.TELEMETRY_FLUSH_MS ?? 100)).unref();
+const telemetryTimer = setInterval(
+  () => {
+    void flushTelemetry();
+  },
+  Number(process.env.TELEMETRY_FLUSH_MS ?? 100),
+);
+telemetryTimer.unref();
 
 app.addHook("onRequest", async (request, reply) => {
   request.started_at = Date.now();
-  request.request_id = safeRequestId(request.headers["x-request-id"]?.toString());
+  request.request_id = safeRequestId(
+    request.headers["x-request-id"]?.toString(),
+  );
   securityHeaders(reply);
   reply.header("x-request-id", request.request_id);
-  if (!request.headers["user-agent"]) reply.header("dispatch-warning", "missing_user_agent");
+  if (!request.headers["user-agent"])
+    reply.header("dispatch-warning", "missing_user_agent");
 });
 
 app.addHook("preHandler", async (request, reply) => {
   const path = request.url.split("?")[0];
   if (
     request.url === "/health" ||
-    (path === "/v1/setup" && publicSetupEnabled()) ||
-    (request.method === "POST" && path === "/v1/sessions") ||
+    // Public setup lets a caller with no key ask whether the install is seeded. A caller who
+    // sends a key is authenticated as usual and gets their own tenant.
+    (path === "/setup" && publicSetupEnabled() && !request.headers.authorization) ||
+    (request.method === "POST" && path === "/sessions") ||
     path.startsWith("/open/") ||
-    path.startsWith("/click/")
+    path.startsWith("/click/") ||
+    path.startsWith("/files/") ||
+    path.startsWith("/shared/") ||
+    path.startsWith("/unsubscribe/")
   ) {
-    await publicRateLimit(request, reply, path);
+    // Keyed on the route pattern. Keyed on the path, every token in /unsubscribe/:token or
+    // /click/:token would get its own bucket and the limit would never apply.
+    await publicRateLimit(request, reply, request.routeOptions.url ?? path);
     return;
   }
   await authenticate(request);
   await rateLimit(request, reply);
+
+  const routeScope =
+    (request.routeOptions.config as { scope?: string } | undefined)?.scope ??
+    "full";
+  // A dashboard user's role decides what they may call. A read-only role gets GET routes and
+  // its own account, and nothing that sends mail. A role with neither full nor read gets nothing.
+  const allowed = !request.auth!.user_id || permitted(request.auth!.permissions ?? [], request.method, request.routeOptions.url ?? path);
+  if (routeScope === "full") {
+    if (request.auth!.scope !== "full") {
+      throw new ApiError("restricted_api_key", 401, "Full access key required");
+    }
+    if (!allowed) throw new ApiError("forbidden", 403, "Full permission required");
+  } else if (routeScope === "send") {
+    if (!["full", "send"].includes(request.auth!.scope)) {
+      throw new ApiError("forbidden", 403, "Sending key required");
+    }
+    if (!allowed) throw new ApiError("forbidden", 403, "Full permission required");
+  }
+});
+
+app.addHook("preSerialization", async (request, reply, payload) => {
+  if (
+    payload &&
+    typeof payload === "object" &&
+    !Array.isArray(payload) &&
+    !Buffer.isBuffer(payload) &&
+    !(payload instanceof Readable) &&
+    !("request_id" in (payload as Record<string, unknown>))
+  ) {
+    (payload as Record<string, unknown>).request_id = request.request_id;
+  }
+  return payload;
+});
+
+app.addHook("onSend", async (request, _reply, payload) => {
+  request.response_text = responseText(payload);
+  return payload;
 });
 
 app.addHook("onResponse", async (request, reply) => {
@@ -164,22 +315,52 @@ app.addHook("onResponse", async (request, reply) => {
 
 app.setErrorHandler((error, request, reply) => {
   const err = error as { statusCode?: number; message?: string };
-  const zodIssues = (error as { issues?: Array<{ message?: string; path?: Array<string | number> }> }).issues;
+  const zodIssues = (
+    error as {
+      issues?: Array<{ message?: string; path?: Array<string | number> }>;
+    }
+  ).issues;
   const errorName = error instanceof Error ? error.name : "";
   const isSchemaError = errorName === "ZodError" && Array.isArray(zodIssues);
-  const statusCode = isSchemaError ? 400 : typeof err.statusCode === "number" ? err.statusCode : 500;
+  // Postgres unique violation: two writers raced past the same existence check.
+  const isDuplicate = (error as { code?: string }).code === "23505";
+  const statusCode = isSchemaError
+    ? 400
+    : isDuplicate
+      ? 409
+      : typeof err.statusCode === "number"
+        ? err.statusCode
+        : 500;
+  // Driver and runtime messages name tables, columns, and hosts. Log them, return a fixed message.
+  if (!(error instanceof ApiError) && !isSchemaError && statusCode >= 500) {
+    request.log.error({ err: error }, "request failed");
+  }
+  // The first issue is the message. Every issue, with its path into the body, is listed beside
+  // it so a form can put each one on the right field.
+  const issues = isSchemaError
+    ? zodIssues.map((issue) => ({ path: (issue.path ?? []).join("."), message: issue.message ?? "Invalid value" }))
+    : undefined;
   const apiError =
     error instanceof ApiError
       ? error
       : isSchemaError
-        ? new ApiError("validation_error", 400, zodIssues[0]?.message ?? "Invalid request")
-      : new ApiError(statusCode >= 500 ? "internal_error" : "validation_error", statusCode, err.message ?? "Unexpected error");
+        ? new ApiError(
+            "validation_error",
+            400,
+            zodIssues[0]?.message ?? "Invalid request",
+          )
+        : isDuplicate
+          ? new ApiError("validation_error", 409, "A record with these values already exists")
+          : statusCode >= 500
+            ? new ApiError("application_error", statusCode, "Unexpected error")
+            : new ApiError("validation_error", statusCode, err.message ?? "Invalid request");
 
   reply.status(apiError.statusCode).send({
     name: apiError.name,
     statusCode: apiError.statusCode,
     message: apiError.message,
-    request_id: request.request_id
+    ...(issues ? { path: issues[0]?.path ?? "", issues } : {}),
+    request_id: request.request_id,
   });
 });
 
@@ -189,1454 +370,668 @@ app.get("/health", async () => {
   return { ok: true, provider: process.env.SES_PROVIDER ?? "fake" };
 });
 
-app.get("/v1/setup", async (request) => {
-  const tenant = await db.query("select id, name from tenants order by created_at asc limit 1");
-  const domain = await db.query("select id, name, status from domains order by created_at asc limit 1");
-  const key = await db.query("select id, name, prefix, scope from api_keys where revoked_at is null order by created_at asc limit 1");
-  const user = await db.query("select id, email, name from users where deactivated_at is null order by created_at asc limit 1");
-  return {
-    tenant: tenant.rows[0] ?? null,
-    domain: domain.rows[0] ?? null,
-    api_key: key.rows[0] ?? null,
-    user: user.rows[0] ?? null,
-    request_id: request.request_id
-  };
+registerPlatform(app, {
+  db,
+  paging,
+  flushTelemetry,
+  validKey,
+  sessionsEnabled: passwordlessSessionsEnabled,
+  signins: signins(redis),
+  quota: sendingQuota,
 });
 
-app.post("/v1/sessions", async (request) => {
-  if (!passwordlessSessionsEnabled()) {
-    throw new ApiError("forbidden", 403, "Passwordless local sessions are disabled");
-  }
-  const input = sessionSchema.parse(request.body);
-  const apiKey = await validKey(input.api_key);
-  if (!apiKey || apiKey.scope !== "full") throw new ApiError("invalid_api_key", 401, "Invalid API key");
-  const user = await db.query<{ id: string; email: string; name: string; role: string; permissions: string[] }>(
-    `select u.id, u.email, u.name, r.name as role, r.permissions
-     from users u
-     join memberships m on m.user_id = u.id and m.disabled_at is null
-     join roles r on r.id = m.role_id and r.deleted_at is null
-     where u.tenant_id = $1 and u.email = $2 and u.deactivated_at is null
-     limit 1`,
-    [apiKey.tenant_id, input.email]
-  );
-  if (!user.rows[0]) throw new ApiError("not_found", 404, "User not found");
-  const token = `sess_${makeKey().secret}`;
-  const row = await db.query(
-    `insert into sessions (id, tenant_id, user_id, token_hash, expires_at)
-     values ($1, $2, $3, $4, now() + interval '30 days')
-     returning id, user_id, expires_at, created_at`,
-    [id("sess"), apiKey.tenant_id, user.rows[0].id, hash(token)]
-  );
-  return { session: { ...row.rows[0], token }, user: user.rows[0], request_id: request.request_id };
-});
-
-app.get("/v1/me", async (request) => {
-  requireScope(request, "full");
-  if (!request.auth!.user_id) {
-    return { tenant_id: request.auth!.tenant_id, api_key_id: request.auth!.api_key_id, scope: request.auth!.scope, request_id: request.request_id };
-  }
-  const row = await db.query(
-    `select u.id, u.email, u.name, r.name as role, r.permissions
-     from users u
-     join memberships m on m.user_id = u.id and m.disabled_at is null
-     join roles r on r.id = m.role_id and r.deleted_at is null
-     where u.tenant_id = $1 and u.id = $2`,
-    [request.auth!.tenant_id, request.auth!.user_id]
-  );
-  return { user: row.rows[0], session_id: request.auth!.session_id, request_id: request.request_id };
-});
-
-app.get("/v1/users", async (request) => {
-  requireScope(request, "full");
-  return pageRows(
-    request,
-    `select id, email, name, created_at, updated_at, deactivated_at
-     from users
-     where tenant_id = $1
-       and ($3::timestamptz is null or created_at > $3)
-       and ($4::timestamptz is null or created_at < $4)
-     order by created_at desc limit $2`
-  );
-});
-
-app.post("/v1/users", async (request) => {
-  requireScope(request, "full");
-  const input = userSchema.parse(request.body);
-  const row = await db.query(
-    `insert into users (id, tenant_id, email, name)
-     values ($1, $2, $3, $4)
-     on conflict (tenant_id, email) do update set name = excluded.name, deactivated_at = null, updated_at = now()
-     returning id, email, name, created_at, updated_at, deactivated_at`,
-    [id("user"), request.auth!.tenant_id, input.email, input.name]
-  );
-  return { user: row.rows[0], request_id: request.request_id };
-});
-
-app.patch("/v1/users/:id", async (request) => {
-  requireScope(request, "full");
-  const userId = (request.params as { id: string }).id;
-  const input = userUpdateSchema.parse(request.body);
-  const current = await db.query("select * from users where tenant_id = $1 and id = $2", [request.auth!.tenant_id, userId]);
-  if (!current.rows[0]) throw new ApiError("not_found", 404, "User not found");
-  const row = await db.query(
-    `update users set email = $3, name = $4,
-       deactivated_at = case
-         when $5::boolean is null then deactivated_at
-         when $5 then null
-         else coalesce(deactivated_at, now())
-       end,
-       updated_at = now()
-     where tenant_id = $1 and id = $2
-     returning id, email, name, created_at, updated_at, deactivated_at`,
-    [request.auth!.tenant_id, userId, input.email ?? current.rows[0].email, input.name ?? current.rows[0].name, input.active ?? null]
-  );
-  return { user: row.rows[0], request_id: request.request_id };
-});
-
-app.delete("/v1/users/:id", async (request) => {
-  requireScope(request, "full");
-  const userId = (request.params as { id: string }).id;
-  await db.query("update users set deactivated_at = now(), updated_at = now() where tenant_id = $1 and id = $2", [
-    request.auth!.tenant_id,
-    userId
-  ]);
-  return { deleted: true, id: userId, request_id: request.request_id };
-});
-
-app.get("/v1/roles", async (request) => {
-  requireScope(request, "full");
-  return pageRows(
-    request,
-    `select id, name, permissions, created_at, updated_at
-     from roles
-     where tenant_id = $1 and deleted_at is null
-       and ($3::timestamptz is null or created_at > $3)
-       and ($4::timestamptz is null or created_at < $4)
-     order by created_at desc limit $2`
-  );
-});
-
-app.post("/v1/roles", async (request) => {
-  requireScope(request, "full");
-  const input = roleSchema.parse(request.body);
-  const row = await db.query(
-    `insert into roles (id, tenant_id, name, permissions)
-     values ($1, $2, $3, $4)
-     on conflict (tenant_id, name) do update set permissions = excluded.permissions, deleted_at = null, updated_at = now()
-     returning id, name, permissions, created_at, updated_at`,
-    [id("role"), request.auth!.tenant_id, input.name, JSON.stringify(input.permissions)]
-  );
-  return { role: row.rows[0], request_id: request.request_id };
-});
-
-app.patch("/v1/roles/:id", async (request) => {
-  requireScope(request, "full");
-  const roleId = (request.params as { id: string }).id;
-  const input = roleUpdateSchema.parse(request.body);
-  const current = await db.query("select * from roles where tenant_id = $1 and id = $2 and deleted_at is null", [
-    request.auth!.tenant_id,
-    roleId
-  ]);
-  if (!current.rows[0]) throw new ApiError("not_found", 404, "Role not found");
-  const row = await db.query(
-    `update roles set name = $3, permissions = $4, updated_at = now()
-     where tenant_id = $1 and id = $2
-     returning id, name, permissions, created_at, updated_at`,
-    [
-      request.auth!.tenant_id,
-      roleId,
-      input.name ?? current.rows[0].name,
-      JSON.stringify(input.permissions ?? current.rows[0].permissions)
-    ]
-  );
-  return { role: row.rows[0], request_id: request.request_id };
-});
-
-app.delete("/v1/roles/:id", async (request) => {
-  requireScope(request, "full");
-  const roleId = (request.params as { id: string }).id;
-  await db.query("update roles set deleted_at = now(), updated_at = now() where tenant_id = $1 and id = $2", [
-    request.auth!.tenant_id,
-    roleId
-  ]);
-  return { deleted: true, id: roleId, request_id: request.request_id };
-});
-
-app.get("/v1/memberships", async (request) => {
-  requireScope(request, "full");
-  return pageRows(
-    request,
-    `select m.id, m.user_id, u.email, u.name, m.role_id, r.name as role, m.created_at, m.updated_at
-     from memberships m
-     join users u on u.tenant_id = m.tenant_id and u.id = m.user_id
-     join roles r on r.tenant_id = m.tenant_id and r.id = m.role_id
-     where m.tenant_id = $1 and m.disabled_at is null
-       and ($3::timestamptz is null or m.created_at > $3)
-       and ($4::timestamptz is null or m.created_at < $4)
-     order by m.created_at desc limit $2`
-  );
-});
-
-app.post("/v1/memberships", async (request) => {
-  requireScope(request, "full");
-  const input = membershipSchema.parse(request.body);
-  const refs = await db.query(
-    `select
-       exists(select 1 from users where tenant_id = $1 and id = $2 and deactivated_at is null) as user_exists,
-       exists(select 1 from roles where tenant_id = $1 and id = $3 and deleted_at is null) as role_exists`,
-    [request.auth!.tenant_id, input.user_id, input.role_id]
-  );
-  if (!refs.rows[0]?.user_exists || !refs.rows[0]?.role_exists) {
-    throw new ApiError("not_found", 404, "User or role not found");
-  }
-  const row = await db.query(
-    `insert into memberships (id, tenant_id, user_id, role_id)
-     values ($1, $2, $3, $4)
-     on conflict (tenant_id, user_id) do update set role_id = excluded.role_id, disabled_at = null, updated_at = now()
-     returning id, user_id, role_id, created_at, updated_at`,
-    [id("member"), request.auth!.tenant_id, input.user_id, input.role_id]
-  );
-  return { membership: row.rows[0], request_id: request.request_id };
-});
-
-app.delete("/v1/memberships/:id", async (request) => {
-  requireScope(request, "full");
-  const membershipId = (request.params as { id: string }).id;
-  await db.query("update memberships set disabled_at = now(), updated_at = now() where tenant_id = $1 and id = $2", [
-    request.auth!.tenant_id,
-    membershipId
-  ]);
-  return { deleted: true, id: membershipId, request_id: request.request_id };
-});
-
-app.get("/v1/sessions", async (request) => {
-  requireScope(request, "full");
-  return pageRows(
-    request,
-    `select s.id, s.user_id, u.email, s.expires_at, s.last_used_at, s.created_at, s.revoked_at
-     from sessions s
-     join users u on u.id = s.user_id
-     where s.tenant_id = $1
-       and ($3::timestamptz is null or s.created_at > $3)
-       and ($4::timestamptz is null or s.created_at < $4)
-     order by s.created_at desc limit $2`
-  );
-});
-
-app.delete("/v1/sessions/:id", async (request) => {
-  requireScope(request, "full");
-  const sessionId = (request.params as { id: string }).id;
-  await db.query("update sessions set revoked_at = now() where tenant_id = $1 and id = $2", [request.auth!.tenant_id, sessionId]);
-  return { deleted: true, id: sessionId, request_id: request.request_id };
-});
-
-app.get("/v1/audit-logs", async (request) => {
-  requireScope(request, "full");
-  await flushTelemetry();
-  const query = request.query as { action?: string };
-  return pageRows(
-    request,
-    `select a.id, a.request_id, a.actor_user_id, u.email as actor_email, a.api_key_id, a.session_id,
-       a.action, a.target_type, a.target_id, a.data, a.created_at
-     from audit_logs a
-     left join users u on u.tenant_id = a.tenant_id and u.id = a.actor_user_id
-     where a.tenant_id = $1
-       and ($3::timestamptz is null or a.created_at > $3)
-       and ($4::timestamptz is null or a.created_at < $4)
-       and ($5::text is null or a.action like '%' || $5 || '%')
-     order by a.created_at desc limit $2`,
-    [query.action ?? null]
-  );
-});
-
-app.post("/v1/api-keys", async (request) => {
-  requireScope(request, "full");
+app.post("/api-keys", async (request) => {
   const input = keySchema.parse(request.body);
+  if (input.domain_id) {
+    await findBy(db, "domains", request.auth!.tenant_id, input.domain_id, {
+      errorMessage: "Domain not found",
+    });
+  }
   const { secret, prefix } = makeKey();
   const row = await db.query(
-    `insert into api_keys (id, tenant_id, name, prefix, hash, scope)
-     values ($1, $2, $3, $4, $5, $6)
-     returning id, name, prefix, scope, created_at`,
-    [id("key"), request.auth!.tenant_id, input.name, prefix, keyHash(secret, pepper), input.scope]
-  );
-  apiKeyCache.clear();
-  return { api_key: { ...row.rows[0], secret }, request_id: request.request_id };
-});
-
-app.get("/v1/api-keys", async (request) => {
-  requireScope(request, "full");
-  return pageRows(
-    request,
-    `select id, name, prefix, scope, last_used_at, created_at, revoked_at
-     from api_keys
-     where tenant_id = $1
-       and ($3::timestamptz is null or created_at > $3)
-       and ($4::timestamptz is null or created_at < $4)
-     order by created_at desc limit $2`
-  );
-});
-
-app.delete("/v1/api-keys/:id", async (request) => {
-  requireScope(request, "full");
-  const keyId = (request.params as { id: string }).id;
-  await db.query("update api_keys set revoked_at = now() where tenant_id = $1 and id = $2", [request.auth!.tenant_id, keyId]);
-  apiKeyCache.clear();
-  return { deleted: true, id: keyId, request_id: request.request_id };
-});
-
-app.post("/v1/domains", async (request) => {
-  requireScope(request, "full");
-  const input = domainSchema.parse(request.body);
-  const records = domainRecords(input.name, input.region);
-  const row = await db.query(
-    `insert into domains (id, tenant_id, name, region, status, records)
-     values ($1, $2, $3, $4, 'pending', $5)
-     on conflict (tenant_id, name) do update set region = excluded.region, records = excluded.records, deleted_at = null
-     returning id, name, region, status, records, checked_at, created_at`,
-    [id("domain"), request.auth!.tenant_id, input.name, input.region, JSON.stringify(records)]
-  );
-  clearDomainCache(request.auth!.tenant_id);
-  return { domain: row.rows[0], request_id: request.request_id };
-});
-
-app.get("/v1/domains", async (request) => {
-  requireScope(request, "full");
-  return pageRows(
-    request,
-    `select id, name, region, status, records, checked_at, created_at
-     from domains
-     where tenant_id = $1 and deleted_at is null
-       and ($3::timestamptz is null or created_at > $3)
-       and ($4::timestamptz is null or created_at < $4)
-     order by created_at desc limit $2`
-  );
-});
-
-app.get("/v1/domains/:id", async (request) => {
-  requireScope(request, "full");
-  const domain = await findDomain(request);
-  return { domain, request_id: request.request_id };
-});
-
-app.patch("/v1/domains/:id", async (request) => {
-  requireScope(request, "full");
-  const domainId = (request.params as { id: string }).id;
-  const input = domainSchema.partial().parse(request.body);
-  const current = await findDomain(request);
-  const name = input.name ?? current.name;
-  const region = input.region ?? current.region;
-  const row = await db.query(
-    `update domains set name = $3, region = $4, records = $5
-     where tenant_id = $1 and id = $2 returning id, name, region, status, records, checked_at, created_at`,
-    [request.auth!.tenant_id, domainId, name, region, JSON.stringify(domainRecords(name, region))]
-  );
-  clearDomainCache(request.auth!.tenant_id);
-  return { domain: row.rows[0], request_id: request.request_id };
-});
-
-app.post("/v1/domains/:id/verify", async (request) => {
-  requireScope(request, "full");
-  const domainId = (request.params as { id: string }).id;
-  const row = await db.query(
-    `update domains set status = 'verified', checked_at = now()
-     where tenant_id = $1 and id = $2 and deleted_at is null
-     returning id, name, region, status, records, checked_at, created_at`,
-    [request.auth!.tenant_id, domainId]
-  );
-  if (!row.rows[0]) throw new ApiError("not_found", 404, "Domain not found");
-  clearDomainCache(request.auth!.tenant_id);
-  return { domain: row.rows[0], request_id: request.request_id };
-});
-
-app.get("/v1/domains/:id/doctor", async (request) => {
-  requireScope(request, "full");
-  const domain = await findDomain(request);
-  return {
-    domain: domain.id,
-    checks: domain.records.map((record: Record<string, unknown>) => ({
-      name: record.name,
-      type: record.type,
-      expected: record.value,
-      status: domain.status === "verified" ? "ok" : "pending"
-    })),
-    request_id: request.request_id
-  };
-});
-
-app.delete("/v1/domains/:id", async (request) => {
-  requireScope(request, "full");
-  const domainId = (request.params as { id: string }).id;
-  await db.query("update domains set deleted_at = now() where tenant_id = $1 and id = $2", [request.auth!.tenant_id, domainId]);
-  clearDomainCache(request.auth!.tenant_id);
-  return { deleted: true, id: domainId, request_id: request.request_id };
-});
-
-app.post("/v1/templates", async (request) => {
-  requireScope(request, "full");
-  const input = templateSchema.parse(request.body);
-  return tx(db, async (client) => {
-    const template = await client.query(
-      `insert into templates (id, tenant_id, name, alias)
-       values ($1, $2, $3, $4)
-       returning id, name, alias, published_version_id, created_at, updated_at`,
-      [id("template"), request.auth!.tenant_id, input.name, input.alias ?? null]
-    );
-    const version = await client.query(
-      `insert into template_versions (id, tenant_id, template_id, subject, html, text, variables, published_at)
-       values ($1, $2, $3, $4, $5, $6, $7, now())
-       returning id, subject, html, text, variables, created_at, published_at`,
-      [
-        id("version"),
-        request.auth!.tenant_id,
-        template.rows[0].id,
-        input.subject,
-        input.html ?? null,
-        input.text ?? null,
-        JSON.stringify(input.variables)
-      ]
-    );
-    await client.query("update templates set published_version_id = $3, updated_at = now() where tenant_id = $1 and id = $2", [
-      request.auth!.tenant_id,
-      template.rows[0].id,
-      version.rows[0].id
-    ]);
-    return {
-      template: { ...template.rows[0], published_version_id: version.rows[0].id, version: version.rows[0] },
-      request_id: request.request_id
-    };
-  });
-});
-
-app.get("/v1/templates", async (request) => {
-  requireScope(request, "full");
-  return pageRows(
-    request,
-    `select t.id, t.name, t.alias, t.published_version_id, t.created_at, t.updated_at,
-       v.subject, v.variables
-     from templates t
-     left join template_versions v on v.id = t.published_version_id
-     where t.tenant_id = $1 and t.deleted_at is null
-       and ($3::timestamptz is null or t.created_at > $3)
-       and ($4::timestamptz is null or t.created_at < $4)
-     order by t.created_at desc limit $2`
-  );
-});
-
-app.get("/v1/templates/:id", async (request) => {
-  requireScope(request, "full");
-  const template = await findTemplate(request);
-  return { template, request_id: request.request_id };
-});
-
-app.patch("/v1/templates/:id", async (request) => {
-  requireScope(request, "full");
-  const templateId = (request.params as { id: string }).id;
-  const input = templateUpdateSchema.parse(request.body);
-  const current = await findTemplate(request);
-  const row = await db.query(
-    `update templates set name = $3, alias = $4, updated_at = now()
-     where tenant_id = $1 and id = $2 and deleted_at is null
-     returning id, name, alias, published_version_id, created_at, updated_at`,
-    [request.auth!.tenant_id, templateId, input.name ?? current.name, input.alias === undefined ? current.alias : input.alias]
-  );
-  return { template: row.rows[0], request_id: request.request_id };
-});
-
-app.delete("/v1/templates/:id", async (request) => {
-  requireScope(request, "full");
-  const templateId = (request.params as { id: string }).id;
-  await db.query("update templates set deleted_at = now(), updated_at = now() where tenant_id = $1 and id = $2", [
-    request.auth!.tenant_id,
-    templateId
-  ]);
-  return { deleted: true, id: templateId, request_id: request.request_id };
-});
-
-app.post("/v1/templates/:id/versions", async (request) => {
-  requireScope(request, "full");
-  const templateId = (request.params as { id: string }).id;
-  const input = templateVersionSchema.parse(request.body);
-  await findTemplate(request);
-  const version = await db.query(
-    `insert into template_versions (id, tenant_id, template_id, subject, html, text, variables)
-     values ($1, $2, $3, $4, $5, $6, $7)
-     returning id, template_id, subject, html, text, variables, created_at, published_at`,
-    [id("version"), request.auth!.tenant_id, templateId, input.subject, input.html ?? null, input.text ?? null, JSON.stringify(input.variables)]
-  );
-  return { version: version.rows[0], request_id: request.request_id };
-});
-
-app.post("/v1/templates/:id/publish", async (request) => {
-  requireScope(request, "full");
-  const templateId = (request.params as { id: string }).id;
-  const body = (request.body ?? {}) as { version_id?: string };
-  await findTemplate(request);
-  const version = await db.query(
-    `select id from template_versions
-     where tenant_id = $1 and template_id = $2 and ($3::text is null or id = $3)
-     order by created_at desc limit 1`,
-    [request.auth!.tenant_id, templateId, body.version_id ?? null]
-  );
-  if (!version.rows[0]) throw new ApiError("not_found", 404, "Template version not found");
-  await db.query("update template_versions set published_at = now() where tenant_id = $1 and id = $2", [
-    request.auth!.tenant_id,
-    version.rows[0].id
-  ]);
-  const template = await db.query(
-    `update templates set published_version_id = $3, updated_at = now()
-     where tenant_id = $1 and id = $2
-     returning id, name, alias, published_version_id, created_at, updated_at`,
-    [request.auth!.tenant_id, templateId, version.rows[0].id]
-  );
-  return { template: template.rows[0], request_id: request.request_id };
-});
-
-app.post("/v1/templates/:id/render", async (request) => {
-  requireScope(request, "full");
-  const input = renderSchema.parse(request.body);
-  const template = await findTemplate(request);
-  if (!template.version) throw new ApiError("conflict", 409, "Template has no published version");
-  return {
-    rendered: renderTemplate(template.version, input.variables),
-    request_id: request.request_id
-  };
-});
-
-app.post("/v1/templates/:id/duplicate", async (request) => {
-  requireScope(request, "full");
-  const source = await findTemplate(request);
-  if (!source.version) throw new ApiError("conflict", 409, "Template has no published version");
-  const body = (request.body ?? {}) as { name?: string; alias?: string };
-  const input = templateSchema.parse({
-    name: body.name ?? `${source.name} copy`,
-    alias: body.alias,
-    subject: source.version.subject,
-    html: source.version.html ?? undefined,
-    text: source.version.text ?? undefined,
-    variables: source.version.variables ?? []
-  });
-  return tx(db, async (client) => {
-    const template = await client.query(
-      `insert into templates (id, tenant_id, name, alias)
-       values ($1, $2, $3, $4)
-       returning id, name, alias, published_version_id, created_at, updated_at`,
-      [id("template"), request.auth!.tenant_id, input.name, input.alias ?? null]
-    );
-    const version = await client.query(
-      `insert into template_versions (id, tenant_id, template_id, subject, html, text, variables, published_at)
-       values ($1, $2, $3, $4, $5, $6, $7, now())
-       returning id, subject, html, text, variables, created_at, published_at`,
-      [
-        id("version"),
-        request.auth!.tenant_id,
-        template.rows[0].id,
-        input.subject,
-        input.html ?? null,
-        input.text ?? null,
-        JSON.stringify(input.variables)
-      ]
-    );
-    await client.query("update templates set published_version_id = $3, updated_at = now() where tenant_id = $1 and id = $2", [
-      request.auth!.tenant_id,
-      template.rows[0].id,
-      version.rows[0].id
-    ]);
-    return {
-      template: { ...template.rows[0], published_version_id: version.rows[0].id, version: version.rows[0] },
-      request_id: request.request_id
-    };
-  });
-});
-
-app.post("/v1/contacts", async (request) => {
-  requireScope(request, "full");
-  const input = contactSchema.parse(request.body);
-  const row = await db.query(
-    `insert into contacts (id, tenant_id, email, first_name, last_name, properties, unsubscribed_at)
-     values ($1, $2, $3, $4, $5, $6, case when $7 then now() else null end)
-     on conflict (tenant_id, email) do update set
-       first_name = excluded.first_name,
-       last_name = excluded.last_name,
-       properties = excluded.properties,
-       unsubscribed_at = excluded.unsubscribed_at,
-       deleted_at = null,
-       updated_at = now()
-     returning id, email, first_name, last_name, properties, unsubscribed_at, created_at, updated_at`,
-    [
-      id("contact"),
-      request.auth!.tenant_id,
-      input.email,
-      input.first_name ?? null,
-      input.last_name ?? null,
-      JSON.stringify(input.properties),
-      input.unsubscribed
-    ]
-  );
-  return { contact: row.rows[0], request_id: request.request_id };
-});
-
-app.get("/v1/contacts", async (request) => {
-  requireScope(request, "full");
-  return pageRows(
-    request,
-    `select id, email, first_name, last_name, properties, unsubscribed_at, created_at, updated_at
-     from contacts
-     where tenant_id = $1 and deleted_at is null
-       and ($3::timestamptz is null or created_at > $3)
-       and ($4::timestamptz is null or created_at < $4)
-     order by created_at desc limit $2`
-  );
-});
-
-app.get("/v1/contacts/:id", async (request) => {
-  requireScope(request, "full");
-  const contact = await findContact(request);
-  return { contact, request_id: request.request_id };
-});
-
-app.patch("/v1/contacts/:id", async (request) => {
-  requireScope(request, "full");
-  const contactId = (request.params as { id: string }).id;
-  const input = contactUpdateSchema.parse(request.body);
-  const current = await findContact(request);
-  const row = await db.query(
-    `update contacts set
-       first_name = $3,
-       last_name = $4,
-       properties = $5,
-       unsubscribed_at = case when $6::boolean is null then unsubscribed_at when $6 then now() else null end,
-       updated_at = now()
-     where tenant_id = $1 and id = $2 and deleted_at is null
-     returning id, email, first_name, last_name, properties, unsubscribed_at, created_at, updated_at`,
-    [
-      request.auth!.tenant_id,
-      contactId,
-      input.first_name ?? current.first_name,
-      input.last_name ?? current.last_name,
-      JSON.stringify(input.properties ?? current.properties ?? {}),
-      input.unsubscribed ?? null
-    ]
-  );
-  return { contact: row.rows[0], request_id: request.request_id };
-});
-
-app.delete("/v1/contacts/:id", async (request) => {
-  requireScope(request, "full");
-  const contactId = (request.params as { id: string }).id;
-  await db.query("update contacts set deleted_at = now(), updated_at = now() where tenant_id = $1 and id = $2", [
-    request.auth!.tenant_id,
-    contactId
-  ]);
-  return { deleted: true, id: contactId, request_id: request.request_id };
-});
-
-app.post("/v1/topics", async (request) => {
-  requireScope(request, "full");
-  const input = topicSchema.parse(request.body);
-  const row = await db.query(
-    `insert into topics (id, tenant_id, name, key, default_status)
-     values ($1, $2, $3, $4, $5)
-     returning id, name, key, default_status, created_at, updated_at`,
-    [id("topic"), request.auth!.tenant_id, input.name, input.key ?? slug(input.name), input.default_status]
-  );
-  return { topic: row.rows[0], request_id: request.request_id };
-});
-
-app.get("/v1/topics", async (request) => {
-  requireScope(request, "full");
-  return pageRows(
-    request,
-    `select id, name, key, default_status, created_at, updated_at
-     from topics
-     where tenant_id = $1 and deleted_at is null
-       and ($3::timestamptz is null or created_at > $3)
-       and ($4::timestamptz is null or created_at < $4)
-     order by created_at desc limit $2`
-  );
-});
-
-app.get("/v1/topics/:id", async (request) => {
-  requireScope(request, "full");
-  const topic = await findTopic(request);
-  return { topic, request_id: request.request_id };
-});
-
-app.patch("/v1/topics/:id", async (request) => {
-  requireScope(request, "full");
-  const topicId = (request.params as { id: string }).id;
-  const input = topicUpdateSchema.parse(request.body);
-  const current = await findTopic(request);
-  const row = await db.query(
-    `update topics set name = $3, key = $4, default_status = $5, updated_at = now()
-     where tenant_id = $1 and id = $2 and deleted_at is null
-     returning id, name, key, default_status, created_at, updated_at`,
-    [
-      request.auth!.tenant_id,
-      topicId,
-      input.name ?? current.name,
-      input.key ?? current.key,
-      input.default_status ?? current.default_status
-    ]
-  );
-  return { topic: row.rows[0], request_id: request.request_id };
-});
-
-app.delete("/v1/topics/:id", async (request) => {
-  requireScope(request, "full");
-  const topicId = (request.params as { id: string }).id;
-  await db.query("update topics set deleted_at = now(), updated_at = now() where tenant_id = $1 and id = $2", [
-    request.auth!.tenant_id,
-    topicId
-  ]);
-  return { deleted: true, id: topicId, request_id: request.request_id };
-});
-
-app.get("/v1/topics/:id/subscriptions", async (request) => {
-  requireScope(request, "full");
-  const topic = await findTopic(request);
-  const paging = page(request);
-  const rows = await db.query(
-    `select s.id, s.status, s.created_at, s.updated_at,
-       c.id as contact_id, c.email, c.first_name, c.last_name
-     from topic_subscriptions s
-     join contacts c on c.id = s.contact_id
-     where s.tenant_id = $1 and s.topic_id = $2 and c.deleted_at is null
-       and ($4::timestamptz is null or s.created_at > $4)
-       and ($5::timestamptz is null or s.created_at < $5)
-     order by s.created_at desc limit $3`,
-    [request.auth!.tenant_id, topic.id, paging.fetch, paging.after, paging.before]
-  );
-  return { ...pageList(rows.rows, paging), request_id: request.request_id };
-});
-
-app.post("/v1/topics/:id/subscriptions", async (request) => {
-  requireScope(request, "full");
-  const topic = await findTopic(request);
-  const input = subscriptionSchema.parse(request.body);
-  const contact = await upsertContact(request.auth!.tenant_id, input.email);
-  const row = await db.query(
-    `insert into topic_subscriptions (id, tenant_id, topic_id, contact_id, status)
-     values ($1, $2, $3, $4, $5)
-     on conflict (tenant_id, topic_id, contact_id)
-     do update set status = excluded.status, updated_at = now()
-     returning id, topic_id, contact_id, status, created_at, updated_at`,
-    [id("sub"), request.auth!.tenant_id, topic.id, contact.id, input.status]
-  );
-  return { subscription: { ...row.rows[0], email: contact.email }, request_id: request.request_id };
-});
-
-app.post("/v1/segments", async (request) => {
-  requireScope(request, "full");
-  const input = segmentSchema.parse(request.body);
-  const row = await db.query(
-    `insert into segments (id, tenant_id, name, description)
-     values ($1, $2, $3, $4)
-     returning id, name, description, created_at, updated_at`,
-    [id("segment"), request.auth!.tenant_id, input.name, input.description ?? null]
-  );
-  return { segment: row.rows[0], request_id: request.request_id };
-});
-
-app.get("/v1/segments", async (request) => {
-  requireScope(request, "full");
-  return pageRows(
-    request,
-    `select s.id, s.name, s.description, s.created_at, s.updated_at, count(sc.id)::integer as contacts
-     from segments s
-     left join segment_contacts sc on sc.segment_id = s.id
-     where s.tenant_id = $1 and s.deleted_at is null
-       and ($3::timestamptz is null or s.created_at > $3)
-       and ($4::timestamptz is null or s.created_at < $4)
-     group by s.id
-     order by s.created_at desc limit $2`
-  );
-});
-
-app.get("/v1/segments/:id", async (request) => {
-  requireScope(request, "full");
-  const segment = await findSegment(request);
-  return { segment, request_id: request.request_id };
-});
-
-app.patch("/v1/segments/:id", async (request) => {
-  requireScope(request, "full");
-  const segmentId = (request.params as { id: string }).id;
-  const input = segmentUpdateSchema.parse(request.body);
-  const current = await findSegment(request);
-  const row = await db.query(
-    `update segments set name = $3, description = $4, updated_at = now()
-     where tenant_id = $1 and id = $2 and deleted_at is null
-     returning id, name, description, created_at, updated_at`,
-    [request.auth!.tenant_id, segmentId, input.name ?? current.name, input.description ?? current.description ?? null]
-  );
-  return { segment: row.rows[0], request_id: request.request_id };
-});
-
-app.delete("/v1/segments/:id", async (request) => {
-  requireScope(request, "full");
-  const segmentId = (request.params as { id: string }).id;
-  await db.query("update segments set deleted_at = now(), updated_at = now() where tenant_id = $1 and id = $2", [
-    request.auth!.tenant_id,
-    segmentId
-  ]);
-  return { deleted: true, id: segmentId, request_id: request.request_id };
-});
-
-app.get("/v1/segments/:id/contacts", async (request) => {
-  requireScope(request, "full");
-  const segment = await findSegment(request);
-  const paging = page(request);
-  const rows = await db.query(
-    `select sc.id, sc.created_at, c.id as contact_id, c.email, c.first_name, c.last_name, c.properties
-     from segment_contacts sc
-     join contacts c on c.id = sc.contact_id
-     where sc.tenant_id = $1 and sc.segment_id = $2 and c.deleted_at is null
-       and ($4::timestamptz is null or sc.created_at > $4)
-       and ($5::timestamptz is null or sc.created_at < $5)
-     order by sc.created_at desc limit $3`,
-    [request.auth!.tenant_id, segment.id, paging.fetch, paging.after, paging.before]
-  );
-  return { ...pageList(rows.rows, paging), request_id: request.request_id };
-});
-
-app.post("/v1/segments/:id/contacts", async (request) => {
-  requireScope(request, "full");
-  const segment = await findSegment(request);
-  const input = segmentContactSchema.parse(request.body);
-  const contact = await upsertContact(request.auth!.tenant_id, input.email);
-  const row = await db.query(
-    `insert into segment_contacts (id, tenant_id, segment_id, contact_id)
-     values ($1, $2, $3, $4)
-     on conflict (tenant_id, segment_id, contact_id) do update set segment_id = excluded.segment_id
-     returning id, segment_id, contact_id, created_at`,
-    [id("member"), request.auth!.tenant_id, segment.id, contact.id]
-  );
-  return { contact: { ...row.rows[0], email: contact.email }, request_id: request.request_id };
-});
-
-app.delete("/v1/segments/:id/contacts/:contact_id", async (request) => {
-  requireScope(request, "full");
-  const segment = await findSegment(request);
-  const contactId = (request.params as { contact_id: string }).contact_id;
-  const row = await db.query(
-    `delete from segment_contacts
-     where tenant_id = $1 and segment_id = $2 and (id = $3 or contact_id = $3)
+    `insert into api_keys (id, tenant_id, name, prefix, hash, scope, domain_id, created_by)
+     values ($1, $2, $3, $4, $5, $6, $7, $8)
      returning id`,
-    [request.auth!.tenant_id, segment.id, contactId]
-  );
-  if (!row.rows[0]) throw new ApiError("not_found", 404, "Segment contact not found");
-  return { deleted: true, id: contactId, request_id: request.request_id };
-});
-
-app.post("/v1/broadcasts", async (request) => {
-  requireScope(request, "full");
-  const input = broadcastSchema.parse(request.body);
-  const draft = await buildBroadcast(request.auth!.tenant_id, input);
-  const row = await db.query(
-    `insert into broadcasts (
-       id, tenant_id, name, from_email, subject, html, text, template_id, template_version_id,
-       variables, topic_id, segment_id
-     )
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-     returning id, name, from_email as from, subject, html, text, template_id, template_version_id,
-       variables, topic_id, segment_id, status, recipient_count, sent_count, created_at, updated_at, sent_at`,
     [
-      id("broadcast"),
+      id("key"),
       request.auth!.tenant_id,
       input.name,
-      input.from,
-      draft.subject,
-      draft.html ?? null,
-      draft.text ?? null,
-      draft.template_id,
-      draft.template_version_id,
-      JSON.stringify(input.variables),
-      input.topic_id ?? null,
-      input.segment_id ?? null
-    ]
+      prefix,
+      keyHash(secret, pepper),
+      input.scope,
+      input.domain_id,
+      // Known only for a key made in the dashboard, where a person is signed in.
+      request.auth!.user_id ?? null,
+    ],
   );
-  return { broadcast: row.rows[0], request_id: request.request_id };
+  apiKeyCache.clear();
+  return { id: row.rows[0].id, object: "api_key", token: secret };
 });
 
-app.get("/v1/broadcasts", async (request) => {
-  requireScope(request, "full");
-  return pageRows(
-    request,
-    `select id, name, from_email as from, subject, topic_id, segment_id, status,
-       recipient_count, sent_count, created_at, updated_at, sent_at
-     from broadcasts
-     where tenant_id = $1 and deleted_at is null
-       and ($3::timestamptz is null or created_at > $3)
-       and ($4::timestamptz is null or created_at < $4)
-     order by created_at desc limit $2`
+app.get("/api-keys", async (request) => {
+  const page = await paginate<Omit<KeyRow, "total_uses">>(
+    db,
+    {
+      table: "api_keys",
+      tenantId: request.auth!.tenant_id,
+      deletedCol: null,
+      where: "revoked_at is null",
+      select:
+        "id, name, prefix, scope, domain_id, created_at, last_used_at, created_by, (select u.email from users u where u.id = api_keys.created_by) as creator",
+    },
+    paging(request),
   );
+  // The masked token and the permission are on each row so a list can show them. Use counts
+  // stay on the detail route, which has to scan the logs for them.
+  return {
+    ...page,
+    data: page.data.map((row) => {
+      const { total_uses: _uses, ...key } = presentKey({ ...row, total_uses: 0 });
+      return key;
+    }),
+  };
 });
 
-app.get("/v1/broadcasts/:id", async (request) => {
-  requireScope(request, "full");
-  const broadcast = await findBroadcast(request);
-  const recipients = await db.query(
-    "select id, contact_id, email_id, email, status, created_at, updated_at from broadcast_recipients where tenant_id = $1 and broadcast_id = $2 order by created_at",
-    [request.auth!.tenant_id, broadcast.id]
+app.get("/api-keys/:id", async (request) => {
+  await flushTelemetry();
+  const row = await db.query<KeyRow>(
+    `select k.id, k.name, k.prefix, k.scope, k.domain_id, k.created_at, k.last_used_at, k.created_by,
+       (select u.email from users u where u.id = k.created_by) as creator,
+       (select count(*) from logs l where l.tenant_id = k.tenant_id and l.api_key_id = k.id)::integer as total_uses
+     from api_keys k
+     where k.tenant_id = $1 and k.id = $2 and k.revoked_at is null`,
+    [request.auth!.tenant_id, (request.params as { id: string }).id],
   );
-  return { broadcast: { ...broadcast, recipients: recipients.rows }, request_id: request.request_id };
+  if (!row.rows[0]) throw new ApiError("not_found", 404, "API key not found");
+  return presentKey(row.rows[0]);
 });
 
-app.patch("/v1/broadcasts/:id", async (request) => {
-  requireScope(request, "full");
-  const broadcastId = (request.params as { id: string }).id;
-  const input = broadcastUpdateSchema.parse(request.body);
-  const current = await findBroadcast(request);
-  if (current.status !== "draft") throw new ApiError("conflict", 409, "Only draft broadcasts can be updated");
-  const draft = await buildBroadcast(request.auth!.tenant_id, {
-    from: input.from ?? current.from,
-    subject: input.subject ?? current.subject ?? undefined,
-    html: input.html ?? current.html ?? undefined,
-    text: input.text ?? current.text ?? undefined,
-    template: input.template,
-    variables: input.variables ?? current.variables ?? {},
-    topic_id: input.topic_id ?? current.topic_id ?? undefined,
-    segment_id: input.segment_id ?? current.segment_id ?? undefined
-  });
+app.patch("/api-keys/:id", async (request) => {
+  const keyId = (request.params as { id: string }).id;
+  const input = keyUpdateSchema.parse(request.body);
   const row = await db.query(
-    `update broadcasts set name = $3, from_email = $4, subject = $5, html = $6, text = $7,
-       template_id = $8, template_version_id = $9, variables = $10, topic_id = $11, segment_id = $12, updated_at = now()
-     where tenant_id = $1 and id = $2 and deleted_at is null
-     returning id, name, from_email as from, subject, html, text, template_id, template_version_id,
-       variables, topic_id, segment_id, status, recipient_count, sent_count, created_at, updated_at, sent_at`,
-    [
-      request.auth!.tenant_id,
-      broadcastId,
-      input.name ?? current.name,
-      input.from ?? current.from,
-      draft.subject,
-      draft.html ?? null,
-      draft.text ?? null,
-      draft.template_id,
-      draft.template_version_id,
-      JSON.stringify(input.variables ?? current.variables ?? {}),
-      input.topic_id ?? current.topic_id ?? null,
-      input.segment_id ?? current.segment_id ?? null
-    ]
+    `update api_keys set name = $3
+     where tenant_id = $1 and id = $2 and revoked_at is null
+     returning id`,
+    [request.auth!.tenant_id, keyId, input.name],
   );
-  return { broadcast: row.rows[0], request_id: request.request_id };
+  if (!row.rows[0]) throw new ApiError("not_found", 404, "API key not found");
+  apiKeyCache.clear();
+  return { object: "api_key", id: keyId };
 });
 
-app.delete("/v1/broadcasts/:id", async (request) => {
-  requireScope(request, "full");
-  const broadcast = await findBroadcast(request);
-  if (!["draft", "cancelled"].includes(broadcast.status)) throw new ApiError("conflict", 409, "Only draft broadcasts can be deleted");
-  await db.query("update broadcasts set deleted_at = now(), updated_at = now() where tenant_id = $1 and id = $2", [
-    request.auth!.tenant_id,
-    broadcast.id
-  ]);
-  return { deleted: true, id: broadcast.id, request_id: request.request_id };
+app.delete("/api-keys/:id", async (request) => {
+  const keyId = (request.params as { id: string }).id;
+  const row = await db.query(
+    "update api_keys set revoked_at = now() where tenant_id = $1 and id = $2 and revoked_at is null returning id",
+    [request.auth!.tenant_id, keyId],
+  );
+  if (!row.rows[0]) throw new ApiError("not_found", 404, "API key not found");
+  apiKeyCache.clear();
+  return { object: "api_key", id: keyId, deleted: true };
 });
 
-app.post("/v1/broadcasts/:id/send", async (request) => {
-  requireScope(request, "full");
-  const broadcast = await findBroadcast(request);
-  if (broadcast.status !== "draft") throw new ApiError("conflict", 409, "Broadcast is not a draft");
-  const recipients = await snapshotBroadcast(request.auth!.tenant_id, broadcast.id);
-  await db.query(
-    `update broadcasts set status = 'sending', recipient_count = $3, updated_at = now()
-     where tenant_id = $1 and id = $2`,
-    [request.auth!.tenant_id, broadcast.id, recipients.length]
-  );
+const domainColumns =
+  "id, name, region, status, records, checked_at, created_at, return_path, open_tracking, click_tracking, tracking_subdomain, tls, sending, receiving, dns_provider";
 
-  let sent = 0;
-  for (const recipient of recipients) {
-    const response = await acceptEmail(
-      request,
-      {
-        from: broadcast.from,
-        to: recipient.email,
-        subject: broadcast.subject,
-        html: broadcast.html ?? undefined,
-        text: broadcast.text ?? undefined,
-        tags: { broadcast_id: broadcast.id }
-      },
-      { idempotency: false }
-    );
-    await db.query(
-      `update broadcast_recipients set email_id = $4, status = 'sent', updated_at = now()
-       where tenant_id = $1 and broadcast_id = $2 and id = $3`,
-      [request.auth!.tenant_id, broadcast.id, recipient.id, response.email.id]
-    );
-    sent += 1;
+app.post("/domains", async (request) => {
+  const input = domainSchema.parse(request.body);
+  const existing = await db.query(
+    "select id from domains where tenant_id = $1 and name = $2 and deleted_at is null",
+    [request.auth!.tenant_id, input.name],
+  );
+  if (existing.rows[0]) {
+    throw new ApiError("validation_error", 403, "This domain has already been added");
   }
-
-  const row = await db.query(
-    `update broadcasts set status = 'sent', sent_count = $3, sent_at = now(), updated_at = now()
-     where tenant_id = $1 and id = $2
-     returning id, name, from_email as from, subject, topic_id, segment_id, status,
-       recipient_count, sent_count, created_at, updated_at, sent_at`,
-    [request.auth!.tenant_id, broadcast.id, sent]
-  );
-  return { broadcast: row.rows[0], request_id: request.request_id };
-});
-
-app.post("/v1/broadcasts/:id/pause", async (request) => {
-  requireScope(request, "full");
-  const broadcast = await findBroadcast(request);
-  if (broadcast.status !== "sending") throw new ApiError("conflict", 409, "Only sending broadcasts can be paused");
-  const row = await db.query(
-    `update broadcasts set status = 'paused', updated_at = now()
-     where tenant_id = $1 and id = $2
-     returning id, name, from_email as from, subject, topic_id, segment_id, status,
-       recipient_count, sent_count, created_at, updated_at, sent_at`,
-    [request.auth!.tenant_id, broadcast.id]
-  );
-  return { broadcast: row.rows[0], request_id: request.request_id };
-});
-
-app.post("/v1/broadcasts/:id/resume", async (request) => {
-  requireScope(request, "full");
-  const broadcast = await findBroadcast(request);
-  if (broadcast.status !== "paused") throw new ApiError("conflict", 409, "Only paused broadcasts can be resumed");
-  const row = await db.query(
-    `update broadcasts set status = 'sending', updated_at = now()
-     where tenant_id = $1 and id = $2
-     returning id, name, from_email as from, subject, topic_id, segment_id, status,
-       recipient_count, sent_count, created_at, updated_at, sent_at`,
-    [request.auth!.tenant_id, broadcast.id]
-  );
-  return { broadcast: row.rows[0], request_id: request.request_id };
-});
-
-app.post("/v1/broadcasts/:id/cancel", async (request) => {
-  requireScope(request, "full");
-  const broadcast = await findBroadcast(request);
-  if (broadcast.status === "sent") throw new ApiError("conflict", 409, "Sent broadcasts cannot be cancelled");
-  const row = await db.query(
-    `update broadcasts set status = 'cancelled', updated_at = now()
-     where tenant_id = $1 and id = $2
-     returning id, name, from_email as from, subject, topic_id, segment_id, status,
-       recipient_count, sent_count, created_at, updated_at, sent_at`,
-    [request.auth!.tenant_id, broadcast.id]
-  );
-  return { broadcast: row.rows[0], request_id: request.request_id };
-});
-
-app.post("/v1/broadcasts/:id/clone", async (request) => {
-  requireScope(request, "full");
-  const source = await findBroadcast(request);
-  const body = (request.body ?? {}) as { name?: string };
-  const row = await db.query(
-    `insert into broadcasts (
-       id, tenant_id, name, from_email, subject, html, text, template_id, template_version_id,
-       variables, topic_id, segment_id, status
+  const tokens = await identityTokens(input.name, input.region, input.custom_return_path);
+  const records = domainRecords(input.name, input.region, tokens, {
+    returnPath: input.custom_return_path,
+    trackingSubdomain: input.tracking_subdomain,
+    receiving: input.capabilities.receiving === "enabled",
+  });
+  const row = await db.query<DomainRow>(
+    `insert into domains (
+       id, tenant_id, name, region, status, records, dkim_tokens,
+       return_path, open_tracking, click_tracking, tracking_subdomain, tls, sending, receiving
      )
-     select $1, tenant_id, $3, from_email, subject, html, text, template_id, template_version_id,
-       variables, topic_id, segment_id, 'draft'
-     from broadcasts
-     where tenant_id = $2 and id = $4
-     returning id, name, from_email as from, subject, topic_id, segment_id, status,
-       recipient_count, sent_count, created_at, updated_at, sent_at`,
-    [id("broadcast"), request.auth!.tenant_id, body.name ?? `${source.name} copy`, source.id]
-  );
-  return { broadcast: row.rows[0], request_id: request.request_id };
-});
-
-app.post("/v1/events", async (request) => {
-  requireScope(request, "full");
-  const input = customEventSchema.parse(request.body);
-  return createCustomEvent(request, input);
-});
-
-app.post("/v1/events/:name", async (request) => {
-  requireScope(request, "full");
-  const name = (request.params as { name: string }).name;
-  const input = customEventSchema.parse({ ...((request.body ?? {}) as Record<string, unknown>), name });
-  return createCustomEvent(request, input);
-});
-
-app.get("/v1/events", async (request) => {
-  requireScope(request, "full");
-  return pageRows(
-    request,
-    `select id, request_id, name, email, data, created_at
-     from custom_events
-     where tenant_id = $1 and deleted_at is null
-       and ($3::timestamptz is null or created_at > $3)
-       and ($4::timestamptz is null or created_at < $4)
-     order by created_at desc limit $2`
-  );
-});
-
-app.get("/v1/events/:id", async (request) => {
-  requireScope(request, "full");
-  const event = await findCustomEvent(request);
-  return { event, request_id: request.request_id };
-});
-
-app.patch("/v1/events/:id", async (request) => {
-  requireScope(request, "full");
-  const eventId = (request.params as { id: string }).id;
-  const input = customEventUpdateSchema.parse(request.body);
-  const current = await findCustomEvent(request);
-  const row = await db.query(
-    `update custom_events
-     set name = $3, email = $4, data = $5, updated_at = now()
-     where tenant_id = $1 and id = $2 and deleted_at is null
-     returning id, request_id, name, email, data, created_at, updated_at`,
+     values ($1, $2, $3, $4, 'not_started', $5, $6, $7, $8, $9, $10, $11, $12, $13)
+     on conflict (tenant_id, name) do update set
+       region = excluded.region,
+       status = 'not_started',
+       checked_at = null,
+       verify_started_at = null,
+       created_at = now(),
+       records = excluded.records,
+       dkim_tokens = excluded.dkim_tokens,
+       return_path = excluded.return_path,
+       open_tracking = excluded.open_tracking,
+       click_tracking = excluded.click_tracking,
+       tracking_subdomain = excluded.tracking_subdomain,
+       tls = excluded.tls,
+       sending = excluded.sending,
+       receiving = excluded.receiving,
+       deleted_at = null,
+       updated_at = now()
+     where domains.deleted_at is not null
+     returning ${domainColumns}`,
     [
+      id("domain"),
       request.auth!.tenant_id,
-      eventId,
-      input.name ?? current.name,
-      input.email === undefined ? current.email : input.email ?? null,
-      JSON.stringify(input.data ?? current.data ?? {})
-    ]
+      input.name,
+      input.region,
+      JSON.stringify(records),
+      JSON.stringify(tokens),
+      input.custom_return_path,
+      input.open_tracking,
+      input.click_tracking,
+      input.tracking_subdomain ?? "links",
+      input.tls,
+      input.capabilities.sending,
+      input.capabilities.receiving,
+    ],
   );
-  return { event: row.rows[0], request_id: request.request_id };
-});
-
-app.delete("/v1/events/:id", async (request) => {
-  requireScope(request, "full");
-  const eventId = (request.params as { id: string }).id;
-  const row = await db.query(
-    "update custom_events set deleted_at = now(), updated_at = now() where tenant_id = $1 and id = $2 and deleted_at is null returning id",
-    [request.auth!.tenant_id, eventId]
-  );
-  if (!row.rows[0]) throw new ApiError("not_found", 404, "Event not found");
-  return { deleted: true, id: eventId, request_id: request.request_id };
-});
-
-app.post("/v1/automations", async (request) => {
-  requireScope(request, "full");
-  const input = automationSchema.parse(request.body);
-  const row = await db.query(
-    `insert into automations (id, tenant_id, name, trigger, steps)
-     values ($1, $2, $3, $4, $5)
-     returning id, name, trigger, steps, enabled, created_at, updated_at`,
-    [id("automation"), request.auth!.tenant_id, input.name, input.trigger, JSON.stringify(input.steps)]
-  );
-  return { automation: row.rows[0], request_id: request.request_id };
-});
-
-app.get("/v1/automations", async (request) => {
-  requireScope(request, "full");
-  return pageRows(
-    request,
-    `select id, name, trigger, steps, enabled, created_at, updated_at
-     from automations
-     where tenant_id = $1 and deleted_at is null
-       and ($3::timestamptz is null or created_at > $3)
-       and ($4::timestamptz is null or created_at < $4)
-     order by created_at desc limit $2`
-  );
-});
-
-app.get("/v1/automations/:id", async (request) => {
-  requireScope(request, "full");
-  const automation = await findAutomation(request);
-  return { automation, request_id: request.request_id };
-});
-
-app.patch("/v1/automations/:id", async (request) => {
-  requireScope(request, "full");
-  const automationId = (request.params as { id: string }).id;
-  const input = automationUpdateSchema.parse(request.body);
-  const current = await findAutomation(request);
-  const row = await db.query(
-    `update automations set name = $3, trigger = $4, steps = $5, enabled = $6, updated_at = now()
-     where tenant_id = $1 and id = $2 and deleted_at is null
-     returning id, name, trigger, steps, enabled, created_at, updated_at`,
-    [
-      request.auth!.tenant_id,
-      automationId,
-      input.name ?? current.name,
-      input.trigger ?? current.trigger,
-      JSON.stringify(input.steps ?? current.steps),
-      input.enabled ?? current.enabled
-    ]
-  );
-  return { automation: row.rows[0], request_id: request.request_id };
-});
-
-app.delete("/v1/automations/:id", async (request) => {
-  requireScope(request, "full");
-  const automationId = (request.params as { id: string }).id;
-  await db.query("update automations set deleted_at = now(), updated_at = now() where tenant_id = $1 and id = $2", [
-    request.auth!.tenant_id,
-    automationId
-  ]);
-  return { deleted: true, id: automationId, request_id: request.request_id };
-});
-
-app.post("/v1/automations/:id/stop", async (request) => {
-  requireScope(request, "full");
-  const automation = await findAutomation(request);
-  await tx(db, async (client) => {
-    await client.query("update automations set enabled = false, updated_at = now() where tenant_id = $1 and id = $2", [
-      request.auth!.tenant_id,
-      automation.id
-    ]);
-    await client.query(
-      `update automation_runs
-       set state = 'stopped', resume_at = null, wait_event = null, updated_at = now()
-       where tenant_id = $1 and automation_id = $2 and state in ('ready', 'running', 'waiting')`,
-      [request.auth!.tenant_id, automation.id]
-    );
+  // No row means a concurrent request created the same live domain between the check and the insert.
+  if (!row.rows[0]) {
+    throw new ApiError("validation_error", 403, "This domain has already been added");
+  }
+  await emitChange(request, "domain.created", row.rows[0].id, {
+    id: row.rows[0].id,
+    name: row.rows[0].name,
+    status: row.rows[0].status,
   });
-  return { stopped: true, id: automation.id, request_id: request.request_id };
+  clearDomainCache(request.auth!.tenant_id);
+  return presentDomain(row.rows[0]);
 });
 
-app.get("/v1/automations/:id/runs", async (request) => {
-  requireScope(request, "full");
-  const automation = await findAutomation(request);
-  const paging = page(request);
-  const rows = await db.query(
-    `select r.id, r.event_id, e.name as event_name, e.email, r.state, r.next_step_index, r.resume_at, r.wait_event,
-       r.error, r.created_at, r.updated_at
-     from automation_runs r
-     join custom_events e on e.id = r.event_id
-     where r.tenant_id = $1 and r.automation_id = $2
-       and ($4::timestamptz is null or r.created_at > $4)
-       and ($5::timestamptz is null or r.created_at < $5)
-     order by r.created_at desc limit $3`,
-    [request.auth!.tenant_id, automation.id, paging.fetch, paging.after, paging.before]
+app.get("/domains", async (request) => {
+  const filters = domainWhere(request.query as DomainQuery);
+  const page = await paginate<DomainRow>(
+    db,
+    {
+      table: "domains",
+      tenantId: request.auth!.tenant_id,
+      select: domainColumns,
+      deletedCol: "deleted_at",
+      where: filters.where,
+      params: filters.params,
+    },
+    paging(request),
   );
-  return { ...pageList(rows.rows, paging), request_id: request.request_id };
+  return { ...page, data: page.data.map((row) => presentDomain(row)) };
 });
 
-app.get("/v1/automation-runs/:id", async (request) => {
-  requireScope(request, "full");
-  const runId = (request.params as { id: string }).id;
-  const run = await db.query(
-    `select r.id, r.automation_id, r.event_id, e.name as event_name, e.email, e.data as event_data,
-       r.state, r.next_step_index, r.resume_at, r.wait_event, r.error, r.created_at, r.updated_at
-     from automation_runs r
-     join custom_events e on e.id = r.event_id
-     where r.tenant_id = $1 and r.id = $2`,
-    [request.auth!.tenant_id, runId]
-  );
-  if (!run.rows[0]) throw new ApiError("not_found", 404, "Automation run not found");
-  const steps = await db.query(
-    `select id, step_index, type, state, data, error, created_at
-     from automation_steps
-     where tenant_id = $1 and run_id = $2
-     order by step_index`,
-    [request.auth!.tenant_id, runId]
-  );
-  return { run: { ...run.rows[0], steps: steps.rows }, request_id: request.request_id };
-});
-
-app.post("/v1/suppressions", async (request) => {
-  requireScope(request, "full");
-  const input = suppressionSchema.parse(request.body);
-  const row = await db.query(
-    `insert into suppressions (id, tenant_id, email, reason)
-     values ($1, $2, $3, $4)
-     on conflict (tenant_id, email) do update set reason = excluded.reason, removed_at = null
-     returning id, email, reason, created_at, removed_at`,
-    [id("supp"), request.auth!.tenant_id, input.email, input.reason]
-  );
-  return { suppression: row.rows[0], request_id: request.request_id };
-});
-
-app.get("/v1/suppressions", async (request) => {
-  requireScope(request, "full");
-  return pageRows(
-    request,
-    `select id, email, reason, created_at
-     from suppressions
-     where tenant_id = $1 and removed_at is null
-       and ($3::timestamptz is null or created_at > $3)
-       and ($4::timestamptz is null or created_at < $4)
-     order by created_at desc limit $2`
-  );
-});
-
-app.delete("/v1/suppressions/:id", async (request) => {
-  requireScope(request, "full");
-  const suppressionId = (request.params as { id: string }).id;
-  await db.query("update suppressions set removed_at = now() where tenant_id = $1 and id = $2", [
+app.get("/domains/:id", async (request) => {
+  const domain = await findBy<DomainRow>(
+    db,
+    "domains",
     request.auth!.tenant_id,
-    suppressionId
-  ]);
-  return { deleted: true, id: suppressionId, request_id: request.request_id };
-});
-
-app.get("/v1/email-jobs", async (request) => {
-  requireScope(request, "full");
-  const query = request.query as { email_id?: string };
-  return pageRows(
-    request,
-    `select j.id, j.email_id, e.subject, j.state, j.attempts, j.available_at, j.locked_at, j.error, j.created_at, j.updated_at
-     from send_jobs j
-     join emails e on e.tenant_id = j.tenant_id and e.id = j.email_id
-     where j.tenant_id = $1
-       and ($3::timestamptz is null or j.created_at > $3)
-       and ($4::timestamptz is null or j.created_at < $4)
-       and ($5::text is null or j.email_id = $5)
-     order by j.created_at desc limit $2`,
-    [query.email_id ?? null]
+    (request.params as { id: string }).id,
+    { select: domainColumns },
   );
+  return presentDomain(domain);
 });
 
-app.get("/v1/email-jobs/:id", async (request) => {
-  requireScope(request, "full");
-  const jobId = (request.params as { id: string }).id;
-  const row = await db.query(
-    `select j.id, j.email_id, e.subject, j.request_id, j.state, j.attempts, j.available_at, j.locked_at, j.error, j.created_at, j.updated_at
-     from send_jobs j
-     join emails e on e.tenant_id = j.tenant_id and e.id = j.email_id
-     where j.tenant_id = $1 and j.id = $2`,
-    [request.auth!.tenant_id, jobId]
+app.patch("/domains/:id", async (request) => {
+  const domainId = (request.params as { id: string }).id;
+  const input = domainUpdateSchema.parse(request.body);
+  const current = await findBy<DomainRow & { dkim_tokens: string[] | null }>(db, "domains", request.auth!.tenant_id, domainId, {
+    select: `${domainColumns}, dkim_tokens`,
+  });
+  const sending = input.capabilities?.sending ?? current.sending ?? "enabled";
+  const receiving = input.capabilities?.receiving ?? current.receiving ?? "disabled";
+  if (sending !== "enabled" && receiving !== "enabled") {
+    throw new ApiError("validation_error", 422, "enable sending or receiving");
+  }
+  // The SES identity already exists. Creating it again fails, so rebuild the records from the stored DKIM tokens.
+  const tokens = current.dkim_tokens ?? [];
+  const records = keepRecordStatus(
+    current.records ?? [],
+    domainRecords(current.name, current.region, tokens, {
+      returnPath: current.return_path ?? "send",
+      trackingSubdomain: input.tracking_subdomain ?? current.tracking_subdomain ?? "links",
+      receiving: receiving === "enabled",
+    }),
   );
-  if (!row.rows[0]) throw new ApiError("not_found", 404, "Email job not found");
-  return { job: row.rows[0], request_id: request.request_id };
-});
-
-app.post("/v1/emails", async (request, reply) => {
-  requireSend(request);
-  const response = await acceptEmail(request, request.body);
-  reply.status(202);
-  return response;
-});
-
-app.post("/v1/emails/batch", async (request, reply) => {
-  requireSend(request);
-  const input = batchSchema.parse(request.body);
-  const idemKey = idempotencyKey(request);
-  const requestHash = stableHash(input);
-  const replay = idemKey ? await readIdempotency(request, idemKey, requestHash) : null;
-  if (replay) return { ...replay, request_id: request.request_id };
-
-  if (idemKey) {
-    await db.query("delete from idempotency_keys where tenant_id = $1 and key = $2 and expires_at <= now()", [
+  const row = await db.query<DomainRow>(
+    `update domains set
+       records = $3,
+       open_tracking = $4,
+       click_tracking = $5,
+       tracking_subdomain = $6,
+       tls = $7,
+       sending = $8,
+       receiving = $9,
+       updated_at = now()
+     where tenant_id = $1 and id = $2
+     returning ${domainColumns}`,
+    [
       request.auth!.tenant_id,
-      idemKey
-    ]);
-    const inserted = await db.query(
-      `insert into idempotency_keys (id, tenant_id, key, request_hash, state, expires_at)
-       values ($1, $2, $3, $4, 'running', now() + interval '24 hours')
-       on conflict (tenant_id, key) do nothing`,
-      [id("idem"), request.auth!.tenant_id, idemKey, requestHash]
+      domainId,
+      JSON.stringify(records),
+      input.open_tracking ?? current.open_tracking ?? false,
+      input.click_tracking ?? current.click_tracking ?? false,
+      input.tracking_subdomain ?? current.tracking_subdomain ?? "links",
+      input.tls ?? current.tls ?? "opportunistic",
+      sending,
+      receiving,
+    ],
+  );
+  await emitChange(request, "domain.updated", domainId, {
+    id: row.rows[0].id,
+    name: row.rows[0].name,
+    status: row.rows[0].status,
+  });
+  clearDomainCache(request.auth!.tenant_id);
+  return presentDomain(row.rows[0]);
+});
+
+app.post("/domains/:id/verify", async (request) => {
+  const domainId = (request.params as { id: string }).id;
+  const live = (process.env.SES_PROVIDER ?? "fake") === "ses";
+  const row = await tx(db, async (client) => {
+    const updated = await client.query(
+      live
+        ? `update domains set status = 'pending', checked_at = now(), verify_started_at = coalesce(verify_started_at, now())
+           where tenant_id = $1 and id = $2 and deleted_at is null
+           returning id, name, region, status, records, checked_at, created_at`
+        : `update domains set status = 'verified', checked_at = now()
+           where tenant_id = $1 and id = $2 and deleted_at is null
+           returning id, name, region, status, records, checked_at, created_at`,
+      [request.auth!.tenant_id, domainId],
     );
-    if (inserted.rowCount === 0) {
-      const raced = await readIdempotency(request, idemKey, requestHash);
-      if (raced) return { ...raced, request_id: request.request_id };
-    }
-  }
-
-  const data = [];
-  try {
-    for (const email of input.emails) {
-      data.push((await acceptEmail(request, email, { idempotency: false })).email);
-    }
-  } catch (error) {
-    if (idemKey) {
-      await db.query("delete from idempotency_keys where tenant_id = $1 and key = $2 and state = 'running'", [
-        request.auth!.tenant_id,
-        idemKey
-      ]);
-    }
-    throw error;
-  }
-  reply.status(202);
-  const response = list(data);
-  if (idemKey) {
-    await db.query("update idempotency_keys set response_json = $3, state = 'done' where tenant_id = $1 and key = $2", [
-      request.auth!.tenant_id,
-      idemKey,
-      JSON.stringify(response)
-    ]);
-  }
-  return { ...response, request_id: request.request_id };
+    if (!updated.rows[0]) throw new ApiError("not_found", 404, "Domain not found");
+    await emit(client, {
+      tenantId: request.auth!.tenant_id,
+      requestId: request.request_id,
+      type: "domain.updated",
+      resourceId: domainId,
+      data: { id: domainId, status: updated.rows[0].status },
+    });
+    return updated.rows[0];
+  });
+  clearDomainCache(request.auth!.tenant_id);
+  return { object: "domain", id: domainId };
 });
 
-app.get("/v1/emails", async (request) => {
-  requireScope(request, "full");
-  return pageRows(
-    request,
-    `select e.id, e.request_id, e.from_email as from, e.subject, e.status, e.provider_message_id, e.created_at, e.updated_at,
-       coalesce(json_agg(r.email order by r.created_at) filter (where r.kind = 'to'), '[]') as to
-     from emails e
-     left join email_recipients r on r.email_id = e.id
-     where e.tenant_id = $1
-       and ($3::timestamptz is null or e.created_at > $3)
-       and ($4::timestamptz is null or e.created_at < $4)
-     group by e.id
-     order by e.created_at desc
-     limit $2`
-  );
-});
-
-app.get("/v1/emails/:id", async (request) => {
-  requireScope(request, "full");
-  const emailId = (request.params as { id: string }).id;
-  const email = await db.query("select * from emails where tenant_id = $1 and id = $2", [request.auth!.tenant_id, emailId]);
-  if (!email.rows[0]) throw new ApiError("not_found", 404, "Email not found");
-  const recipients = await db.query(
-    "select id, email, kind, status, created_at from email_recipients where tenant_id = $1 and email_id = $2 order by created_at",
-    [request.auth!.tenant_id, emailId]
-  );
-  const attachments = await db.query(
-    "select id, filename, content_type, size_bytes, content_id, created_at from email_attachments where tenant_id = $1 and email_id = $2 order by created_at",
-    [request.auth!.tenant_id, emailId]
-  );
-  const events = await db.query("select id, type, data, created_at from email_events where tenant_id = $1 and email_id = $2 order by created_at", [
+app.get("/domains/:id/doctor", async (request) => {
+  const domain = await findBy<{
+    id: string;
+    status: string;
+    records: Array<{ record: "DKIM" | "SPF" | "DMARC" | "Tracking" | "Receiving MX"; name: string; type: "CNAME" | "TXT" | "MX"; value: string; status: string; ttl: string; priority?: number }>;
+  }>(
+    db,
+    "domains",
     request.auth!.tenant_id,
-    emailId
-  ]);
-  return { email: { ...email.rows[0], recipients: recipients.rows, attachments: attachments.rows, events: events.rows }, request_id: request.request_id };
-});
-
-app.get("/v1/emails/:id/attachments", async (request) => {
-  requireScope(request, "full");
-  const emailId = (request.params as { id: string }).id;
-  await findEmail(request, emailId);
-  const paging = page(request);
-  const rows = await db.query(
-    `select id, filename, content_type, size_bytes, content_id, created_at
-     from email_attachments
-     where tenant_id = $1 and email_id = $2
-       and ($4::timestamptz is null or created_at > $4)
-       and ($5::timestamptz is null or created_at < $5)
-     order by created_at desc limit $3`,
-    [request.auth!.tenant_id, emailId, paging.fetch, paging.after, paging.before]
+    (request.params as { id: string }).id,
   );
-  return { ...pageList(rows.rows, paging), request_id: request.request_id };
+  const checks = await checkRecords(domain.records ?? [], nodeResolvers);
+  return { domain: domain.id, checks };
 });
 
-app.get("/v1/emails/:id/attachments/:attachment_id", async (request) => {
-  requireScope(request, "full");
-  const { id: emailId, attachment_id: attachmentId } = request.params as { id: string; attachment_id: string };
-  await findEmail(request, emailId);
-  const row = await db.query(
-    `select id, filename, content_type, size_bytes, content_id, disposition, content_hash, storage_key, created_at
+app.post("/domains/:id/publish-route53", async (request) => {
+  const domain = await findBy<{ id: string; name: string; records: Array<{ record: "DKIM" | "SPF" | "DMARC" | "Tracking" | "Receiving MX"; name: string; type: "CNAME" | "TXT" | "MX"; value: string; status: string; ttl: string; priority?: number }> }>(
+    db,
+    "domains",
+    request.auth!.tenant_id,
+    (request.params as { id: string }).id,
+  );
+  return publishRoute53(route53Client(), { name: domain.name, records: domain.records ?? [] });
+});
+
+app.delete("/domains/:id", async (request) => {
+  const domainId = (request.params as { id: string }).id;
+  const domain = await findBy<{ name: string; region: string }>(db, "domains", request.auth!.tenant_id, domainId);
+  if ((process.env.SES_PROVIDER ?? "fake") === "ses") {
+    await deleteIdentity(sesClient(domain.region), domain.name);
+  }
+  const removed = await softDelete(db, "domains", request.auth!.tenant_id, domainId);
+  if (removed.rowCount) await emitChange(request, "domain.deleted", domainId, { id: domainId });
+  clearDomainCache(request.auth!.tenant_id);
+  return { object: "domain", id: domainId, deleted: true };
+});
+
+app.post("/templates", async (request) => {
+  const input = templateSchema.parse(request.body);
+  const row = await tx(db, (client) => createTemplate(client, request.auth!.tenant_id, input));
+  return presentTemplate(row);
+});
+
+app.get("/templates", async (request) => {
+  const filters = templateWhere(request.query as TemplateQuery);
+  const page = await paginate<TemplateRecord>(
+    db,
+    {
+      table: templateFrom,
+      tenantId: request.auth!.tenant_id,
+      tenantCol: "t.tenant_id",
+      createdCol: "t.created_at",
+      idCol: "t.id",
+      deletedCol: "t.deleted_at",
+      where: filters.where,
+      params: filters.params,
+      select: templateSelect,
+    },
+    paging(request),
+  );
+  return { ...page, data: page.data.map(presentTemplate) };
+});
+
+app.get("/templates/:id", async (request) => {
+  const row = await templateDetail(db, request.auth!.tenant_id, (request.params as { id: string }).id);
+  return presentTemplate(row);
+});
+
+app.patch("/templates/:id", async (request) => {
+  const input = templateUpdateSchema.parse(request.body ?? {});
+  const tenantId = request.auth!.tenant_id;
+  const current = await templateDetail(db, tenantId, (request.params as { id: string }).id);
+  if (templateContentChanged(input) || input.publish || input.name !== undefined || input.alias !== undefined || input.track !== undefined) {
+    await tx(db, async (client) => {
+      if (templateContentChanged(input)) {
+        const next: TemplateWrite = {
+          name: input.name ?? current.name,
+          from: input.from !== undefined ? input.from : current.from_address,
+          reply_to: input.reply_to !== undefined ? (input.reply_to ?? []) : (current.reply_to ?? []),
+          subject: input.subject !== undefined ? input.subject : current.subject,
+          html: input.html !== undefined ? input.html : current.html,
+          text: input.text !== undefined ? input.text : current.text,
+          variables: input.variables !== undefined ? input.variables : (current.variables ?? []),
+          source: input.source,
+          publish: input.publish,
+        };
+        // An edit to a template whose latest version was never published changes that version.
+        await addTemplateVersion(client, tenantId, current.id, next, { reuseDraft: true });
+      } else if (input.publish) {
+        await publishTemplate(client, tenantId, current.id);
+      }
+      if (input.track !== undefined) {
+        await client.query(
+          "update templates set track = $3, updated_at = now() where tenant_id = $1 and id = $2",
+          [tenantId, current.id, input.track],
+        );
+      }
+      if (input.name !== undefined || input.alias !== undefined) {
+        await updateTemplateMeta(client, tenantId, current.id, { name: input.name, alias: input.alias });
+      }
+    });
+  }
+  return presentTemplate(await templateDetail(db, tenantId, current.id));
+});
+
+app.delete("/templates/:id", async (request) => {
+  const template = await templateDetail(db, request.auth!.tenant_id, (request.params as { id: string }).id);
+  await softDelete(db, "templates", request.auth!.tenant_id, template.id);
+  return { object: "template", id: template.id, deleted: true };
+});
+
+app.post("/templates/:id/versions", async (request) => {
+  const input = templateVersionSchema.parse(request.body);
+  const template = await templateDetail(db, request.auth!.tenant_id, (request.params as { id: string }).id);
+  const row = await tx(db, (client) => addTemplateVersion(client, request.auth!.tenant_id, template.id, {
+    name: template.name,
+    from: input.from,
+    reply_to: input.reply_to,
+    subject: input.subject,
+    html: input.html,
+    text: input.text,
+    variables: input.variables,
+    source: input.source,
+    track: input.track,
+  }));
+  return presentTemplate(row);
+});
+
+app.get("/templates/:id/versions", async (request) => {
+  const template = await templateDetail(db, request.auth!.tenant_id, (request.params as { id: string }).id);
+  const versions = await listTemplateVersions(db, request.auth!.tenant_id, template.id);
+  return { object: "list", has_more: false, data: versions.map(presentVersion) };
+});
+
+app.post("/templates/:id/publish", async (request) => {
+  const body = (request.body ?? {}) as { version_id?: string };
+  const row = await tx(db, (client) => publishTemplate(
+    client,
+    request.auth!.tenant_id,
+    (request.params as { id: string }).id,
+    body.version_id,
+  ));
+  return presentTemplate(row);
+});
+
+app.get("/template-library", async () => {
+  return listLibrary(await loadLibrary());
+});
+
+app.get("/template-library/:slug", async (request) => {
+  const entry = libraryEntry(await loadLibrary(), (request.params as { slug: string }).slug);
+  return previewLibrary(entry, await previewBrand(request.auth!.tenant_id));
+});
+
+app.post("/template-library/:slug/install", async (request) => {
+  const library = await loadLibrary();
+  // One transaction: a failure between the template row and its version leaves nothing behind.
+  return tx(db, (client) =>
+    installLibraryTemplate(client, request.auth!.tenant_id, library, (request.params as { slug: string }).slug),
+  );
+});
+
+// `variables` holds the reserved template names exactly as a preview render fills them, so the
+// dashboard's own preview does not have to repeat the fallback rules.
+app.get("/brand", async (request) => {
+  return { ...presentBrand(await tenantBrand(request.auth!.tenant_id)), variables: await previewBrand(request.auth!.tenant_id) };
+});
+
+app.patch("/brand", async (request) => {
+  const input = brandSchema.parse(request.body ?? {});
+  const current = await tenantBrand(request.auth!.tenant_id);
+  const next: BrandRecord = { ...current };
+  for (const [key, value] of Object.entries(input)) {
+    if (value === null) delete next[key as keyof BrandRecord];
+    else (next as Record<string, unknown>)[key] = value;
+  }
+  await db.query("update tenants set brand = $2 where id = $1", [request.auth!.tenant_id, JSON.stringify(next)]);
+  clearBrandCache(request.auth!.tenant_id);
+  return { ...presentBrand(next), variables: await previewBrand(request.auth!.tenant_id) };
+});
+
+app.post("/templates/:id/render", async (request) => {
+  const input = renderSchema.parse(request.body ?? {});
+  const ref = (request.params as { id: string }).id;
+  if (input.draft) {
+    const latest = await templateDetail(db, request.auth!.tenant_id, ref);
+    return { rendered: renderTemplate(latest, input.variables, await previewBrand(request.auth!.tenant_id)) };
+  }
+  try {
+    const template = await publishedTemplate(db, request.auth!.tenant_id, ref);
+    const context = await previewBrand(request.auth!.tenant_id);
+    return { rendered: renderTemplate(template, input.variables, context) };
+  } catch (error) {
+    if (!(error instanceof ApiError) || error.statusCode !== 404) throw error;
+    await templateDetail(db, request.auth!.tenant_id, ref);
+    throw new ApiError("conflict", 409, "Template has no published version");
+  }
+});
+
+app.post("/templates/:id/duplicate", async (request) => {
+  const source = await templateDetail(db, request.auth!.tenant_id, (request.params as { id: string }).id);
+  const raw = (request.body ?? {}) as { name?: string };
+  const body = templateUpdateSchema.pick({ name: true }).parse(raw.name === undefined ? {} : { name: raw.name });
+  const row = await tx(db, (client) => createTemplate(client, request.auth!.tenant_id, {
+    name: body.name ?? `${source.name} (Copy)`,
+    from: source.from_address,
+    reply_to: source.reply_to ?? [],
+    subject: source.subject,
+    html: source.html,
+    text: source.text,
+    variables: source.variables ?? [],
+    track: source.track ?? true,
+    source: source.source ?? undefined,
+  }));
+  return presentTemplate(row);
+});
+
+registerAudience(app, { db, paging, emitChange, slug });
+registerImports(app, { db, storage, paging });
+registerInsights(app, { db });
+registerLinks(app);
+
+registerBroadcasts(app, { db, paging });
+registerUnsubscribe(app, { db, secret: appSecret });
+
+registerAutomations(app, { db, paging });
+registerEvents(app, { db, paging });
+
+app.post(
+  "/emails",
+  { config: { scope: "send" } },
+  async (request, reply) => {
+    const response = await acceptEmail(db, request.body, emailContext(request), {
+      prepare: withSchedule,
+      publicUrl,
+      storeAttachment: writeBlob,
+    });
+    reply.status(200);
+    return { id: response.email.id };
+  },
+);
+
+app.post(
+  "/emails/batch",
+  { config: { scope: "send" } },
+  async (request, reply) => {
+    // Only the list's shape is checked here. Each email is validated as it is accepted, so
+    // permissive mode can queue the valid ones and report the others by index.
+    const emails = batchEnvelopeSchema.parse(request.body);
+    const header = request.headers["x-batch-validation"]?.toString();
+    if (header && header !== "strict" && header !== "permissive") {
+      throw new ApiError("validation_error", 400, "x-batch-validation must be strict or permissive");
+    }
+    const response = await acceptBatch(db, emails, emailContext(request), {
+      validation: header === "permissive" ? "permissive" : "strict",
+      prepare: withSchedule,
+      publicUrl,
+      storeAttachment: writeBlob,
+    });
+    reply.status(200);
+    return response;
+  },
+);
+
+app.get("/emails", async (request) => {
+  const filters = emailWhere(request.query as EmailQuery);
+  const page = await paginate<EmailRow & { to: string[]; cc: string[]; bcc: string[] }>(
+    db,
+    "emails e left join email_recipients r on r.email_id = e.id",
+    request.auth!.tenant_id,
+    paging(request),
+    {
+      tenantCol: "e.tenant_id",
+      createdCol: "e.created_at",
+      idCol: "e.id",
+      where: filters.where,
+      params: filters.params,
+      groupBy: "e.id",
+      select: `e.id, e.message_id, e.from_email, e.from_name, e.subject, e.reply_to, e.status, e.scheduled_at, e.tags, e.created_at,
+        coalesce(json_agg(r.email order by r.created_at) filter (where r.kind = 'to'), '[]') as to,
+        coalesce(json_agg(r.email order by r.created_at) filter (where r.kind = 'cc'), '[]') as cc,
+        coalesce(json_agg(r.email order by r.created_at) filter (where r.kind = 'bcc'), '[]') as bcc`,
+    },
+  );
+  return {
+    ...page,
+    data: page.data.map((row) =>
+      presentEmail({
+        ...row,
+        recipients: [
+          ...(row.to ?? []).map((email) => ({ email, kind: "to" })),
+          ...(row.cc ?? []).map((email) => ({ email, kind: "cc" })),
+          ...(row.bcc ?? []).map((email) => ({ email, kind: "bcc" })),
+        ],
+      }),
+    ),
+  };
+});
+
+app.get("/emails/metrics", async (request) => {
+  const input = parseMetricsQuery((request.query ?? {}) as Record<string, unknown>);
+  return emailMetrics(db, request.auth!.tenant_id, input);
+});
+
+app.get("/emails/:id", async (request) => {
+  const emailId = (request.params as { id: string }).id;
+  const email = await emailDetail(db, request.auth!.tenant_id, emailId);
+  const shown = presentEmail(email as unknown as EmailRow);
+  // The stored copy carries the recipient's unsubscribe, click, and open links, which act
+  // without a session. A read-only user sees the email without them.
+  return readOnly(request.auth) ? { ...shown, html: hideLinks(shown.html), text: hideLinks(shown.text) } : shown;
+});
+
+app.get("/emails/:id/attachments", async (request) => {
+  const emailId = (request.params as { id: string }).id;
+  await findBy(db, "emails", request.auth!.tenant_id, emailId, {
+    errorMessage: "Email not found",
+  });
+  const page = await paginate<AttachmentRow>(
+    db,
+    "email_attachments",
+    request.auth!.tenant_id,
+    paging(request),
+    {
+      where: "email_id = $2",
+      params: [emailId],
+      select: "id, filename, content_type, disposition, size_bytes, content_id, storage_key, created_at",
+    },
+  );
+  return { ...page, data: await Promise.all(page.data.map((row) => signedAttachment(row, urlTtl(request)))) };
+});
+
+app.get("/emails/:id/attachments/:attachment_id", async (request) => {
+  const { id: emailId, attachment_id: attachmentId } = request.params as {
+    id: string;
+    attachment_id: string;
+  };
+  await findBy(db, "emails", request.auth!.tenant_id, emailId, {
+    errorMessage: "Email not found",
+  });
+  const row = await db.query<AttachmentRow>(
+    `select id, filename, content_type, size_bytes, content_id, disposition, storage_key, created_at
      from email_attachments
      where tenant_id = $1 and email_id = $2 and id = $3`,
-    [request.auth!.tenant_id, emailId, attachmentId]
+    [request.auth!.tenant_id, emailId, attachmentId],
   );
-  if (!row.rows[0]) throw new ApiError("not_found", 404, "Attachment not found");
-  const content = (await readFile(blobPath(row.rows[0].storage_key))).toString("base64");
-  return { attachment: { ...row.rows[0], content }, request_id: request.request_id };
+  if (!row.rows[0])
+    throw new ApiError("not_found", 404, "Attachment not found");
+  return signedAttachment(row.rows[0], urlTtl(request));
 });
 
-app.get("/v1/emails/:id/events", async (request) => {
-  requireScope(request, "full");
+app.get("/files/*", async (request, reply) => {
+  const token = (request.params as { "*": string })["*"];
+  const file = await readSignedFile(token, storage, appSecret);
+  reply.header("content-type", "application/octet-stream");
+  reply.header("content-disposition", contentDisposition(file.filename));
+  return file.bytes;
+});
+
+app.get("/emails/:id/events", async (request) => {
   const emailId = (request.params as { id: string }).id;
-  const email = await db.query("select id from emails where tenant_id = $1 and id = $2", [request.auth!.tenant_id, emailId]);
-  if (!email.rows[0]) throw new ApiError("not_found", 404, "Email not found");
-  const paging = page(request);
-  const events = await db.query(
-    `select id, request_id, type, data, created_at
-     from email_events
-     where tenant_id = $1 and email_id = $2
-       and ($4::timestamptz is null or created_at > $4)
-       and ($5::timestamptz is null or created_at < $5)
-     order by created_at asc
-     limit $3`,
-    [request.auth!.tenant_id, emailId, paging.fetch, paging.after, paging.before]
+  await findBy(db, "emails", request.auth!.tenant_id, emailId, {
+    errorMessage: "Email not found",
+  });
+  return paginate(
+    db,
+    "email_events",
+    request.auth!.tenant_id,
+    paging(request),
+    {
+      where: "email_id = $2",
+      params: [emailId],
+      orderDirection: "asc",
+      select: "id, request_id, type, data, created_at",
+    },
   );
-  return { ...pageList(events.rows, paging), request_id: request.request_id };
 });
 
-app.patch("/v1/emails/:id", async (request) => {
-  requireSend(request);
+app.patch("/emails/:id", { config: { scope: "send" } }, async (request) => {
   const emailId = (request.params as { id: string }).id;
   const input = emailUpdateSchema.parse(request.body);
   const row = await tx(db, async (client) => {
@@ -1649,28 +1044,55 @@ app.patch("/v1/emails/:id", async (request) => {
       tags: Record<string, string>;
       status: string;
       scheduled_at: string | null;
+      from_email: string;
     }>(
-      `select id, subject, html, text, headers, tags, status, scheduled_at
+      `select id, subject, html, text, headers, tags, status, scheduled_at, from_email
        from emails
        where tenant_id = $1 and id = $2
        for update`,
-      [request.auth!.tenant_id, emailId]
+      [request.auth!.tenant_id, emailId],
     );
     const email = current.rows[0];
     if (!email) throw new ApiError("not_found", 404, "Email not found");
-    if (!["queued", "scheduled"].includes(email.status)) throw new ApiError("conflict", 409, "Email cannot be updated after dispatch");
+    assertKeyDomain(request, email.from_email);
+    if (!["queued", "scheduled"].includes(email.status))
+      throw new ApiError(
+        "conflict",
+        409,
+        "Email cannot be updated after dispatch",
+      );
     const runningJob = await client.query(
       "select id from send_jobs where tenant_id = $1 and email_id = $2 and state = 'running' limit 1",
-      [request.auth!.tenant_id, emailId]
+      [request.auth!.tenant_id, emailId],
     );
-    if (runningJob.rows[0]) throw new ApiError("conflict", 409, "Email dispatch is already running");
+    if (runningJob.rows[0])
+      throw new ApiError("conflict", 409, "Email dispatch is already running");
 
     const scheduledAt =
-      input.scheduled_at === undefined ? (email.scheduled_at ? new Date(email.scheduled_at) : null) : input.scheduled_at ? new Date(input.scheduled_at) : null;
-    const nextStatus = scheduledAt && scheduledAt.getTime() > Date.now() ? "scheduled" : "queued";
+      input.scheduled_at === undefined
+        ? email.scheduled_at
+          ? new Date(email.scheduled_at)
+          : null
+        : scheduleAt(input.scheduled_at);
+    const nextStatus =
+      scheduledAt && scheduledAt.getTime() > Date.now()
+        ? "scheduled"
+        : "queued";
     const html = input.html === undefined ? email.html : input.html;
-    const text = input.text === undefined ? email.text : input.text;
-    if (!html && !text) throw new ApiError("validation_error", 400, "html or text is required");
+    const htmlChanged = input.html !== undefined && input.html !== email.html;
+    // New HTML with no new text gets its text rebuilt, so the two parts of the message agree.
+    const text = input.text !== undefined ? input.text : htmlChanged && html ? textFromHtml(html) : email.text;
+    if (!html && !text)
+      throw new ApiError("validation_error", 400, "html or text is required");
+    // The worker sends the tracked copy. Left alone, it would still hold the old HTML.
+    if (htmlChanged) {
+      const tracked = await retrackEmail(client, { tenantId: request.auth!.tenant_id, emailId, html, publicUrl });
+      await client.query("update emails set html_tracked = $3 where tenant_id = $1 and id = $2", [
+        request.auth!.tenant_id,
+        emailId,
+        tracked,
+      ]);
+    }
 
     const updated = await client.query(
       `update emails
@@ -1687,14 +1109,18 @@ app.patch("/v1/emails/:id", async (request) => {
         JSON.stringify(input.headers ?? email.headers ?? {}),
         JSON.stringify(input.tags ?? email.tags ?? {}),
         scheduledAt,
-        nextStatus
-      ]
+        nextStatus,
+      ],
     );
     await client.query(
       `update send_jobs
        set state = 'ready', available_at = coalesce($3::timestamptz, now()), updated_at = now()
        where tenant_id = $1 and email_id = $2 and state in ('ready', 'failed')`,
-      [request.auth!.tenant_id, emailId, nextStatus === "scheduled" ? scheduledAt : null]
+      [
+        request.auth!.tenant_id,
+        emailId,
+        nextStatus === "scheduled" ? scheduledAt : null,
+      ],
     );
     if (nextStatus === "scheduled") {
       const event = await appendEvent(client, {
@@ -1703,1307 +1129,536 @@ app.patch("/v1/emails/:id", async (request) => {
         emailId,
         type: "email.scheduled",
         providerEventId: `${emailId}:rescheduled:${Date.now()}`,
-        data: { scheduled_at: scheduledAt?.toISOString() }
+        data: { scheduled_at: scheduledAt?.toISOString() },
       });
       if (event) await fanoutEvent(client, event);
     }
     return updated.rows[0];
   });
-  return { email: row, request_id: request.request_id };
+  return { object: "email", id: row.id };
 });
 
-app.post("/v1/emails/:id/cancel", async (request) => {
-  requireSend(request);
-  const emailId = (request.params as { id: string }).id;
-  const row = await db.query(
-    `update emails set status = 'cancelled', updated_at = now()
-     where tenant_id = $1 and id = $2 and status in ('queued', 'scheduled')
-     returning id, status`,
-    [request.auth!.tenant_id, emailId]
-  );
-  await db.query("update send_jobs set state = 'cancelled' where tenant_id = $1 and email_id = $2 and state = 'ready'", [
-    request.auth!.tenant_id,
-    emailId
-  ]);
-  if (!row.rows[0]) throw new ApiError("conflict", 409, "Email cannot be cancelled");
-  return { email: row.rows[0], request_id: request.request_id };
-});
+app.post(
+  "/emails/:id/cancel",
+  { config: { scope: "send" } },
+  async (request) => {
+    const emailId = (request.params as { id: string }).id;
+    await tx(db, async (client) => {
+      const current = await client.query<{ status: string; from_email: string }>(
+        "select status, from_email from emails where tenant_id = $1 and id = $2 for update",
+        [request.auth!.tenant_id, emailId],
+      );
+      const email = current.rows[0];
+      if (!email) throw new ApiError("not_found", 404, "Email not found");
+      assertKeyDomain(request, email.from_email);
+      if (!["queued", "scheduled"].includes(email.status)) {
+        throw new ApiError("conflict", 409, "Email cannot be cancelled");
+      }
+      await client.query(
+        "update emails set status = 'cancelled', updated_at = now() where tenant_id = $1 and id = $2",
+        [request.auth!.tenant_id, emailId],
+      );
+      await client.query(
+        "update send_jobs set state = 'cancelled' where tenant_id = $1 and email_id = $2 and state = 'ready'",
+        [request.auth!.tenant_id, emailId],
+      );
+    });
+    return { object: "email", id: emailId };
+  },
+);
 
-app.post("/v1/emails/:id/retry", async (request) => {
-  requireSend(request);
-  const emailId = (request.params as { id: string }).id;
-  const email = await db.query(
-    "select id, status, request_id from emails where tenant_id = $1 and id = $2",
-    [request.auth!.tenant_id, emailId]
-  );
-  if (!email.rows[0]) throw new ApiError("not_found", 404, "Email not found");
-  if (["queued", "scheduled", "sent", "delivered"].includes(email.rows[0].status)) {
-    throw new ApiError("conflict", 409, "Email does not need retry");
-  }
-  const row = await db.query(
-    `insert into send_jobs (id, tenant_id, email_id, request_id, state, available_at)
-     values ($1, $2, $3, $4, 'ready', now())
-     returning id, email_id, state, available_at, created_at`,
-    [id("job"), request.auth!.tenant_id, emailId, request.request_id]
-  );
-  await db.query("update emails set status = 'queued', updated_at = now() where tenant_id = $1 and id = $2", [
-    request.auth!.tenant_id,
-    emailId
-  ]);
-  return { job: row.rows[0], request_id: request.request_id };
-});
+app.post(
+  "/emails/:id/retry",
+  { config: { scope: "send" } },
+  async (request) => {
+    const emailId = (request.params as { id: string }).id;
+    const job = await tx(db, async (client) => {
+      const email = await client.query<{ id: string; status: string; from_email: string }>(
+        "select id, status, from_email from emails where tenant_id = $1 and id = $2 for update",
+        [request.auth!.tenant_id, emailId],
+      );
+      if (!email.rows[0]) throw new ApiError("not_found", 404, "Email not found");
+      assertKeyDomain(request, email.rows[0].from_email);
+      if (
+        ["queued", "scheduled", "sent", "delivered"].includes(
+          email.rows[0].status,
+        )
+      ) {
+        throw new ApiError("conflict", 409, "Email does not need retry");
+      }
+      const row = await client.query(
+        `insert into send_jobs (id, tenant_id, email_id, request_id, state, available_at)
+         values ($1, $2, $3, $4, 'ready', now())
+         returning id, email_id, state, available_at, created_at`,
+        [id("job"), request.auth!.tenant_id, emailId, request.request_id],
+      );
+      // A retry sends the message again on purpose, so the earlier provider id is cleared.
+      await client.query(
+        "update emails set status = 'queued', provider_message_id = null, updated_at = now() where tenant_id = $1 and id = $2",
+        [request.auth!.tenant_id, emailId],
+      );
+      return row.rows[0];
+    });
+    return { job };
+  },
+);
 
-app.post("/v1/webhooks", async (request) => {
-  requireScope(request, "full");
+app.post("/webhooks", async (request) => {
   const input = webhookSchema.parse(request.body);
-  const url = await webhookUrl(input.url);
-  const secret = randomBytes(32).toString("base64url");
+  const url = await webhookUrl(input.endpoint ?? "");
+  const secret = makeWebhookSecret();
   const row = await db.query(
-    `insert into webhooks (id, tenant_id, url, events, secret)
-     values ($1, $2, $3, $4, $5)
+    `insert into webhooks (id, tenant_id, url, events, secret, enabled)
+     values ($1, $2, $3, $4, $5, $6)
      returning id, url, events, enabled, created_at`,
-    [id("webhook"), request.auth!.tenant_id, url, JSON.stringify(input.events), secret]
-  );
-  return { webhook: { ...row.rows[0], secret }, request_id: request.request_id };
-});
-
-app.get("/v1/webhooks", async (request) => {
-  requireScope(request, "full");
-  return pageRows(
-    request,
-    `select w.id, w.url, w.events, w.enabled, h.state as health, h.consecutive_failures, w.created_at, w.updated_at
-     from webhooks w
-     left join webhook_endpoint_health h on h.webhook_id = w.id
-     where w.tenant_id = $1
-       and ($3::timestamptz is null or w.created_at > $3)
-       and ($4::timestamptz is null or w.created_at < $4)
-     order by w.created_at desc limit $2`
-  );
-});
-
-app.get("/v1/webhooks/:id", async (request) => {
-  requireScope(request, "full");
-  const webhookId = (request.params as { id: string }).id;
-  const row = await db.query(
-    `select w.id, w.url, w.events, w.enabled, h.state as health, h.consecutive_failures, h.last_status, h.last_error,
-       w.created_at, w.updated_at
-     from webhooks w
-     left join webhook_endpoint_health h on h.webhook_id = w.id
-     where w.tenant_id = $1 and w.id = $2`,
-    [request.auth!.tenant_id, webhookId]
-  );
-  if (!row.rows[0]) throw new ApiError("not_found", 404, "Webhook not found");
-  return { webhook: row.rows[0], request_id: request.request_id };
-});
-
-app.patch("/v1/webhooks/:id", async (request) => {
-  requireScope(request, "full");
-  const webhookId = (request.params as { id: string }).id;
-  const body = request.body as { url?: string; events?: string[]; enabled?: boolean };
-  const url = body.url ? await webhookUrl(body.url) : undefined;
-  if (body.events && (!Array.isArray(body.events) || body.events.length === 0)) {
-    throw new ApiError("validation_error", 400, "events must be a non-empty array");
-  }
-  if (body.enabled !== undefined && typeof body.enabled !== "boolean") {
-    throw new ApiError("validation_error", 400, "enabled must be a boolean");
-  }
-  const current = await db.query("select * from webhooks where tenant_id = $1 and id = $2", [request.auth!.tenant_id, webhookId]);
-  if (!current.rows[0]) throw new ApiError("not_found", 404, "Webhook not found");
-  const row = await db.query(
-    `update webhooks set url = $3, events = $4, enabled = $5, updated_at = now()
-     where tenant_id = $1 and id = $2
-     returning id, url, events, enabled, created_at, updated_at`,
     [
+      id("webhook"),
       request.auth!.tenant_id,
-      webhookId,
-      url ?? current.rows[0].url,
-      JSON.stringify(body.events ?? current.rows[0].events),
-      body.enabled ?? current.rows[0].enabled
-    ]
+      url,
+      JSON.stringify(input.events ?? ["email.sent"]),
+      encrypt(secret, appSecret),
+      input.enabled ?? true,
+    ],
   );
-  return { webhook: row.rows[0], request_id: request.request_id };
+  return presentWebhook(row.rows[0], secret);
 });
 
-app.delete("/v1/webhooks/:id", async (request) => {
-  requireScope(request, "full");
-  const webhookId = (request.params as { id: string }).id;
-  await db.query("delete from webhooks where tenant_id = $1 and id = $2", [request.auth!.tenant_id, webhookId]);
-  return { deleted: true, id: webhookId, request_id: request.request_id };
+app.get("/webhooks", async (request) => {
+  const page = await paginate<{
+    id: string;
+    url: string;
+    events: string[];
+    enabled: boolean;
+    created_at: string;
+  }>(db, "webhooks", request.auth!.tenant_id, paging(request), {
+    select: "id, url, events, enabled, created_at",
+  });
+  return { ...page, data: page.data.map((row) => (readOnly(request.auth) ? viewerWebhook(row) : presentWebhook(row))) };
 });
 
-app.get("/v1/webhooks/:id/attempts", async (request) => {
-  requireScope(request, "full");
-  const webhookId = (request.params as { id: string }).id;
-  const paging = page(request);
-  const rows = await db.query(
-    `select id, event_id, state, attempt, available_at, status, latency_ms, error, response, created_at, updated_at
-     from webhook_attempts
-     where tenant_id = $1 and webhook_id = $2
-       and ($4::timestamptz is null or created_at > $4)
-       and ($5::timestamptz is null or created_at < $5)
-     order by created_at desc limit $3`,
-    [request.auth!.tenant_id, webhookId, paging.fetch, paging.after, paging.before]
-  );
-  return { ...pageList(rows.rows, paging), request_id: request.request_id };
-});
-
-app.post("/v1/webhooks/:id/replay", async (request) => {
-  requireScope(request, "full");
-  const webhookId = (request.params as { id: string }).id;
-  const body = (request.body ?? {}) as { event_id?: string; attempt_id?: string };
-  const row = await db.query(
-    body.attempt_id
-      ? `select e.* from webhook_attempts a
-         join email_events e on e.id = a.event_id
-         join webhooks w on w.tenant_id = a.tenant_id and w.id = a.webhook_id
-         where a.tenant_id = $1 and a.webhook_id = $2 and a.id = $3 and w.enabled = true and w.events ? e.type
-         limit 1`
-      : body.event_id
-        ? `select e.* from email_events e
-           join webhooks w on w.tenant_id = e.tenant_id
-           where w.id = $2 and w.tenant_id = $1 and e.id = $3 and w.enabled = true and w.events ? e.type
-           limit 1`
-        : `select e.* from webhook_attempts a
-           join email_events e on e.id = a.event_id
-           join webhooks w on w.tenant_id = a.tenant_id and w.id = a.webhook_id
-           where a.tenant_id = $1 and a.webhook_id = $2 and a.state = 'failed' and w.enabled = true and w.events ? e.type
-           order by a.created_at desc limit 1`,
-    [request.auth!.tenant_id, webhookId, body.attempt_id ?? body.event_id ?? null]
-  );
-  if (!row.rows[0]) throw new ApiError("not_found", 404, "No event to replay");
-  const attempt = await db.query(
-    `insert into webhook_attempts (id, tenant_id, request_id, webhook_id, event_id, state)
-     values ($1, $2, $3, $4, $5, 'queued')
-     returning id`,
-    [id("attempt"), request.auth!.tenant_id, row.rows[0].request_id ?? request.request_id, webhookId, row.rows[0].id]
-  );
-  await db.query(
-    `insert into webhook_replays (id, tenant_id, webhook_id, event_id, attempt_id, request_id)
-     values ($1, $2, $3, $4, $5, $6)`,
-    [id("replay"), request.auth!.tenant_id, webhookId, row.rows[0].id, attempt.rows[0].id, request.request_id]
-  );
-  return { queued: true, event_id: row.rows[0].id, request_id: request.request_id };
-});
-
-app.post("/v1/webhooks/test", async (request) => {
-  requireScope(request, "full");
+app.post("/webhooks/test", async (request) => {
   const eventId = id("event");
   const row = await db.query(
     `insert into email_events (id, tenant_id, request_id, type, data)
      values ($1, $2, $3, 'email.sent', $4)
      returning id, request_id, type, data, created_at`,
-    [eventId, request.auth!.tenant_id, request.request_id, JSON.stringify({ test: true })]
+    [
+      eventId,
+      request.auth!.tenant_id,
+      request.request_id,
+      JSON.stringify({ test: true }),
+    ],
   );
   await db.query(
     `insert into webhook_attempts (id, tenant_id, request_id, webhook_id, event_id, state)
      select 'attempt_' || md5(random()::text || clock_timestamp()::text || id), tenant_id, $3, id, $2, 'queued'
      from webhooks where tenant_id = $1 and enabled = true and events ? 'email.sent'`,
-    [request.auth!.tenant_id, eventId, request.request_id]
+    [request.auth!.tenant_id, eventId, request.request_id],
   );
-  return { event: row.rows[0], request_id: request.request_id };
+  return { event: row.rows[0] };
 });
 
-app.post("/v1/received-emails/simulate", async (request) => {
-  requireScope(request, "full");
-  const input = inboundSchema.parse(request.body);
-  return tx(db, async (client) => {
-    const row = await client.query(
-      `insert into received_emails (id, tenant_id, request_id, from_email, subject, html, text, headers, raw)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       returning id, request_id, from_email as from, subject, html, text, headers, created_at`,
-      [
-        id("recv"),
-        request.auth!.tenant_id,
-        request.request_id,
-        input.from,
-        input.subject,
-        input.html ?? null,
-        input.text ?? null,
-        JSON.stringify(input.headers),
-        JSON.stringify(rawInbound(input))
-      ]
-    );
-    const recipients = [
-      ...toArray(input.to).map((email) => ({ email, kind: "to" })),
-      ...toArray(input.cc).map((email) => ({ email, kind: "cc" })),
-      ...toArray(input.bcc).map((email) => ({ email, kind: "bcc" }))
-    ];
-    if (recipients.length > 50) throw new ApiError("too_many_recipients", 400, "A received email can have at most 50 recipients");
-    const attachments = prepareAttachments(request.auth!.tenant_id, row.rows[0].id, input.attachments, "received");
-    await client.query(
-      `insert into received_recipients (id, tenant_id, received_email_id, email, kind)
-       select * from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[])`,
-      [
-        recipients.map(() => id("rr")),
-        recipients.map(() => request.auth!.tenant_id),
-        recipients.map(() => row.rows[0].id),
-        recipients.map((recipient) => recipient.email),
-        recipients.map((recipient) => recipient.kind)
-      ]
-    );
-    for (const attachment of attachments) {
-      await writeBlob(attachment.storage_key, attachment.bytes);
-    }
-    if (attachments.length > 0) {
-      await client.query(
-        `insert into received_attachments (id, tenant_id, received_email_id, filename, content_type, size_bytes, content_hash, storage_key)
-         select * from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::integer[], $7::text[], $8::text[])`,
-        [
-          attachments.map((attachment) => attachment.id),
-          attachments.map(() => request.auth!.tenant_id),
-          attachments.map(() => row.rows[0].id),
-          attachments.map((attachment) => attachment.filename),
-          attachments.map((attachment) => attachment.content_type),
-          attachments.map((attachment) => attachment.size_bytes),
-          attachments.map((attachment) => attachment.content_hash),
-          attachments.map((attachment) => attachment.storage_key)
-        ]
-      );
-    }
-    const event = await appendEvent(client, {
-      tenantId: request.auth!.tenant_id,
-      requestId: request.request_id,
-      emailId: null,
-      type: "email.received",
-      providerEventId: `${row.rows[0].id}:received`,
-      data: {
-        received_email_id: row.rows[0].id,
-        from: input.from,
-        to: recipients.filter((recipient) => recipient.kind === "to").map((recipient) => recipient.email),
-        cc: recipients.filter((recipient) => recipient.kind === "cc").map((recipient) => recipient.email),
-        bcc: recipients.filter((recipient) => recipient.kind === "bcc").map((recipient) => recipient.email),
-        subject: input.subject,
-        attachments: attachments.length
-      }
-    });
-    if (event) await fanoutEvent(client, event);
-    return {
-      received_email: {
-        ...row.rows[0],
-        to: recipients.filter((recipient) => recipient.kind === "to").map((recipient) => recipient.email),
-        cc: recipients.filter((recipient) => recipient.kind === "cc").map((recipient) => recipient.email),
-        bcc: recipients.filter((recipient) => recipient.kind === "bcc").map((recipient) => recipient.email)
-      },
-      request_id: request.request_id
-    };
+app.get("/webhooks/:id", async (request) => {
+  const webhook = await findBy<WebhookRecord & { secret: string }>(
+    db,
+    "webhooks",
+    request.auth!.tenant_id,
+    (request.params as { id: string }).id,
+    {
+      select: "id, url, events, enabled, secret, created_at",
+      errorMessage: "Webhook not found",
+    },
+  );
+  // The signing secret lets its holder forge deliveries. A read-only user does not see it.
+  return readOnly(request.auth) ? viewerWebhook(webhook) : presentStoredWebhook(webhook, appSecret);
+});
+
+// A read-only user sees neither the signing secret nor the part of the URL that can hold a credential.
+function viewerWebhook(webhook: Parameters<typeof presentWebhook>[0]) {
+  const { signing_secret: _secret, ...shown } = presentWebhook(webhook) as ReturnType<typeof presentWebhook> & { signing_secret?: string };
+  return { ...shown, endpoint: hostOnly(shown.endpoint) };
+}
+
+app.patch("/webhooks/:id", async (request) => {
+  const webhookId = (request.params as { id: string }).id;
+  const input = webhookUpdateSchema.parse(request.body);
+  const current = await findBy<WebhookRecord & { secret: string }>(
+    db,
+    "webhooks",
+    request.auth!.tenant_id,
+    webhookId,
+    {
+      select: "id, url, events, enabled, secret, created_at",
+      errorMessage: "Webhook not found",
+    },
+  );
+  const url = input.endpoint ? await webhookUrl(input.endpoint) : current.url;
+  const storedSecret = encrypted(current.secret)
+    ? current.secret
+    : encrypt(current.secret, appSecret);
+  const row = await db.query<WebhookRecord & { secret: string }>(
+    `update webhooks set url = $3, events = $4, enabled = $5, secret = $6, updated_at = now()
+     where tenant_id = $1 and id = $2
+     returning id, url, events, enabled, secret, created_at`,
+    [
+      request.auth!.tenant_id,
+      webhookId,
+      url,
+      JSON.stringify(input.events ?? current.events),
+      input.enabled ?? current.enabled,
+      storedSecret,
+    ],
+  );
+  // Switching an endpoint back on starts its health record fresh. With the old failing_since in
+  // place, the first failure after a fix would disable it again at once.
+  if (input.enabled === true && !current.enabled) {
+    await db.query("delete from webhook_endpoint_health where tenant_id = $1 and webhook_id = $2", [
+      request.auth!.tenant_id,
+      webhookId,
+    ]);
+  }
+  return presentStoredWebhook(row.rows[0]!, appSecret);
+});
+
+app.delete("/webhooks/:id", async (request) => {
+  const webhookId = (request.params as { id: string }).id;
+  const row = await db.query(
+    "delete from webhooks where tenant_id = $1 and id = $2 returning id",
+    [request.auth!.tenant_id, webhookId],
+  );
+  if (!row.rows[0]) throw new ApiError("not_found", 404, "Webhook not found");
+  return { object: "webhook", id: webhookId, deleted: true };
+});
+
+app.post("/webhooks/:id/signing-secret/rotate", async (request) => {
+  return rotateWebhookSecret(
+    db,
+    request.auth!.tenant_id,
+    (request.params as { id: string }).id,
+    appSecret,
+  );
+});
+
+app.get("/webhooks/:id/events", async (request) => {
+  const webhookId = (request.params as { id: string }).id;
+  await findBy(db, "webhooks", request.auth!.tenant_id, webhookId, {
+    errorMessage: "Webhook not found",
+  });
+  const query = request.query as { limit?: string; after?: string; before?: string };
+  return listWebhookEvents(db, request.auth!.tenant_id, webhookId, {
+    limit: query.limit !== undefined ? Number(query.limit) : undefined,
+    after: query.after || undefined,
+    before: query.before || undefined,
   });
 });
 
-app.get("/v1/received-emails", async (request) => {
-  requireScope(request, "full");
-  return pageRows(
-    request,
-    `select m.id, m.request_id, m.from_email as from, m.subject, m.created_at,
-       coalesce(json_agg(r.email order by r.created_at) filter (where r.id is not null), '[]') as to
-     from received_emails m
-     left join received_recipients r on r.received_email_id = m.id
-     where m.tenant_id = $1
-       and ($3::timestamptz is null or m.created_at > $3)
-       and ($4::timestamptz is null or m.created_at < $4)
-     group by m.id
-     order by m.created_at desc limit $2`
+app.get("/webhooks/:id/events/:event_id", async (request) => {
+  const params = request.params as { id: string; event_id: string };
+  await findBy(db, "webhooks", request.auth!.tenant_id, params.id, {
+    errorMessage: "Webhook not found",
+  });
+  return webhookEventDetail(db, request.auth!.tenant_id, params.id, params.event_id);
+});
+
+app.get("/webhooks/:id/events/:event_id/attempts", async (request) => {
+  const params = request.params as { id: string; event_id: string };
+  await findBy(db, "webhooks", request.auth!.tenant_id, params.id, {
+    errorMessage: "Webhook not found",
+  });
+  return webhookEventAttempts(db, request.auth!.tenant_id, params.id, params.event_id);
+});
+
+app.post("/webhooks/:id/events/:event_id/replay", async (request) => {
+  const params = request.params as { id: string; event_id: string };
+  await findBy(db, "webhooks", request.auth!.tenant_id, params.id, {
+    errorMessage: "Webhook not found",
+  });
+  return queueWebhookReplay(db, {
+    tenantId: request.auth!.tenant_id,
+    webhookId: params.id,
+    eventId: params.event_id,
+    requestId: request.request_id,
+  });
+});
+
+app.post("/emails/receiving/simulate", async (request) => {
+  const input = inboundSchema.parse(request.body);
+  const received = await tx(db, (client) =>
+    ingestReceived(client, {
+      tenantId: request.auth!.tenant_id,
+      requestId: request.request_id,
+      from: input.from,
+      to: input.to,
+      cc: input.cc,
+      bcc: input.bcc,
+      subject: input.subject,
+      html: input.html,
+      text: input.text,
+      headers: input.headers,
+      raw: rawInbound(input),
+      attachments: attachmentsFromInbound(input.attachments),
+      storeAttachment: (key, bytes) => storage.put(key, bytes),
+    }),
+  );
+  return presentReceived(received);
+});
+
+app.get("/emails/receiving", async (request) => {
+  const filters = receivedWhere(request.query as ReceivedQuery);
+  return paginate(
+    db,
+    "received_emails m left join received_recipients r on r.received_email_id = m.id",
+    request.auth!.tenant_id,
+    paging(request),
+    {
+      tenantCol: "m.tenant_id",
+      createdCol: "m.created_at",
+      idCol: "m.id",
+      where: filters.where,
+      params: filters.params,
+      groupBy: "m.id",
+      select: `m.id, m.message_id, m.from_email as from, m.subject, m.reply_to, m.created_at,
+        coalesce(json_agg(r.email order by r.created_at) filter (where r.kind = 'to'), '[]') as to,
+        coalesce(json_agg(r.email order by r.created_at) filter (where r.kind = 'cc'), '[]') as cc,
+        coalesce(json_agg(r.email order by r.created_at) filter (where r.kind = 'bcc'), '[]') as bcc`,
+    },
   );
 });
 
-app.get("/v1/received-emails/:id", async (request) => {
-  requireScope(request, "full");
+app.get("/emails/receiving/:id", async (request) => {
   const receivedId = (request.params as { id: string }).id;
-  const row = await db.query(
-    "select id, request_id, from_email as from, subject, html, text, headers, created_at from received_emails where tenant_id = $1 and id = $2",
-    [request.auth!.tenant_id, receivedId]
+  const format = (request.query as { html_format?: string }).html_format;
+  const row = await findBy<Record<string, unknown>>(
+    db,
+    "received_emails",
+    request.auth!.tenant_id,
+    receivedId,
+    {
+      select: "id, request_id, from_email as from, subject, html, text, headers, message_id, reply_to, authentication, raw_key, created_at",
+      errorMessage: "Received email not found",
+    },
   );
-  if (!row.rows[0]) throw new ApiError("not_found", 404, "Received email not found");
-  const recipients = await db.query(
+  const recipients = await db.query<{ id: string; email: string; kind: string; created_at: string }>(
     "select id, email, kind, created_at from received_recipients where tenant_id = $1 and received_email_id = $2 order by created_at",
-    [request.auth!.tenant_id, receivedId]
+    [request.auth!.tenant_id, receivedId],
   );
-  const attachments = await db.query(
-    "select id, filename, content_type, size_bytes, created_at from received_attachments where tenant_id = $1 and received_email_id = $2 order by created_at",
-    [request.auth!.tenant_id, receivedId]
+  const attachments = await db.query<AttachmentRow & { bytes?: Buffer }>(
+    "select id, filename, content_type, size_bytes, content_id, storage_key, created_at from received_attachments where tenant_id = $1 and received_email_id = $2 order by created_at",
+    [request.auth!.tenant_id, receivedId],
   );
-  return { received_email: { ...row.rows[0], recipients: recipients.rows, attachments: attachments.rows }, request_id: request.request_id };
+  const withBytes = [];
+  for (const attachment of attachments.rows) {
+    if (format === "cid" || !attachment.content_id) {
+      withBytes.push(attachment);
+      continue;
+    }
+    withBytes.push({ ...attachment, bytes: await storage.get(attachment.storage_key) });
+  }
+  const signed = await Promise.all(attachments.rows.map((attachment) => signedAttachment(attachment, urlTtl(request))));
+  const raw = row.raw_key
+    ? await storage.url(String(row.raw_key), { filename: "message.eml", expiresIn: urlTtl(request) })
+    : null;
+  return presentReceived({
+    ...row,
+    html: applyHtmlFormat(row.html as string | null, format, withBytes),
+    to: recipients.rows.filter((recipient) => recipient.kind === "to").map((recipient) => recipient.email),
+    cc: recipients.rows.filter((recipient) => recipient.kind === "cc").map((recipient) => recipient.email),
+    bcc: recipients.rows.filter((recipient) => recipient.kind === "bcc").map((recipient) => recipient.email),
+    received_for: recipients.rows.filter((recipient) => recipient.kind === "to").map((recipient) => recipient.email),
+    recipients: recipients.rows,
+    attachments: signed,
+    raw,
+  });
 });
 
-app.get("/v1/received-emails/:id/attachments", async (request) => {
-  requireScope(request, "full");
+app.get("/emails/receiving/:id/attachments", async (request) => {
   const receivedId = (request.params as { id: string }).id;
-  const exists = await db.query("select id from received_emails where tenant_id = $1 and id = $2", [request.auth!.tenant_id, receivedId]);
-  if (!exists.rows[0]) throw new ApiError("not_found", 404, "Received email not found");
-  const paging = page(request);
-  const rows = await db.query(
-    `select id, filename, content_type, size_bytes, created_at
-     from received_attachments
-     where tenant_id = $1 and received_email_id = $2
-       and ($4::timestamptz is null or created_at > $4)
-       and ($5::timestamptz is null or created_at < $5)
-     order by created_at desc limit $3`,
-    [request.auth!.tenant_id, receivedId, paging.fetch, paging.after, paging.before]
+  await findBy(db, "received_emails", request.auth!.tenant_id, receivedId, {
+    errorMessage: "Received email not found",
+  });
+  const page = await paginate<AttachmentRow>(
+    db,
+    "received_attachments",
+    request.auth!.tenant_id,
+    paging(request),
+    {
+      where: "received_email_id = $2",
+      params: [receivedId],
+      select: "id, filename, content_type, size_bytes, content_id, storage_key, created_at",
+    },
   );
-  return { ...pageList(rows.rows, paging), request_id: request.request_id };
+  return { ...page, data: await Promise.all(page.data.map((row) => signedAttachment(row, urlTtl(request)))) };
 });
 
-app.get("/v1/received-emails/:id/attachments/:attachment_id", async (request) => {
-  requireScope(request, "full");
-  const { id: receivedId, attachment_id: attachmentId } = request.params as { id: string; attachment_id: string };
-  const row = await db.query(
-    `select id, filename, content_type, size_bytes, content_hash, storage_key, created_at
+app.get("/emails/receiving/:id/attachments/:attachment_id", async (request) => {
+  const { id: receivedId, attachment_id: attachmentId } = request.params as {
+    id: string;
+    attachment_id: string;
+  };
+  const row = await db.query<AttachmentRow>(
+    `select id, filename, content_type, size_bytes, content_id, storage_key, created_at
      from received_attachments
      where tenant_id = $1 and received_email_id = $2 and id = $3`,
-    [request.auth!.tenant_id, receivedId, attachmentId]
+    [request.auth!.tenant_id, receivedId, attachmentId],
   );
   if (!row.rows[0]) throw new ApiError("not_found", 404, "Received attachment not found");
-  const content = (await readFile(blobPath(row.rows[0].storage_key))).toString("base64");
-  return { attachment: { ...row.rows[0], content }, request_id: request.request_id };
+  return signedAttachment(row.rows[0], urlTtl(request));
+});
+
+app.post("/emails/:id/share", async (request) => {
+  const emailId = (request.params as { id: string }).id;
+  const body = shareSchema.parse(request.body ?? {});
+  const sent = await db.query(
+    "select id from emails where tenant_id = $1 and id = $2",
+    [request.auth!.tenant_id, emailId],
+  );
+  let kind: "sent" | "received" = "sent";
+  if (!sent.rows[0]) {
+    const received = await db.query(
+      "select id from received_emails where tenant_id = $1 and id = $2",
+      [request.auth!.tenant_id, emailId],
+    );
+    if (!received.rows[0]) throw new ApiError("not_found", 404, "Email not found");
+    kind = "received";
+  }
+  const exp = shareExpiry(body.expires_in);
+  const token = shareToken(
+    { tenantId: request.auth!.tenant_id, emailId, kind, exp },
+    appSecret,
+  );
+  const base = (process.env.APP_URL ?? "http://localhost:5173").replace(/\/$/, "");
+  return { object: "email", id: emailId, url: `${base}/shared?token=${encodeURIComponent(token)}` };
+});
+
+app.get("/shared/:token", async (request) => {
+  const payload = readShareToken((request.params as { token: string }).token, appSecret);
+  if (!payload) throw new ApiError("not_found", 404, "Email not found");
+  const email = await loadSharedEmail(db, payload);
+  if (!email) throw new ApiError("not_found", 404, "Email not found");
+  return email;
 });
 
 app.get("/open/:token.gif", async (request, reply) => {
   const token = (request.params as { token: string }).token;
   const row = await useTrackingToken(token, "open", request.request_id, {
     user_agent: request.headers["user-agent"]?.toString() ?? null,
-    ip: request.ip
+    ip: request.ip,
   });
   if (!row) throw new ApiError("not_found", 404, "Tracking token not found");
   reply.header("content-type", "image/gif");
   reply.header("cache-control", "no-store");
-  return Buffer.from("R0lGODlhAQABAPAAAP///wAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==", "base64");
+  return Buffer.from(
+    "R0lGODlhAQABAPAAAP///wAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw==",
+    "base64",
+  );
 });
 
 app.get("/click/:token", async (request, reply) => {
   const token = (request.params as { token: string }).token;
   const row = await useTrackingToken(token, "click", request.request_id, {
     user_agent: request.headers["user-agent"]?.toString() ?? null,
-    ip: request.ip
+    ip: request.ip,
   });
-  if (!row?.url) throw new ApiError("not_found", 404, "Tracking token not found");
+  if (!row?.url)
+    throw new ApiError("not_found", 404, "Tracking token not found");
   reply.redirect(row.url);
 });
 
-app.get("/v1/system", async (request) => {
-  requireScope(request, "full");
+const logColumns = "id, created_at, path, method, status, user_agent";
+
+app.get("/logs", async (request) => {
   await flushTelemetry();
-  const [jobs, attempts, runs, logs, health] = await Promise.all([
-    db.query("select state, count(*)::integer as count from send_jobs where tenant_id = $1 group by state order by state", [request.auth!.tenant_id]),
-    db.query("select state, count(*)::integer as count from webhook_attempts where tenant_id = $1 group by state order by state", [
-      request.auth!.tenant_id
-    ]),
-    db.query("select state, count(*)::integer as count from automation_runs where tenant_id = $1 group by state order by state", [
-      request.auth!.tenant_id
-    ]),
-    db.query(
-      "select count(*)::integer as count, coalesce(max(created_at), now()) as last_seen_at from logs where tenant_id = $1",
-      [request.auth!.tenant_id]
-    ),
-    db.query(
-      `select count(*) filter (where enabled)::integer as enabled_webhooks,
-        count(*) filter (where not enabled)::integer as disabled_webhooks
-       from webhooks where tenant_id = $1`,
-      [request.auth!.tenant_id]
-    )
-  ]);
-  const backlog = Object.fromEntries(jobs.rows.map((row) => [row.state, row.count]));
-  const webhook_attempts = Object.fromEntries(attempts.rows.map((row) => [row.state, row.count]));
-  const automation_runs = Object.fromEntries(runs.rows.map((row) => [row.state, row.count]));
-  return {
-    ok: true,
-    provider: process.env.SES_PROVIDER ?? "fake",
-    worker: { backlog, concurrency: Number(process.env.WORKER_CONCURRENCY ?? 5) },
-    webhooks: { attempts: webhook_attempts, ...health.rows[0] },
-    automations: automation_runs,
-    logs: logs.rows[0],
-    request_id: request.request_id
-  };
+  const filters = logWhere(request.query as LogQuery);
+  const page = await paginate<StoredLog>(db, "logs", request.auth!.tenant_id, paging(request), {
+    where: filters.where,
+    params: filters.params,
+    select: logColumns,
+  });
+  return { ...page, data: page.data.map((row) => presentLog(row)) };
 });
 
-app.get("/v1/usage", async (request) => {
-  requireScope(request, "full");
+app.get("/logs/export", async (request) => {
   await flushTelemetry();
-  return pageRows(
-    request,
-    `select id, name, period, value::bigint::text as value, updated_at
-     from usage_counters
-     where tenant_id = $1
-       and ($3::timestamptz is null or updated_at > $3)
-       and ($4::timestamptz is null or updated_at < $4)
-     order by updated_at desc limit $2`
-  );
-});
-
-app.get("/v1/timeline", async (request) => {
-  requireScope(request, "full");
-  await flushTelemetry();
-  return pageRows(
-    request,
-    `select kind, id, request_id, name, summary, created_at
-     from (
-       select 'email' as kind, id, tenant_id, request_id, status as name, subject as summary, created_at from emails
-       union all
-       select 'email_event' as kind, id, tenant_id, request_id, type as name, coalesce(email_id, '') as summary, created_at from email_events
-       union all
-       select 'custom_event' as kind, id, tenant_id, request_id, name, coalesce(email, '') as summary, created_at from custom_events where deleted_at is null
-       union all
-       select 'received_email' as kind, id, tenant_id, request_id, 'email.received' as name, subject as summary, created_at from received_emails
-       union all
-       select 'webhook_attempt' as kind, id, tenant_id, request_id, state as name, webhook_id as summary, created_at from webhook_attempts
-       union all
-       select 'automation_run' as kind, id, tenant_id, null as request_id, state as name, automation_id as summary, created_at from automation_runs
-       union all
-       select 'api_log' as kind, id, tenant_id, request_id, method || ' ' || status::text as name, path as summary, created_at from logs
-     ) items
-     where tenant_id = $1
-       and ($3::timestamptz is null or created_at > $3)
-       and ($4::timestamptz is null or created_at < $4)
-     order by created_at desc limit $2`
-  );
-});
-
-app.get("/v1/logs", async (request) => {
-  requireScope(request, "full");
-  await flushTelemetry();
-  const query = request.query as { path?: string; status?: string };
-  return pageRows(
-    request,
-    `select id, request_id, user_agent, method, path, status, latency_ms, api_key_id, error, created_at
-     from logs
-     where tenant_id = $1
-       and ($5::text is null or path like '%' || $5 || '%')
-       and ($6::integer is null or status = $6)
-       and ($3::timestamptz is null or created_at > $3)
-       and ($4::timestamptz is null or created_at < $4)
-     order by created_at desc limit $2`,
-    [query.path ?? null, query.status ? Number(query.status) : null]
-  );
-});
-
-app.get("/v1/logs/export", async (request) => {
-  requireScope(request, "full");
-  await flushTelemetry();
-  const rows = await db.query(
-    `select id, request_id, user_agent, method, path, status, latency_ms, api_key_id, error, created_at
+  const rows = await db.query<StoredLog>(
+    `select ${logColumns}
      from logs
      where tenant_id = $1
      order by created_at desc limit 1000`,
-    [request.auth!.tenant_id]
+    [request.auth!.tenant_id],
   );
-  return { exported_at: new Date().toISOString(), logs: rows.rows, request_id: request.request_id };
+  return { exported_at: new Date().toISOString(), logs: rows.rows.map((row) => presentLog(row)) };
 });
 
-app.get("/v1/logs/:id", async (request) => {
-  requireScope(request, "full");
+app.get("/logs/:id", async (request) => {
   await flushTelemetry();
-  const logId = (request.params as { id: string }).id;
-  const row = await db.query("select * from logs where tenant_id = $1 and id = $2", [request.auth!.tenant_id, logId]);
-  if (!row.rows[0]) throw new ApiError("not_found", 404, "Log not found");
-  return { log: row.rows[0], request_id: request.request_id };
+  const log = await findBy<StoredLog>(
+    db,
+    "logs",
+    request.auth!.tenant_id,
+    (request.params as { id: string }).id,
+    {
+      select: `${logColumns}, request_body, response_body`,
+      errorMessage: "Log not found",
+    },
+  );
+  return presentLog(log, true, readOnly(request.auth));
 });
 
-async function acceptEmail(request: FastifyRequest, input: unknown, options: { idempotency?: boolean } = {}) {
-  const parsed = sendSchema.parse(input);
-  const idemKey = options.idempotency === false ? undefined : idempotencyKey(request);
-  const requestHash = idemKey ? stableHash(parsed) : null;
-  const scheduledAt = parsed.scheduled_at ? new Date(parsed.scheduled_at) : null;
-  const isScheduled = scheduledAt !== null && scheduledAt.getTime() > Date.now();
-  const initialStatus = isScheduled ? "scheduled" : "queued";
-
-  return tx(db, async (client) => {
-    if (idemKey) {
-      await client.query("delete from idempotency_keys where tenant_id = $1 and key = $2 and expires_at <= now()", [
-        request.auth!.tenant_id,
-        idemKey
-      ]);
-      const inserted = await client.query(
-        `insert into idempotency_keys (id, tenant_id, key, request_hash, state, expires_at)
-         values ($1, $2, $3, $4, 'running', now() + interval '24 hours')
-         on conflict (tenant_id, key) do nothing
-         returning id`,
-        [id("idem"), request.auth!.tenant_id, idemKey, requestHash]
-      );
-      if (inserted.rowCount === 0) {
-        const existing = await client.query(
-          "select request_hash, response_json, state from idempotency_keys where tenant_id = $1 and key = $2 and expires_at > now() for update",
-          [request.auth!.tenant_id, idemKey]
-        );
-        if (existing.rows[0]?.request_hash !== requestHash) {
-          throw new ApiError("idempotency_conflict", 409, "Idempotency key was used with a different payload");
-        }
-        if (existing.rows[0]?.state === "running") {
-          throw new ApiError("idempotency_conflict", 409, "Idempotency request is still in flight");
-        }
-        if (existing.rows[0]?.response_json) return { ...existing.rows[0].response_json, request_id: request.request_id };
-      }
-    }
-
-    const domain = parsed.from.split("@")[1];
-    if (!(await verifiedDomain(client, request.auth!.tenant_id, domain))) throw new ApiError("invalid_sender", 400, "Sender domain is not verified");
-
-    let subject = parsed.subject;
-    let html = parsed.html;
-    let text = parsed.text;
-    let templateId: string | null = null;
-    let templateVersionId: string | null = null;
-
-    if (parsed.template) {
-      const template = await publishedTemplate(client, request.auth!.tenant_id, parsed.template);
-      const rendered = renderTemplate(template, parsed.variables ?? {});
-      subject = subject ?? rendered.subject;
-      html = html ?? rendered.html;
-      text = text ?? rendered.text;
-      templateId = template.template_id;
-      templateVersionId = template.id;
-    }
-
-    if (!subject || (!html && !text)) throw new ApiError("validation_error", 400, "subject and content are required");
-
-    const recipients = [
-      ...toArray(parsed.to).map((email) => ({ email, kind: "to" })),
-      ...toArray(parsed.cc).map((email) => ({ email, kind: "cc" })),
-      ...toArray(parsed.bcc).map((email) => ({ email, kind: "bcc" }))
-    ];
-    if (recipients.length > 50) throw new ApiError("too_many_recipients", 400, "An email can have at most 50 recipients");
-
-    const suppressed = await client.query(
-      `select email from suppressions where tenant_id = $1 and email = any($2) and removed_at is null
-       union
-       select email from contacts where tenant_id = $1 and email = any($2) and deleted_at is null and unsubscribed_at is not null`,
-      [request.auth!.tenant_id, recipients.map((recipient) => recipient.email)]
-    );
-    if ((suppressed.rowCount ?? 0) > 0) throw new ApiError("suppressed", 400, `Recipient is suppressed: ${suppressed.rows[0].email}`);
-
-    const emailId = id("email");
-    const tracking = html ? prepareTracking(html, publicUrl) : { html, tokens: [] };
-    html = tracking.html ?? html;
-    const attachments = prepareAttachments(request.auth!.tenant_id, emailId, parsed.attachments ?? [], "attachments");
-
-    const email = await client.query(
-      `insert into emails (
-        id, tenant_id, request_id, idempotency_key, from_email, subject, html, text,
-        template_id, template_version_id, headers, tags, status, scheduled_at
-      )
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-       returning id, request_id, from_email as from, subject, status, scheduled_at, created_at`,
-      [
-        emailId,
-        request.auth!.tenant_id,
-        request.request_id,
-        idemKey ?? null,
-        parsed.from,
-        subject,
-        html ?? null,
-        text ?? null,
-        templateId,
-        templateVersionId,
-        JSON.stringify(parsed.headers ?? {}),
-        JSON.stringify(parsed.tags ?? {}),
-        initialStatus,
-        scheduledAt
-      ]
-    );
-
-    for (const attachment of attachments) {
-      await writeBlob(attachment.storage_key, attachment.bytes);
-    }
-    if (attachments.length > 0) {
-      await client.query(
-        `insert into email_attachments (
-          id, tenant_id, email_id, filename, content_type, content_id, disposition, size_bytes, content_hash, storage_key
-        )
-         select * from unnest(
-          $1::text[], $2::text[], $3::text[], $4::text[], $5::text[],
-          $6::text[], $7::text[], $8::integer[], $9::text[], $10::text[]
-        )`,
-        [
-          attachments.map((attachment) => attachment.id),
-          attachments.map(() => request.auth!.tenant_id),
-          attachments.map(() => emailId),
-          attachments.map((attachment) => attachment.filename),
-          attachments.map((attachment) => attachment.content_type),
-          attachments.map((attachment) => attachment.content_id ?? null),
-          attachments.map((attachment) => attachment.disposition),
-          attachments.map((attachment) => attachment.size_bytes),
-          attachments.map((attachment) => attachment.content_hash),
-          attachments.map((attachment) => attachment.storage_key)
-        ]
-      );
-    }
-
-    await client.query(
-      `insert into email_recipients (id, tenant_id, email_id, email, kind)
-       select * from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[])`,
-      [
-        recipients.map(() => id("rcpt")),
-        recipients.map(() => request.auth!.tenant_id),
-        recipients.map(() => emailId),
-        recipients.map((recipient) => recipient.email),
-        recipients.map((recipient) => recipient.kind)
-      ]
-    );
-
-    if (tracking.tokens.length > 0) {
-      await client.query(
-        `insert into tracking_tokens (token, tenant_id, email_id, kind, url)
-         select * from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[])`,
-        [
-          tracking.tokens.map((token) => token.token),
-          tracking.tokens.map(() => request.auth!.tenant_id),
-          tracking.tokens.map(() => emailId),
-          tracking.tokens.map((token) => token.kind),
-          tracking.tokens.map((token) => token.url ?? null)
-        ]
-      );
-    }
-
-    await client.query(
-      `insert into send_jobs (id, tenant_id, email_id, request_id, available_at)
-       values ($1, $2, $3, $4, coalesce($5::timestamptz, now()))`,
-      [id("job"), request.auth!.tenant_id, emailId, request.request_id, isScheduled ? scheduledAt : null]
-    );
-
-    if (isScheduled) {
-      const event = await client.query(
-        `insert into email_events (id, tenant_id, request_id, email_id, type, provider_event_id, data)
-         values ($1, $2, $3, $4, 'email.scheduled', $5, $6)
-         returning id`,
-        [
-          id("event"),
-          request.auth!.tenant_id,
-          request.request_id,
-          emailId,
-          `${emailId}:scheduled`,
-          JSON.stringify({ scheduled_at: parsed.scheduled_at })
-        ]
-      );
-      await client.query(
-        `insert into webhook_attempts (id, tenant_id, request_id, webhook_id, event_id, state)
-         select 'attempt_' || md5(random()::text || clock_timestamp()::text || id), tenant_id, $3, id, $4, 'queued'
-         from webhooks where tenant_id = $1 and enabled = true and events ? $2`,
-        [request.auth!.tenant_id, "email.scheduled", request.request_id, event.rows[0].id]
-      );
-    }
-
-    const response = { email: { ...email.rows[0], to: recipients.filter((r) => r.kind === "to").map((r) => r.email) } };
-    if (idemKey) {
-      await client.query(
-        "update idempotency_keys set response_json = $3, state = 'done' where tenant_id = $1 and key = $2",
-        [request.auth!.tenant_id, idemKey, JSON.stringify(response)]
-      );
-    }
-    return { ...response, request_id: request.request_id };
-  });
-}
-
-async function readIdempotency(request: FastifyRequest, idemKey: string, requestHash: string) {
-  const existing = await db.query(
-    "select request_hash, response_json, state from idempotency_keys where tenant_id = $1 and key = $2 and expires_at > now()",
-    [request.auth!.tenant_id, idemKey]
-  );
-  if (!existing.rows[0]) return null;
-  if (existing.rows[0].request_hash !== requestHash) {
-    throw new ApiError("idempotency_conflict", 409, "Idempotency key was used with a different payload");
-  }
-  if (existing.rows[0].state === "running") {
-    throw new ApiError("idempotency_conflict", 409, "Idempotency request is still in flight");
-  }
-  return existing.rows[0].response_json;
-}
-
-async function findTemplate(request: FastifyRequest) {
-  const templateId = (request.params as { id: string }).id;
-  const row = await db.query(
-    `select t.id, t.name, t.alias, t.published_version_id, t.created_at, t.updated_at,
-       case when v.id is null then null else jsonb_build_object(
-         'id', v.id,
-         'template_id', v.template_id,
-         'subject', v.subject,
-         'html', v.html,
-         'text', v.text,
-         'variables', v.variables,
-         'created_at', v.created_at,
-         'published_at', v.published_at
-       ) end as version
-     from templates t
-     left join template_versions v on v.id = t.published_version_id
-     where t.tenant_id = $1 and t.id = $2 and t.deleted_at is null`,
-    [request.auth!.tenant_id, templateId]
-  );
-  if (!row.rows[0]) throw new ApiError("not_found", 404, "Template not found");
-  return row.rows[0];
-}
-
-async function publishedTemplate(
-  client: Pick<typeof db, "query">,
-  tenantId: string,
-  ref: string
-): Promise<{ id: string; template_id: string; subject: string; html?: string | null; text?: string | null; variables: string[] }> {
-  const row = await client.query(
-    `select v.id, v.template_id, v.subject, v.html, v.text, v.variables
-     from templates t
-     join template_versions v on v.id = t.published_version_id
-     where t.tenant_id = $1 and t.deleted_at is null and (t.id = $2 or t.alias = $2 or t.name = $2)
-     limit 1`,
-    [tenantId, ref]
-  );
-  if (!row.rows[0]) throw new ApiError("not_found", 404, "Published template not found");
-  return row.rows[0];
-}
-
-async function findContact(request: FastifyRequest) {
-  const contactId = (request.params as { id: string }).id;
-  const row = await db.query(
-    `select id, email, first_name, last_name, properties, unsubscribed_at, created_at, updated_at
-     from contacts
-     where tenant_id = $1 and id = $2 and deleted_at is null`,
-    [request.auth!.tenant_id, contactId]
-  );
-  if (!row.rows[0]) throw new ApiError("not_found", 404, "Contact not found");
-  return row.rows[0];
-}
-
-async function upsertContact(tenantId: string, email: string) {
-  const row = await db.query<{ id: string; email: string }>(
-    `insert into contacts (id, tenant_id, email, properties)
-     values ($1, $2, $3, '{}')
-     on conflict (tenant_id, email) do update set deleted_at = null, updated_at = now()
-     returning id, email`,
-    [id("contact"), tenantId, email]
-  );
-  return row.rows[0];
-}
-
-async function findTopic(request: FastifyRequest) {
-  const topicId = (request.params as { id: string }).id;
-  const row = await db.query(
-    `select id, name, key, default_status, created_at, updated_at
-     from topics
-     where tenant_id = $1 and id = $2 and deleted_at is null`,
-    [request.auth!.tenant_id, topicId]
-  );
-  if (!row.rows[0]) throw new ApiError("not_found", 404, "Topic not found");
-  return row.rows[0];
-}
-
-async function findSegment(request: FastifyRequest) {
-  const segmentId = (request.params as { id: string }).id;
-  const row = await db.query(
-    `select id, name, description, created_at, updated_at
-     from segments
-     where tenant_id = $1 and id = $2 and deleted_at is null`,
-    [request.auth!.tenant_id, segmentId]
-  );
-  if (!row.rows[0]) throw new ApiError("not_found", 404, "Segment not found");
-  return row.rows[0];
-}
-
-async function findBroadcast(request: FastifyRequest) {
-  const broadcastId = (request.params as { id: string }).id;
-  const row = await db.query<{
-    id: string;
-    name: string;
-    from: string;
-    subject: string | null;
-    html: string | null;
-    text: string | null;
-    variables: Record<string, unknown>;
-    topic_id: string | null;
-    segment_id: string | null;
-    status: string;
-    recipient_count: number;
-    sent_count: number;
-    created_at: string;
-    updated_at: string;
-    sent_at: string | null;
-  }>(
-    `select id, name, from_email as from, subject, html, text, variables, topic_id, segment_id,
-       status, recipient_count, sent_count, created_at, updated_at, sent_at
-     from broadcasts
-     where tenant_id = $1 and id = $2 and deleted_at is null`,
-    [request.auth!.tenant_id, broadcastId]
-  );
-  if (!row.rows[0]) throw new ApiError("not_found", 404, "Broadcast not found");
-  return row.rows[0];
-}
-
-async function buildBroadcast(
-  tenantId: string,
-  input: {
-    from: string;
-    subject?: string | null;
-    html?: string | null;
-    text?: string | null;
-    template?: string;
-    variables?: Record<string, unknown>;
-    topic_id?: string | null;
-    segment_id?: string | null;
-  }
-) {
-  if (input.topic_id) {
-    const topic = await db.query("select id from topics where tenant_id = $1 and id = $2 and deleted_at is null", [tenantId, input.topic_id]);
-    if (!topic.rows[0]) throw new ApiError("not_found", 404, "Topic not found");
-  }
-  if (input.segment_id) {
-    const segment = await db.query("select id from segments where tenant_id = $1 and id = $2 and deleted_at is null", [
-      tenantId,
-      input.segment_id
-    ]);
-    if (!segment.rows[0]) throw new ApiError("not_found", 404, "Segment not found");
-  }
-
-  let subject = input.subject ?? undefined;
-  let html = input.html ?? undefined;
-  let text = input.text ?? undefined;
-  let templateId: string | null = null;
-  let templateVersionId: string | null = null;
-  if (input.template) {
-    const template = await publishedTemplate(db, tenantId, input.template);
-    const rendered = renderTemplate(template, input.variables ?? {});
-    subject = subject ?? rendered.subject;
-    html = html ?? rendered.html ?? undefined;
-    text = text ?? rendered.text ?? undefined;
-    templateId = template.template_id;
-    templateVersionId = template.id;
-  }
-  if (!subject || (!html && !text)) throw new ApiError("validation_error", 400, "subject and content are required");
-  return { subject, html, text, template_id: templateId, template_version_id: templateVersionId };
-}
-
-async function snapshotBroadcast(tenantId: string, broadcastId: string) {
-  return tx(db, async (client) => {
-    const broadcast = await client.query<{ topic_id: string | null; segment_id: string | null }>(
-      "select topic_id, segment_id from broadcasts where tenant_id = $1 and id = $2 for update",
-      [tenantId, broadcastId]
-    );
-    if (!broadcast.rows[0]) throw new ApiError("not_found", 404, "Broadcast not found");
-    const rows = await client.query<{ contact_id: string; email: string }>(
-      `select c.id as contact_id, c.email
-       from contacts c
-       left join topics t on t.tenant_id = c.tenant_id and t.id = $3 and t.deleted_at is null
-       left join topic_subscriptions s on s.tenant_id = c.tenant_id and s.topic_id = t.id and s.contact_id = c.id
-       where c.tenant_id = $1
-         and c.deleted_at is null
-         and c.unsubscribed_at is null
-         and not exists (
-           select 1 from suppressions sup
-           where sup.tenant_id = c.tenant_id and sup.email = c.email and sup.removed_at is null
-         )
-         and (
-           $2::text is null
-           or exists (
-             select 1 from segment_contacts sc
-             where sc.tenant_id = c.tenant_id and sc.segment_id = $2 and sc.contact_id = c.id
-           )
-         )
-         and (
-           $3::text is null
-           or (t.default_status = 'subscribed' and coalesce(s.status, 'subscribed') = 'subscribed')
-           or (t.default_status = 'unsubscribed' and s.status = 'subscribed')
-         )
-       order by c.created_at`,
-      [tenantId, broadcast.rows[0].segment_id, broadcast.rows[0].topic_id]
-    );
-    if (rows.rows.length === 0) return [];
-    const inserted = await client.query<{ id: string; email: string }>(
-      `insert into broadcast_recipients (id, tenant_id, broadcast_id, contact_id, email, status)
-       select * from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[])
-       on conflict (tenant_id, broadcast_id, contact_id)
-       do update set email = excluded.email, status = 'queued', updated_at = now()
-       returning id, email`,
-      [
-        rows.rows.map(() => id("br")),
-        rows.rows.map(() => tenantId),
-        rows.rows.map(() => broadcastId),
-        rows.rows.map((row) => row.contact_id),
-        rows.rows.map((row) => row.email),
-        rows.rows.map(() => "queued")
-      ]
-    );
-    return inserted.rows;
-  });
-}
-
-type AutomationStep =
-  | { type: "send_email"; from: string; to?: string; template: string; variables?: Record<string, unknown> }
-  | { type: "update_contact"; email?: string; properties?: Record<string, unknown>; unsubscribed?: boolean }
-  | { type: "add_to_segment"; segment_id: string; email?: string }
-  | { type: "delay"; seconds: number }
-  | { type: "wait"; event: string; timeout_seconds?: number };
-
-async function createCustomEvent(
-  request: FastifyRequest,
-  input: { name: string; email?: string; data: Record<string, unknown> }
-) {
-  const created = await tx(db, async (client) => {
-    const event = await client.query<{
-      id: string;
-      request_id: string;
-      name: string;
-      email: string | null;
-      data: Record<string, unknown>;
-      created_at: string;
-    }>(
-      `insert into custom_events (id, tenant_id, request_id, name, email, data)
-       values ($1, $2, $3, $4, $5, $6)
-       returning id, request_id, name, email, data, created_at`,
-      [id("ce"), request.auth!.tenant_id, request.request_id, input.name, input.email ?? null, JSON.stringify(input.data)]
-    );
-    const automations = await client.query<{ id: string }>(
-      `select id from automations
-       where tenant_id = $1 and trigger = $2 and enabled = true and deleted_at is null
-       order by created_at`,
-      [request.auth!.tenant_id, input.name]
-    );
-    const runs = [];
-    for (const automation of automations.rows) {
-      const run = await client.query<{ id: string }>(
-        `insert into automation_runs (id, tenant_id, automation_id, event_id, state)
-         values ($1, $2, $3, $4, 'ready')
-         returning id`,
-        [id("run"), request.auth!.tenant_id, automation.id, event.rows[0].id]
-      );
-      runs.push(run.rows[0]);
-    }
-
-    const waiting = await client.query<{ id: string }>(
-      `select r.id
-       from automation_runs r
-       join custom_events started on started.id = r.event_id
-       where r.tenant_id = $1 and r.state = 'waiting' and r.wait_event = $2
-         and (started.email is null or started.email = $3)
-       order by r.updated_at, r.id
-       for update of r skip locked`,
-      [request.auth!.tenant_id, input.name, input.email ?? null]
-    );
-    const resumed = waiting.rows;
-    if (resumed.length > 0) {
-      await client.query(
-        `update automation_runs
-         set state = 'running', resume_at = null, wait_event = null, updated_at = now()
-         where tenant_id = $1 and id = any($2)`,
-        [request.auth!.tenant_id, resumed.map((run) => run.id)]
-      );
-      await client.query(
-        `update automation_steps s
-         set state = 'done',
-           data = s.data || jsonb_build_object('event_id', $3::text, 'resumed_at', now())
-         from automation_runs r
-         where s.tenant_id = $1 and s.run_id = r.id and r.id = any($2)
-           and s.state = 'waiting' and s.step_index = r.next_step_index - 1`,
-        [request.auth!.tenant_id, resumed.map((run) => run.id), event.rows[0].id]
-      );
-    }
-
-    return { event: event.rows[0], runs, resumed };
-  });
-
-  for (const run of created.runs) {
-    await runAutomation(request, run.id);
-  }
-  for (const run of created.resumed) {
-    await runAutomation(request, run.id);
-  }
-
-  const runs = await db.query(
-    `select id, automation_id, event_id, state, next_step_index, resume_at, wait_event, error, created_at, updated_at
-     from automation_runs
-     where tenant_id = $1 and event_id = $2
-     order by created_at`,
-    [request.auth!.tenant_id, created.event.id]
-  );
-  const resumedRuns = created.resumed.length
-    ? await db.query(
-        `select id, automation_id, event_id, state, next_step_index, resume_at, wait_event, error, created_at, updated_at
-         from automation_runs
-         where tenant_id = $1 and id = any($2)
-         order by updated_at`,
-        [request.auth!.tenant_id, created.resumed.map((run) => run.id)]
-      )
-    : { rows: [] };
-  return { event: created.event, runs: runs.rows, resumed_runs: resumedRuns.rows, request_id: request.request_id };
-}
-
-async function findCustomEvent(request: FastifyRequest) {
-  const eventId = (request.params as { id: string }).id;
-  const row = await db.query(
-    `select id, request_id, name, email, data, created_at, updated_at
-     from custom_events
-     where tenant_id = $1 and id = $2 and deleted_at is null`,
-    [request.auth!.tenant_id, eventId]
-  );
-  if (!row.rows[0]) throw new ApiError("not_found", 404, "Event not found");
-  return row.rows[0];
-}
-
-async function findAutomation(request: FastifyRequest) {
-  const automationId = (request.params as { id: string }).id;
-  const row = await db.query<{
-    id: string;
-    name: string;
-    trigger: string;
-    steps: AutomationStep[];
-    enabled: boolean;
-    created_at: string;
-    updated_at: string;
-  }>(
-    `select id, name, trigger, steps, enabled, created_at, updated_at
-     from automations
-     where tenant_id = $1 and id = $2 and deleted_at is null`,
-    [request.auth!.tenant_id, automationId]
-  );
-  if (!row.rows[0]) throw new ApiError("not_found", 404, "Automation not found");
-  return row.rows[0];
-}
-
-async function runAutomation(request: FastifyRequest, runId: string) {
-  try {
-    const run = await db.query<{
-      id: string;
-      tenant_id: string;
-      automation_id: string;
-      event_id: string;
-      steps: AutomationStep[];
-      event_name: string;
-      email: string | null;
-      data: Record<string, unknown>;
-      state: string;
-      next_step_index: number;
-    }>(
-      `select r.id, r.tenant_id, r.automation_id, r.event_id, r.state, r.next_step_index, a.steps,
-         e.name as event_name, e.email, e.data
-       from automation_runs r
-       join automations a on a.id = r.automation_id
-       join custom_events e on e.id = r.event_id
-       where r.tenant_id = $1 and r.id = $2`,
-      [request.auth!.tenant_id, runId]
-    );
-    const current = run.rows[0];
-    if (!current) throw new ApiError("not_found", 404, "Automation run not found");
-    if (current.state === "done" || current.state === "failed") return;
-    await db.query(
-      `update automation_runs
-       set state = 'running', resume_at = null, wait_event = null, updated_at = now()
-       where tenant_id = $1 and id = $2`,
-      [request.auth!.tenant_id, runId]
-    );
-    if (current.next_step_index > 0) {
-      await db.query(
-        `update automation_steps
-         set state = 'done', data = data || jsonb_build_object('resumed_at', now())
-         where tenant_id = $1 and run_id = $2 and step_index = $3 and state = 'waiting'`,
-        [request.auth!.tenant_id, runId, current.next_step_index - 1]
-      );
-    }
-
-    for (let index = current.next_step_index; index < current.steps.length; index += 1) {
-      const step = current.steps[index];
-      if (step.type === "delay" || step.type === "wait") {
-        await pauseAutomation(request, current, index, step);
-        return;
-      }
-      try {
-        const data = await executeAutomationStep(request, current, step);
-        await db.query(
-          `insert into automation_steps (id, tenant_id, run_id, step_index, type, state, data)
-           values ($1, $2, $3, $4, $5, 'done', $6)`,
-          [id("step"), request.auth!.tenant_id, runId, index, step.type, JSON.stringify(data)]
-        );
-        await db.query("update automation_runs set next_step_index = $3, updated_at = now() where tenant_id = $1 and id = $2", [
-          request.auth!.tenant_id,
-          runId,
-          index + 1
-        ]);
-      } catch (error) {
-        await db.query(
-          `insert into automation_steps (id, tenant_id, run_id, step_index, type, state, data, error)
-           values ($1, $2, $3, $4, $5, 'failed', '{}', $6)`,
-          [id("step"), request.auth!.tenant_id, runId, index, step.type, error instanceof Error ? error.message : String(error)]
-        );
-        throw error;
-      }
-    }
-
-    await db.query(
-      `update automation_runs
-       set state = 'done', next_step_index = $3, resume_at = null, wait_event = null, updated_at = now()
-       where tenant_id = $1 and id = $2`,
-      [request.auth!.tenant_id, runId, current.steps.length]
-    );
-  } catch (error) {
-    await db.query("update automation_runs set state = 'failed', error = $3, updated_at = now() where tenant_id = $1 and id = $2", [
-      request.auth!.tenant_id,
-      runId,
-      error instanceof Error ? error.message : String(error)
-    ]);
-  }
-}
-
-async function pauseAutomation(
-  request: FastifyRequest,
-  run: { id: string },
-  index: number,
-  step: Extract<AutomationStep, { type: "delay" | "wait" }>
-) {
-  const resumeAt =
-    step.type === "delay"
-      ? new Date(Date.now() + step.seconds * 1_000)
-      : step.timeout_seconds
-        ? new Date(Date.now() + step.timeout_seconds * 1_000)
-        : null;
-  const data =
-    step.type === "delay"
-      ? { seconds: step.seconds, resume_at: resumeAt?.toISOString() }
-      : { event: step.event, timeout_at: resumeAt?.toISOString() };
-
-  await tx(db, async (client) => {
-    await client.query(
-      `insert into automation_steps (id, tenant_id, run_id, step_index, type, state, data)
-       values ($1, $2, $3, $4, $5, 'waiting', $6)`,
-      [id("step"), request.auth!.tenant_id, run.id, index, step.type, JSON.stringify(data)]
-    );
-    await client.query(
-      `update automation_runs
-       set state = 'waiting', next_step_index = $3, resume_at = $4, wait_event = $5, updated_at = now()
-       where tenant_id = $1 and id = $2`,
-      [request.auth!.tenant_id, run.id, index + 1, resumeAt, step.type === "wait" ? step.event : null]
-    );
-  });
-}
-
-async function executeAutomationStep(
-  request: FastifyRequest,
-  run: { id: string; automation_id: string; event_id: string; email: string | null; data: Record<string, unknown> },
-  step: AutomationStep
-) {
-  if (step.type === "send_email") {
-    const to = step.to ?? run.email;
-    if (!to) throw new ApiError("validation_error", 400, "send_email step needs a recipient");
-    const variables = { ...run.data, event: run.data, email: run.email, ...(step.variables ?? {}) };
-    const response = await acceptEmail(
-      request,
-      {
-        from: step.from,
-        to,
-        template: step.template,
-        variables,
-        tags: { automation_id: run.automation_id, automation_run_id: run.id, event_id: run.event_id }
-      },
-      { idempotency: false }
-    );
-    return { email_id: response.email.id };
-  }
-
-  if (step.type === "update_contact") {
-    const email = step.email ?? run.email;
-    if (!email) throw new ApiError("validation_error", 400, "update_contact step needs an email");
-    const contact = await upsertContact(request.auth!.tenant_id, email);
-    const row = await db.query(
-      `update contacts set
-         properties = properties || $3::jsonb,
-         unsubscribed_at = case
-           when $4::boolean is null then unsubscribed_at
-           when $4 then coalesce(unsubscribed_at, now())
-           else null
-         end,
-         updated_at = now()
-       where tenant_id = $1 and id = $2
-       returning id, email, properties, unsubscribed_at`,
-      [request.auth!.tenant_id, contact.id, JSON.stringify(step.properties ?? {}), step.unsubscribed ?? null]
-    );
-    return { contact_id: row.rows[0].id, email: row.rows[0].email };
-  }
-
-  if (step.type === "add_to_segment") {
-    const email = step.email ?? run.email;
-    if (!email) throw new ApiError("validation_error", 400, "add_to_segment step needs an email");
-    const segment = await db.query("select id from segments where tenant_id = $1 and id = $2 and deleted_at is null", [
-      request.auth!.tenant_id,
-      step.segment_id
-    ]);
-    if (!segment.rows[0]) throw new ApiError("not_found", 404, "Segment not found");
-    const contact = await upsertContact(request.auth!.tenant_id, email);
-    await db.query(
-      `insert into segment_contacts (id, tenant_id, segment_id, contact_id)
-       values ($1, $2, $3, $4)
-       on conflict (tenant_id, segment_id, contact_id) do nothing`,
-      [id("member"), request.auth!.tenant_id, step.segment_id, contact.id]
-    );
-    return { segment_id: step.segment_id, contact_id: contact.id, email };
-  }
-
-  throw new ApiError("validation_error", 400, `Unsupported automation step: ${step.type}`);
-}
-
-async function findEmail(request: FastifyRequest, emailId: string) {
-  const row = await db.query("select id from emails where tenant_id = $1 and id = $2", [request.auth!.tenant_id, emailId]);
-  if (!row.rows[0]) throw new ApiError("not_found", 404, "Email not found");
-  return row.rows[0];
-}
-
-type StoredAttachment = {
+type AttachmentRow = {
   id: string;
   filename: string;
   content_type: string;
-  content_id?: string;
-  disposition: "attachment" | "inline";
+  disposition?: string | null;
   size_bytes: number;
-  content_hash: string;
+  content_id?: string | null;
   storage_key: string;
-  bytes: Buffer;
+  created_at?: string;
 };
 
-function prepareAttachments(
-  tenantId: string,
-  ownerId: string,
-  attachments: Array<{ filename: string; content: string; content_type?: string; content_id?: string; disposition?: "attachment" | "inline" }>,
-  kind: "attachments" | "received"
-) {
-  let total = 0;
-  return attachments.map((attachment) => {
-    const bytes = decodeAttachment(attachment.content);
-    total += Buffer.byteLength(attachment.content, "utf8");
-    if (total > 40 * 1024 * 1024) throw new ApiError("invalid_attachment", 400, "Attachments exceed 40 MB after base64 encoding");
-    const attachmentId = id(kind === "received" ? "ratt" : "att");
-    return {
-      id: attachmentId,
-      filename: attachment.filename,
-      content_type: attachment.content_type ?? "application/octet-stream",
-      content_id: attachment.content_id,
-      disposition: attachment.disposition ?? "attachment",
-      size_bytes: bytes.byteLength,
-      content_hash: hash(bytes.toString("base64")),
-      storage_key: `${kind}/${tenantId}/${ownerId}/${attachmentId}`,
-      bytes
-    } satisfies StoredAttachment;
-  });
+// A signed link works without a session. A read-only user's links last five minutes, long
+// enough to open the file and short enough not to outlive a removed account by much.
+function urlTtl(request: FastifyRequest) {
+  return readOnly(request.auth) ? 5 * 60 : signedUrlTtl;
 }
 
-function decodeAttachment(content: string) {
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(content) || content.length % 4 !== 0) {
-    throw new ApiError("invalid_attachment", 400, "Attachment content must be base64");
-  }
-  const bytes = Buffer.from(content, "base64");
-  if (bytes.length === 0 || bytes.toString("base64").replace(/=+$/, "") !== content.replace(/=+$/, "")) {
-    throw new ApiError("invalid_attachment", 400, "Attachment content must be base64");
-  }
-  return bytes;
+async function signedAttachment(row: AttachmentRow, expiresIn = signedUrlTtl) {
+  const signed = await storage.url(row.storage_key, { filename: row.filename, expiresIn });
+  return {
+    id: row.id,
+    filename: row.filename,
+    content_type: row.content_type,
+    content_disposition: row.disposition ?? "attachment",
+    size: row.size_bytes,
+    content_id: row.content_id ?? null,
+    download_url: signed.download_url,
+    expires_at: signed.expires_at,
+    created_at: row.created_at,
+  };
+}
+
+// Storage keys and content hashes are internal. An attachment is described the way the
+// attachment routes describe it.
+function presentReceived(row: Record<string, unknown>) {
+  const { raw_key: _rawKey, ...rest } = row;
+  const attachments = Array.isArray(rest.attachments)
+    ? rest.attachments.map((attachment: Record<string, unknown>) => {
+        const { storage_key: _key, content_hash: _hash, size_bytes: size, ...shown } = attachment;
+        return size === undefined ? shown : { ...shown, size };
+      })
+    : rest.attachments;
+  return { object: "email" as const, ...rest, attachments };
 }
 
 async function writeBlob(storageKey: string, bytes: Buffer) {
-  const path = blobPath(storageKey);
-  await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, bytes);
+  await storage.put(storageKey, bytes);
 }
 
-function blobPath(storageKey: string) {
-  if (!/^[a-z]+\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+\/[A-Za-z0-9_-]+$/.test(storageKey)) {
-    throw new ApiError("invalid_storage_key", 400, "Invalid storage key");
-  }
-  const root = resolve(storageRoot);
-  const path = resolve(root, storageKey);
-  const child = relative(root, path);
-  if (child.startsWith("..") || child === "" || child.startsWith("/")) {
-    throw new ApiError("invalid_storage_key", 400, "Invalid storage key");
-  }
-  return path;
-}
-
-async function useTrackingToken(token: string, kind: "open" | "click", requestIdValue: string, data: Record<string, unknown>) {
+async function useTrackingToken(
+  token: string,
+  kind: "open" | "click",
+  requestIdValue: string,
+  data: Record<string, unknown>,
+) {
   return tx(db, async (client) => {
     const row = await client.query<{
       token: string;
@@ -3015,140 +1670,93 @@ async function useTrackingToken(token: string, kind: "open" | "click", requestId
       used_at: string | null;
     }>(
       "select token, tenant_id, email_id, recipient_id, kind, url, used_at from tracking_tokens where token = $1 and kind = $2",
-      [token, kind]
+      [token, kind],
     );
     const tracking = row.rows[0];
     if (!tracking) return null;
-    if (tracking.used_at) return tracking;
-    const claimed = await client.query("update tracking_tokens set used_at = now() where token = $1 and used_at is null returning token", [token]);
-    if (claimed.rowCount === 0) return tracking;
+    const timestamp = new Date().toISOString();
     const event = await appendEvent(client, {
       tenantId: tracking.tenant_id,
       requestId: requestIdValue,
       emailId: tracking.email_id,
       recipientId: tracking.recipient_id,
       type: kind === "open" ? "email.opened" : "email.clicked",
-      providerEventId: `${token}:${kind}`,
-      data: { ...data, url: tracking.url, token }
+      providerEventId: `${token}:${kind}:${Date.now()}`,
+      data:
+        kind === "click"
+          ? {
+              click: {
+                ipAddress: data.ip ?? null,
+                link: tracking.url,
+                timestamp,
+                userAgent: data.user_agent ?? null,
+              },
+            }
+          : { ...data, url: tracking.url, token },
     });
     if (event) await fanoutEvent(client, event);
     return tracking;
   });
 }
 
-async function appendEvent(
-  client: Pick<typeof db, "query">,
-  input: {
-    tenantId: string;
-    requestId: string;
-    emailId: string | null;
-    recipientId?: string | null;
-    type: string;
-    providerEventId: string;
-    data: Record<string, unknown>;
-  }
-) {
-  const row = await client.query<{
-    id: string;
-    tenant_id: string;
-    request_id: string | null;
-    email_id: string | null;
-    type: string;
-    data: Record<string, unknown>;
-  }>(
-    `insert into email_events (id, tenant_id, request_id, email_id, recipient_id, type, provider_event_id, data)
-     values ($1, $2, $3, $4, $5, $6, $7, $8)
-     on conflict (provider_event_id) do nothing
-     returning id, tenant_id, request_id, email_id, type, data`,
-    [
-      id("event"),
-      input.tenantId,
-      input.requestId,
-      input.emailId,
-      input.recipientId ?? null,
-      input.type,
-      input.providerEventId,
-      JSON.stringify(input.data)
-    ]
-  );
-  const event = row.rows[0];
-  if (!event) return null;
-
-  if (input.emailId) {
-    const status = statusForEvent(input.type);
-    if (status) {
-      await client.query(
-        `update emails set status = $3, updated_at = now()
-         where tenant_id = $1 and id = $2
-           and status not in ('bounced', 'complained', 'failed', 'cancelled')`,
-        [input.tenantId, input.emailId, status]
-      );
-    }
-  }
-
-  return event;
-}
-
-async function fanoutEvent(
-  client: Pick<typeof db, "query">,
-  event: { id: string; tenant_id: string; request_id: string | null; type: string }
-) {
-  await client.query(
-    `insert into webhook_attempts (id, tenant_id, request_id, webhook_id, event_id, state)
-     select 'attempt_' || md5(random()::text || clock_timestamp()::text || id), tenant_id, $3, id, $4, 'queued'
-     from webhooks
-     where tenant_id = $1 and enabled = true and events ? $2`,
-    [event.tenant_id, event.type, event.request_id, event.id]
-  );
-}
-
-function statusForEvent(type: string) {
-  switch (type) {
-    case "email.opened":
-      return "opened";
-    case "email.clicked":
-      return "clicked";
-    default:
-      return null;
-  }
-}
-
 async function authenticate(request: FastifyRequest) {
   const header = request.headers.authorization;
-  if (!header?.startsWith("Bearer ")) throw new ApiError("missing_api_key", 401, "Missing API key");
+  if (!header?.startsWith("Bearer "))
+    throw new ApiError("missing_api_key", 401, "Missing API key");
   const secret = header.slice("Bearer ".length).trim();
   if (secret.startsWith("sess_")) {
     const session = await db.query(
+      // The key is only a label for the request log. A session does not depend on one: revoking
+      // the tenant's last full-access key used to sign every user out.
       `select s.id, s.tenant_id, s.user_id, s.last_used_at, k.id as api_key_id, r.permissions
        from sessions s
+       join users u on u.tenant_id = s.tenant_id and u.id = s.user_id and u.deactivated_at is null
        join memberships m on m.tenant_id = s.tenant_id and m.user_id = s.user_id and m.disabled_at is null
        join roles r on r.tenant_id = s.tenant_id and r.id = m.role_id and r.deleted_at is null
-       join api_keys k on k.tenant_id = s.tenant_id and k.revoked_at is null and k.scope = 'full'
+       left join lateral (
+         select id from api_keys
+         where tenant_id = s.tenant_id and revoked_at is null and scope = 'full'
+         order by created_at asc limit 1
+       ) k on true
        where s.token_hash = $1 and s.revoked_at is null and s.expires_at > now()
-       order by k.created_at asc
        limit 1`,
-      [hash(secret)]
+      [hash(secret)],
     );
-    if (!session.rows[0]) throw new ApiError("invalid_session", 401, "Invalid session");
+    if (!session.rows[0])
+      throw new ApiError("invalid_session", 401, "Invalid session");
     request.auth = {
       tenant_id: session.rows[0].tenant_id,
       api_key_id: session.rows[0].api_key_id,
       scope: "full",
       user_id: session.rows[0].user_id,
       session_id: session.rows[0].id,
-      permissions: session.rows[0].permissions ?? []
+      permissions: session.rows[0].permissions ?? [],
     };
-    const lastUsed = session.rows[0].last_used_at ? new Date(session.rows[0].last_used_at).getTime() : 0;
-    if (Date.now() - lastUsed > 60_000) await db.query("update sessions set last_used_at = now() where id = $1", [session.rows[0].id]);
+    const lastUsed = session.rows[0].last_used_at
+      ? new Date(session.rows[0].last_used_at).getTime()
+      : 0;
+    if (Date.now() - lastUsed > 60_000)
+      await db.query("update sessions set last_used_at = now() where id = $1", [
+        session.rows[0].id,
+      ]);
     return;
   }
 
   const apiKey = await validKey(secret);
-  if (!apiKey) throw new ApiError("invalid_api_key", 401, "Invalid API key");
-  request.auth = { tenant_id: apiKey.tenant_id, api_key_id: apiKey.id, scope: apiKey.scope };
-  const lastUsed = apiKey.last_used_at ? new Date(apiKey.last_used_at).getTime() : 0;
+  if (!apiKey) throw new ApiError("invalid_api_key", 403, "Invalid API key");
+  request.auth = {
+    tenant_id: apiKey.tenant_id,
+    api_key_id: apiKey.id,
+    scope: apiKey.scope,
+    domain_name: apiKey.domain_name,
+  };
+  const lastUsed = apiKey.last_used_at
+    ? new Date(apiKey.last_used_at).getTime()
+    : 0;
   if (Date.now() - lastUsed > 60_000) {
-    await db.query("update api_keys set last_used_at = now() where id = $1", [apiKey.id]);
+    await db.query("update api_keys set last_used_at = now() where id = $1", [
+      apiKey.id,
+    ]);
     apiKey.last_used_at = new Date().toISOString();
   }
 }
@@ -3161,21 +1769,49 @@ async function validKey(secret: string) {
     return safeEqualHex(cached.row.hash, expected) ? cached.row : null;
   }
   const row = await db.query<ApiKeyRow>(
-    "select id, tenant_id, hash, scope, last_used_at from api_keys where prefix = $1 and revoked_at is null limit 1",
-    [prefix]
+    `select k.id, k.tenant_id, k.hash, k.scope, k.last_used_at, k.domain_id, d.name as domain_name
+     from api_keys k
+     left join domains d on d.id = k.domain_id and d.tenant_id = k.tenant_id
+     where k.prefix = $1 and k.revoked_at is null
+     limit 1`,
+    [prefix],
   );
   const apiKey = row.rows[0];
   if (!apiKey || !safeEqualHex(apiKey.hash, expected)) return null;
-  apiKeyCache.set(prefix, { row: apiKey, expires_at: Date.now() + authCacheTtlMs });
+  apiKeyCache.set(prefix, {
+    row: apiKey,
+    expires_at: Date.now() + authCacheTtlMs,
+  });
   return apiKey;
 }
 
+// Counts a request and sets the key's expiry in one round trip, so a process that stops between
+// the two cannot leave a key behind with no expiry.
+async function countHit(key: string) {
+  const results = await redis.multi().incr(key).expire(key, 2).exec();
+  const count = Number(results?.[0]?.[1] ?? 0);
+  if (!Number.isFinite(count) || count < 1) throw new Error("rate limit counter unavailable");
+  return count;
+}
+
+function trustProxy(value = process.env.TRUST_PROXY) {
+  if (!value) return false;
+  if (/^\d+$/.test(value)) return Number(value);
+  return value.split(",").map((part) => part.trim()).filter(Boolean);
+}
+
+// /unsubscribe/<token>, /shared/<token>, /files/<token>, /open/<token>.gif, /click/<token>
+function redactPath(url: string) {
+  return url.replace(/^\/(unsubscribe|shared|files|open|click)\/[^?]+/, "/$1/[token]");
+}
+
 async function rateLimit(request: FastifyRequest, reply: FastifyReply) {
-  const route = request.routeOptions.url ?? request.url.split("?")[0];
-  const key = `rate:${request.auth!.tenant_id}:${request.auth!.api_key_id}:${route}:${Math.floor(Date.now() / 1000)}`;
-  const count = await redis.incr(key);
-  if (count === 1) await redis.expire(key, 2);
-  const limitValue = Number(process.env.RATE_LIMIT_PER_SECOND ?? 5);
+  const auth = request.auth!;
+  // API keys share one bucket per tenant. A dashboard session has its own, per user.
+  const session = auth.session_id && auth.user_id;
+  const key = session ? sessionRateKey(auth.tenant_id, auth.user_id!) : rateKey(auth.tenant_id);
+  const count = await countHit(key);
+  const limitValue = session ? sessionRateLimitValue() : rateLimitValue();
   reply.header("ratelimit-limit", String(limitValue));
   reply.header("ratelimit-remaining", String(Math.max(0, limitValue - count)));
   reply.header("ratelimit-reset", "1");
@@ -3185,57 +1821,64 @@ async function rateLimit(request: FastifyRequest, reply: FastifyReply) {
   }
 }
 
-function requireScope(request: FastifyRequest, scope: "full") {
-  if (!request.auth) throw new ApiError("missing_api_key", 401, "Missing API key");
-  if (scope === "full" && request.auth.scope !== "full") throw new ApiError("forbidden", 403, "Full access key required");
-  if (scope === "full" && request.auth.user_id && !(request.auth.permissions ?? []).includes("full")) {
-    throw new ApiError("forbidden", 403, "Full permission required");
+// A key restricted to one domain may only change emails sent from that domain.
+function assertKeyDomain(request: FastifyRequest, fromEmail: string) {
+  const allowed = request.auth?.domain_name;
+  if (allowed && fromEmail.split("@")[1]?.toLowerCase() !== allowed.toLowerCase()) {
+    throw new ApiError("not_found", 404, "Email not found");
   }
 }
 
+// A settings change rebuilds the record list. Records that did not change keep the status the
+// verification poller gave them.
+function keepRecordStatus<T extends { name: string; type: string; value: string; status: string }>(
+  current: Array<{ name: string; type: string; value: string; status?: string }>,
+  next: T[],
+) {
+  const known = new Map(current.map((record) => [`${record.type}:${record.name}:${record.value}`, record.status]));
+  return next.map((record) => ({ ...record, status: known.get(`${record.type}:${record.name}:${record.value}`) ?? record.status }));
+}
+
 function requireSend(request: FastifyRequest) {
-  if (!request.auth) throw new ApiError("missing_api_key", 401, "Missing API key");
-  if (!["full", "send"].includes(request.auth.scope)) throw new ApiError("forbidden", 403, "Sending key required");
+  if (!request.auth)
+    throw new ApiError("missing_api_key", 401, "Missing API key");
+  if (!["full", "send"].includes(request.auth.scope))
+    throw new ApiError("forbidden", 403, "Sending key required");
 }
 
-function limit(request: FastifyRequest) {
-  const query = request.query as { limit?: string | number };
-  const value = Number(query?.limit ?? 20);
-  return Math.min(100, Math.max(1, Number.isFinite(value) ? value : 20));
-}
-
-function page(request: FastifyRequest) {
-  const query = request.query as { limit?: string | number; after?: string; before?: string };
+function emailContext(request: FastifyRequest): AcceptEmailContext {
   return {
-    limit: limit(request),
-    fetch: limit(request) + 1,
-    after: cursor(query.after),
-    before: cursor(query.before)
+    tenant_id: request.auth!.tenant_id,
+    api_key_id: request.auth!.api_key_id,
+    request_id: request.request_id,
+    idempotency_key: idempotencyKey(request),
+    domain_name: request.auth!.domain_name,
   };
 }
 
-function pageList<T>(rows: T[], paging: { limit: number }) {
-  return list(rows.slice(0, paging.limit), rows.length > paging.limit);
-}
-
-async function pageRows(request: FastifyRequest, sql: string, values: unknown[] = []) {
-  const paging = page(request);
-  const rows = await db.query(sql, [request.auth!.tenant_id, paging.fetch, paging.after, paging.before, ...values]);
-  return { ...pageList(rows.rows, paging), request_id: request.request_id };
+function paging(request: FastifyRequest): PagingParams {
+  const query = (request.query ?? {}) as {
+    limit?: string | number;
+    after?: string;
+    before?: string;
+  };
+  return {
+    limit: query.limit !== undefined ? Number(query.limit) : undefined,
+    after: query.after || undefined,
+    before: query.before || undefined,
+  };
 }
 
 function idempotencyKey(request: FastifyRequest) {
   const key = request.headers["idempotency-key"]?.toString();
   if (!key) return undefined;
-  if (key.length < 1 || key.length > 256) throw new ApiError("invalid_idempotency_key", 400, "Idempotency key must be 1-256 characters");
+  if (key.length < 1 || key.length > 256)
+    throw new ApiError(
+      "invalid_idempotency_key",
+      400,
+      "Idempotency key must be 1-256 characters",
+    );
   return key;
-}
-
-function cursor(value?: string) {
-  if (!value) return null;
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) throw new ApiError("invalid_cursor", 400, "Cursor must be an ISO timestamp");
-  return date.toISOString();
 }
 
 function slug(value: string) {
@@ -3248,33 +1891,34 @@ function slug(value: string) {
   );
 }
 
-async function incrementUsage(tenantId: string | null, name: string, amount: number) {
-  const period = new Date().toISOString().slice(0, 10);
-  await db.query(
-    `insert into usage_counters (id, tenant_id, name, period, value)
-     values ($1, $2, $3, $4, $5)
-     on conflict (tenant_id, name, period)
-     do update set value = usage_counters.value + excluded.value, updated_at = now()`,
-    [id("usage"), tenantId, name, period, amount]
-  );
-}
-
 function enqueueTelemetry(request: FastifyRequest, reply: FastifyReply) {
   const auth = request.auth;
+  const bodies = logBodies({
+    method: request.method,
+    route: request.routeOptions.url,
+    body: request.body,
+    responseText: request.response_text ?? null,
+  });
   logQueue.push({
     id: id("log"),
     tenant_id: auth?.tenant_id ?? null,
     request_id: request.request_id,
     user_agent: request.headers["user-agent"]?.toString() ?? null,
     method: request.method,
-    path: request.url,
+    path: redactPath(request.url),
     status: reply.statusCode,
     latency_ms: Math.max(0, Date.now() - request.started_at),
-    api_key_id: auth?.api_key_id ?? null
+    api_key_id: auth?.api_key_id ?? null,
+    request_body: bodies.request_body,
+    response_body: bodies.response_body,
   });
   if (auth) addUsageDelta(auth.tenant_id, "api_requests", 1);
 
-  if (auth && reply.statusCode < 400 && !["GET", "HEAD", "OPTIONS"].includes(request.method)) {
+  if (
+    auth &&
+    reply.statusCode < 400 &&
+    !["GET", "HEAD", "OPTIONS"].includes(request.method)
+  ) {
     auditQueue.push({
       id: id("audit"),
       tenant_id: auth.tenant_id,
@@ -3283,11 +1927,16 @@ function enqueueTelemetry(request: FastifyRequest, reply: FastifyReply) {
       api_key_id: auth.api_key_id,
       session_id: auth.session_id ?? null,
       action: `${request.method} ${request.routeOptions.url ?? request.url.split("?")[0]}`,
-      data: { path: request.url, status: reply.statusCode }
+      data: { path: redactPath(request.url), status: reply.statusCode },
     });
   }
 
-  if (logQueue.length >= 100 || auditQueue.length >= 100 || usageDeltas.size >= 25) void flushTelemetry();
+  if (
+    logQueue.length >= 100 ||
+    auditQueue.length >= 100 ||
+    usageDeltas.size >= 25
+  )
+    void flushTelemetry();
 }
 
 function addUsageDelta(tenantId: string, name: string, amount: number) {
@@ -3300,6 +1949,28 @@ function addUsageDelta(tenantId: string, name: string, amount: number) {
   }
 }
 
+async function tenantBrand(tenantId: string) {
+  const row = await db.query<{ brand: BrandRecord | null }>("select brand from tenants where id = $1", [tenantId]);
+  return row.rows[0]?.brand ?? {};
+}
+
+function presentBrand(brand: BrandRecord) {
+  return { object: "brand" as const, ...brand, text_color: brandTextColor(brand.color || "#18181b") };
+}
+
+async function renderBrand(tenantId: string, from?: string | null) {
+  const brand = await loadBrand(db, tenantId);
+  return brandContext(brand.brand, { tenantName: brand.name, domain: brand.domain, from });
+}
+
+// A preview has no sender and a new tenant has no brand yet. A real send always has both, so the
+// preview fills the two values a send would supply with samples instead of failing.
+async function previewBrand(tenantId: string) {
+  const brand = await loadBrand(db, tenantId);
+  const domain = brand.domain ?? "example.com";
+  return brandContext(brand.brand, { tenantName: brand.name, domain, from: `support@${domain}` });
+}
+
 async function flushTelemetry() {
   if (telemetryFlushPromise) return telemetryFlushPromise;
   telemetryFlushPromise = flushTelemetryNow().finally(() => {
@@ -3310,72 +1981,75 @@ async function flushTelemetry() {
 
 async function flushTelemetryNow() {
   while (logQueue.length > 0 || auditQueue.length > 0 || usageDeltas.size > 0) {
-      const logs = logQueue.splice(0, 500);
-      const audits = auditQueue.splice(0, 500);
-      const usage = Array.from(usageDeltas.values());
-      usageDeltas.clear();
+    const logs = logQueue.splice(0, 500);
+    const audits = auditQueue.splice(0, 500);
+    const usage = Array.from(usageDeltas.values());
+    usageDeltas.clear();
 
-      try {
-        await tx(db, async (client) => {
-          if (logs.length > 0) {
-            await client.query(
-              `insert into logs (id, tenant_id, request_id, user_agent, method, path, status, latency_ms, api_key_id)
-               select * from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::integer[], $8::integer[], $9::text[])`,
-              [
-                logs.map((log) => log.id),
-                logs.map((log) => log.tenant_id),
-                logs.map((log) => log.request_id),
-                logs.map((log) => log.user_agent),
-                logs.map((log) => log.method),
-                logs.map((log) => log.path),
-                logs.map((log) => log.status),
-                logs.map((log) => log.latency_ms),
-                logs.map((log) => log.api_key_id)
-              ]
-            );
-          }
+    try {
+      await tx(db, async (client) => {
+        if (logs.length > 0) {
+          await client.query(
+            `insert into logs (id, tenant_id, request_id, user_agent, method, path, status, latency_ms, api_key_id, request_body, response_body)
+               select * from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::integer[], $8::integer[], $9::text[], $10::jsonb[], $11::jsonb[])`,
+            [
+              logs.map((log) => log.id),
+              logs.map((log) => log.tenant_id),
+              logs.map((log) => log.request_id),
+              logs.map((log) => log.user_agent),
+              logs.map((log) => log.method),
+              logs.map((log) => log.path),
+              logs.map((log) => log.status),
+              logs.map((log) => log.latency_ms),
+              logs.map((log) => log.api_key_id),
+              jsonbParams(logs.map((log) => log.request_body)),
+              jsonbParams(logs.map((log) => log.response_body)),
+            ],
+          );
+        }
 
-          if (audits.length > 0) {
-            await client.query(
-              `insert into audit_logs (id, tenant_id, request_id, actor_user_id, api_key_id, session_id, action, data)
+        if (audits.length > 0) {
+          await client.query(
+            `insert into audit_logs (id, tenant_id, request_id, actor_user_id, api_key_id, session_id, action, data)
                select * from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::text[], $8::jsonb[])`,
-              [
-                audits.map((audit) => audit.id),
-                audits.map((audit) => audit.tenant_id),
-                audits.map((audit) => audit.request_id),
-                audits.map((audit) => audit.actor_user_id),
-                audits.map((audit) => audit.api_key_id),
-                audits.map((audit) => audit.session_id),
-                audits.map((audit) => audit.action),
-                audits.map((audit) => JSON.stringify(audit.data))
-              ]
-            );
-          }
+            [
+              audits.map((audit) => audit.id),
+              audits.map((audit) => audit.tenant_id),
+              audits.map((audit) => audit.request_id),
+              audits.map((audit) => audit.actor_user_id),
+              audits.map((audit) => audit.api_key_id),
+              audits.map((audit) => audit.session_id),
+              audits.map((audit) => audit.action),
+              audits.map((audit) => JSON.stringify(audit.data)),
+            ],
+          );
+        }
 
-          if (usage.length > 0) {
-            const period = new Date().toISOString().slice(0, 10);
-            await client.query(
-              `insert into usage_counters (id, tenant_id, name, period, value)
+        if (usage.length > 0) {
+          const period = new Date().toISOString().slice(0, 10);
+          await client.query(
+            `insert into usage_counters (id, tenant_id, name, period, value)
                select * from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::integer[])
                on conflict (tenant_id, name, period)
                do update set value = usage_counters.value + excluded.value, updated_at = now()`,
-              [
-                usage.map(() => id("usage")),
-                usage.map((row) => row.tenant_id),
-                usage.map((row) => row.name),
-                usage.map(() => period),
-                usage.map((row) => row.amount)
-              ]
-            );
-          }
-        });
-      } catch (error) {
-        logQueue.unshift(...logs);
-        auditQueue.unshift(...audits);
-        for (const row of usage) addUsageDelta(row.tenant_id, row.name, row.amount);
-        app.log.warn({ error }, "failed to flush telemetry");
-        break;
-      }
+            [
+              usage.map(() => id("usage")),
+              usage.map((row) => row.tenant_id),
+              usage.map((row) => row.name),
+              usage.map(() => period),
+              usage.map((row) => row.amount),
+            ],
+          );
+        }
+      });
+    } catch (error) {
+      logQueue.unshift(...logs);
+      auditQueue.unshift(...audits);
+      for (const row of usage)
+        addUsageDelta(row.tenant_id, row.name, row.amount);
+      app.log.warn({ error }, "failed to flush telemetry");
+      break;
+    }
   }
 }
 
@@ -3383,8 +2057,14 @@ function securityHeaders(reply: FastifyReply) {
   reply.header("x-content-type-options", "nosniff");
   reply.header("x-frame-options", "DENY");
   reply.header("referrer-policy", "no-referrer");
-  reply.header("permissions-policy", "camera=(), microphone=(), geolocation=()");
-  reply.header("content-security-policy", "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'");
+  reply.header(
+    "permissions-policy",
+    "camera=(), microphone=(), geolocation=()",
+  );
+  reply.header(
+    "content-security-policy",
+    "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+  );
 }
 
 function allowedOrigin(origin?: string) {
@@ -3393,7 +2073,7 @@ function allowedOrigin(origin?: string) {
     (process.env.CORS_ORIGINS ?? "http://localhost:5173,http://127.0.0.1:5173")
       .split(",")
       .map((value) => value.trim())
-      .filter(Boolean)
+      .filter(Boolean),
   );
   return allowed.has(origin);
 }
@@ -3404,18 +2084,30 @@ function safeRequestId(value?: string) {
 }
 
 function publicSetupEnabled() {
-  return (process.env.ALLOW_PUBLIC_SETUP ?? (process.env.NODE_ENV === "production" ? "false" : "true")) === "true";
+  return (
+    (process.env.ALLOW_PUBLIC_SETUP ??
+      (process.env.NODE_ENV === "production" ? "false" : "true")) === "true"
+  );
 }
 
 function passwordlessSessionsEnabled() {
-  return (process.env.ALLOW_PASSWORDLESS_SESSIONS ?? (process.env.NODE_ENV === "production" ? "false" : "true")) === "true";
+  return (
+    (process.env.ALLOW_PASSWORDLESS_SESSIONS ??
+      (process.env.NODE_ENV === "production" ? "false" : "true")) === "true"
+  );
 }
 
-async function publicRateLimit(request: FastifyRequest, reply: FastifyReply, route: string) {
-  const limitValue = route === "/v1/sessions" ? Number(process.env.AUTH_RATE_LIMIT_PER_SECOND ?? 5) : Number(process.env.PUBLIC_RATE_LIMIT_PER_SECOND ?? 50);
+async function publicRateLimit(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  route: string,
+) {
+  const limitValue =
+    route === "/sessions"
+      ? Number(process.env.AUTH_RATE_LIMIT_PER_SECOND ?? 5)
+      : Number(process.env.PUBLIC_RATE_LIMIT_PER_SECOND ?? 50);
   const key = `rate:public:${route}:${request.ip}:${Math.floor(Date.now() / 1000)}`;
-  const count = await redis.incr(key);
-  if (count === 1) await redis.expire(key, 2);
+  const count = await countHit(key);
   reply.header("ratelimit-limit", String(limitValue));
   reply.header("ratelimit-remaining", String(Math.max(0, limitValue - count)));
   reply.header("ratelimit-reset", "1");
@@ -3425,13 +2117,17 @@ async function publicRateLimit(request: FastifyRequest, reply: FastifyReply, rou
   }
 }
 
-async function verifiedDomain(client: Pick<typeof db, "query">, tenantId: string, domain: string) {
+async function verifiedDomain(
+  client: Pick<typeof db, "query">,
+  tenantId: string,
+  domain: string,
+) {
   const key = `${tenantId}:${domain}`;
   const cached = domainCache.get(key);
   if (cached && cached > Date.now()) return true;
   const verified = await client.query(
     "select id from domains where tenant_id = $1 and name = $2 and status = 'verified' and deleted_at is null",
-    [tenantId, domain]
+    [tenantId, domain],
   );
   if (verified.rowCount === 0) return false;
   domainCache.set(key, Date.now() + domainCacheTtlMs);
@@ -3447,25 +2143,66 @@ function clearDomainCache(tenantId: string) {
 function safeEqualHex(left: string, right: string) {
   const leftBuffer = Buffer.from(left, "hex");
   const rightBuffer = Buffer.from(right, "hex");
-  return leftBuffer.length === rightBuffer.length && timingSafeEqual(leftBuffer, rightBuffer);
+  return (
+    leftBuffer.length === rightBuffer.length &&
+    timingSafeEqual(leftBuffer, rightBuffer)
+  );
+}
+
+// A route handler runs once per request, so every change it reports is a new event. The key is
+// made here and not from the request ID, which a client may send again on another call.
+function emitChange(request: FastifyRequest, type: EventType, resourceId: string, data: Record<string, unknown>) {
+  return emit(db, {
+    tenantId: request.auth!.tenant_id,
+    requestId: request.request_id,
+    type,
+    resourceId,
+    data,
+    key: `${resourceId}:${type}:${id("change")}`,
+  });
 }
 
 async function webhookUrl(value: string) {
   try {
     return await normalizeWebhookUrl(value, {
       requireHttps: process.env.NODE_ENV === "production",
-      allowPrivate: privateWebhookTargetsEnabled()
+      allowPrivate: privateWebhookTargetsEnabled(),
     });
   } catch (error) {
-    throw new ApiError("validation_error", 400, error instanceof Error ? error.message : "Invalid webhook URL");
+    throw new ApiError(
+      "validation_error",
+      400,
+      error instanceof Error ? error.message : "Invalid webhook URL",
+    );
   }
 }
 
-function privateWebhookTargetsEnabled() {
-  return (process.env.ALLOW_PRIVATE_WEBHOOKS ?? (process.env.NODE_ENV === "production" ? "false" : "true")) === "true";
+// The fake provider has no account behind it, so it reports the limits it simulates.
+async function sendingQuota(region: string) {
+  if ((process.env.SES_PROVIDER ?? "fake") !== "ses") {
+    return { max_24_hour: 100_000, max_per_second: 100, sent_24_hour: 0, sandbox: false };
+  }
+  return sesProvider().quota(region);
 }
 
-function rawInbound(input: { attachments?: Array<Record<string, unknown>>; [key: string]: unknown }) {
+let cachedSesProvider: ReturnType<typeof createSesProvider> | undefined;
+
+function sesProvider() {
+  cachedSesProvider ??= createSesProvider();
+  return cachedSesProvider;
+}
+
+function privateWebhookTargetsEnabled() {
+  return (
+    (process.env.ALLOW_PRIVATE_WEBHOOKS ??
+      (process.env.NODE_ENV === "production" ? "false" : "true")) === "true"
+  );
+}
+
+function rawInbound(input: {
+  attachments?: Array<Record<string, unknown>>;
+  [key: string]: unknown;
+}) {
   return {
     ...input,
     attachments: (input.attachments ?? []).map((attachment) => {
@@ -3473,9 +2210,10 @@ function rawInbound(input: { attachments?: Array<Record<string, unknown>>; [key:
       return {
         ...meta,
         content_hash: typeof content === "string" ? hash(content) : null,
-        content_bytes: typeof content === "string" ? Buffer.byteLength(content, "utf8") : 0
+        content_bytes:
+          typeof content === "string" ? Buffer.byteLength(content, "utf8") : 0,
       };
-    })
+    }),
   };
 }
 
@@ -3484,39 +2222,67 @@ function assertProductionConfig() {
   const forbidden = new Set([
     "dev-pepper-change-before-deploy",
     "sk_local_dispatch_dev_key_change_before_deploy",
-    "dev-secret-change-before-deploy"
+    "dev-secret-change-before-deploy",
   ]);
   for (const [name, value] of Object.entries({
     API_KEY_PEPPER: process.env.API_KEY_PEPPER,
     DISPATCH_API_KEY: process.env.DISPATCH_API_KEY,
-    WEBHOOK_SECRET: process.env.WEBHOOK_SECRET
+    APP_SECRET: process.env.APP_SECRET,
   })) {
-    if (value && forbidden.has(value)) throw new Error(`${name} must be changed before production`);
+    if (value && forbidden.has(value))
+      throw new Error(`${name} must be changed before production`);
   }
-  if ((process.env.SES_PROVIDER ?? "fake") === "fake" && process.env.ALLOW_FAKE_PROVIDER !== "true") {
-    throw new Error("Fake provider is disabled in production");
+  assertRealProvider();
+}
+
+async function identityTokens(name: string, region: string, returnPath = "send") {
+  if ((process.env.SES_PROVIDER ?? "fake") === "ses") {
+    return createIdentity(sesClient(region), { name, mailFromDomain: `${returnPath}.${name}` });
+  }
+  return [randomBytes(8).toString("hex"), randomBytes(8).toString("hex"), randomBytes(8).toString("hex")];
+}
+
+function domainRecords(
+  name: string,
+  region: string,
+  tokens: string[],
+  options: { returnPath?: string; trackingSubdomain?: string; receiving?: boolean } = {},
+) {
+  return dnsRecords({
+    name,
+    region,
+    tokens,
+    returnPath: options.returnPath,
+    trackingSubdomain: options.trackingSubdomain,
+    trackingHost: process.env.TRACKING_DOMAIN ?? "links.localhost",
+    receiving: options.receiving,
+  });
+}
+
+export async function close() {
+  clearInterval(telemetryTimer);
+  await app.close();
+  redis.disconnect();
+  await db.end();
+}
+
+export { app };
+
+if (runningAsEntry()) {
+  const port = Number(process.env.PORT ?? 3100);
+  const host =
+    process.env.API_HOST ??
+    process.env.HOST ??
+    (process.env.NODE_ENV === "production" ? "0.0.0.0" : "127.0.0.1");
+  await app.listen({ port, host });
+}
+
+function runningAsEntry() {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return import.meta.url === pathToFileURL(realpathSync(entry)).href;
+  } catch {
+    return false;
   }
 }
-
-async function findDomain(request: FastifyRequest) {
-  const domainId = (request.params as { id: string }).id;
-  const row = await db.query(
-    "select id, name, region, status, records, checked_at, created_at from domains where tenant_id = $1 and id = $2 and deleted_at is null",
-    [request.auth!.tenant_id, domainId]
-  );
-  if (!row.rows[0]) throw new ApiError("not_found", 404, "Domain not found");
-  return row.rows[0];
-}
-
-function domainRecords(name: string, region: string) {
-  return [
-    { type: "TXT", name, value: "v=spf1 include:amazonses.com ~all", status: "pending" },
-    { type: "CNAME", name: `dkim1._domainkey.${name}`, value: `dkim1.${region}.amazonses.com`, status: "pending" },
-    { type: "MX", name: `send.${name}`, value: `10 feedback-smtp.${region}.amazonses.com`, status: "pending" },
-    { type: "CNAME", name: `links.${name}`, value: process.env.TRACKING_DOMAIN ?? "links.localhost", status: "pending" }
-  ];
-}
-
-const port = Number(process.env.PORT ?? 3100);
-const host = process.env.API_HOST ?? process.env.HOST ?? (process.env.NODE_ENV === "production" ? "0.0.0.0" : "127.0.0.1");
-await app.listen({ port, host });

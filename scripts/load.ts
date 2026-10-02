@@ -1,7 +1,13 @@
 import "dotenv/config";
+import { DEFAULT_API_URL, DEFAULT_DEV_API_KEY } from "./helpers/index.js";
 
-const apiUrl = process.env.API_URL ?? "http://localhost:3100";
-const apiKey = process.env.DISPATCH_API_KEY ?? "sk_local_dispatch_dev_key_change_before_deploy";
+if (process.argv.includes("--help") || process.argv.includes("-h")) {
+  console.log("Usage: tsx scripts/load.ts [--count 50] [--concurrency 10] [--no-idempotency]");
+  process.exit(0);
+}
+
+const apiUrl = process.env.API_URL ?? DEFAULT_API_URL;
+const apiKey = process.env.DISPATCH_API_KEY ?? DEFAULT_DEV_API_KEY;
 const count = numberArg("--count", 50);
 const concurrency = numberArg("--concurrency", 10);
 const useIdempotency = !process.argv.includes("--no-idempotency");
@@ -42,7 +48,7 @@ async function worker() {
     const index = next++;
     const started = performance.now();
     try {
-      const response = await fetch(`${apiUrl}/v1/emails`, {
+      const response = await fetch(`${apiUrl}/emails`, {
         method: "POST",
         headers: {
           authorization: `Bearer ${apiKey}`,
