@@ -1,0 +1,37 @@
+import { Command, Option } from "@commander-js/extra-typings";
+import { runWrite } from "../../lib/actions.js";
+import { helpText } from "../../lib/help.js";
+import { compact, jsonFlag } from "../../lib/json.js";
+import { pickAutomation } from "../../lib/pickers.js";
+
+export const update = new Command("update")
+  .description("Turn an automation on or off, or change its definition")
+  .argument("[id]", "Automation ID")
+  .addOption(new Option("--status <status>", "enabled or disabled").choices(["enabled", "disabled"] as const))
+  .option("--name <name>", "New name")
+  .option("--steps <json>", "Steps as a JSON array")
+  .option("--connections <json>", "Connections as a JSON array")
+  .addHelpText(
+    "after",
+    helpText({
+      output: '{"object":"automation","id":"..."}',
+      codes: ["missing_id", "invalid_json", "update_error"],
+      examples: ["dispatch automations update auto_123 --status disabled"],
+    }),
+  )
+  .action(async (id, options, command) => {
+    await runWrite(command, {
+      prepare: (globals) => pickAutomation(id, globals),
+      call: (api, target) =>
+        api.automations.update(
+          target,
+          compact({
+            status: options.status,
+            name: options.name,
+            steps: jsonFlag<unknown[]>(options.steps, "--steps"),
+            connections: jsonFlag<unknown[]>(options.connections, "--connections"),
+          }),
+        ),
+      done: (automation: { id: string }) => `Updated automation ${automation.id}`,
+    });
+  });
