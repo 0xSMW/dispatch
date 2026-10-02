@@ -4,7 +4,7 @@ Dispatch is a self-hosted email API for the email your product sends: password r
 
 ## Features
 
-Every email moves through states you can read back, such as `queued`, `sent`, `delivered`, `bounced`, `opened`, and `clicked`. Each change is an event. You can fetch it from the API, receive it as a webhook, or see it on the email's page in the dashboard.
+Every email event is traceable, so you can see what's queued, sent, delivered, bounced, opened, and clicked. Fetch any event from the API, receive it as a webhook, or see it on the email's page in the dashboard.
 
 - **Sending API.** Send one email or a batch, schedule one for later, attach files, and retry safely with idempotency keys.
 - **SMTP relay.** Send from anything that speaks SMTP, such as a CMS or a framework's mailer, with an API key as the password.
