@@ -1,4 +1,4 @@
-import "dotenv/config";
+import "@dispatchmail/core/env";
 import { connect } from "./index.js";
 import { schema } from "./schema.js";
 

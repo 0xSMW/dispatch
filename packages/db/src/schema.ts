@@ -56,6 +56,7 @@ create table if not exists api_keys (
   prefix text not null unique,
   hash text not null,
   scope text not null check (scope in ('full', 'send')),
+  domain_id text,
   last_used_at timestamptz,
   created_at timestamptz not null default now(),
   revoked_at timestamptz
@@ -80,6 +81,11 @@ create table if not exists emails (
   request_id text not null,
   idempotency_key text,
   from_email text not null,
+  from_name text,
+  reply_to jsonb not null default '[]',
+  message_id text,
+  topic_id text,
+  broadcast_id text,
   subject text not null,
   html text,
   text text,
@@ -249,6 +255,18 @@ create table if not exists contacts (
   updated_at timestamptz not null default now(),
   deleted_at timestamptz,
   unique (tenant_id, email)
+);
+
+create table if not exists contact_properties (
+  id text primary key,
+  tenant_id text not null references tenants(id) on delete cascade,
+  key text not null,
+  type text not null default 'string' check (type in ('string', 'number')),
+  fallback_value jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  deleted_at timestamptz,
+  unique (tenant_id, key)
 );
 
 create table if not exists topics (
@@ -530,6 +548,40 @@ alter table webhook_attempts add column if not exists available_at timestamptz n
 alter table webhook_attempts add column if not exists updated_at timestamptz not null default now();
 alter table logs add column if not exists user_agent text;
 alter table emails add column if not exists scheduled_at timestamptz;
+alter table emails add column if not exists from_name text;
+alter table emails add column if not exists reply_to jsonb not null default '[]';
+alter table emails add column if not exists message_id text;
+alter table emails add column if not exists topic_id text;
+alter table emails add column if not exists broadcast_id text;
+alter table api_keys add column if not exists domain_id text;
+alter table domains add column if not exists tls text not null default 'opportunistic';
+alter table domains add column if not exists return_path text not null default 'send';
+alter table domains add column if not exists tracking_subdomain text not null default 'links';
+alter table domains add column if not exists sending text not null default 'enabled';
+alter table domains add column if not exists receiving text not null default 'disabled';
+alter table domains add column if not exists dkim_tokens jsonb not null default '[]';
+alter table domains add column if not exists verify_started_at timestamptz;
+alter table suppressions add column if not exists origin text not null default 'manual';
+alter table suppressions add column if not exists source_id text;
+update suppressions set origin = 'bounce' where reason = 'email.bounced' and origin = 'manual';
+update suppressions set origin = 'complaint' where reason = 'email.complained' and origin = 'manual';
+alter table received_emails add column if not exists message_id text;
+alter table received_emails add column if not exists reply_to jsonb not null default '[]';
+alter table received_emails add column if not exists authentication jsonb;
+alter table received_emails add column if not exists raw_key text;
+alter table received_attachments add column if not exists content_id text;
+alter table domains add column if not exists open_tracking boolean not null default false;
+alter table domains add column if not exists click_tracking boolean not null default false;
+alter table domains add column if not exists updated_at timestamptz not null default now();
+alter table emails add column if not exists html_tracked text;
+alter table logs add column if not exists request_body jsonb;
+alter table logs add column if not exists response_body jsonb;
+alter table tenants add column if not exists brand jsonb not null default '{}';
+alter table templates add column if not exists track boolean not null default true;
+alter table template_versions add column if not exists source jsonb not null default '{}';
+alter table template_versions add column if not exists from_address text;
+alter table template_versions add column if not exists reply_to jsonb not null default '[]';
+alter table template_versions alter column subject drop not null;
 alter table emails add column if not exists template_id text;
 alter table emails add column if not exists template_version_id text;
 alter table email_attachments add column if not exists content_id text;
@@ -542,12 +594,57 @@ alter table received_recipients add column if not exists kind text not null defa
 alter table email_events add column if not exists request_id text;
 alter table webhook_attempts add column if not exists request_id text;
 alter table broadcasts add column if not exists sent_count integer not null default 0;
+alter table webhooks add column if not exists previous_secret text;
+alter table webhooks add column if not exists previous_secret_expires_at timestamptz;
+alter table webhook_endpoint_health add column if not exists failing_since timestamptz;
 alter table custom_events add column if not exists updated_at timestamptz not null default now();
 alter table custom_events add column if not exists deleted_at timestamptz;
 alter table broadcasts drop constraint if exists broadcasts_status_check;
 alter table broadcasts add constraint broadcasts_status_check check (status in ('draft', 'sending', 'paused', 'sent', 'cancelled'));
+alter table topics add column if not exists description text;
+alter table topics add column if not exists visibility text not null default 'private';
+alter table emails add column if not exists api_key_id text;
+create index if not exists emails_tenant_api_key_idx on emails (tenant_id, api_key_id, created_at desc) where api_key_id is not null;
+create index if not exists logs_tenant_api_key_idx on logs (tenant_id, api_key_id);
+create table if not exists contact_imports (
+  id text primary key,
+  tenant_id text not null references tenants(id) on delete cascade,
+  status text not null default 'queued' check (status in ('queued', 'in_progress', 'completed', 'failed')),
+  storage_key text not null,
+  column_map jsonb not null default '{}',
+  on_conflict text not null default 'upsert' check (on_conflict in ('upsert', 'skip')),
+  segments jsonb not null default '[]',
+  topics jsonb not null default '[]',
+  counts jsonb not null default '{"total":0,"created":0,"updated":0,"skipped":0,"failed":0}',
+  error text,
+  locked_at timestamptz,
+  created_at timestamptz not null default now(),
+  completed_at timestamptz
+);
+create index if not exists contact_imports_ready_idx on contact_imports (created_at, id) where status = 'queued';
+create index if not exists contact_imports_tenant_created_idx on contact_imports (tenant_id, created_at desc);
+alter table broadcasts add column if not exists reply_to jsonb not null default '[]';
+alter table broadcasts add column if not exists preview_text text;
+alter table broadcasts add column if not exists scheduled_at timestamptz;
+alter table broadcasts add column if not exists from_name text;
+alter table broadcasts add column if not exists request_id text;
+alter table broadcasts drop constraint if exists broadcasts_status_check;
+alter table broadcasts add constraint broadcasts_status_check
+  check (status in ('draft', 'scheduled', 'sending', 'paused', 'sent', 'cancelled'));
+create index if not exists broadcasts_due_idx on broadcasts (scheduled_at) where status in ('sending', 'scheduled');
+alter table broadcast_recipients add column if not exists error text;
+alter table broadcast_recipients add column if not exists unsubscribed_at timestamptz;
+create index if not exists broadcast_recipients_queued_idx on broadcast_recipients (broadcast_id, created_at, id) where status = 'queued';
+alter table automations add column if not exists connections jsonb not null default '[]';
+alter table automation_runs add column if not exists next_step_key text;
+alter table automation_steps add column if not exists step_key text;
+alter table automation_steps add column if not exists started_at timestamptz;
+alter table automation_steps add column if not exists completed_at timestamptz;
+create index if not exists contact_properties_tenant_created_idx
+  on contact_properties (tenant_id, created_at desc) where deleted_at is null;
 
 create index if not exists emails_tenant_created_idx on emails (tenant_id, created_at desc);
+create index if not exists emails_broadcast_idx on emails (tenant_id, broadcast_id) where broadcast_id is not null;
 create index if not exists emails_tenant_status_idx on emails (tenant_id, status, created_at desc);
 create index if not exists recipients_email_idx on email_recipients (email_id);
 create index if not exists recipients_tenant_status_idx on email_recipients (tenant_id, status, created_at desc);
@@ -593,4 +690,126 @@ create index if not exists event_schemas_tenant_created_idx on event_schemas (te
 create index if not exists usage_counters_tenant_name_idx on usage_counters (tenant_id, name, period);
 create index if not exists logs_tenant_created_idx on logs (tenant_id, created_at desc);
 create index if not exists audit_logs_tenant_created_idx on audit_logs (tenant_id, created_at desc);
+
+-- Addresses are matched without regard to case when a send is checked against suppressions and topics.
+create index if not exists suppressions_tenant_lower_email_idx on suppressions (tenant_id, lower(email)) where removed_at is null;
+create index if not exists contacts_tenant_lower_email_idx on contacts (tenant_id, lower(email)) where deleted_at is null;
+
+-- A deleted template, topic, or segment must not block a new one with the same name.
+alter table templates drop constraint if exists templates_tenant_id_name_key;
+create unique index if not exists templates_tenant_name_idx on templates (tenant_id, name) where deleted_at is null;
+alter table topics drop constraint if exists topics_tenant_id_key_key;
+create unique index if not exists topics_tenant_key_idx on topics (tenant_id, key) where deleted_at is null;
+alter table segments drop constraint if exists segments_tenant_id_name_key;
+create unique index if not exists segments_tenant_name_idx on segments (tenant_id, name) where deleted_at is null;
+
+-- What resumed a paused automation run: an event, or the timeout. Read by the worker that runs it.
+alter table automation_runs add column if not exists resume_data jsonb;
+create index if not exists automation_runs_ready_idx on automation_runs (created_at, id) where state in ('ready', 'running');
+alter table automations drop constraint if exists automations_tenant_id_name_key;
+create unique index if not exists automations_tenant_name_idx on automations (tenant_id, name) where deleted_at is null;
+
+alter table broadcasts add column if not exists failures integer not null default 0;
+alter table broadcasts add column if not exists error text;
+create index if not exists send_jobs_email_idx on send_jobs (email_id);
+
+-- The worker reclaims work a crashed process left in the running state.
+create index if not exists send_jobs_running_idx on send_jobs (locked_at) where state = 'running';
+create index if not exists webhook_attempts_running_idx on webhook_attempts (updated_at) where state = 'running';
+
+-- Who made an API key, when it was made from the dashboard. A key made with another key has none.
+alter table api_keys add column if not exists created_by text references users(id) on delete set null;
+-- Where the domain's DNS is hosted, read from its NS records by the verification poller.
+alter table domains add column if not exists dns_provider text;
+
+-- A restarted import skips the rows an earlier worker already committed.
+alter table contact_imports add column if not exists row_offset integer not null default 0;
+
+-- Usage counters page on a time that never moves. updated_at changes with every increment.
+alter table usage_counters add column if not exists created_at timestamptz not null default now();
+
+-- One contact per mailbox. Addresses are lowercased on write now, but rows written earlier can
+-- differ only by case. Each statement below does nothing once the rows are merged.
+-- The row that stays is the live one, or the oldest when several are live.
+-- 1. An opt-out on any copy carries over, so nobody is resubscribed by the merge.
+update contacts c set unsubscribed_at = d.unsubscribed_at
+from (
+  select tenant_id, lower(email) as mailbox, min(unsubscribed_at) as unsubscribed_at
+  from contacts group by tenant_id, lower(email) having count(*) > 1
+) d
+where c.tenant_id = d.tenant_id and lower(c.email) = d.mailbox
+  and c.unsubscribed_at is null and d.unsubscribed_at is not null;
+-- 2. Segment memberships move to the row that stays.
+insert into segment_contacts (id, tenant_id, segment_id, contact_id)
+select 'member_' || md5(sc.id || k.id), sc.tenant_id, sc.segment_id, k.id
+from segment_contacts sc
+join contacts c on c.id = sc.contact_id
+join (
+  select distinct on (tenant_id, lower(email)) id, tenant_id, lower(email) as mailbox
+  from contacts
+  order by tenant_id, lower(email), (deleted_at is not null), created_at, id
+) k on k.tenant_id = c.tenant_id and k.mailbox = lower(c.email)
+where k.id <> c.id
+on conflict (tenant_id, segment_id, contact_id) do nothing;
+-- 3. Topic choices move too. Where the copies disagree, the opt-out wins.
+insert into topic_subscriptions (id, tenant_id, topic_id, contact_id, status)
+select distinct on (s.tenant_id, s.topic_id, k.id) 'topicsub_' || md5(s.id || k.id), s.tenant_id, s.topic_id, k.id, s.status
+from topic_subscriptions s
+join contacts c on c.id = s.contact_id
+join (
+  select distinct on (tenant_id, lower(email)) id, tenant_id, lower(email) as mailbox
+  from contacts
+  order by tenant_id, lower(email), (deleted_at is not null), created_at, id
+) k on k.tenant_id = c.tenant_id and k.mailbox = lower(c.email)
+where k.id <> c.id
+order by s.tenant_id, s.topic_id, k.id, (s.status = 'unsubscribed') desc
+on conflict (tenant_id, topic_id, contact_id) do update set status = 'unsubscribed', updated_at = now()
+  where excluded.status = 'unsubscribed';
+-- 4. Broadcast history moves too, so the record of what each person was sent survives. Where
+-- both copies were sent the same broadcast, the kept row's record stays and the other goes
+-- with its contact in step 5.
+update broadcast_recipients br set contact_id = k.id
+from contacts c
+join (
+  select distinct on (tenant_id, lower(email)) id, tenant_id, lower(email) as mailbox
+  from contacts
+  order by tenant_id, lower(email), (deleted_at is not null), created_at, id
+) k on k.tenant_id = c.tenant_id and k.mailbox = lower(c.email)
+where br.contact_id = c.id and k.id <> c.id
+  and not exists (
+    select 1 from broadcast_recipients kept
+    where kept.tenant_id = br.tenant_id and kept.broadcast_id = br.broadcast_id and kept.contact_id = k.id
+  );
+-- 5. The extra rows go, then every address is lowercased and the rule is enforced.
+delete from contacts c using (
+  select distinct on (tenant_id, lower(email)) id, tenant_id, lower(email) as mailbox
+  from contacts
+  order by tenant_id, lower(email), (deleted_at is not null), created_at, id
+) k
+where k.tenant_id = c.tenant_id and k.mailbox = lower(c.email) and k.id <> c.id;
+update contacts set email = lower(email) where email <> lower(email);
+create unique index if not exists contacts_tenant_mailbox_key on contacts (tenant_id, lower(email));
+
+-- Email and password sign-in, and the Viewer role.
+-- A scrypt hash with its parameters ("scrypt$N$r$p$salt$hash"). Null means the user has no
+-- password yet and cannot sign in with one.
+alter table users add column if not exists password_hash text;
+-- Every tenant has two roles: Admin with full access and Viewer, which can only read. Tenants
+-- were created with a full-access role named "owner". It becomes Admin.
+update roles r set name = 'Admin', updated_at = now()
+where r.name = 'owner' and r.permissions = '["full"]'::jsonb
+  and not exists (select 1 from roles a where a.tenant_id = r.tenant_id and a.name = 'Admin');
+-- A tenant gets its Viewer once. A role this statement made, any role named Viewer, or any
+-- read-only role, live or deleted, means the tenant has had one, so a Viewer an admin renamed or
+-- deleted is not made again. With no conflict target, every unique index arbitrates and a
+-- clash is skipped, never raised.
+insert into roles (id, tenant_id, name, permissions)
+select 'role_' || md5(t.id || ':viewer'), t.id, 'Viewer', '["read"]'::jsonb
+from tenants t
+where not exists (
+  select 1 from roles r
+  where r.tenant_id = t.id
+    and (r.id = 'role_' || md5(t.id || ':viewer') or r.name = 'Viewer' or r.permissions = '["read"]'::jsonb)
+)
+on conflict do nothing;
 `;
