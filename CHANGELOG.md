@@ -10,3 +10,4 @@
 - Attribute automation emails to their flow and step, with per-email metrics in the dashboard and `automation` and `step` API dimensions. Legacy messages have no recoverable step key.
 - Show fired events and automation runs in contact history, with stable paged IDs and links to each run.
 - Deliver `email.unsubscribed` and automation run started, completed, and failed webhooks once per transition.
+- Clarify Marketing and broadcast unsubscribe webhook fanout once per email, including repeated link use. Contact activity shows completed run states (`done`, `failed`, `stopped`) with dashboard run links and CLI labels and run attribution.

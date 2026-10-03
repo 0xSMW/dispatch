@@ -171,6 +171,28 @@ describe("applyUnsubscribe", () => {
     ).rejects.toMatchObject({ name: "not_found" });
   });
 
+  it.each([
+    ["opt_out", "opt_in", false],
+    ["opt_in", "opt_out", true],
+  ])("uses the final repeated topic preference (%s then %s) for email fanout", async (first, last, unsubscribed) => {
+    const db = client((sql) => {
+      if (sql.includes("from contacts")) return { rows: [contact] };
+      if (sql.includes("from broadcasts")) return { rows: [{ topic_id: "topic_news" }] };
+      if (sql.includes("from topics")) return { rows: [{ id: "topic_news" }] };
+      return { rows: [] };
+    });
+    await applyUnsubscribe(db, payload, {
+      kind: "topics",
+      topics: [
+        { id: "topic_news", subscription: first as string },
+        { id: "topic_news", subscription: last as string },
+      ],
+    });
+    const saved = db.queries.filter((query) => query.sql.includes("insert into topic_subscriptions"));
+    expect(saved.at(-1)?.params.at(-1)).toBe(last === "opt_out" ? "unsubscribed" : "subscribed");
+    expect(db.queries.some((query) => query.sql.includes("update broadcast_recipients"))).toBe(unsubscribed);
+  });
+
   it("fails with not_found for a missing contact", async () => {
     const db = client(() => ({ rows: [] }));
     await expect(applyUnsubscribe(db, payload, { kind: "all" })).rejects.toMatchObject({ name: "not_found" });

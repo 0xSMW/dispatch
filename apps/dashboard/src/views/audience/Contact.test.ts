@@ -44,6 +44,17 @@ function api() {
       { object: "contact_activity", id: "sc_1", type: "segment.added", resource_id: "seg_vip", label: "VIP", email_id: null, created_at: "2026-09-01T00:00:00.000Z" },
       { object: "contact_activity", id: "run_1:started", type: "automation.run.started", resource_id: "run_1", label: "Onboarding", email_id: null, automation_id: "automation_1", run_id: "run_1", created_at: "2026-09-01T00:00:00.000Z" },
       { object: "contact_activity", id: "fired_1", type: "event.fired", resource_id: "fired_1", label: "user.joined", email_id: null, created_at: "2026-09-01T00:00:00.000Z" },
+      ...["done", "failed", "stopped"].map((state) => ({
+        object: "contact_activity",
+        id: `run_${state}:completed`,
+        type: "automation.run.completed",
+        resource_id: `run_${state}`,
+        label: state,
+        email_id: null,
+        automation_id: "automation_1",
+        run_id: `run_${state}`,
+        created_at: "2026-09-02T00:00:00.000Z",
+      })),
     ]),
   });
 }
@@ -82,6 +93,14 @@ describe("Contact", () => {
     expect(screen.getByText("Event received")).toBeTruthy();
     expect(((await screen.findByLabelText("seats")) as HTMLInputElement).value).toBe("3");
     expect(screen.getByText("Not a defined property.")).toBeTruthy();
+  });
+
+  it.each(["done", "failed", "stopped"])("shows a completed %s run with its state label and run link", async (state) => {
+    api();
+    open();
+    const link = await screen.findByRole("link", { name: state });
+    expect(link.getAttribute("href")).toBe(`/automations/automation_1/editor?tab=runs&run=run_${state}`);
+    expect(within(link.closest("tr")!).getByText("Automation run ended")).toBeTruthy();
   });
 
   it("saves properties, sending cleared values as null", async () => {

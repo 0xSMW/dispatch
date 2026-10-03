@@ -16921,7 +16921,7 @@
               "automation.run.completed",
               "automation.run.failed"
             ],
-            "description": "`email.unsubscribed` is recorded for a broadcast recipient who unsubscribes. No webhook fires for it."
+            "description": "Marketing and broadcast unsubscribe links record one `email.unsubscribed` event per email, even when used again. The event is fanned out to enabled webhook endpoints subscribed to `email.unsubscribed`."
           },
           "data": {
             "type": "object",

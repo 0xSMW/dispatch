@@ -7,6 +7,12 @@ import { describe, expect, it } from "vitest";
 const src = new URL("./", import.meta.url);
 const spec = JSON.parse(readFileSync(new URL("../../../docs/api/openapi.json", import.meta.url), "utf8")) as {
   paths: Record<string, Record<string, unknown>>;
+  components: {
+    schemas: {
+      EventType: { enum: string[] };
+      EmailEvent: { properties: { type: { enum: string[]; description: string } } };
+    };
+  };
 };
 
 const methods = ["get", "post", "patch", "put", "delete"];
@@ -106,6 +112,17 @@ describe("docs/api/openapi.json", () => {
 
   it("resolves every $ref", () => {
     expect(refs(spec).filter((pointer) => !resolves(pointer))).toEqual([]);
+  });
+
+  it("documents lifecycle event types and repeat-safe unsubscribe webhook fanout", () => {
+    const types = ["email.unsubscribed", "automation.run.started", "automation.run.completed", "automation.run.failed"];
+    const event = spec.components.schemas.EmailEvent.properties.type;
+    expect(spec.components.schemas.EventType.enum).toEqual(expect.arrayContaining(types));
+    expect(event.enum).toEqual(expect.arrayContaining(types));
+    expect(event.description).toContain("Marketing and broadcast unsubscribe links");
+    expect(event.description).toContain("one `email.unsubscribed` event per email, even when used again");
+    expect(event.description).toContain("enabled webhook endpoints subscribed to `email.unsubscribed`");
+    expect(event.description).not.toMatch(/no webhook|broadcast recipient/i);
   });
 
   it("gives every operation an operationId, a summary, and a tag", () => {

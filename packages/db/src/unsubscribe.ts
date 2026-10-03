@@ -233,9 +233,9 @@ export async function applyUnsubscribe(db: Queryable, payload: UnsubscribePayloa
     }
     await setContactTopics(db, payload.tenant_id, contact.id, next.topics);
     type = "contact.topics.updated";
-    leftBroadcast = next.topics.some(
-      (topic) => topic.id === broadcastTopic && subscriptionStored(topic.subscription) === "unsubscribed",
-    );
+    // Topic writes are ordered: a repeated topic's last preference is the one saved.
+    const subscription = new Map(next.topics.map((topic) => [topic.id, topic.subscription])).get(broadcastTopic ?? "");
+    leftBroadcast = subscription !== undefined && subscriptionStored(subscription) === "unsubscribed";
   }
 
   let emailId = payload.email_id ?? null;

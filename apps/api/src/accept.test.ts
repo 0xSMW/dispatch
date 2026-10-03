@@ -21,7 +21,7 @@ import {
   sign,
   verify,
 } from "@dispatchmail/core";
-import { connect, tx, type Db } from "@dispatchmail/db";
+import { connect, executeAutomationRun, tx, unsubscribeToken, type Db } from "@dispatchmail/db";
 import { schema } from "../../../packages/db/src/schema.js";
 import type { FastifyInstance } from "fastify";
 
@@ -1296,6 +1296,212 @@ describe.skipIf(!live)("delivery", () => {
     } finally {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     }
+  });
+
+  it.each(["one_click", "preferences", "global", "deleted_topic", "broadcast", "legacy_broadcast"])(
+    "delivers only to subscribed endpoints once for the %s unsubscribe path",
+    async (mode) => {
+      const contacts = await audience();
+      const received: Parameters<typeof recordWebhook>[2] = [];
+      const server = createServer((request, response) => recordWebhook(request, response, received));
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("webhook server did not bind");
+      try {
+        const endpoint = await post(fullKey, "/webhooks", {
+          url: `http://127.0.0.1:${address.port}/ok`, events: ["email.unsubscribed"],
+        });
+        const unrelated = await post(fullKey, "/webhooks", {
+          url: `http://127.0.0.1:${address.port}/unrelated`, events: ["automation.run.started"],
+        });
+        const disabled = await post(fullKey, "/webhooks", {
+          url: `http://127.0.0.1:${address.port}/disabled`, events: ["email.unsubscribed"], enabled: false,
+        });
+        const otherKey = await seedTenant();
+        const other = await post(otherKey, "/webhooks", {
+          url: `http://127.0.0.1:${address.port}/other`, events: ["email.unsubscribed"],
+        });
+        expect([endpoint.status, unrelated.status, disabled.status, other.status]).toEqual([200, 200, 200, 200]);
+        const sent = await post(fullKey, "/emails", letter({ to: "ada@example.com", topic_id: contacts.topic }));
+        expect(sent.status).toBe(200);
+        let path = link((await stored(sent.json.id)).headers);
+        const tenant = (await db.query<{ tenant_id: string }>("select tenant_id from contacts where id = $1", [contacts.first])).rows[0]!.tenant_id;
+        if (mode.includes("broadcast")) {
+          const broadcastId = id("broadcast");
+          await db.query(
+            "insert into broadcasts (id, tenant_id, name, from_email, topic_id) values ($1, $2, 'History', 'hello@example.com', $3)",
+            [broadcastId, tenant, contacts.topic],
+          );
+          await db.query(
+            "insert into broadcast_recipients (id, tenant_id, broadcast_id, contact_id, email_id, email) values ($1, $2, $3, $4, $5, 'ada@example.com')",
+            [id("br"), tenant, broadcastId, contacts.first, sent.json.id],
+          );
+          const token = unsubscribeToken({
+            tenant_id: tenant, contact_id: contacts.first, broadcast_id: broadcastId,
+            ...(mode === "broadcast" ? { email_id: sent.json.id } : {}),
+          }, process.env.APP_SECRET ?? "dev-secret-change-before-deploy");
+          path = `/unsubscribe/${encodeURIComponent(token)}`;
+        }
+        if (mode === "deleted_topic") {
+          expect((await call(fullKey, "DELETE", `/topics/${contacts.topic}`)).status).toBe(200);
+        }
+        if (mode === "preferences") {
+          // A last opt-in must neither count as an unsubscribe nor queue a delivery.
+          expect((await post("", path, { topics: [
+            { id: contacts.topic, subscription: "opt_out" },
+            { id: contacts.topic, subscription: "opt_in" },
+          ] })).status).toBe(200);
+          expect((await db.query("select id from email_events where type = 'email.unsubscribed'")).rows).toHaveLength(0);
+          expect((await db.query("select id from webhook_attempts")).rows).toHaveLength(0);
+          expect((await db.query("select status from topic_subscriptions where contact_id = $1", [contacts.first])).rows).toEqual([{ status: "subscribed" }]);
+        }
+        const action = mode === "global" ? { unsubscribe_all: true } : mode === "preferences" ? { topics: [
+          { id: contacts.topic, subscription: "opt_in" },
+          { id: contacts.topic, subscription: "opt_out" },
+        ] } : { "List-Unsubscribe": "One-Click" };
+        expect((await Promise.all([post("", path, action), post("", path, action)])).map((row) => row.status)).toEqual([200, 200]);
+        const attempts = await db.query(
+          `select a.webhook_id, e.email_id from webhook_attempts a join email_events e on e.id = a.event_id
+           where e.type = 'email.unsubscribed'`,
+        );
+        expect(attempts.rows).toEqual([{ webhook_id: endpoint.json.id, email_id: sent.json.id }]);
+        if (mode.includes("broadcast")) {
+          expect((await db.query("select unsubscribed_at from broadcast_recipients where email_id = $1", [sent.json.id])).rows[0]!.unsubscribed_at).not.toBeNull();
+        }
+        await tick();
+        await tick();
+        expect(received).toHaveLength(1);
+        expect(received[0]!.url).toBe("/ok");
+        const delivery = received[0]!;
+        expect(JSON.parse(delivery.body)).toMatchObject({ type: "email.unsubscribed", data: { email_id: sent.json.id } });
+        expect(verify(delivery.body, endpoint.json.signing_secret, delivery.id, delivery.timestamp, delivery.signature)).toBe(true);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    },
+  );
+
+  it.each(["delay", "event", "timeout", "recovery"])(
+    "does not repeat lifecycle transitions after %s resumption and retries",
+    async (mode) => {
+      const endpoint = await post(fullKey, "/webhooks", {
+        url: "http://127.0.0.1:1/unused",
+        events: ["automation.run.started", "automation.run.completed", "automation.run.failed"],
+      });
+      const flow = await post(fullKey, "/automations", {
+        name: "Resume", enabled: true,
+        steps: [
+          { key: "start", type: "trigger", config: { event_name: "resume" } },
+          mode === "delay"
+            ? { key: "wait", type: "delay", config: { duration: "1 hour" } }
+            : { key: "wait", type: "wait_for_event", config: { event_name: "wake", timeout: "1 hour" } },
+        ],
+        connections: [{ from: "start", to: "wait", type: "default" }],
+      });
+      expect([endpoint.status, flow.status]).toEqual([200, 200]);
+      await post(fullKey, "/events/send", { event: "resume", email: "ada@example.com" });
+      // Execute directly so webhook attempts stay queued, without network retries.
+      const run = (await db.query<{ id: string; tenant_id: string }>("select id, tenant_id from automation_runs")).rows[0]!;
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect((await db.query("select state from automation_runs where id = $1", [run.id])).rows).toEqual([{ state: "waiting" }]);
+      expect((await db.query("select id from email_events where type = 'automation.run.started'")).rows).toHaveLength(1);
+      expect((await db.query("select id from email_events where type = 'automation.run.completed'")).rows).toHaveLength(0);
+      if (mode === "event") {
+        await post(fullKey, "/events/send", { event: "wake", email: "ADA@example.com" });
+      } else {
+        await db.query(
+          `update automation_runs set state = $2, resume_data = $3::jsonb, updated_at = now() - interval '6 minutes'
+           where id = $1`,
+          [run.id, mode === "recovery" ? "running" : "ready", JSON.stringify({ timed_out: mode !== "delay" })],
+        );
+      }
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      const events = await db.query<{ type: string; data: Record<string, unknown> }>(
+        "select type, data from email_events where type like 'automation.run.%' order by type",
+      );
+      expect(events.rows.map((row) => row.type)).toEqual(["automation.run.completed", "automation.run.started"]);
+      for (const event of events.rows) expect(event.data).toMatchObject({
+        automation_id: flow.json.id, run_id: run.id, contact_id: expect.any(String),
+        state: event.type === "automation.run.started" ? "ready" : "done",
+      });
+      expect((await db.query("select webhook_id from webhook_attempts")).rows).toEqual([
+        { webhook_id: endpoint.json.id }, { webhook_id: endpoint.json.id },
+      ]);
+      expect((await db.query("select state from automation_steps where run_id = $1", [run.id])).rows).toEqual([{ state: "done" }]);
+    },
+  );
+
+  it("rolls back enrollment and stop together with failed event insertion or fanout", async () => {
+    const endpoint = await post(fullKey, "/webhooks", {
+      url: "http://127.0.0.1:1/unused", events: ["automation.run.started", "automation.run.completed"],
+    });
+    const flow = await post(fullKey, "/automations", {
+      name: "Atomic", enabled: true,
+      steps: [{ key: "start", type: "trigger", config: { event_name: "atomic" } }],
+      connections: [],
+    });
+    expect([endpoint.status, flow.status]).toEqual([200, 200]);
+    try {
+      await db.query(`
+        create function lifecycle_reject_start() returns trigger language plpgsql as $$
+          begin if new.type = 'automation.run.started' then raise exception 'synthetic start failure'; end if; return new; end $$;
+        create trigger lifecycle_reject_start before insert on email_events for each row execute function lifecycle_reject_start();
+      `);
+      expect((await post(fullKey, "/events/send", { event: "atomic", email: "ada@example.com" })).status).toBe(500);
+      expect((await db.query("select id from contacts")).rows).toHaveLength(0);
+      expect((await db.query("select id from custom_events")).rows).toHaveLength(0);
+      expect((await db.query("select id from automation_runs")).rows).toHaveLength(0);
+      expect((await db.query("select id from webhook_attempts")).rows).toHaveLength(0);
+      await db.query("drop trigger lifecycle_reject_start on email_events; drop function lifecycle_reject_start()");
+      expect((await post(fullKey, "/events/send", { event: "atomic", email: "ada@example.com" })).status).toBe(200);
+      await db.query(`
+        create function lifecycle_reject_terminal() returns trigger language plpgsql as $$
+          begin if exists (select 1 from email_events where id = new.event_id and type = 'automation.run.completed')
+            then raise exception 'synthetic terminal fanout failure'; end if; return new; end $$;
+        create trigger lifecycle_reject_terminal before insert on webhook_attempts for each row execute function lifecycle_reject_terminal();
+      `);
+      expect((await post(fullKey, `/automations/${flow.json.id}/stop`, {})).status).toBe(500);
+      expect((await db.query("select enabled from automations where id = $1", [flow.json.id])).rows).toEqual([{ enabled: true }]);
+      expect((await db.query("select state from automation_runs")).rows).toEqual([{ state: "ready" }]);
+      expect((await db.query("select id from email_events where type = 'automation.run.completed'")).rows).toHaveLength(0);
+      await db.query("drop trigger lifecycle_reject_terminal on webhook_attempts; drop function lifecycle_reject_terminal()");
+      expect((await post(fullKey, `/automations/${flow.json.id}/stop`, {})).status).toBe(200);
+      expect((await post(fullKey, `/automations/${flow.json.id}/stop`, {})).status).toBe(200);
+      expect((await db.query("select state from automation_runs")).rows).toEqual([{ state: "stopped" }]);
+      expect((await db.query("select id from email_events where type = 'automation.run.completed'")).rows).toHaveLength(1);
+      expect((await db.query("select id from webhook_attempts")).rows).toHaveLength(2);
+    } finally {
+      await db.query(`
+        drop trigger if exists lifecycle_reject_start on email_events;
+        drop function if exists lifecycle_reject_start();
+        drop trigger if exists lifecycle_reject_terminal on webhook_attempts;
+        drop function if exists lifecycle_reject_terminal();
+      `);
+    }
+  });
+
+  it("serializes a stop against completion without two terminal events", async () => {
+    const flow = await post(fullKey, "/automations", {
+      name: "Race", enabled: true,
+      steps: [{ key: "start", type: "trigger", config: { event_name: "race" } }],
+      connections: [],
+    });
+    expect(flow.status).toBe(200);
+    await post(fullKey, "/events/send", { event: "race", email: "ada@example.com" });
+    const run = (await db.query<{ id: string; tenant_id: string }>("select id, tenant_id from automation_runs")).rows[0]!;
+    const [, stop] = await Promise.all([
+      executeAutomationRun(db, run.tenant_id, run.id),
+      post(fullKey, `/automations/${flow.json.id}/stop`, {}),
+    ]);
+    expect(stop.status).toBe(200);
+    const state = (await db.query<{ state: string }>("select state from automation_runs where id = $1", [run.id])).rows[0]!.state;
+    expect(["done", "stopped"]).toContain(state);
+    expect((await db.query("select data from email_events where type = 'automation.run.completed'")).rows).toEqual([{
+      data: { automation_id: flow.json.id, run_id: run.id, contact_id: expect.any(String), state },
+    }]);
+    await executeAutomationRun(db, run.tenant_id, run.id);
+    expect((await db.query("select id from email_events where type like 'automation.run.%'")).rows).toHaveLength(2);
   });
 
   it("writes a bounce event and a suppression row from one worker tick", async () => {

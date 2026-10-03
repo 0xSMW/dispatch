@@ -3,8 +3,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { contacts } from "../../../src/commands/contacts/index.js";
+import { activity } from "../../../src/commands/contacts/activity.js";
 import { parseTopics } from "../../../src/commands/contacts/update-topics.js";
-import { captureExit, errorJson, list, method, run, setNonInteractive, spies } from "../../helpers.js";
+import { captureExit, errorJson, list, method, run, setInteractive, setNonInteractive, spies } from "../../helpers.js";
 
 vi.mock("@dispatchmail/sdk", async () => (await import("../../helpers.js")).sdk);
 
@@ -69,6 +70,33 @@ describe("contacts", () => {
       email: "ada@example.com",
       topics: [{ id: "t1", subscription: "opt_out" }],
     });
+  });
+
+  it("describes events, automation runs, and email activity", () => {
+    expect(activity.description()).toBe("Show a contact's events, automation runs, and email activity (Dispatch only)");
+  });
+
+  it("shows labels and run attribution alongside email activity in the table", async () => {
+    setInteractive();
+    method("contacts.activity").mockResolvedValue(list([
+      { id: "fired_1", type: "event.fired", label: "user.joined", email_id: null, created_at: "2026-09-01T00:00:00.000Z" },
+      { id: "run_1:started", type: "automation.run.started", label: "Onboarding", automation_id: "automation_1", run_id: "run_1", email_id: null, created_at: "2026-09-01T00:00:00.000Z" },
+      ...["done", "failed", "stopped"].map((state) => ({
+        id: `run_${state}:completed`, type: "automation.run.completed", label: state, automation_id: "automation_1", run_id: `run_${state}`, email_id: null, created_at: "2026-09-02T00:00:00.000Z",
+      })),
+      { id: "ev_1", type: "email.delivered", label: "Welcome", email_id: "email_1", created_at: "2026-09-02T00:00:00.000Z" },
+    ]));
+    const { stdout } = spies();
+    expect(await run(contacts, ["activity", "ct_1"])).toBe(0);
+    expect(method("contacts.activity")).toHaveBeenCalledWith("ct_1", { limit: 10 });
+    const lines = stdout().split("\n").map((line) => line.replace(/\u001b\[[0-9;]*m/g, "").trim().split(/\s+/));
+    expect(lines).toEqual([
+      ["Type", "Label", "Automation", "Run", "Email", "At", "ID"],
+      ["event.fired", "user.joined", "2026-09-01T00:00:00.000Z", "fired_1"],
+      ["automation.run.started", "Onboarding", "automation_1", "run_1", "2026-09-01T00:00:00.000Z", "run_1:started"],
+      ...["done", "failed", "stopped"].map((state) => ["automation.run.completed", state, "automation_1", `run_${state}`, "2026-09-02T00:00:00.000Z", `run_${state}:completed`]),
+      ["email.delivered", "Welcome", "email_1", "2026-09-02T00:00:00.000Z", "ev_1"],
+    ]);
   });
 
   it("delete needs --yes", async () => {
