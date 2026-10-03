@@ -606,48 +606,48 @@ describe.skipIf(!live)("contact timeline", () => {
   });
 });
 
+async function audience() {
+  const topic = await post(fullKey, "/topics", {
+    name: "News",
+    default_subscription: "opt_in",
+  });
+  const first = await post(fullKey, "/contacts", {
+    email: "ada@example.com",
+    first_name: "Ada",
+  });
+  const second = await post(fullKey, "/contacts", {
+    email: "bob@example.com",
+    first_name: "Bob",
+  });
+  expect([topic.status, first.status, second.status]).toEqual([
+    200, 200, 200,
+  ]);
+  return {
+    topic: topic.json.id as string,
+    first: first.json.id as string,
+    second: second.json.id as string,
+  };
+}
+
+async function stored(emailId: string) {
+  const result = await db.query<{
+    headers: Record<string, string>;
+    html: string;
+    html_tracked: string;
+    text: string;
+    status: string;
+  }>(
+    "select headers, html, html_tracked, text, status from emails where id = $1",
+    [emailId],
+  );
+  return result.rows[0]!;
+}
+
+function link(headers: Record<string, string>) {
+  return new URL(headers["List-Unsubscribe"]!.slice(1, -1)).pathname;
+}
+
 describe.skipIf(!live)("marketing", () => {
-  async function audience() {
-    const topic = await post(fullKey, "/topics", {
-      name: "News",
-      default_subscription: "opt_in",
-    });
-    const first = await post(fullKey, "/contacts", {
-      email: "ada@example.com",
-      first_name: "Ada",
-    });
-    const second = await post(fullKey, "/contacts", {
-      email: "bob@example.com",
-      first_name: "Bob",
-    });
-    expect([topic.status, first.status, second.status]).toEqual([
-      200, 200, 200,
-    ]);
-    return {
-      topic: topic.json.id as string,
-      first: first.json.id as string,
-      second: second.json.id as string,
-    };
-  }
-
-  async function stored(emailId: string) {
-    const result = await db.query<{
-      headers: Record<string, string>;
-      html: string;
-      html_tracked: string;
-      text: string;
-      status: string;
-    }>(
-      "select headers, html, html_tracked, text, status from emails where id = $1",
-      [emailId],
-    );
-    return result.rows[0]!;
-  }
-
-  function link(headers: Record<string, string>) {
-    return new URL(headers["List-Unsubscribe"]!.slice(1, -1)).pathname;
-  }
-
   it.each(["topic", "global", "deleted_topic"])(
     "isolates a split recipient's %s unsubscribe and replays the whole request",
     async (mode) => {
@@ -1454,7 +1454,7 @@ describe.skipIf(!live)("delivery", () => {
       expect((await db.query("select id from automation_runs")).rows).toHaveLength(0);
       expect((await db.query("select id from webhook_attempts")).rows).toHaveLength(0);
       await db.query("drop trigger lifecycle_reject_start on email_events; drop function lifecycle_reject_start()");
-      expect((await post(fullKey, "/events/send", { event: "atomic", email: "ada@example.com" })).status).toBe(200);
+      expect((await post(fullKey, "/events/send", { event: "atomic", email: "ada@example.com" })).status).toBe(202);
       await db.query(`
         create function lifecycle_reject_terminal() returns trigger language plpgsql as $$
           begin if exists (select 1 from email_events where id = new.event_id and type = 'automation.run.completed')
