@@ -4,7 +4,7 @@ import { ApiError } from "./errors.js";
 import { retrying } from "./retry.js";
 import type { Globals } from "./tty.js";
 
-export const version = "0.2.0";
+export const version = "0.1.0";
 
 // The CLI prints API JSON as it comes back, so it types every call loosely.
 // Listing each SDK method here still makes typecheck fail when one is missing.
