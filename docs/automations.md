@@ -195,6 +195,8 @@ A Condition chooses the met or not-met path. It reads:
 
 Property definition fallbacks are not applied to this condition context. Existing stored properties named `topics` or `segments` retain precedence over the membership lists. Use `exists` or `is_empty` when a field may be absent. Wait-for-event filters use the same context, with `event.received_at` belonging to the event that satisfies the wait.
 
+Filter and Branch steps use these same rules and fresh contact context. Their event context comes from the run's triggering event.
+
 | Operator | Meaning |
 |:---|:---|
 | `eq`, `neq` | Strict equality or inequality. The number `3` is not the string `"3"`. |
@@ -232,11 +234,14 @@ For example, `{ "type": "rule", "field": "contact.topics", "operator": "contains
 | Delay | Waits for a duration such as `1 hour` or `2 days`, from 1 second to 30 days. |
 | Wait for event | Waits for a later event with the configured name and the same email address, matched case-insensitively. An optional timeout takes the timeout path; without one it waits indefinitely. |
 | Condition | Chooses the met or not-met path using a rule. |
+| Filter | Ends the run when a rule fails, optionally checking it again before all following steps. |
+| Branch | Chooses the first matching path from an ordered list, or Otherwise when none match. |
+| Exit | Ends the run deliberately, without executing another step. |
 | Add to segment | Adds the contact to a static list. |
 | Update contact | Writes configured names, properties, or global subscription status. |
 | Delete contact | Deletes the contact and removes its segment memberships and once enrollments. |
 
-The run ends when its chosen path has no next step. The editor's End marker is not a separate configurable step.
+The run ends naturally when its chosen path has no next step. An Exit step is an explicit ending with empty config and no outgoing connections. The editor creates an Exit step for an empty path so every path has a real target.
 
 A send step can inherit From from its template and override the subject and reply-to. Trigger payload fields are available as template variables, and explicit step variables override them. Recipient fields are available under `contact.*`, plus `FIRST_NAME`, `LAST_NAME`, and `EMAIL`. See [template variables](templates.md#variables).
 
@@ -264,6 +269,79 @@ Mapped values retain their JSON type and must match the template variable's decl
 Set a Topic on the send step for Marketing email. It skips deleted contacts, global unsubscribes, and topic opt-outs, adds recipient-specific unsubscribe links and one-click headers, and checks opt-outs again at delivery. With no topic, the step is Transactional and does not enforce marketing subscriptions, including for a deleted contact's address. A template that prints an unsubscribe link needs a topic.
 
 Update contact and Add to segment skip deleted contacts rather than reviving them. Changing steps on an enabled automation is refused with `409`; [pause it before editing](#editing-while-paused) to keep existing runs, or stop it to cancel them.
+
+### Filter, Branch, and Exit
+
+A Filter uses `{ "rule": Rule, "scope": "next" | "following" }`:
+
+- `next` evaluates the rule once when the Filter executes. A match continues to its next step.
+- `following` does the same and saves `{ "filter": "<step key>", "rule": Rule }` in the run's `guards`. Before every later step, including Delay and Wait for event steps and their resumed execution, all saved guards are checked against fresh contact state and the run's event.
+- Any failed filter or guard ends the run with `exit_reason: "filter"`. Failure never follows a `default` connection. Multiple saved guards must all match.
+
+For example, filter on `contact.activated` being the JSON boolean `false` with scope `following`. If `PATCH /contacts/{id}` sets it to `true` during a delay, the run exits before the next step sends. A missing property is not `false`; use an explicit rule for missing values if needed. Already queued emails are not cancelled.
+
+A Branch uses `{ "paths": [{ "key": "...", "label": "...", "rule": Rule }] }`, with 2 to 10 paths. Keys must be nonempty, unique within the branch, and not `otherwise`. Paths are evaluated in array order; the first match wins even when several match. Otherwise is implicit and chosen only when none match.
+
+Every branch requires exactly one outgoing connection for each configured path key and one for `otherwise`. These connections use `type: "branch"` and `path: "<key>"`. Only a Branch can use a branch connection or the `path` field. Each connection targets a real step, including Exit; Exit cannot have any outgoing connections. Other connection types (`default`, `condition_met`, `condition_not_met`, `timeout`, and `event_received`) are unchanged.
+
+Here is a keyed graph using all three steps. Replace `welcome` with a published template that stores a sender:
+
+```json
+{
+  "name": "Onboarding",
+  "status": "disabled",
+  "steps": [
+    { "key": "start", "type": "trigger", "config": { "type": "contact_created" } },
+    {
+      "key": "audience",
+      "type": "filter",
+      "config": {
+        "rule": { "type": "rule", "field": "contact.activated", "operator": "eq", "value": false },
+        "scope": "following"
+      }
+    },
+    { "key": "later", "type": "delay", "config": { "duration": "1 hour" } },
+    {
+      "key": "plan",
+      "type": "branch",
+      "config": {
+        "paths": [
+          { "key": "free", "label": "Free plan", "rule": { "type": "rule", "field": "contact.plan", "operator": "eq", "value": "free" } },
+          { "key": "pro", "label": "Pro plan", "rule": { "type": "rule", "field": "contact.plan", "operator": "eq", "value": "pro" } }
+        ]
+      }
+    },
+    { "key": "welcome", "type": "send_email", "config": { "template": "welcome" } },
+    { "key": "end", "type": "exit", "config": {} }
+  ],
+  "connections": [
+    { "from": "start", "to": "audience", "type": "default" },
+    { "from": "audience", "to": "later", "type": "default" },
+    { "from": "later", "to": "plan", "type": "default" },
+    { "from": "plan", "to": "welcome", "type": "branch", "path": "free" },
+    { "from": "plan", "to": "end", "type": "branch", "path": "pro" },
+    { "from": "plan", "to": "end", "type": "branch", "path": "otherwise" },
+    { "from": "welcome", "to": "end", "type": "default" }
+  ]
+}
+```
+
+SDK graph configs and connections keep the same snake_case wire keys. TypeScript, Go, and Python export `ExitConfig`, `FilterConfig`, `BranchConfig`, and `BranchPath`; connections support `path`. These additions do not change trigger, re-entry, pause, version, or stable step-key rules.
+
+### Run exit reasons
+
+Run list and detail responses include nullable `exit_reason` and `guards` (an array, empty when no following filter was saved). Status remains `running`, `completed`, `failed`, or `cancelled`.
+
+| Exit reason | Status | Meaning |
+|:---|:---|:---|
+| `completed` | `completed` | The chosen path ended naturally. |
+| `exit` | `completed` | An Exit step ended the run. |
+| `filter` | `completed` | A Filter or saved guard failed. |
+| `stopped` | `cancelled` | Stop or disabling the automation cancelled the run. |
+| `stranded` | `cancelled` | A paused graph edit removed or changed the run's next step. |
+| null | `running` or `failed` | No normal exit reason; failed runs describe the failure in `error`. |
+
+There is no `failed` exit reason. Detail step `output` records `{ "path": "<key>" }` for a Branch (including `otherwise`). A failed saved guard records `{ "exited": "filter", "filter": "<originating filter step key>" }` on the later step it prevented. [Lifecycle webhooks](webhooks.md#event-types) carry the run's exit reason too.
 
 ## Re-entry
 

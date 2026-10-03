@@ -32,6 +32,7 @@ export type AutomationRun = {
   email: string | null;
   data: Record<string, unknown>;
   received_at?: string | Date;
+  guards?: Array<{ filter: string; rule: Rule }>;
 };
 
 export type AutomationRunOptions = {
@@ -57,7 +58,7 @@ export type AutomationRow = {
   updated_at: string;
 };
 
-export type Outcome = Connection["type"];
+export type Outcome = Connection["type"] | { type: "branch"; path: string } | { type: "exit" };
 
 export const stepLimit = 100;
 export const activeStates = ["ready", "running", "waiting"];
@@ -79,10 +80,14 @@ export function automationGraph(row: { trigger?: string | null; steps: Array<Rec
 
 export function walker(graph: { steps: Step[]; connections: Connection[] }) {
   const byKey = new Map(graph.steps.map((step) => [step.key, step]));
-  const next = (from: string, outcome: Outcome) =>
-    graph.connections.find((c) => c.from === from && c.type === outcome)?.to ??
-    graph.connections.find((c) => c.from === from && c.type === "default")?.to ??
-    null;
+  const next = (from: string, outcome: Outcome) => {
+    if (typeof outcome === "object") {
+      if (outcome.type === "exit") return null;
+      return graph.connections.find((c) => c.from === from && c.type === "branch" && c.path === outcome.path)?.to ?? null;
+    }
+    return graph.connections.find((c) => c.from === from && c.type === outcome)?.to ??
+      graph.connections.find((c) => c.from === from && c.type === "default")?.to ?? null;
+  };
   const trigger = graph.steps.find((step) => step.type === "trigger")?.key ?? null;
   return { byKey, next, trigger, index: (key: string) => graph.steps.findIndex((step) => step.key === key) };
 }
@@ -146,7 +151,7 @@ export async function executeAutomationRun(db: Db, tenantId: string, runId: stri
   try {
     const loaded = await db.query<RunRow>(
       `select r.id, r.tenant_id, r.automation_id, r.event_id, coalesce(e.request_id, r.id) as request_id,
-         r.state, r.next_step_index, r.next_step_key, r.resume_data, a.trigger, a.steps, a.connections,
+         r.state, r.next_step_index, r.next_step_key, r.resume_data, r.guards, a.trigger, a.steps, a.connections,
          (a.deleted_at is not null) as automation_deleted, a.enabled, a.paused_at, a.version,
          e.email, e.data, e.created_at as received_at
        from automation_runs r
@@ -161,7 +166,7 @@ export async function executeAutomationRun(db: Db, tenantId: string, runId: stri
     if (run.automation_deleted) {
       await tx(db, async (client) => {
         const stoppedRun = await client.query(
-          `update automation_runs set state = 'stopped', resume_at = null, wait_event = null, updated_at = now()
+          `update automation_runs set state = 'stopped', exit_reason = 'stopped', resume_at = null, wait_event = null, updated_at = now()
            where tenant_id = $1 and id = $2 and state = any($3) returning id`,
           [tenantId, runId, activeStates]
         );
@@ -229,7 +234,7 @@ export async function executeAutomationRun(db: Db, tenantId: string, runId: stri
       const index = walk.index(key);
 
       if (step.type === "delay" || step.type === "wait_for_event") {
-        await pauseAutomation(db, tenantId, runId, index, step, run.version);
+        await pauseAutomation(db, run, index, step, run.version);
         return;
       }
 
@@ -240,14 +245,21 @@ export async function executeAutomationRun(db: Db, tenantId: string, runId: stri
           // The lock also makes a concurrent stop wait until this step has committed.
           const blocked = await guard(client, tenantId, runId, run.version);
           if (blocked) return blocked;
+          if (await checkGuards(client, run, step, index)) return null;
           const output = await executeStep(client, run, step, options);
           const following = walk.next(step.key, stepOutcome(step, output));
+          if (step.type === "filter" && output.result && (step.config as StepConfig<"filter">).scope === "following") {
+            const saved = { filter: step.key, rule: (step.config as StepConfig<"filter">).rule };
+            await client.query("update automation_runs set guards = guards || $3::jsonb where tenant_id = $1 and id = $2 and state = 'running'",
+              [tenantId, runId, JSON.stringify([saved])]);
+            run.guards = [...(run.guards ?? []), saved];
+          }
           await client.query(
             `insert into automation_steps (id, tenant_id, run_id, step_index, step_key, type, state, data, started_at, completed_at)
              values ($1, $2, $3, $4, $5, $6, 'done', $7, $8, now())`,
             [id("step"), tenantId, runId, index, step.key, step.type, JSON.stringify(output), startedAt]
           );
-          await advance(client, tenantId, runId, following);
+          await advance(client, tenantId, runId, following, step.type === "exit" ? "exit" : output.exited === "filter" ? "filter" : "completed");
           return following;
         });
       } catch (error) {
@@ -282,20 +294,23 @@ export async function executeAutomationRun(db: Db, tenantId: string, runId: stri
 
 // Moves a running run to its next step, or marks it done when there is none. Returns false when
 // the run is no longer running, which means it was stopped.
-async function advance(client: Queryable, tenantId: string, runId: string, next: string | null) {
+async function advance(client: Queryable, tenantId: string, runId: string, next: string | null, reason = "completed") {
   const row = await client.query(
     `update automation_runs
      set next_step_key = $3, resume_data = null, resume_at = null, wait_event = null, updated_at = now(),
-       state = case when $3::text is null then 'done' else state end
+       state = case when $3::text is null then 'done' else state end,
+       exit_reason = case when $3::text is null then $4::text else exit_reason end
      where tenant_id = $1 and id = $2 and state = 'running'
      returning id`,
-    [tenantId, runId, next]
+    [tenantId, runId, next, reason]
   );
   if (row.rows[0] && next === null) await emitRunEvent(client, tenantId, runId, "automation.run.completed");
   return Boolean(row.rows[0]);
 }
 
 export function stepOutcome(step: Step, output: Record<string, unknown>): Outcome {
+  if (step.type === "exit" || step.type === "filter" && !output.result) return { type: "exit" };
+  if (step.type === "branch") return { type: "branch", path: String(output.path) };
   if (step.type !== "condition") return "default";
   return output.result ? "condition_met" : "condition_not_met";
 }
@@ -335,7 +350,23 @@ async function finishWaiting(db: Queryable, tenantId: string, runId: string, key
   return (row.rowCount ?? row.rows.length) > 0;
 }
 
-async function pauseAutomation(db: Db, tenantId: string, runId: string, index: number, step: Step, version: number) {
+async function checkGuards(client: Queryable, run: AutomationRun, step: Step, index: number) {
+  if (!run.guards?.length) return false;
+  const contact = await contactContext(client, run.tenant_id, run.email);
+  const context = { contact, event: eventContext(run.data, run.received_at) };
+  const failed = run.guards.find((saved) => !evaluate(saved.rule, context));
+  if (!failed) return false;
+  await client.query(
+    `insert into automation_steps (id, tenant_id, run_id, step_index, step_key, type, state, data, started_at, completed_at)
+     values ($1, $2, $3, $4, $5, $6, 'done', $7, now(), now())`,
+    [id("step"), run.tenant_id, run.id, index, step.key, step.type, JSON.stringify({ exited: "filter", filter: failed.filter })]
+  );
+  await advance(client, run.tenant_id, run.id, null, "filter");
+  return true;
+}
+
+async function pauseAutomation(db: Db, run: RunRow, index: number, step: Step, version: number) {
+  const { tenant_id: tenantId, id: runId } = run;
   let resumeAt: Date | null;
   let data: Record<string, unknown>;
   let waitEvent: string | null = null;
@@ -352,6 +383,7 @@ async function pauseAutomation(db: Db, tenantId: string, runId: string, index: n
 
   await tx(db, async (client) => {
     if (await guard(client, tenantId, runId, version)) return;
+    if (await checkGuards(client, run, step, index)) return;
     // Only a run that is still running may wait. A stopped run stays stopped.
     const paused = await client.query(
       `update automation_runs
@@ -454,10 +486,16 @@ export function mappedVariables(mapping: Record<string, string> | undefined, con
 
 async function executeStep(db: Queryable, run: AutomationRun, step: Step, options: AutomationRunOptions): Promise<Record<string, unknown>> {
   if (step.type === "trigger") return {};
+  if (step.type === "exit") return { exited: "exit" };
 
-  if (step.type === "condition") {
+  if (step.type === "condition" || step.type === "filter" || step.type === "branch") {
     const contact = await contactContext(db, run.tenant_id, run.email);
-    return { result: evaluate(step.config as Rule, { event: eventContext(run.data, run.received_at), contact }) };
+    const context = { event: eventContext(run.data, run.received_at), contact };
+    if (step.type === "branch") {
+      return { path: (step.config as StepConfig<"branch">).paths.find((path) => evaluate(path.rule, context))?.key ?? "otherwise" };
+    }
+    const result = evaluate(step.type === "filter" ? (step.config as StepConfig<"filter">).rule : step.config as Rule, context);
+    return step.type === "filter" && !result ? { result, exited: "filter", filter: step.key } : { result };
   }
 
   if (step.type === "send_email") {

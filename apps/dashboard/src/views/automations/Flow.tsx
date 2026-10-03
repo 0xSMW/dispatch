@@ -40,11 +40,11 @@ type Actions = {
 // They reach the canvas's state through this context instead of through `data`.
 const FlowActions = createContext<Actions>({ selected: null, adding: null, onSelect: () => undefined, onAdd: () => undefined });
 
-function Handles() {
+function Handles({ exit = false }: { exit?: boolean }) {
   return (
     <>
       <Handle type="target" position={Position.Top} isConnectable={false} className="canvasHandle" />
-      <Handle type="source" position={Position.Bottom} isConnectable={false} className="canvasHandle" />
+      {!exit ? <Handle type="source" position={Position.Bottom} isConnectable={false} className="canvasHandle" /> : null}
     </>
   );
 }
@@ -60,7 +60,7 @@ function StepBox({ data }: NodeProps<StepNode>) {
   const classes = ["canvasNode", "nodrag", "nopan", tintOf(status), issues ? "invalid" : "", selected === node.key ? "selected" : ""];
   return (
     <>
-      <Handles />
+      <Handles exit={node.type === "exit"} />
       <button
         type="button"
         className={classes.filter(Boolean).join(" ")}
@@ -138,7 +138,7 @@ function EndBox({ data }: NodeProps<EndNode>) {
             Add step
           </button>
         ) : (
-          <span className="canvasEnd done">End</span>
+          <span className="canvasEnd done">{data.exit ? "Exit" : "End"}</span>
         )}
         <span className="dim">The run ends here.</span>
       </div>

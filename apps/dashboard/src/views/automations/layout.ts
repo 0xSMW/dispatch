@@ -2,7 +2,7 @@
 // nodes and edges React Flow draws. Pure, so it runs and is tested without a browser. Only types
 // come from @xyflow/react, so importing this file does not pull the library into the main bundle.
 import type { Edge as FlowEdge, Node as FlowNode, NodeHandle } from "@xyflow/react";
-import { branchLabels, branchesOf, branching, type Branch, type ListPath, type Node, type Tree } from "./graph";
+import { branchLabel, branchLabels, branchSteps, branchesOf, branching, listAt, type Branch, type ListPath, type Node, type Tree } from "./graph";
 import type { RunStep } from "./Steps";
 
 // Node boxes have a fixed size so the layout needs no measuring. `styles/canvas.css` uses the same numbers.
@@ -33,7 +33,7 @@ export type StepData = {
 };
 export type TriggerData = { key: string; event: string; issues: number; status: string | null };
 /** The end of a list: a "+" while editing, "End" when read-only. */
-export type EndData = { slot: Slot | null; label: string };
+export type EndData = { slot: Slot | null; label: string; exit?: boolean };
 export type LinkData = { label?: string; branch?: Branch; slot?: Slot; addLabel?: string };
 
 export type StepNode = FlowNode<StepData, "step">;
@@ -75,15 +75,15 @@ export function measure(list: Node[]): number {
   for (const node of list) {
     const branches = branchesOf(node);
     if (!branches.length) continue;
-    const inner = branches.reduce((sum, branch) => sum + measure(node.branches?.[branch] ?? []), 0) + columnGap * (branches.length - 1);
+    const inner = branches.reduce((sum, branch) => sum + measure(branchSteps(node, branch)), 0) + columnGap * (branches.length - 1);
     width = Math.max(width, inner);
   }
   return width;
 }
 
 function branchName(node: Node, branch: Branch) {
-  if (branch === "event_received") return String(node.config.event_name ?? "").trim() || branchLabels.event_received;
-  return branchLabels[branch];
+  if (node.type === "wait_for_event" && branch === "event_received") return String(node.config.event_name ?? "").trim() || branchLabels.event_received;
+  return branchLabel(node, branch);
 }
 
 /**
@@ -123,7 +123,7 @@ export function layout(tree: Tree, { editable, errors = {}, run }: LayoutOptions
         position: { x: center - nodeWidth / 2, y },
         width: nodeWidth,
         height: nodeHeight,
-        handles: handles(nodeWidth, nodeHeight),
+        handles: node.type === "exit" ? handles(nodeWidth, nodeHeight).filter((handle) => handle.type === "target") : handles(nodeWidth, nodeHeight),
         data: {
           node,
           path,
@@ -142,21 +142,22 @@ export function layout(tree: Tree, { editable, errors = {}, run }: LayoutOptions
       });
       const branches = branchesOf(node);
       if (branches.length) {
-        const widths = branches.map((branch) => measure(node.branches?.[branch] ?? []));
+        const widths = branches.map((branch) => measure(branchSteps(node, branch)));
         let left = center - (widths.reduce((sum, width) => sum + width, 0) + columnGap * (branches.length - 1)) / 2;
         for (const [at, branch] of branches.entries()) {
           const width = widths[at]!;
           const label = branchName(node, branch);
-          place(node.branches?.[branch] ?? [], [...path, { key: node.key, branch }], left + width / 2, y + nodeHeight + branchGap, {
+          place(branchSteps(node, branch), [...path, { key: node.key, branch }], left + width / 2, y + nodeHeight + branchGap, {
             id: node.key,
             branch,
             label,
-            name: `${branchLabels[branch]} branch of ${node.key}`,
+            name: `${branchLabel(node, branch)} branch of ${node.key}`,
           });
           left += width + columnGap;
         }
         return;
       }
+      if (node.type === "exit") return;
       previous = { id: node.key, name: node.key };
       y += nodeHeight + rowGap;
     }
@@ -164,7 +165,9 @@ export function layout(tree: Tree, { editable, errors = {}, run }: LayoutOptions
     // The list ends without a branch, so it gets an end marker: the "+" that appends to it.
     const id = endId(path);
     const empty = list.length === 0;
-    const where = path.length ? `${branchLabels[path.at(-1)!.branch]} branch of ${path.at(-1)!.key}` : "";
+    const hop = path.at(-1);
+    const parent = hop ? listAt(tree, path.slice(0, -1)).find((node) => node.key === hop.key) : null;
+    const where = hop ? `${parent ? branchLabel(parent, hop.branch) : hop.branch} branch of ${hop.key}` : "";
     nodes.push({
       id,
       type: "end",
@@ -174,6 +177,7 @@ export function layout(tree: Tree, { editable, errors = {}, run }: LayoutOptions
       handles: handles(endWidth, endHeight),
       data: {
         slot: editable ? { path, index: list.length } : null,
+        exit: empty && Boolean(path.length),
         label: !path.length ? "Add step at the end" : empty ? `Add step to ${where}` : `Add step at the end of ${where}`,
       },
     });
@@ -190,7 +194,7 @@ export function locate(tree: Tree, key: string): { node: Node; path: ListPath; i
     for (const [index, node] of list.entries()) {
       if (node.key === key) return { node, path, index, list };
       for (const branch of branchesOf(node)) {
-        const found = walk(node.branches?.[branch] ?? [], [...path, { key: node.key, branch }]);
+        const found = walk(branchSteps(node, branch), [...path, { key: node.key, branch }]);
         if (found) return found;
       }
     }
@@ -210,7 +214,7 @@ export function runFocus(tree: Tree, run: Map<string, RunStep>): string | null {
         if (!failed && (result.error || result.status === "failed")) failed = node.key;
         last = node.key;
       }
-      if (branching(node)) for (const branch of branchesOf(node)) walk(node.branches?.[branch] ?? []);
+      if (branching(node)) for (const branch of branchesOf(node)) walk(branchSteps(node, branch));
     }
   };
   walk(tree.steps);

@@ -80,7 +80,8 @@ export async function editRuns(client: Queryable, tenantId: string, current: Aut
   if (positions.length) {
     await client.query(
       `update automation_runs r set next_step_key = p.key,
-         state = case when p.key is null then 'done' else r.state end
+         state = case when p.key is null then 'done' else r.state end,
+         exit_reason = case when p.key is null then 'completed' else r.exit_reason end
        from jsonb_to_recordset($2::jsonb) as p(id text, key text)
        where r.tenant_id = $1 and r.id = p.id`,
       [tenantId, JSON.stringify(positions)],
@@ -89,7 +90,7 @@ export async function editRuns(client: Queryable, tenantId: string, current: Aut
   for (const run of positions) if (run.key === null) await emitRunEvent(client, tenantId, run.id, "automation.run.completed");
   if (result.ids.length) {
     await client.query(
-      `update automation_runs set state = 'stopped', error = $3, resume_at = null, wait_event = null,
+      `update automation_runs set state = 'stopped', exit_reason = 'stranded', error = $3, resume_at = null, wait_event = null,
          resume_data = null, updated_at = now()
        where tenant_id = $1 and id = any($2::text[])`,
       [tenantId, result.ids, strandedError],

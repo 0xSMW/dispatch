@@ -94,16 +94,19 @@ describe("Canvas", () => {
     const picker = screen.getByRole("region", { name: "Add a step" });
     expect(within(picker).getAllByRole("group").map((group) => group.getAttribute("aria-label"))).toEqual(["Messages", "Flow control", "Audience"]);
     expect(within(within(picker).getByRole("group", { name: "Flow control" })).getAllByRole("button").map((button) => button.textContent)).toEqual([
-      "Time delay",
+      "Delay",
       "Wait for event",
-      "True/false branch",
+      "Condition",
+      "Branch",
+      "Filter",
+      "Exit",
     ]);
     expect(within(within(picker).getByRole("group", { name: "Audience" })).getAllByRole("button").map((button) => button.textContent)).toEqual([
       "Update contact",
       "Delete contact",
       "Add to segment",
     ]);
-    fireEvent.click(within(picker).getByRole("button", { name: "Time delay" }));
+    fireEvent.click(within(picker).getByRole("button", { name: "Delay" }));
     expect(actions.insert).toHaveBeenCalledWith([], 1, "delay", "delay_1");
 
     // The parent applies the insert; the panel opens on the new step.
@@ -350,18 +353,20 @@ describe("AutomationEditor on the canvas", () => {
     fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
 
     fireEvent.click(await screen.findByRole("button", { name: "Add step to False branch of pro" }));
-    fireEvent.click(screen.getByRole("button", { name: "Time delay" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delay" }));
     expect(await screen.findByRole("region", { name: "Step delay_1 settings" })).toBeTruthy();
     expect(screen.getByText("Unsaved changes")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
     const body = JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "PATCH")![1]!.body));
-    expect(body.steps.map((step: { key: string }) => step.key)).toEqual(["trigger", "welcome", "pro", "delay_1"]);
-    expect(body.steps[3]).toEqual({ key: "delay_1", type: "delay", config: { duration: "1 hour" } });
+    expect(body.steps.map((step: { key: string }) => step.key)).toEqual(["trigger", "welcome", "pro", "pro_condition_met_exit", "delay_1"]);
+    expect(body.steps[3]).toEqual({ key: "pro_condition_met_exit", type: "exit", config: {} });
+    expect(body.steps[4]).toEqual({ key: "delay_1", type: "delay", config: { duration: "1 hour" } });
     expect(body.connections).toEqual([
       { from: "trigger", to: "welcome", type: "default" },
       { from: "welcome", to: "pro", type: "default" },
+      { from: "pro", to: "pro_condition_met_exit", type: "condition_met" },
       { from: "pro", to: "delay_1", type: "condition_not_met" },
     ]);
 

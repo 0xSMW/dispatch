@@ -123,6 +123,124 @@ afterAll(async () => {
 });
 
 describe.skipIf(!live)("accept", () => {
+  describe("flow control", () => {
+    const start = { key: "start", type: "trigger", config: { event_name: "flow.start" } };
+    const activated = { type: "rule", field: "contact.activated", operator: "eq", value: false };
+    const exit = { key: "end", type: "exit", config: {} };
+    async function fixture(scope = "following", rule: unknown = activated) {
+      await post(fullKey, "/contact-properties", { key: "activated", type: "boolean" });
+      const contact = await post(fullKey, "/contacts", { email: "flow@dispatch-fixture.net", properties: { activated: false } });
+      const template = await post(fullKey, "/templates", { name: "Flow", subject: "Flow", text: "Fresh", publish: true });
+      const flow = await post(fullKey, "/automations", { name: "Flow", enabled: true, steps: [
+        start, { key: "eligible", type: "filter", config: { rule, scope } },
+        { key: "wait", type: "delay", config: { duration: "1 hour" } },
+        { key: "send", type: "send_email", config: { from: "hello@dispatch-fixture.net", template: template.json.id } },
+      ], connections: [{ from: "start", to: "eligible" }, { from: "eligible", to: "wait" }, { from: "wait", to: "send" }] });
+      expect(flow.status, JSON.stringify(flow.json)).toBe(200);
+      await post(fullKey, "/events/send", { event: "flow.start", email: "flow@dispatch-fixture.net", payload: { received_at: "2099-01-01" } });
+      const run = (await db.query<{ id: string; tenant_id: string }>("select id,tenant_id from automation_runs")).rows[0]!;
+      return { flow: flow.json, contact: contact.json, run };
+    }
+    const row = async (runId: string) => (await db.query("select state,exit_reason,guards from automation_runs where id=$1", [runId])).rows[0];
+    it("persists following guards, checks PATCH activation before the next send and emits one atomic filter completion", async () => {
+      const { flow, run, contact } = await fixture();
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect(await row(run.id)).toMatchObject({ state: "waiting", exit_reason: null, guards: [{ filter: "eligible", rule: activated }] });
+      expect((await call(fullKey, "PATCH", `/contacts/${contact.id}`, { properties: { activated: true } })).status).toBe(200);
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect(await row(run.id)).toMatchObject({ state: "done", exit_reason: "filter" });
+      expect((await db.query("select id from emails")).rows).toHaveLength(0);
+      expect((await db.query("select id from send_jobs")).rows).toHaveLength(0);
+      const detail = (await call(fullKey, "GET", `/automations/${flow.id}/runs/${run.id}`)).json;
+      expect(detail).toMatchObject({ exit_reason: "filter", guards: [{ filter: "eligible", rule: activated }] });
+      expect(detail.steps.at(-1)).toMatchObject({ key: "send", output: { exited: "filter", filter: "eligible" } });
+      const events = (await db.query("select type,data from email_events where data->>'run_id'=$1 order by created_at", [run.id])).rows;
+      expect(events).toEqual([
+        { type: "automation.run.started", data: expect.objectContaining({ exit_reason: null }) },
+        { type: "automation.run.completed", data: expect.objectContaining({ exit_reason: "filter", state: "done" }) },
+      ]);
+    });
+    it("keeps saved freshness guards across paused edits and refuses stale sends after resume", async () => {
+      const freshRule = { type: "rule", field: "event.received_at", operator: "within", value: "1 day" };
+      const { flow, run } = await fixture("following", freshRule);
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      await call(fullKey, "PATCH", `/automations/${flow.id}`, { status: "paused" });
+      await db.query("update custom_events set created_at=now()-interval '2 days' where id=(select event_id from automation_runs where id=$1)", [run.id]);
+      // Changing the graph's filter cannot loosen a guard the run already passed.
+      flow.steps.find((step: any) => step.key === "eligible").config.rule.value = "30 days";
+      expect((await call(fullKey, "PATCH", `/automations/${flow.id}`, { steps: flow.steps, connections: flow.connections })).status).toBe(200);
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect((await row(run.id)).state).toBe("waiting");
+      await call(fullKey, "PATCH", `/automations/${flow.id}`, { status: "enabled" });
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect(await row(run.id)).toMatchObject({ state: "done", exit_reason: "filter", guards: [{ filter: "eligible", rule: freshRule }] });
+      expect((await db.query("select id from emails")).rows).toHaveLength(0);
+    });
+    it("tests next filters only once, never persists them, and completes a real queued send", async () => {
+      const { run, contact } = await fixture("next");
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      await call(fullKey, "PATCH", `/contacts/${contact.id}`, { properties: { activated: true } });
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect(await row(run.id)).toEqual({ state: "done", exit_reason: "completed", guards: [] });
+      expect((await db.query("select id from emails")).rows).toHaveLength(1);
+      expect((await db.query("select id from send_jobs")).rows).toHaveLength(1);
+    });
+    it.each(["next", "following"])("failed %s filters never follow a default edge", async (scope) => {
+      const { run, contact } = await fixture(scope);
+      await call(fullKey, "PATCH", `/contacts/${contact.id}`, { properties: { activated: true } });
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect(await row(run.id)).toEqual({ state: "done", exit_reason: "filter", guards: [] });
+      expect((await db.query("select step_key,data from automation_steps")).rows).toEqual([{ step_key: "eligible", data: { result: false, exited: "filter", filter: "eligible" } }]);
+      expect((await db.query("select id from emails")).rows).toHaveLength(0);
+    });
+    it.each(["first", "second", "otherwise"])("takes ordered branch path %s through an explicit Exit and rejects incomplete graphs", async (expected) => {
+      const choose = { key: "choose", type: "branch", config: { paths: [
+        { key: "first", label: "First", rule: { type: "rule", field: "event.first", operator: "eq", value: true } },
+        { key: "second", label: "Second", rule: { type: "rule", field: "event.second", operator: "eq", value: true } },
+      ] } };
+      const connections = [{ from: "start", to: "choose", type: "default" },
+        ...["first", "second", "otherwise"].map((path) => ({ from: "choose", to: "end", type: "branch", path }))];
+      const body = { name: "Branch", enabled: true, steps: [start, choose, exit], connections };
+      for (const edges of [connections.slice(0, -1), [...connections, connections[1]], [...connections, { from: "end", to: "choose", type: "default" }]]) {
+        expect((await post(fullKey, "/automations", { ...body, connections: edges })).status).toBe(400);
+      }
+      const flow = await post(fullKey, "/automations", body);
+      expect(flow.status, JSON.stringify(flow.json)).toBe(200);
+      expect(flow.json.connections).toEqual(connections);
+      await post(fullKey, "/events/send", { event: "flow.start", email: "flow@dispatch-fixture.net", payload: { first: expected === "first", second: expected !== "otherwise" } });
+      const run = (await db.query("select id,tenant_id from automation_runs")).rows[0];
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect(await row(run.id)).toMatchObject({ state: "done", exit_reason: "exit" });
+      expect((await db.query("select step_key,data from automation_steps order by started_at")).rows).toEqual([
+        { step_key: "choose", data: { path: expected } }, { step_key: "end", data: { exited: "exit" } },
+      ]);
+      const viewer = await teammate("Viewer");
+      const session = await signInAs(viewer.email, viewer.password);
+      expect((await call(session.token, "GET", `/automations/${flow.json.id}/runs/${run.id}`)).json.exit_reason).toBe("exit");
+      expect((await call(session.token, "PATCH", `/automations/${flow.json.id}`, { status: "paused" })).status).toBe(403);
+      const foreign = await seedTenant();
+      expect((await call(foreign, "GET", `/automations/${flow.json.id}/runs/${run.id}`)).status).toBe(404);
+    });
+    it("backfills legacy terminal reasons twice without changing explicit reasons or guards", async () => {
+      const { flow, run } = await fixture();
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      await call(fullKey, "PATCH", `/automations/${flow.id}`, { status: "paused" });
+      await call(fullKey, "PATCH", `/automations/${flow.id}`, { steps: [start, exit], connections: [{ from: "start", to: "end" }] });
+      expect((await row(run.id)).exit_reason).toBe("stranded");
+      await db.query("update automation_runs set exit_reason=null where id=$1", [run.id]);
+      await db.query(schema);
+      await db.query(schema);
+      expect(await row(run.id)).toMatchObject({ state: "stopped", exit_reason: "stranded", guards: [{ filter: "eligible", rule: activated }] });
+      await db.query("update automation_runs set state='done',error=null,exit_reason=null where id=$1", [run.id]);
+      await db.query(schema);
+      expect((await row(run.id)).exit_reason).toBe("completed");
+      await db.query("update automation_runs set state='stopped',exit_reason=null where id=$1", [run.id]);
+      await db.query(schema);
+      expect((await row(run.id)).exit_reason).toBe("stopped");
+    });
+  });
   describe("paused editing", () => {
     const wait = { key: "wait", type: "wait_for_event", config: {
       event_name: "edit.wake", timeout: "1 day",
@@ -3794,7 +3912,7 @@ describe.skipIf(!live)("delivery", () => {
     const state = (await db.query<{ state: string }>("select state from automation_runs where id = $1", [run.id])).rows[0]!.state;
     expect(["done", "stopped"]).toContain(state);
     expect((await db.query("select data from email_events where type = 'automation.run.completed'")).rows).toEqual([{
-      data: { automation_id: flow.json.id, run_id: run.id, contact_id: expect.any(String), state },
+      data: { automation_id: flow.json.id, run_id: run.id, contact_id: expect.any(String), state, exit_reason: state === "done" ? "completed" : "stopped" },
     }]);
     await executeAutomationRun(db, run.tenant_id, run.id);
     expect((await db.query("select id from email_events where type like 'automation.run.%'")).rows).toHaveLength(2);

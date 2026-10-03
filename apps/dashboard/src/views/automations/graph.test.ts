@@ -96,6 +96,7 @@ describe("toTree and toGraph", () => {
     expect(tree.steps[0]!.branches).toEqual({ event_received: [], timeout: [expect.objectContaining({ key: "x" })] });
     expect(toGraph(tree).connections).toEqual([
       { from: "t", to: "w", type: "default" },
+      { from: "w", to: "w_event_received_exit", type: "event_received" },
       { from: "w", to: "x", type: "timeout" },
     ]);
   });

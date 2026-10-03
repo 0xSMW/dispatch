@@ -434,7 +434,7 @@ export type Automation = {
   version?: number;
   enabled?: boolean;
   steps: AutomationStep[];
-  connections?: Array<{ from: string; to: string; type?: string }>;
+  connections?: Array<{ from: string; to: string; type?: string; path?: string }>;
   /** Present on list rows from `GET /automations`, which omit `steps` and `connections`. */
   run_count?: number;
   created_at: string;
@@ -451,6 +451,9 @@ export type AutomationRun = {
   status?: string;
   state?: string;
   error?: string | null;
+  exit_reason?: "completed" | "exit" | "filter" | "stopped" | "stranded" | null;
+  guards?: Array<{ filter: string; rule: import("./views/automations/graph").Rule }>;
+  cancellation_reason?: string | null;
   created_at: string;
   updated_at?: string;
   event?: { id: string; name: string; email: string | null; payload?: Record<string, unknown> };

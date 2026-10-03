@@ -126,7 +126,13 @@ export type ApiKeyCreate = {
 };
 
 export type LifecycleEventType = "email.unsubscribed" | "automation.run.started" | "automation.run.completed" | "automation.run.failed";
-export type AutomationRunEvent = { automation_id: string; run_id: string; contact_id: string | null; state: string };
+export type AutomationRunEvent = {
+  automation_id: string;
+  run_id: string;
+  contact_id: string | null;
+  state: string;
+  exit_reason: AutomationExitReason | null;
+};
 
 export type WebhookCreate = {
   endpoint?: string;
@@ -246,6 +252,47 @@ export type Operator = "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "contains" |
 export type Rule =
   | { type: "rule"; field: string; operator: Operator; value?: unknown }
   | { type: "and" | "or"; rules: Rule[] };
+
+export type StepType = "trigger" | "send_email" | "delay" | "wait_for_event" | "condition" | "add_to_segment" | "contact_update" | "contact_delete" | "exit" | "filter" | "branch";
+export type ConnectionType = "default" | "condition_met" | "condition_not_met" | "timeout" | "event_received" | "branch";
+export type ExitConfig = Record<string, never>;
+/** next tests once; following also saves a guard checked before every later step. */
+export type FilterConfig = { rule: Rule; scope: "next" | "following" };
+export type BranchPath = { key: string; label: string; rule: Rule };
+/** Two to ten ordered paths, with unique nonempty keys other than "otherwise". */
+export type BranchConfig = { paths: BranchPath[] };
+export type AutomationConnection = {
+  from: string;
+  to: string;
+  type?: string;
+  /** Required only for type branch: a configured path key or "otherwise". */
+  path?: string;
+};
+export type AutomationExitReason = "completed" | "exit" | "filter" | "stopped" | "stranded";
+export type AutomationGuard = { filter: string; rule: Rule };
+export type AutomationRun = Row & {
+  object: "automation_run";
+  automation_id: string;
+  status: "running" | "completed" | "failed" | "cancelled";
+  exit_reason: AutomationExitReason | null;
+  guards: AutomationGuard[];
+  event: { id: string; name: string; email: string | null };
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+};
+export type AutomationRunDetail = AutomationRun & {
+  event: AutomationRun["event"] & { payload: Record<string, unknown> };
+  steps: Array<{
+    key: string;
+    type: StepType;
+    status: string;
+    started_at: string | null;
+    completed_at: string | null;
+    output: Record<string, unknown>;
+    error: string | null;
+  }>;
+};
 /** Step config keys are sent as given, using snake_case. Variables stay literal. */
 export type SendEmailConfig = {
   template: string | { id: string; variables?: Record<string, unknown> };
@@ -302,7 +349,7 @@ export type AutomationCreate = {
   enabled?: boolean;
   version?: never;
   steps: Array<Record<string, unknown>>;
-  connections?: Array<{ from: string; to: string; type?: string }>;
+  connections?: AutomationConnection[];
   trigger?: string;
   reentry?: AutomationReentry;
   [key: string]: unknown;
@@ -315,7 +362,7 @@ export type AutomationUpdate = {
   enabled?: boolean;
   version?: never;
   steps?: Array<Record<string, unknown>>;
-  connections?: Array<{ from: string; to: string; type?: string }>;
+  connections?: AutomationConnection[];
   trigger?: string;
   reentry?: AutomationReentry;
   [key: string]: unknown;
@@ -1104,7 +1151,7 @@ class Broadcasts extends Resource {
 
 class AutomationRuns extends Resource {
   list(automationId: string, page: Page & { status?: string; startDate?: string; endDate?: string } = {}) {
-    return this.client.call<List>("GET", `/automations/${seg(automationId)}/runs${query(page)}`);
+    return this.client.call<List<AutomationRun>>("GET", `/automations/${seg(automationId)}/runs${query(page)}`);
   }
 
   metrics(automationId: string, range: { startDate?: string; endDate?: string } = {}) {
@@ -1112,7 +1159,7 @@ class AutomationRuns extends Resource {
   }
 
   get(automationId: string, runId: string) {
-    return this.client.call<Row>("GET", `/automations/${seg(automationId)}/runs/${seg(runId)}`);
+    return this.client.call<AutomationRunDetail>("GET", `/automations/${seg(automationId)}/runs/${seg(runId)}`);
   }
 }
 

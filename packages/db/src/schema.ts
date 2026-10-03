@@ -980,4 +980,18 @@ update automation_steps s set data = coalesce(s.data, '{}'::jsonb) || jsonb_buil
 from automation_runs r join automations a on a.tenant_id = r.tenant_id and a.id = r.automation_id
 where s.tenant_id = r.tenant_id and s.run_id = r.id and s.state = 'waiting'
   and not (coalesce(s.data, '{}'::jsonb) ? 'wait_config');
+
+-- Explicit flow exits and durable, fresh-state following filters.
+alter table automation_runs add column if not exists exit_reason text;
+alter table automation_runs add column if not exists guards jsonb not null default '[]';
+alter table automation_runs drop constraint if exists automation_runs_exit_reason_check;
+alter table automation_runs add constraint automation_runs_exit_reason_check
+  check (exit_reason in ('completed', 'exit', 'filter', 'stopped', 'stranded'));
+alter table automation_runs drop constraint if exists automation_runs_guards_check;
+alter table automation_runs add constraint automation_runs_guards_check check (jsonb_typeof(guards) = 'array');
+update automation_runs set exit_reason = case
+  when state = 'done' then 'completed'
+  when error = 'Its next step was removed or changed while the automation was paused' then 'stranded'
+  else 'stopped' end
+where exit_reason is null and state in ('done', 'stopped');
 `;

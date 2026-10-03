@@ -11,19 +11,25 @@ export const stepTypes = [
   "delay",
   "wait_for_event",
   "condition",
+  "branch",
+  "filter",
+  "exit",
   "add_to_segment",
   "contact_update",
   "contact_delete",
 ] as const;
 export type StepType = (typeof stepTypes)[number];
 
-export type Branch = "condition_met" | "condition_not_met" | "event_received" | "timeout";
+// Ordered branch paths use their permanent key in the same ListPath as legacy branches.
+export type Branch = string;
+export type BranchPath = { key: string; label: string; rule: Rule };
 
 export type Node = {
   key: string;
   type: StepType;
   config: Record<string, unknown>;
   branches?: Partial<Record<Branch, Node[]>>;
+  paths?: Array<{ key: string; label: string; steps: Node[] }>;
   /** Raw text of JSON fields while the user types, keyed by field name. Never sent. */
   drafts?: Record<string, string>;
   /** Manual types for undeclared fields, by rule index path. Editor-only, shared by both views. */
@@ -157,7 +163,7 @@ export function triggerIssues(config: TriggerConfig, sources: RuleSources = {}):
 }
 
 export type GraphStep = { key?: string; type: string; config?: Record<string, unknown> };
-export type Connection = { from: string; to: string; type?: string };
+export type Connection = { from: string; to: string; type?: string; path?: string };
 export type Graph = { steps: Array<{ key: string; type: string; config: Record<string, unknown> }>; connections: Connection[] };
 
 /** Where a list sits: each hop names a branching step and which of its branches. Empty is the main list. */
@@ -166,9 +172,12 @@ export type ListPath = Array<{ key: string; branch: Branch }>;
 export const stepLabels: Record<StepType | "trigger", string> = {
   trigger: "Trigger",
   send_email: "Send email",
-  delay: "Time delay",
+  delay: "Delay",
   wait_for_event: "Wait for event",
-  condition: "True/false branch",
+  condition: "Condition",
+  branch: "Branch",
+  filter: "Filter",
+  exit: "Exit",
   add_to_segment: "Add to segment",
   contact_update: "Update contact",
   contact_delete: "Delete contact",
@@ -181,15 +190,35 @@ export const branchLabels: Record<Branch, string> = {
   timeout: "Timed out",
 };
 
-export function branchesOf(node: Pick<Node, "type" | "branches">): Branch[] {
+export function configuredPaths(node: Pick<Node, "config">): BranchPath[] {
+  return Array.isArray(node.config.paths) ? node.config.paths as BranchPath[] : [];
+}
+
+export function branchesOf(node: Pick<Node, "type" | "branches" | "config">): Branch[] {
+  if (node.type === "branch") return [...configuredPaths(node).map((path) => path.key), "otherwise"];
   if (node.type === "condition") return ["condition_met", "condition_not_met"];
   if (node.type === "wait_for_event" && node.branches) return ["event_received", "timeout"];
   return [];
 }
 
-export function branching(node: Pick<Node, "type" | "branches">) {
+export function branching(node: Pick<Node, "type" | "branches" | "config">) {
   return branchesOf(node).length > 0;
 }
+
+export function branchSteps(node: Node, branch: Branch): Node[] {
+  return node.type === "branch" ? node.paths?.find((path) => path.key === branch)?.steps ?? [] : node.branches?.[branch] ?? [];
+}
+
+export function branchLabel(node: Node, branch: Branch): string {
+  if (node.type === "branch") return branch === "otherwise" ? "Otherwise" : configuredPaths(node).find((path) => path.key === branch)?.label || branch;
+  return branchLabels[branch] ?? branch;
+}
+
+export function terminal(node: Node) {
+  return node.type === "exit" || branching(node);
+}
+
+export const blankRule = (): Rule => ({ type: "rule", field: "", operator: "eq", value: "" });
 
 export function defaultConfig(type: StepType): Record<string, unknown> {
   switch (type) {
@@ -200,7 +229,14 @@ export function defaultConfig(type: StepType): Record<string, unknown> {
     case "wait_for_event":
       return { event_name: "" };
     case "condition":
-      return { type: "rule", field: "", operator: "eq", value: "" };
+      return blankRule();
+    case "filter":
+      return { rule: blankRule(), scope: "next" };
+    case "branch":
+      return { paths: [
+        { key: "path_1", label: "Path 1", rule: blankRule() },
+        { key: "path_2", label: "Path 2", rule: blankRule() },
+      ] };
     case "add_to_segment":
       return { segment_id: "" };
     default:
@@ -215,8 +251,8 @@ export function defaultConfig(type: StepType): Record<string, unknown> {
 export function toTree(steps: GraphStep[], connections: Connection[] = []): { tree: Tree; problem: string | null } {
   const trigger = steps.find((step) => step.type === "trigger");
   const byKey = new Map(steps.map((step) => [step.key ?? "", step]));
-  const out = (from: string, type: string) =>
-    connections.find((connection) => connection.from === from && (connection.type ?? "default") === type)?.to ?? null;
+  const out = (from: string, type: string, path?: string) =>
+    connections.find((connection) => connection.from === from && (connection.type ?? "default") === type && connection.path === path)?.to ?? null;
   const seen = new Set<string>();
   let problem: string | null = null;
 
@@ -234,6 +270,19 @@ export function toTree(steps: GraphStep[], connections: Connection[] = []): { tr
       }
       seen.add(key);
       const node: Node = { key, type: step.type as StepType, config: { ...(step.config ?? {}) } };
+      if (node.type === "branch") {
+        const paths = branchesOf(node);
+        const edges = connections.filter((edge) => edge.from === node.key);
+        if (edges.some((edge) => edge.type !== "branch" || !edge.path || !paths.includes(edge.path)) ||
+          paths.some((path) => edges.filter((edge) => edge.type === "branch" && edge.path === path).length !== 1)) {
+          problem ??= `Branch ${node.key} needs exactly one connection per path, including Otherwise.`;
+        }
+        node.paths = branchesOf(node).map((path) => ({
+          key: path, label: branchLabel(node, path), steps: chain(out(node.key, "branch", path)),
+        }));
+        list.push(node);
+        break;
+      }
       if (node.type === "condition") {
         const met = out(key, "condition_met") ?? out(key, "default");
         const unmet = out(key, "condition_not_met") ?? out(key, "default");
@@ -249,6 +298,10 @@ export function toTree(steps: GraphStep[], connections: Connection[] = []): { tr
         break;
       }
       list.push(node);
+      if (node.type === "exit") {
+        if (connections.some((edge) => edge.from === node.key)) problem ??= `Exit ${node.key} cannot have following steps.`;
+        break;
+      }
       key = out(key, "default");
     }
     return list;
@@ -272,14 +325,28 @@ export function toGraph(tree: Tree): Graph {
   const config = trigger.type === "event" ? { ...trigger, event_name: trigger.event_name.trim() } : { ...trigger };
   const steps: Graph["steps"] = [{ key: tree.trigger, type: "trigger", config }];
   const connections: Connection[] = [];
-  const walk = (list: Node[], from: { key: string; type: string } | null) => {
+  const taken = allKeys(tree);
+  const walk = (list: Node[], from: { key: string; type: string; path?: string } | null) => {
+    // Legacy trees may have an empty lane. Its deterministic key keeps snapshots stable;
+    // edits create a real, permanently keyed Exit in the tree instead.
+    if (!list.length && from) {
+      const name = `${from.key}_${from.path ?? from.type}_exit`.replace(/[^A-Za-z0-9_-]/g, "_");
+      const base = name.length > 54 ? `${name.slice(0, 49)}_exit` : name;
+      let key = base;
+      for (let index = 2; taken.has(key); index++) key = `${base}_${index}`;
+      taken.add(key);
+      steps.push({ key, type: "exit", config: {} });
+      connections.push({ from: from.key, to: key, type: from.type, ...(from.path ? { path: from.path } : {}) });
+      return;
+    }
     let previous = from;
     for (const node of list) {
       steps.push({ key: node.key, type: node.type, config: cleanConfig(node) });
-      if (previous) connections.push({ from: previous.key, to: node.key, type: previous.type });
+      if (previous) connections.push({ from: previous.key, to: node.key, type: previous.type, ...(previous.path ? { path: previous.path } : {}) });
       const branches = branchesOf(node);
-      for (const branch of branches) walk(node.branches?.[branch] ?? [], { key: node.key, type: branch });
-      previous = branches.length ? null : { key: node.key, type: "default" };
+      for (const branch of branches) walk(branchSteps(node, branch), { key: node.key, type: node.type === "branch" ? "branch" : branch, ...(node.type === "branch" ? { path: branch } : {}) });
+      if (terminal(node)) break;
+      previous = { key: node.key, type: "default" };
     }
   };
   walk(tree.steps, { key: tree.trigger, type: "default" });
@@ -296,6 +363,8 @@ const optional: Partial<Record<StepType, string[]>> = {
 
 /** Drops blank optional fields so the API's defaults apply. */
 export function cleanConfig(node: Node): Record<string, unknown> {
+  if (node.type === "exit") return {};
+  if (node.type === "branch") return { paths: configuredPaths(node).map(({ key, label, rule }) => ({ key, label, rule })) };
   const config = { ...node.config };
   for (const field of optional[node.type] ?? []) {
     const value = config[field];
@@ -310,7 +379,7 @@ export function allKeys(tree: Tree): Set<string> {
   const walk = (list: Node[]) => {
     for (const node of list) {
       keys.add(node.key);
-      for (const branch of Object.values(node.branches ?? {})) walk(branch ?? []);
+      for (const branch of branchesOf(node)) walk(branchSteps(node, branch));
     }
   };
   walk(tree.steps);
@@ -333,16 +402,22 @@ export function newKey(tree: Tree, type: StepType) {
 function editList(list: Node[], path: ListPath, edit: (list: Node[]) => Node[]): Node[] {
   if (!path.length) return edit(list);
   const [head, ...rest] = path;
-  return list.map((node) =>
-    node.key === head!.key
-      ? { ...node, branches: { ...node.branches, [head!.branch]: editList(node.branches?.[head!.branch] ?? [], rest, edit) } }
-      : node,
-  );
+  return list.map((node) => {
+    if (node.key !== head!.key) return node;
+    const children = editList(branchSteps(node, head!.branch), rest, edit);
+    if (node.type === "branch") return { ...node, paths: branchesOf(node).map((branch) => ({
+      key: branch, label: branchLabel(node, branch), steps: branch === head!.branch ? children : branchSteps(node, branch),
+    })) };
+    return { ...node, branches: { ...node.branches, [head!.branch]: children } };
+  });
 }
 
 export function listAt(tree: Tree, path: ListPath): Node[] {
   let list = tree.steps;
-  for (const hop of path) list = list.find((node) => node.key === hop.key)?.branches?.[hop.branch] ?? [];
+  for (const hop of path) {
+    const node = list.find((node) => node.key === hop.key);
+    list = node ? branchSteps(node, hop.branch) : [];
+  }
   return list;
 }
 
@@ -350,12 +425,23 @@ export function listAt(tree: Tree, path: ListPath): Node[] {
 /** `key` lets the caller pick the new step's key up front, to open it once it exists. */
 export function insertStep(tree: Tree, path: ListPath, index: number, type: StepType, key = newKey(tree, type)): Tree {
   const node: Node = { key, type, config: defaultConfig(type) };
+  const taken = allKeys(tree);
+  taken.add(key);
+  const exit = () => [exitNode(taken)];
   return {
     ...tree,
     steps: editList(tree.steps, path, (list) => {
       const rest = list.slice(index);
+      if (list.slice(0, index).some(terminal)) return list;
+      // Never silently discard following work when inserting a terminal Exit.
+      if (type === "exit") return rest.some((step) => step.type !== "exit") ? list : [...list.slice(0, index), node];
       if (type === "condition") {
-        return [...list.slice(0, index), { ...node, branches: { condition_met: rest, condition_not_met: [] } }];
+        return [...list.slice(0, index), { ...node, branches: { condition_met: rest.length ? rest : exit(), condition_not_met: exit() } }];
+      }
+      if (type === "branch") {
+        return [...list.slice(0, index), { ...node, paths: branchesOf(node).map((branch, at) => ({
+          key: branch, label: branchLabel(node, branch), steps: at === 0 && rest.length ? rest : exit(),
+        })) }];
       }
       return [...list.slice(0, index), node, ...rest];
     }),
@@ -363,14 +449,39 @@ export function insertStep(tree: Tree, path: ListPath, index: number, type: Step
 }
 
 export function removeStep(tree: Tree, path: ListPath, index: number): Tree {
-  return { ...tree, steps: editList(tree.steps, path, (list) => list.filter((_, at) => at !== index)) };
+  return { ...tree, steps: editList(tree.steps, path, (list) => {
+    const next = list.filter((_, at) => at !== index);
+    return next.length ? next : [exitNode(allKeys(tree))];
+  }) };
+}
+
+function exitNode(taken: Set<string>): Node {
+  let key: string;
+  do { key = `exit_${keys.suffix()}`; } while (taken.has(key));
+  taken.add(key);
+  return { key, type: "exit", config: {} };
+}
+
+/** Changes the ordered rules without changing surviving lane or step keys. */
+export function setBranchPaths(node: Node, paths: BranchPath[]): Node {
+  const taken = new Set<string>();
+  const collect = (step: Node) => {
+    taken.add(step.key);
+    for (const branch of branchesOf(step)) for (const child of branchSteps(step, branch)) collect(child);
+  };
+  collect(node);
+  const next = { ...node, config: { paths } };
+  return { ...next, paths: branchesOf(next).map((branch) => ({
+    key: branch, label: branchLabel(next, branch),
+    steps: branchSteps(node, branch).length ? branchSteps(node, branch) : [exitNode(taken)],
+  })) };
 }
 
 /** Swaps a step with its neighbour. Branching steps stay last in their list, so they never move. */
 export function canMove(list: Node[], index: number, delta: -1 | 1) {
   const target = index + delta;
   if (target < 0 || target >= list.length) return false;
-  return !branching(list[index]!) && !branching(list[target]!);
+  return !terminal(list[index]!) && !terminal(list[target]!);
 }
 
 export function moveStep(tree: Tree, path: ListPath, index: number, delta: -1 | 1): Tree {
@@ -392,8 +503,12 @@ export function setWaitBranches(tree: Tree, path: ListPath, index: number, on: b
     steps: editList(tree.steps, path, (list) => {
       const node = list[index];
       if (!node || node.type !== "wait_for_event") return list;
-      if (on) return [...list.slice(0, index), { ...node, branches: { event_received: list.slice(index + 1), timeout: [] } }];
-      if (node.branches?.timeout?.length) return list;
+      if (on) {
+        const taken = allKeys(tree);
+        const rest = list.slice(index + 1);
+        return [...list.slice(0, index), { ...node, branches: { event_received: rest.length ? rest : [exitNode(taken)], timeout: [exitNode(taken)] } }];
+      }
+      if (node.branches?.timeout?.some((step) => step.type !== "exit")) return list;
       return [...list.slice(0, index), { ...node, branches: undefined }, ...(node.branches?.event_received ?? [])];
     }),
   };
@@ -403,6 +518,7 @@ export function updateNode(tree: Tree, key: string, change: (node: Node) => Node
   const walk = (list: Node[]): Node[] =>
     list.map((node) => {
       if (node.key === key) return change(node);
+      if (node.paths) return { ...node, paths: node.paths.map((path) => ({ ...path, steps: walk(path.steps) })) };
       if (!node.branches) return node;
       const branches: Node["branches"] = {};
       for (const [branch, children] of Object.entries(node.branches)) branches[branch as Branch] = walk(children ?? []);
@@ -413,8 +529,8 @@ export function updateNode(tree: Tree, key: string, change: (node: Node) => Node
 
 /** How many steps sit under a branching step. */
 export function descendants(node: Node): number {
-  return Object.values(node.branches ?? {}).reduce(
-    (sum, list) => sum + (list ?? []).reduce((inner, child) => inner + 1 + descendants(child), 0),
+  return branchesOf(node).reduce(
+    (sum, branch) => sum + branchSteps(node, branch).reduce((inner, child) => inner + 1 + descendants(child), 0),
     0,
   );
 }
@@ -529,12 +645,28 @@ export function stepIssues(node: Node, fields: ContextField[] = []): Record<stri
       issues.timeout = durationIssue(config.timeout, false);
       // Only a timeout branch with steps in it needs a timeout. A wait that came from the API
       // with just an "event received" edge has none, and has to save unchanged.
-      if (node.branches?.timeout?.length && !config.timeout) issues.timeout = "A timeout branch needs a timeout.";
+      if (node.branches?.timeout?.some((step) => step.type !== "exit") && !config.timeout) issues.timeout = "A timeout branch needs a timeout.";
       if (config.filter_rule) issues.filter_rule = ruleIssue(config.filter_rule, fields, node.ruleTypes);
       break;
     case "condition":
       issues.rule = ruleIssue(config, fields, node.ruleTypes);
       break;
+    case "filter":
+      issues.rule = ruleIssue(config.rule, fields, node.ruleTypes);
+      if (config.scope !== "next" && config.scope !== "following") issues.scope = "Choose when to check the filter.";
+      break;
+    case "branch": {
+      const paths = configuredPaths(node);
+      if (paths.length < 2 || paths.length > 10) issues.paths = "A branch needs 2 to 10 paths.";
+      const seen = new Set<string>();
+      for (const path of paths) {
+        if (!path.key || path.key === "otherwise" || seen.has(path.key)) issues.paths = "Every path needs a unique key. Otherwise is reserved.";
+        seen.add(path.key);
+        if (!String(path.label ?? "").trim()) issues[`path.${path.key}.label`] = "Enter a path label.";
+        issues[`path.${path.key}.rule`] = ruleIssue(path.rule, fields, node.ruleTypes, `paths.${path.key}`);
+      }
+      break;
+    }
     case "add_to_segment":
       if (!config.segment_id) issues.segment_id = "Choose a segment.";
       issues.email = emailIssue(config.email);
@@ -557,7 +689,7 @@ export function treeIssues(tree: Tree, sources?: RuleSources): Record<string, Re
       const fields = sources ? contextFields(sources, node.type === "wait_for_event" ? String(node.config.event_name ?? "") : tree.event) : [];
       const issues = stepIssues(node, fields);
       if (Object.keys(issues).length) all[node.key] = issues;
-      for (const branch of Object.values(node.branches ?? {})) walk(branch ?? []);
+      for (const branch of branchesOf(node)) walk(branchSteps(node, branch));
     }
   };
   walk(tree.steps);
@@ -571,6 +703,8 @@ const cardFields: Record<string, string[]> = {
   delay: ["duration"],
   wait_for_event: ["event_name", "timeout", "filter_rule"],
   condition: ["rule"],
+  filter: ["rule", "scope"],
+  branch: ["paths"],
   add_to_segment: ["segment_id", "email"],
   contact_update: ["email", "properties"],
   contact_delete: ["email"],
@@ -599,6 +733,13 @@ export function placeIssues(steps: Graph["steps"], issues: Array<{ path: string;
     }
     let field = parts[2] === "config" ? (parts[3] ?? "") : "";
     if (step.type === "condition" && field) field = "rule";
+    if (step.type === "branch" && field === "paths" && /^\d+$/.test(parts[4] ?? "") && (parts[5] === "label" || parts[5] === "rule")) {
+      const path = (step.config.paths as BranchPath[] | undefined)?.[Number(parts[4])];
+      if (path) {
+        add(step.key, `path.${path.key}.${parts[5]}`, issue.message);
+        continue;
+      }
+    }
     if (step.type === "send_email" && field === "template" && parts[4] === "variables") field = "variables";
     if (field && (cardFields[step.type] ?? []).includes(field)) add(step.key, field, issue.message);
     else add(step.key, stepError, field ? `${field}: ${issue.message}` : issue.message);
@@ -623,11 +764,17 @@ export function describe(node: Node): string {
       return `Template ${id || "not set"}${config.to ? ` to ${String(config.to)}` : ""}`;
     }
     case "delay":
-      return `Wait ${String(config.duration ?? "")}`;
+      return String(config.duration ?? "");
     case "wait_for_event":
-      return `Wait for ${String(config.event_name ?? "")}${config.timeout ? `, up to ${String(config.timeout)}` : ""}`;
+      return `${String(config.event_name ?? "")}${config.timeout ? `, up to ${String(config.timeout)}` : ""}`;
     case "condition":
       return ruleText(config as Rule);
+    case "filter":
+      return `${ruleText(config.rule as Rule)} · ${config.scope === "following" ? "all following steps" : "next step"}`;
+    case "branch":
+      return `${configuredPaths(node).length} paths`;
+    case "exit":
+      return "The run ends here";
     case "add_to_segment":
       return `Segment ${String(config.segment_id ?? "")}`;
     case "contact_update":
@@ -639,7 +786,8 @@ export function describe(node: Node): string {
 
 export function ruleText(rule: Rule | undefined): string {
   if (!rule) return "";
-  if (rule.type !== "rule") return rule.rules.map((child) => `(${ruleText(child)})`).join(` ${rule.type} `);
+  if (rule.type !== "rule") return (rule.rules ?? []).map((child) => `(${ruleText(child)})`).join(` ${rule.type} `);
+  const words: Record<string, string> = { eq: "is", neq: "is not", gt: "is greater than", gte: "is at least", lt: "is less than", lte: "is at most" };
   const value = rule.operator === "exists" || rule.operator === "is_empty" ? "" : ` ${JSON.stringify(rule.value ?? "")}`;
-  return `${rule.field} ${rule.operator.replaceAll("_", " ")}${value}`;
+  return `${rule.field} ${words[rule.operator] ?? rule.operator.replaceAll("_", " ")}${value}`;
 }

@@ -1,9 +1,10 @@
 import { useId, useState, type ReactNode } from "react";
-import { ArrowDown, ArrowUp, Clock, Hourglass, Mail, Plus, Split, Trash2, UserCog, UserX, UsersRound, Zap } from "lucide-react";
+import { ArrowDown, ArrowUp, Clock, Funnel, Hourglass, LogOut, Mail, Plus, Split, Trash2, UserCog, UserX, UsersRound, Zap } from "lucide-react";
 import { Badge, statusToVariant, type BadgeVariant } from "../../components/Badge";
 import { Code } from "../../components/Code";
 import { Field, Select, Switch, TextArea, type Option } from "../../components/Field";
 import { Menu, type MenuItem } from "../../components/Menu";
+import { Modal } from "../../components/Modal";
 import { Tile } from "../../components/PageHeader";
 import { Time } from "../../components/Time";
 import { ContextField } from "../../components/ContextField";
@@ -13,13 +14,19 @@ import { contextFields, isIsoDate, operatorsForType, propertyTypes, typedValue, 
 import type { ContactProperty, EventDefinition, PropertyType } from "../../types";
 import { EmailCountLine, type EmailCounts } from "./EmailMetrics";
 import {
-  branchLabels,
+  blankRule as emptyRule,
+  branchLabel,
+  branchSteps,
   branchesOf,
-  branching,
   canMove,
+  configuredPaths,
+  descendants,
   describe,
+  keys,
+  setBranchPaths,
   stepError,
   stepLabels,
+  terminal,
   type ListPath,
   type Node,
   type Rule,
@@ -68,6 +75,9 @@ export const stepIcons: Record<StepType | "trigger", ReactNode> = {
   delay: <Clock size={14} />,
   wait_for_event: <Hourglass size={14} />,
   condition: <Split size={14} />,
+  branch: <Split size={14} />,
+  filter: <Funnel size={14} />,
+  exit: <LogOut size={14} />,
   add_to_segment: <UsersRound size={14} />,
   contact_update: <UserCog size={14} />,
   contact_delete: <UserX size={14} />,
@@ -79,6 +89,9 @@ export const stepTones: Record<StepType | "trigger", BadgeVariant> = {
   delay: "warning",
   wait_for_event: "warning",
   condition: "info",
+  branch: "info",
+  filter: "info",
+  exit: "neutral",
   add_to_segment: "neutral",
   contact_update: "neutral",
   contact_delete: "danger",
@@ -104,7 +117,7 @@ export function StepList({ nodes, path = [], actions, disabled = false, errors =
     <ol className="stepList">
       {nodes.map((node, index) => (
         <li key={node.key} className="stepItem">
-          {editable ? <AddStep onPick={(type) => actions!.insert(path, index, type)} /> : null}
+          {editable ? <AddStep onPick={(type) => actions!.insert(path, index, type)} allowExit={!nodes.slice(index).some((node) => node.type !== "exit")} /> : null}
           <StepCard
             node={node}
             path={path}
@@ -117,12 +130,12 @@ export function StepList({ nodes, path = [], actions, disabled = false, errors =
             run={run}
           />
           {branchesOf(node).length ? (
-            <div className="branches">
+            <div className={node.type === "branch" ? "branches ordered" : "branches"}>
               {branchesOf(node).map((branch) => (
-                <section key={branch} className={`branch ${branch}`} aria-label={`${branchLabels[branch]} branch of ${node.key}`}>
-                  <div className="branchLabel">{branchLabels[branch]}</div>
+                <section key={branch} className={`branch ${node.type === "branch" ? branch === "otherwise" ? "otherwise" : "orderedPath" : branch}`} aria-label={`${branchLabel(node, branch)} branch of ${node.key}`}>
+                  <div className="branchLabel">{branchLabel(node, branch)}</div>
                   <StepList
-                    nodes={node.branches?.[branch] ?? []}
+                    nodes={branchSteps(node, branch)}
                     path={[...path, { key: node.key, branch }]}
                     actions={actions}
                     disabled={disabled}
@@ -136,27 +149,31 @@ export function StepList({ nodes, path = [], actions, disabled = false, errors =
           ) : null}
         </li>
       ))}
-      {editable && !(last && branching(last)) ? (
+      {editable && !(last && terminal(last)) ? (
         <li className="stepItem">
           <AddStep onPick={(type) => actions!.insert(path, nodes.length, type)} end={nodes.length === 0} />
         </li>
       ) : null}
-      {!editable && nodes.length === 0 ? <li className="stepEnd dim">End</li> : null}
+      {!editable && nodes.length === 0 ? <li className="stepEnd dim">{path.length ? "Exit" : "End"}</li> : null}
     </ol>
   );
 }
 
 const pickerGroups: StepType[][] = [
   ["send_email"],
-  ["delay", "wait_for_event", "condition"],
+  ["delay", "wait_for_event", "condition", "branch", "filter", "exit"],
   ["contact_update", "contact_delete", "add_to_segment"],
 ];
 
 /** The "+" between steps that opens the step picker. */
-export function AddStep({ onPick, end = false }: { onPick: (type: StepType) => void; end?: boolean }) {
+export function AddStep({ onPick, end = false, allowExit = true }: { onPick: (type: StepType) => void; end?: boolean; allowExit?: boolean }) {
   const items: MenuItem[] = pickerGroups.flatMap((group, index) => [
     ...(index ? (["divider"] as MenuItem[]) : []),
-    ...group.map((type) => ({ label: stepLabels[type], icon: stepIcons[type], onSelect: () => onPick(type) })),
+    ...group.map((type) => ({
+      label: stepLabels[type], icon: stepIcons[type], onSelect: () => onPick(type),
+      disabled: type === "exit" && !allowExit,
+      hint: type === "exit" && !allowExit ? "Only at the end of a path" : undefined,
+    })),
   ]);
   return (
     <div className={end ? "addStep end" : "addStep"}>
@@ -168,7 +185,7 @@ export function AddStep({ onPick, end = false }: { onPick: (type: StepType) => v
         trigger={
           <>
             <Plus size={14} />
-            {end ? "Add step" : null}
+            {end ? "Add step" : <span className="addStepName">Add step</span>}
           </>
         }
       />
@@ -251,6 +268,7 @@ function StepCard({
 }
 
 export function RunResult({ node, result }: { node: Node; result?: RunStep }) {
+  const output = result?.output as { exited?: string; filter?: string; path?: string; passed?: boolean } | undefined;
   return (
     <div className="stack">
       <p className="muted">{describe(node)}</p>
@@ -277,6 +295,9 @@ export function RunResult({ node, result }: { node: Node; result?: RunStep }) {
           {result.error}
         </div>
       ) : null}
+      {output?.exited === "filter" ? <p role="status">Left at the Filter step{output.filter ? ` (${output.filter})` : ""}. No further steps ran.</p> : null}
+      {node.type === "filter" && output?.passed === true ? <p role="status">Filter matched{node.config.scope === "following" ? "; it will be checked before every following step" : ""}.</p> : null}
+      {node.type === "branch" && output?.path ? <p role="status">Took the {branchLabel(node, output.path)} path.</p> : null}
       {result && result.output && Object.keys(result.output as object).length ? <Code value={result.output} /> : null}
     </div>
   );
@@ -449,9 +470,9 @@ export function StepForm({ node, path, index, actions, disabled, errors, options
           <div className="wide stack">
             <Switch
               label="Branch on timeout"
-              hint="Run different steps when the event arrives and when the wait times out. A branch with no steps in it is not saved."
+              hint="Run different steps when the event arrives and when the wait times out. Empty paths end at an Exit step."
               checked={Boolean(node.branches)}
-              disabled={disabled || Boolean(node.branches?.timeout?.length)}
+              disabled={disabled || Boolean(node.branches?.timeout?.some((step) => step.type !== "exit"))}
               onChange={(on) => actions?.waitBranches(path, index, on)}
             />
             <Switch
@@ -490,6 +511,26 @@ export function StepForm({ node, path, index, actions, disabled, errors, options
           )}
         </div>
       );
+    case "filter":
+      return (
+        <div className="stack">
+          <RuleEditor rule={(config.rule as Rule) ?? emptyRule()} onChange={(rule) => set("rule", rule)} disabled={disabled} fields={fields} valueTypes={node.ruleTypes} onTypesChange={setRuleTypes} />
+          {errors.rule ? <span className="fieldError" role="alert">{errors.rule}</span> : null}
+          <Select
+            label="Check"
+            value={text("scope")}
+            onChange={(value) => set("scope", value)}
+            options={[{ value: "next", label: "Here only" }, { value: "following", label: "Before every following step" }]}
+            hint="If the rule fails, the contact leaves this run. Following filters use fresh contact data before each later step."
+            error={errors.scope}
+            disabled={disabled}
+          />
+        </div>
+      );
+    case "branch":
+      return <BranchEditor node={node} actions={actions} disabled={disabled} fields={fields} errors={errors} />;
+    case "exit":
+      return <p className="muted">End this run here. No following step runs.</p>;
     case "add_to_segment": {
       const segments = options?.segments ?? [];
       const id = text("segment_id");
@@ -541,6 +582,92 @@ export function StepForm({ node, path, index, actions, disabled, errors, options
         </div>
       );
   }
+}
+
+/** The ordered lanes and their rules. Keys stay fixed through rename and reorder. */
+function BranchEditor({ node, actions, disabled, fields, errors }: {
+  node: Node; actions?: StepActions; disabled: boolean; fields: ContextFieldRow[]; errors: Record<string, string>;
+}) {
+  const paths = configuredPaths(node);
+  const [removing, setRemoving] = useState<string | null>(null);
+  const edit = (change: (current: Node) => Node) => {
+    if (!disabled) actions?.change(node.key, change);
+  };
+  const update = (key: string, change: (path: (typeof paths)[number]) => (typeof paths)[number]) =>
+    edit((current) => setBranchPaths(current, configuredPaths(current).map((path) => path.key === key ? change(path) : path)));
+  const move = (key: string, delta: -1 | 1) => edit((current) => {
+    const ordered = [...configuredPaths(current)];
+    const index = ordered.findIndex((path) => path.key === key);
+    if (index < 0 || index + delta < 0 || index + delta >= ordered.length) return current;
+    [ordered[index], ordered[index + delta]] = [ordered[index + delta]!, ordered[index]!];
+    return setBranchPaths(current, ordered);
+  });
+  const remove = (key: string) => {
+    edit((current) => {
+      const ordered = configuredPaths(current);
+      if (ordered.length <= 2) return current;
+      const ruleTypes = Object.fromEntries(Object.entries(current.ruleTypes ?? {}).filter(([location]) => location !== `paths.${key}` && !location.startsWith(`paths.${key}.`)));
+      return { ...setBranchPaths(current, ordered.filter((path) => path.key !== key)), ruleTypes };
+    });
+    setRemoving(null);
+  };
+  const removedPath = paths.find((path) => path.key === removing);
+  const count = removing ? branchSteps(node, removing).reduce((sum, child) => sum + 1 + descendants(child), 0) : 0;
+  return (
+    <div className="stack branchEditor">
+      <p className="fieldHint">Checked from top to bottom. The first matching path wins. If none match, use Otherwise.</p>
+      {paths.map((path, index) => (
+        <section className="branchRule" key={path.key} aria-label={`Path ${index + 1} settings`}>
+          <header className="stepHeader">
+            <strong className="stepTitle">Path {index + 1}</strong>
+            <span className="mono dim">{path.key}</span>
+            <div className="toolbar">
+              <button type="button" className="ghost icon small" aria-label={`Move path ${index + 1} up`} disabled={disabled || index === 0} onClick={() => move(path.key, -1)}><ArrowUp size={14} /></button>
+              <button type="button" className="ghost icon small" aria-label={`Move path ${index + 1} down`} disabled={disabled || index === paths.length - 1} onClick={() => move(path.key, 1)}><ArrowDown size={14} /></button>
+              <button type="button" className="ghost icon small" aria-label={`Remove path ${index + 1}`} disabled={disabled || paths.length <= 2} onClick={() => {
+                if (branchSteps(node, path.key).some((child) => child.type !== "exit")) setRemoving(path.key);
+                else remove(path.key);
+              }}><Trash2 size={14} /></button>
+            </div>
+          </header>
+          <Field label="Path label" value={path.label} onChange={(label) => update(path.key, (current) => ({ ...current, label }))} disabled={disabled} error={errors[`path.${path.key}.label`]} required />
+          <RuleEditor
+            rule={path.rule ?? emptyRule()}
+            onChange={(rule) => update(path.key, (current) => ({ ...current, rule }))}
+            disabled={disabled}
+            fields={fields}
+            valueTypes={node.ruleTypes}
+            onTypesChange={(ruleTypes) => edit((current) => ({ ...current, ruleTypes }))}
+            location={`paths.${path.key}`}
+          />
+          {errors[`path.${path.key}.rule`] ? <span className="fieldError" role="alert">{errors[`path.${path.key}.rule`]}</span> : null}
+        </section>
+      ))}
+      {errors.paths ? <span className="fieldError" role="alert">{errors.paths}</span> : null}
+      <div className="toolbar">
+        <button type="button" className="secondary small" disabled={disabled || paths.length >= 10} onClick={() => edit((current) => {
+          const ordered = configuredPaths(current);
+          if (ordered.length >= 10) return current;
+          let key: string;
+          do { key = `path_${keys.suffix()}`; } while (ordered.some((path) => path.key === key));
+          return setBranchPaths(current, [...ordered, { key, label: `Path ${ordered.length + 1}`, rule: emptyRule() }]);
+        })}><Plus size={14} />Add path</button>
+        <span className="fieldHint">2 to 10 paths, plus Otherwise.</span>
+      </div>
+      <p className="fieldHint">Otherwise is always last and needs no rule. Empty paths end at an Exit step.</p>
+      <Modal
+        isOpen={Boolean(removedPath)}
+        title="Remove path"
+        onClose={() => setRemoving(null)}
+        onSubmit={() => removing && remove(removing)}
+        submitLabel="Remove path"
+        submitDisabled={disabled || paths.length <= 2}
+        danger
+      >
+        <p>This removes the {removedPath?.label} path and its {count} {count === 1 ? "step" : "steps"}. Other path keys and steps stay unchanged.</p>
+      </Modal>
+    </div>
+  );
 }
 
 function UnsubscribeWarning({ templateId }: { templateId: string }) {

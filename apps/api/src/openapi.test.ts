@@ -1,4 +1,5 @@
 import { readdirSync, readFileSync } from "node:fs";
+import { automationGraphSchema } from "@dispatchmail/core";
 import { describe, expect, it } from "vitest";
 import { presentEmail, presentSend, type EmailRow } from "./present.js";
 
@@ -229,6 +230,103 @@ describe("docs/api/openapi.json", () => {
     });
     for (const operation of [spec.paths["/automations"].post, spec.paths["/automations/{id}"].patch]) {
       expect(operation).toMatchObject({ responses: { "409": { $ref: "#/components/responses/Conflict" } } });
+    }
+  });
+
+  it("documents Exit, Filter and ordered Branch configs using the shared Rule schema", () => {
+    const schemas = spec.components.schemas as unknown as Record<string, {
+      properties: Record<string, unknown>;
+      allOf?: Array<{ if: { properties: { type: { const: string } } }; then: unknown }>;
+    }>;
+    expect(schemas.AutomationStep.properties.type).toMatchObject({
+      enum: expect.arrayContaining(["exit", "filter", "branch"]),
+    });
+    for (const [type, config] of [["exit", "ExitConfig"], ["filter", "FilterConfig"], ["branch", "BranchConfig"]]) {
+      expect(schemas.AutomationStep.allOf?.find((item) => item.if.properties.type.const === type)?.then).toMatchObject({
+        properties: { config: { $ref: `#/components/schemas/${config}` } },
+      });
+    }
+    expect(schemas.ExitConfig).toMatchObject({ type: "object", properties: {}, additionalProperties: false });
+    expect(schemas.FilterConfig).toMatchObject({
+      type: "object", required: expect.arrayContaining(["rule", "scope"]),
+      properties: { rule: { $ref: "#/components/schemas/Rule" }, scope: { enum: ["next", "following"] } },
+    });
+    expect(schemas.BranchConfig.properties.paths).toMatchObject({
+      type: "array", minItems: 2, maxItems: 10,
+      items: {
+        type: "object", required: expect.arrayContaining(["key", "label", "rule"]),
+        properties: {
+          key: { type: "string", minLength: 1, not: { const: "otherwise" } },
+          label: { type: "string" }, rule: { $ref: "#/components/schemas/Rule" },
+        },
+      },
+    });
+    const branch = JSON.stringify(schemas.BranchConfig);
+    expect(branch).toMatch(/first.match/i);
+    expect(branch).toMatch(/unique/i);
+    expect(branch).toContain("otherwise");
+  });
+
+  it("documents keyed branch connections, branch-only paths and terminal exits", () => {
+    const schemas = spec.components.schemas as unknown as Record<string, { properties: Record<string, unknown>; allOf?: unknown[] }>;
+    expect(schemas.AutomationConnection.properties.type).toMatchObject({
+      enum: ["default", "condition_met", "condition_not_met", "timeout", "event_received", "branch"],
+    });
+    expect(schemas.AutomationConnection.properties.path).toMatchObject({ type: "string", minLength: 1 });
+    expect(schemas.AutomationConnection.allOf).toEqual(expect.arrayContaining([expect.objectContaining({
+      if: { properties: { type: { const: "branch" } }, required: ["type"] },
+      then: { required: ["path"] },
+    })]));
+    const graph = JSON.stringify(schemas.AutomationInput);
+    expect(graph).toMatch(/exactly one/i);
+    expect(graph).toContain("otherwise");
+    expect(graph).toMatch(/only.*branch|branch.*only/i);
+    expect(graph).toMatch(/exit.*no outgoing|no outgoing.*exit/i);
+  });
+
+  it("documents nullable run exit reasons and saved following-filter guards without changing statuses", () => {
+    const schemas = spec.components.schemas as unknown as Record<string, { properties: Record<string, unknown>; required?: string[] }>;
+    expect(schemas.AutomationRun.required).toEqual(expect.arrayContaining(["exit_reason", "guards"]));
+    expect(schemas.AutomationRun.properties.status).toMatchObject({ enum: ["running", "completed", "failed", "cancelled"] });
+    expect(schemas.AutomationRun.properties.exit_reason).toMatchObject({
+      type: ["string", "null"], enum: ["completed", "exit", "filter", "stopped", "stranded", null],
+    });
+    expect(schemas.AutomationRun.properties.guards).toMatchObject({
+      type: "array", items: {
+        type: "object", required: expect.arrayContaining(["filter", "rule"]),
+        properties: { filter: { type: "string" }, rule: { $ref: "#/components/schemas/Rule" } },
+      },
+    });
+    const description = JSON.stringify(schemas.FilterConfig);
+    expect(description).toMatch(/fresh/i);
+    expect(description).toMatch(/wait/i);
+    expect(description).toMatch(/never.*default|no.*default/i);
+  });
+
+  it("documents lifecycle webhook exit_reason including null for started and failed transitions", () => {
+    const data = spec.components.schemas.WebhookPayload.properties.data;
+    expect(data.properties.exit_reason).toMatchObject({
+      type: ["string", "null"], enum: ["completed", "exit", "filter", "stopped", "stranded", null],
+    });
+    for (const name of ["automation_id", "run_id", "contact_id", "state"]) {
+      expect(data.properties[name]).toBeDefined();
+    }
+    const description = JSON.stringify(data);
+    expect(description).toMatch(/started.*null/i);
+    expect(description).toMatch(/failed.*null/i);
+  });
+
+  it("publishes a valid graph example with all flow controls and an Otherwise edge", () => {
+    const schemas = spec.components.schemas as unknown as Record<string, {
+      examples?: Array<{ steps: Array<{ type: string }>; connections: Array<{ type?: string; path?: string }> }>;
+    }>;
+    const examples = schemas.AutomationInput.examples ?? [];
+    const flow = examples.find((example) => ["exit", "filter", "branch"].every((type) => example.steps.some((step) => step.type === type)));
+    expect(flow).toBeDefined();
+    expect(flow?.connections).toEqual(expect.arrayContaining([{ from: expect.any(String), to: expect.any(String), type: "branch", path: "otherwise" }]));
+    for (const example of examples) {
+      const parsed = automationGraphSchema.safeParse(example);
+      expect(parsed.success, JSON.stringify(parsed.error?.issues)).toBe(true);
     }
   });
 

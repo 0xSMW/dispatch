@@ -20,6 +20,7 @@ import type { AutomationRun, AutomationRunDetail } from "../../types";
 import { allKeys, stepLabels, type Tree } from "./graph";
 import { StepList, elapsed, type RunStep, type StepOptions } from "./Steps";
 import { Canvas, ViewSwitch, type View } from "./Canvas";
+import { runReason } from "./reasons";
 
 export const runStatuses = ["running", "completed", "failed", "cancelled"];
 
@@ -81,6 +82,7 @@ export function Runs({ automationId, tree, options }: { automationId: string; tr
           { header: "Contact", cell: (row) => contact(row) ?? <span className="dim">No contact</span> },
           { header: "Event", cell: (row) => <span className="mono">{eventName(row)}</span> },
           { header: "Status", cell: (row) => <Badge value={row.status ?? "running"} /> },
+          { header: "Why it ended", cell: (row) => runReason(row) ?? <span className="dim">—</span> },
           { header: "Started", cell: (row) => <Time value={row.created_at} /> },
           { header: "Duration", cell: (row) => (finished(row) ? elapsed(row.created_at, row.updated_at) : <span className="dim">—</span>) },
         ]}
@@ -94,7 +96,7 @@ export function Runs({ automationId, tree, options }: { automationId: string; tr
 export function RunDrawer({ automationId, runId, tree, onClose, options }: { automationId: string; runId: string; tree: Tree | null; onClose: () => void; options?: StepOptions }) {
   const run = useResource<AutomationRunDetail>(`/automations/${automationId}/runs/${runId}`);
   const data = run.data;
-  const steps = new Map<string, RunStep>((data?.steps ?? []).filter((step) => step.key).map((step) => [step.key!, step]));
+  const steps = new Map<string, RunStep>((data?.steps ?? []).filter((step) => step.key).map((step) => [step.key!, { ...step, output: step.output ?? step.data }]));
   const known = tree ? allKeys(tree) : new Set<string>();
   const others = (data?.steps ?? []).filter((step) => !step.key || !known.has(step.key));
   const [view, setView] = useState<View>("list");
@@ -130,6 +132,7 @@ export function RunDrawer({ automationId, runId, tree, onClose, options }: { aut
               { label: "ID", value: data.id, copy: true },
             ]}
           />
+          {runReason(data, tree) ? <div className="notice" role="status">{runReason(data, tree)}</div> : null}
           {data.error ? (
             <div className="alert" role="alert">
               {data.error}

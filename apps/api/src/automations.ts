@@ -1,4 +1,4 @@
-import { ApiError, automationEnrollSchema, automationGraphSchema, automationSchema, automationStopSchema, automationUpdateSchema, id, type TriggerConfig } from "@dispatchmail/core";
+import { ApiError, automationEnrollSchema, automationGraphSchema, automationSchema, automationStopSchema, automationUpdateSchema, id, type Rule, type TriggerConfig } from "@dispatchmail/core";
 import {
   activeStates,
   automationColumns,
@@ -31,6 +31,8 @@ type RunRow = {
   email: string | null;
   event_data?: Record<string, unknown>;
   state: string;
+  exit_reason?: string | null;
+  guards?: Array<{ filter: string; rule: Rule }>;
   next_step_key?: string | null;
   error: string | null;
   created_at: string;
@@ -120,6 +122,8 @@ export function presentRun(row: RunRow) {
     status: runStatus(row.state),
     event: { id: row.event_id, name: row.event_name, email: row.email },
     error: row.error,
+    exit_reason: row.exit_reason ?? null,
+    guards: row.guards ?? [],
     created_at: row.created_at,
     updated_at: row.updated_at,
   };
@@ -194,7 +198,7 @@ export function mergeGraph(current: AutomationRow, input: GraphInput) {
 }
 
 const runSelect = `r.id, r.automation_id, r.event_id, e.name as event_name, e.email, r.state, r.next_step_key,
-  r.error, r.created_at, r.updated_at`;
+  r.error, r.exit_reason, r.guards, r.created_at, r.updated_at`;
 
 export function registerAutomations(
   app: FastifyInstance,
@@ -449,7 +453,7 @@ export function registerAutomations(
 async function stopRuns(client: { query: Db["query"] }, tenantId: string, automationId: string, resetReentry = false) {
   await client.query(
     `update automation_runs
-     set state = 'stopped', resume_at = null, wait_event = null, updated_at = now()
+     set state = 'stopped', exit_reason = 'stopped', resume_at = null, wait_event = null, updated_at = now()
      where tenant_id = $1 and automation_id = $2 and state = any($3)
      returning id`,
     [tenantId, automationId, activeStates],

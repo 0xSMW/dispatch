@@ -4,7 +4,7 @@ import { Badge } from "../../components/Badge";
 import { Failed } from "../../components/Empty";
 import { Tile } from "../../components/PageHeader";
 import { Skeleton } from "../../components/Skeleton";
-import { canMove, newKey, stepError, stepLabels, treeTrigger, triggerLabels, triggerSummary, type TriggerConfig, type StepType, type Tree } from "./graph";
+import { canMove, listAt, newKey, stepError, stepLabels, treeTrigger, triggerLabels, triggerSummary, type TriggerConfig, type StepType, type Tree } from "./graph";
 import { layout, locate, runFocus, slotId, type Slot } from "./layout";
 import { RunResult, StepForm, stepIcons, stepTones, type RunStep, type StepActions, type StepOptions } from "./Steps";
 import { TriggerForm, triggerSources } from "./Trigger";
@@ -37,7 +37,7 @@ export function ViewSwitch({ value, onChange }: { value: View; onChange: (view: 
 /** The step picker groups, in the order the picker shows them. */
 export const pickerGroups: Array<{ name: string; types: StepType[] }> = [
   { name: "Messages", types: ["send_email"] },
-  { name: "Flow control", types: ["delay", "wait_for_event", "condition"] },
+  { name: "Flow control", types: ["delay", "wait_for_event", "condition", "branch", "filter", "exit"] },
   { name: "Audience", types: ["contact_update", "contact_delete", "add_to_segment"] },
 ];
 
@@ -111,13 +111,14 @@ export function Canvas({ tree, actions, disabled = false, errors = {}, options, 
           <div key={group.name} className="pickerGroup" role="group" aria-label={group.name}>
             <h3>{group.name}</h3>
             {group.types.map((type) => (
-              <button key={type} type="button" className="pickerItem" onClick={() => pick(type)}>
+              <button key={type} type="button" className="pickerItem" disabled={type === "exit" && listAt(tree, adding.path).slice(adding.index).some((node) => node.type !== "exit")} onClick={() => pick(type)}>
                 <Tile tone={stepTones[type]}>{stepIcons[type]}</Tile>
                 {stepLabels[type]}
               </button>
             ))}
           </div>
         ))}
+        {listAt(tree, adding.path).slice(adding.index).some((node) => node.type !== "exit") ? <p className="fieldHint">Exit can only be added at the end of a path, so following steps are not discarded.</p> : null}
       </section>
     );
   } else if (selected && selected === tree.trigger) {

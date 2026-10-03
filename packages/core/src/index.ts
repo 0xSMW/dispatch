@@ -1058,6 +1058,21 @@ export const stepConfigs = {
       return { event_name: name, ...(timeout ? { timeout } : {}), ...(value.filter_rule ? { filter_rule: value.filter_rule } : {}) };
     }),
   condition: ruleSchema,
+  exit: z.object({}).strict(),
+  filter: z.object({ rule: ruleSchema, scope: z.enum(["next", "following"]) }),
+  branch: z.object({
+    paths: z.array(z.object({
+      key: z.string().regex(/^[A-Za-z0-9_-]{1,60}$/).refine((key) => key !== "otherwise", "otherwise is reserved"),
+      label: z.string().trim().min(1).max(120),
+      rule: ruleSchema
+    })).min(2).max(10)
+  }).superRefine(({ paths }, ctx) => {
+    const keys = new Set<string>();
+    paths.forEach((path, index) => {
+      if (keys.has(path.key)) ctx.addIssue({ code: "custom", message: "Path keys must be unique", path: ["paths", index, "key"] });
+      keys.add(path.key);
+    });
+  }),
   add_to_segment: z.object({ segment_id: z.string().min(1), email: stepEmail }),
   contact_update: z.object({
     first_name: z.string().max(200).optional(),
@@ -1070,7 +1085,7 @@ export const stepConfigs = {
 };
 export type StepConfig<T extends StepType> = z.infer<(typeof stepConfigs)[T]>;
 
-export const stepTypes = ["trigger", "send_email", "delay", "wait_for_event", "condition", "add_to_segment", "contact_update", "contact_delete"] as const;
+export const stepTypes = ["trigger", "send_email", "delay", "wait_for_event", "condition", "filter", "branch", "exit", "add_to_segment", "contact_update", "contact_delete"] as const;
 export type StepType = (typeof stepTypes)[number];
 
 export const stepSchema = z.object({
@@ -1081,12 +1096,13 @@ export const stepSchema = z.object({
 export type Step = z.infer<typeof stepSchema>;
 export type AutomationStep = Step;
 
-export const connectionTypes = ["default", "condition_met", "condition_not_met", "timeout", "event_received"] as const;
+export const connectionTypes = ["default", "condition_met", "condition_not_met", "timeout", "event_received", "branch"] as const;
 
 export const connectionSchema = z.object({
   from: z.string().min(1),
   to: z.string().min(1),
-  type: z.enum(connectionTypes).default("default")
+  type: z.enum(connectionTypes).default("default"),
+  path: z.string().regex(/^[A-Za-z0-9_-]{1,60}$/).optional()
 });
 export type Connection = z.infer<typeof connectionSchema>;
 
@@ -1156,6 +1172,17 @@ export function automationIssues(steps: Step[], connections: Connection[]) {
     if (!from) issues.push(`Connection starts at unknown step ${connection.from}`);
     if (!byKey.has(connection.to)) issues.push(`Connection ends at unknown step ${connection.to}`);
     if (!from || !byKey.has(connection.to)) continue;
+    if (from.type === "exit") issues.push(`Exit ${from.key} cannot have outgoing connections`);
+    if (connection.type === "branch") {
+      if (from.type !== "branch") issues.push(`A branch connection must start at a branch step, not ${from.key}`);
+      else if (!connection.path || ![...(from.config as StepConfig<"branch">).paths.map((path) => path.key), "otherwise"].includes(connection.path)) {
+        issues.push(`Branch ${from.key} has an unknown path ${connection.path ?? ""}`);
+      }
+    } else {
+      if (connection.path !== undefined) issues.push(`Only branch connections can have a path`);
+      if (from.type === "branch") issues.push(`Branch ${from.key} must use branch connections`);
+    }
+    if (from.type === "filter" && connection.type !== "default") issues.push(`Filter ${from.key} can only have a default connection`);
     if ((connection.type === "condition_met" || connection.type === "condition_not_met") && from.type !== "condition") {
       issues.push(`A ${connection.type} connection must start at a condition step, not ${from.key}`);
     }
@@ -1163,7 +1190,7 @@ export function automationIssues(steps: Step[], connections: Connection[]) {
       issues.push(`A ${connection.type} connection must start at a wait_for_event step, not ${from.key}`);
     }
     // A run follows one edge of each type out of a step. A second one would never be taken.
-    const branch = `${connection.from}:${connection.type}`;
+    const branch = `${connection.from}:${connection.type}:${connection.path ?? ""}`;
     branches.set(branch, (branches.get(branch) ?? 0) + 1);
     if (branches.get(branch) === 2) {
       issues.push(
@@ -1173,6 +1200,12 @@ export function automationIssues(steps: Step[], connections: Connection[]) {
       );
     }
     edges.set(connection.from, [...(edges.get(connection.from) ?? []), connection.to]);
+  }
+
+  for (const step of steps.filter((step) => step.type === "branch")) {
+    for (const path of [...(step.config as StepConfig<"branch">).paths.map((path) => path.key), "otherwise"]) {
+      if (branches.get(`${step.key}:branch:${path}`) !== 1) issues.push(`Branch ${step.key} needs exactly one connection for path ${path}`);
+    }
   }
 
   const state = new Map<string, "open" | "closed">();

@@ -19,8 +19,9 @@ export async function emitRunEvent(
     request_id: string;
     contact_id: string | null;
     state: string;
+    exit_reason: string | null;
   }>(
-    `select r.id, r.automation_id, coalesce(e.request_id, r.id) as request_id, c.id as contact_id, r.state
+    `select r.id, r.automation_id, coalesce(e.request_id, r.id) as request_id, c.id as contact_id, r.state, r.exit_reason
      from automation_runs r
      join custom_events e on e.tenant_id = r.tenant_id and e.id = r.event_id
      left join contacts c on c.tenant_id = r.tenant_id and lower(c.email) = lower(e.email)
@@ -40,6 +41,7 @@ export async function emitRunEvent(
       run_id: runId,
       contact_id: run.contact_id ?? null,
       state: run.state,
+      exit_reason: run.exit_reason ?? null,
     },
   });
 }

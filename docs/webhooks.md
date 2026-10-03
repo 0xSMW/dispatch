@@ -14,7 +14,7 @@ Create, `GET /webhooks/{id}`, `PATCH /webhooks/{id}`, and rotate return `signing
 
 `email.scheduled`, `email.sent`, `email.delivered`, `email.delivery_delayed`, `email.bounced`, `email.complained`, `email.failed`, `email.opened`, `email.clicked`, `email.suppressed`, `email.received`, `email.unsubscribed`, `automation.run.started`, `automation.run.completed`, `automation.run.failed`, `contact.created`, `contact.updated`, `contact.deleted`, `contact.topics.updated`, `domain.created`, `domain.updated`, `domain.deleted`, `suppression.added`, `suppression.removed`, `topic.created`, `topic.updated`, `topic.deleted`.
 
-An unsubscribe link records one `email.unsubscribed` event per email, even when used again. Automation events carry `automation_id`, `run_id`, `contact_id` (nullable), and `state`. Started means the run was enrolled and queued. Completed covers `done` and `stopped`; failed has state `failed`. Delays and resumed waits do not emit another start. Each transition and its webhook attempts commit with the run's state change.
+An unsubscribe link records one `email.unsubscribed` event per email, even when used again. Automation events carry `automation_id`, `run_id`, `contact_id` (nullable), `state`, and `exit_reason` (nullable). Started means the run was enrolled and queued, with a null exit reason. Completed covers `done` and `stopped`: its exit reason is `completed` for a natural ending, `exit` for an Exit step, `filter` for a failed Filter or saved guard, `stopped` for cancellation, or `stranded` for a paused edit that removed or changed the next step. Failed has state `failed` and a null exit reason; `failed` is not an exit reason. These internal states are unchanged; run API statuses remain running/completed/failed/cancelled. Delays and resumed waits do not emit another start. Each transition and its webhook attempts commit with the run's state change.
 
 `all` expands to the supported types when an endpoint is created or updated. Update an existing endpoint's events to `["all"]` to include types added since it was configured.
 
@@ -40,6 +40,27 @@ An unsubscribe link records one `email.unsubscribed` event per email, even when 
 ```
 
 For email events, `data` has `email_id`, `created_at` (when the email was created), `from`, `to`, `subject`, `message_id`, and `tags`, plus `broadcast_id` and `template_id` when they apply. Bounce, click, failure, and suppression events add a `bounce`, `click`, `failed`, or `suppressed` object. Bounce and suppression events also carry `email`, the one address the event is about, since `to` can hold several. `bounce.type` is `Permanent`, `Temporary`, or `Undetermined`. `Temporary` is what SES calls `Transient`: the payload uses Resend's word, and `GET /emails/{id}/events` and the metrics use SES's. Other events carry the event's own data, such as `{ "id": "contact_...", "email": "..." }` for contact events. The top-level `created_at` is when the event was recorded. `id` is the same across retries and replays, so use it to drop duplicates.
+
+For example, an automation leaving at a Filter emits:
+
+```json
+{
+  "id": "event_...",
+  "request_id": null,
+  "type": "automation.run.completed",
+  "email_id": null,
+  "data": {
+    "automation_id": "auto_...",
+    "run_id": "run_...",
+    "contact_id": "contact_...",
+    "state": "done",
+    "exit_reason": "filter"
+  },
+  "created_at": "2026-10-04T12:00:00.000Z"
+}
+```
+
+Saved filter guards and per-step branch choices are available through the [automation run API](automations.md#run-exit-reasons), not added to lifecycle webhook data.
 
 ## Signatures
 

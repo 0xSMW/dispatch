@@ -6,7 +6,7 @@ const emit = vi.hoisted(() => vi.fn());
 vi.mock("./emails.js", () => ({ ingestEmail }));
 vi.mock("./events.js", () => ({ emit }));
 
-const { executeAutomationRun, fireEvent, stepLimit, contactContext, eventContext, mappedVariables } = await import("./automations.js");
+const { executeAutomationRun, fireEvent, stepLimit, contactContext, eventContext, mappedVariables, walker, stepOutcome } = await import("./automations.js");
 
 type StepRow = { step_key: string | null; step_index: number; type: string; state: string; data: Record<string, unknown>; error?: string };
 type Contact = {
@@ -37,6 +37,7 @@ function fake(run: {
   deleted?: boolean;
   paused_at?: string | null;
   version?: number;
+  guards?: Array<{ filter: string; rule: import("@dispatchmail/core").Rule }>;
   onStep?: (text: string, state: ReturnType<typeof fake>["state"]) => void;
 }) {
   const state = {
@@ -60,6 +61,8 @@ function fake(run: {
       enabled: true,
       paused_at: run.paused_at ?? null,
       version: run.version ?? 0,
+      guards: run.guards ?? [],
+      exit_reason: null as string | null,
       email: run.email === undefined ? "ada@example.com" : run.email,
       data: run.data ?? {},
       received_at: "2026-10-04T00:00:00Z"
@@ -107,6 +110,7 @@ function fake(run: {
     if (text.startsWith("update automation_runs set state = 'stopped'")) {
       if (!active()) return { rows: [] };
       state.run.state = "stopped";
+      state.run.exit_reason = "stopped";
       return { rows: one };
     }
     if (text.startsWith("update automation_runs set state = 'ready'")) {
@@ -126,6 +130,11 @@ function fake(run: {
     if (text.startsWith("update automation_runs set next_step_key = $3, resume_data = null")) {
       if (!running()) return { rows: [] };
       Object.assign(state.run, { next_step_key: params[2], resume_data: null, state: params[2] === null ? "done" : "running" });
+      if (params[2] === null) state.run.exit_reason = String(params[3]);
+      return { rows: one };
+    }
+    if (text.startsWith("update automation_runs set guards =")) {
+      state.run.guards = [...state.run.guards, ...JSON.parse(String(params[2]))];
       return { rows: one };
     }
     if (text.startsWith("update automation_runs set state = 'failed'")) {
@@ -255,6 +264,81 @@ beforeEach(() => {
   ingestEmail.mockReset();
   emit.mockReset();
   ingestEmail.mockImplementation(async (_client: unknown, input: { template: string }) => ({ email: { id: `email_${input.template}` } }));
+});
+
+describe("flow control execution", () => {
+  const rule = { type: "rule", field: "contact.activated", operator: "eq", value: false };
+  const start = { key: "start", type: "trigger", config: { event_name: "flow.start" } };
+  const filter = (scope = "following") => ({ key: "eligible", type: "filter", config: { rule, scope } });
+  it.each(["next", "following"])("failed %s filter exits without following default", async (scope) => {
+    const { db, state } = fake({ steps: [start, filter(scope), send("later", "stale")],
+      connections: [{ from: "start", to: "eligible" }, { from: "eligible", to: "later" }],
+      contacts: [{ id: "c", email: "ada@example.com", properties: { activated: true } }],
+    });
+    await executeAutomationRun(db, "tenant_1", "run_1");
+    expect(state.run).toMatchObject({ state: "done", exit_reason: "filter", guards: [] });
+    expect(state.steps[0].data).toEqual({ result: false, exited: "filter", filter: "eligible" });
+    expect(sent()).toEqual([]);
+  });
+  it.each(["delay", "send_email", "contact_update", "exit"])("reevaluates following filters before later %s steps", async (type) => {
+    let changed = false;
+    const next = type === "send_email" ? send("later", "stale") : { key: "later", type, config: type === "delay" ? { duration: "1 hour" } : {} };
+    const { db, state } = fake({ steps: [start, filter(), next],
+      connections: [{ from: "start", to: "eligible" }, { from: "eligible", to: "later" }],
+      contacts: [{ id: "c", email: "ada@example.com", properties: { activated: false } }],
+      onStep: (sql, current) => {
+        if (sql === "commit" && !changed && current.steps.length) {
+          changed = true;
+          current.contacts[0].properties = { activated: true };
+        }
+      },
+    });
+    await executeAutomationRun(db, "tenant_1", "run_1");
+    expect(state.run).toMatchObject({ state: "done", exit_reason: "filter", guards: [{ filter: "eligible", rule }] });
+    expect(state.steps[1].data).toEqual({ exited: "filter", filter: "eligible" });
+    expect(sent()).toEqual([]);
+  });
+  it("next filters are not stored and explicit Exit is terminal", async () => {
+    const { db, state } = fake({ steps: [start, filter("next"), { key: "end", type: "exit", config: {} }, send("never", "never")],
+      connections: [{ from: "start", to: "eligible" }, { from: "eligible", to: "end" }, { from: "end", to: "never" }],
+      contacts: [{ id: "c", email: "ada@example.com", properties: { activated: false } }],
+    });
+    await executeAutomationRun(db, "tenant_1", "run_1");
+    expect(state.run).toMatchObject({ state: "done", exit_reason: "exit", guards: [] });
+    expect(state.steps.map((step) => step.step_key)).toEqual(["eligible", "end"]);
+    expect(sent()).toEqual([]);
+  });
+  it("uses the first failed saved guard after resuming with fresh contact state", async () => {
+    const { db, state } = fake({ steps: [start, send("later", "stale")], next_step_key: "later",
+      guards: [{ filter: "old-filter", rule: rule as import("@dispatchmail/core").Rule }, { filter: "second-filter", rule: rule as import("@dispatchmail/core").Rule }],
+      contacts: [{ id: "c", email: "ada@example.com", properties: { activated: true } }],
+    });
+    await executeAutomationRun(db, "tenant_1", "run_1");
+    expect(state.run.exit_reason).toBe("filter");
+    expect(state.steps[0].data).toEqual({ exited: "filter", filter: "old-filter" });
+    expect(sent()).toEqual([]);
+  });
+  it.each(["first", "second", "otherwise"])("records ordered branch selection %s without default fallback", async (expected) => {
+    const config = { paths: [
+      { key: "first", label: "First", rule: { type: "rule", field: "event.first", operator: "eq", value: true } },
+      { key: "second", label: "Second", rule: { type: "rule", field: "event.second", operator: "eq", value: true } },
+    ] };
+    const { db, state } = fake({ steps: [start, { key: "choose", type: "branch", config }, ...["first", "second", "otherwise"].map((key) => send(key, key))],
+      connections: [{ from: "start", to: "choose" }, ...["first", "second", "otherwise"].map((path) => ({ from: "choose", to: path, type: "branch", path }))],
+      data: { first: expected === "first", second: expected !== "otherwise" },
+    });
+    await executeAutomationRun(db, "tenant_1", "run_1");
+    expect(state.steps[0].data).toEqual({ path: expected });
+    expect(sent()).toEqual([expected]);
+    expect(state.run.exit_reason).toBe("completed");
+  });
+  it("routes exact keyed outcomes and never falls back for exits or missing branch paths", () => {
+    const walk = walker({ steps: [], connections: [{ from: "a", to: "default", type: "default" }, { from: "a", to: "one", type: "branch", path: "one" }] });
+    expect(walk.next("a", { type: "branch", path: "one" })).toBe("one");
+    expect(walk.next("a", { type: "branch", path: "missing" })).toBeNull();
+    expect(walk.next("a", { type: "exit" })).toBeNull();
+    expect(stepOutcome({ key: "a", type: "filter", config: {} }, { result: false })).toEqual({ type: "exit" });
+  });
 });
 
 describe("executeAutomationRun", () => {

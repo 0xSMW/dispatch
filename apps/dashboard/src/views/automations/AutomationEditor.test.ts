@@ -149,6 +149,7 @@ describe("AutomationEditor", () => {
     await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
     expect(JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "PATCH")![1]!.body)).steps).toEqual([
       { key: "trigger", type: "trigger", config: { ...config, to: false } },
+      { key: "trigger_default_exit", type: "exit", config: {} },
     ]);
   });
 
@@ -165,7 +166,7 @@ describe("AutomationEditor", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
     expect(JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "PATCH")![1]!.body))).toMatchObject({
-      reentry, steps: [{ key: "trigger", type: "trigger", config: { type: "contact_created" } }],
+      reentry, steps: [{ key: "trigger", type: "trigger", config: { type: "contact_created" } }, { key: "trigger_default_exit", type: "exit", config: {} }],
     });
   });
 
@@ -338,7 +339,7 @@ describe("AutomationEditor", () => {
     open();
     const branch = await screen.findByRole("region", { name: "False branch of pro" });
     fireEvent.click(within(branch).getByRole("button", { name: "Add step" }));
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Time delay" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Delay" }));
     expect(await screen.findByRole("article", { name: "Step delay_1" })).toBeTruthy();
     expect(screen.getByText('Examples: "2 days", "1 hour". Up to 30 days.')).toBeTruthy();
     expect(screen.getByText("Unsaved changes")).toBeTruthy();
@@ -349,11 +350,13 @@ describe("AutomationEditor", () => {
     expect(String(patch[0])).toBe("http://localhost:3100/automations/automation_1");
     const body = JSON.parse(String(patch[1]!.body));
     expect(body.name).toBe("Welcome");
-    expect(body.steps.map((step: { key: string }) => step.key)).toEqual(["trigger", "welcome", "pro", "delay_1"]);
-    expect(body.steps[3]).toEqual({ key: "delay_1", type: "delay", config: { duration: "1 hour" } });
+    expect(body.steps.map((step: { key: string }) => step.key)).toEqual(["trigger", "welcome", "pro", "pro_condition_met_exit", "delay_1"]);
+    expect(body.steps[3]).toEqual({ key: "pro_condition_met_exit", type: "exit", config: {} });
+    expect(body.steps[4]).toEqual({ key: "delay_1", type: "delay", config: { duration: "1 hour" } });
     expect(body.connections).toEqual([
       { from: "trigger", to: "welcome", type: "default" },
       { from: "welcome", to: "pro", type: "default" },
+      { from: "pro", to: "pro_condition_met_exit", type: "condition_met" },
       { from: "pro", to: "delay_1", type: "condition_not_met" },
     ]);
     expect(body.status).toBeUndefined();

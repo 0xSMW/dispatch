@@ -94,7 +94,7 @@ describe("layout", () => {
     expect(edges.map((item) => item.id)).toEqual(["start->welcome", "welcome->pause", "pause->end:main"]);
     expect(edges.map((item) => item.data?.slot)).toEqual([{ path: [], index: 0 }, { path: [], index: 1 }, undefined]);
     expect(edges.map((item) => item.data?.addLabel)).toEqual(["Add step after the trigger", "Add step after welcome", undefined]);
-    expect(byId(nodes, "end:main").data).toEqual({ slot: { path: [], index: 2 }, label: "Add step at the end" });
+    expect(byId(nodes, "end:main").data).toEqual({ slot: { path: [], index: 2 }, label: "Add step at the end", exit: false });
   });
 
   it("gives every node a fixed size and top and bottom handles, so edges draw before measuring", () => {
@@ -150,10 +150,14 @@ describe("layout", () => {
       const shape = tree(graph);
       const { edges } = layout(shape, { editable: true });
       const steps = edges.filter((item) => !item.target.startsWith("end:"));
+      const saved = toGraph(shape);
+      // Empty legacy lanes draw an Exit end marker and serialize an explicit Exit target.
+      const exits = new Set(saved.steps.filter((step) => step.type === "exit").map((step) => step.key));
+      const connections = saved.connections.filter((edge) => !exits.has(edge.to));
       expect(steps.map((item) => ({ from: item.source, to: item.target, type: item.data?.branch ?? "default" }))).toEqual(
-        expect.arrayContaining(toGraph(shape).connections),
+        expect.arrayContaining(connections),
       );
-      expect(steps).toHaveLength(toGraph(shape).connections.length);
+      expect(steps).toHaveLength(connections.length);
     }
   });
 

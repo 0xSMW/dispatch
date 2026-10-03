@@ -161,10 +161,11 @@ const (
 )
 
 type AutomationRunEvent struct {
-	AutomationID string  `json:"automation_id"`
-	RunID        string  `json:"run_id"`
-	ContactID    *string `json:"contact_id"`
-	State        string  `json:"state"`
+	AutomationID string                `json:"automation_id"`
+	RunID        string                `json:"run_id"`
+	ContactID    *string               `json:"contact_id"`
+	State        string                `json:"state"`
+	ExitReason   *AutomationExitReason `json:"exit_reason"`
 }
 
 type BatchResponse struct {
@@ -309,6 +310,47 @@ type Automation struct {
 type AutomationDryRun struct {
 	StrandedRuns int            `json:"stranded_runs"`
 	ByStep       map[string]int `json:"by_step"`
+}
+
+type AutomationExitReason string
+
+const (
+	ExitCompleted AutomationExitReason = "completed"
+	ExitExplicit  AutomationExitReason = "exit"
+	ExitFilter    AutomationExitReason = "filter"
+	ExitStopped   AutomationExitReason = "stopped"
+	ExitStranded  AutomationExitReason = "stranded"
+)
+
+type AutomationGuard struct {
+	Filter string `json:"filter"`
+	Rule   Rule   `json:"rule"`
+}
+
+// AutomationRun describes both list and detail responses. AutomationRuns and
+// AutomationRun retain their existing map return types for compatibility.
+type AutomationRun struct {
+	Object       string                `json:"object"`
+	ID           string                `json:"id"`
+	AutomationID string                `json:"automation_id"`
+	Status       string                `json:"status"`
+	ExitReason   *AutomationExitReason `json:"exit_reason"`
+	Guards       []AutomationGuard     `json:"guards"`
+	Event        Map                   `json:"event"`
+	Error        *string               `json:"error"`
+	CreatedAt    string                `json:"created_at"`
+	UpdatedAt    string                `json:"updated_at"`
+	Steps        []AutomationRunStep   `json:"steps,omitempty"`
+}
+
+type AutomationRunStep struct {
+	Key         string  `json:"key"`
+	Type        string  `json:"type"`
+	Status      string  `json:"status"`
+	StartedAt   *string `json:"started_at"`
+	CompletedAt *string `json:"completed_at"`
+	Output      Map     `json:"output"`
+	Error       *string `json:"error"`
 }
 
 // Automation statuses. Pausing a disabled automation returns 409.
@@ -621,6 +663,37 @@ type AutomationStep struct {
 	Config any    `json:"config,omitempty"`
 }
 
+// Rule is a predicate (type rule) or a recursive and/or group.
+// Value retains JSON booleans, numbers, strings, and arrays without coercion.
+// Nil omits Value; json.RawMessage("null") preserves an explicit JSON null.
+type Rule struct {
+	Type     string `json:"type"`
+	Field    string `json:"field,omitempty"`
+	Operator string `json:"operator,omitempty"`
+	Value    any    `json:"value,omitempty"`
+	Rules    []Rule `json:"rules,omitempty"`
+}
+
+type ExitConfig struct{}
+
+// FilterConfig tests once for next, or before every later step for following.
+type FilterConfig struct {
+	Rule  Rule   `json:"rule"`
+	Scope string `json:"scope"`
+}
+
+type BranchPath struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+	Rule  Rule   `json:"rule"`
+}
+
+// BranchConfig has two to ten ordered paths, with unique nonempty keys other
+// than otherwise. The first matching rule wins; otherwise is implicit.
+type BranchConfig struct {
+	Paths []BranchPath `json:"paths"`
+}
+
 // SendEmailConfig uses literal Variables and optional dotted context mappings.
 // Mappings override literals; recipient and unsubscribe context stays protected.
 type SendEmailConfig struct {
@@ -638,6 +711,8 @@ type AutomationConnection struct {
 	From string `json:"from"`
 	To   string `json:"to"`
 	Type string `json:"type,omitempty"`
+	// Path applies only to type branch: a configured path key or otherwise.
+	Path string `json:"path,omitempty"`
 }
 
 type AutomationInput struct {

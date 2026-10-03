@@ -18247,16 +18247,178 @@
               "sandbox": {
                 "type": "boolean",
                 "description": "True on simulated sandbox email.delivered events, not provider-confirmed delivery. All-sandbox emails bypass the provider and have no real provider message ID. For mixed emails, only sandbox recipients appear in the simulated event; real recipients still receive provider delivery events."
+              },
+              "automation_id": {
+                "type": "string",
+                "description": "Present on automation lifecycle events."
+              },
+              "run_id": {
+                "type": "string",
+                "description": "Present on automation lifecycle events."
+              },
+              "contact_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Present on automation lifecycle events; null when no contact was identified."
+              },
+              "state": {
+                "type": "string",
+                "description": "Internal run state on automation lifecycle events: ready on started, done or stopped on completed, failed on failed."
+              },
+              "exit_reason": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "completed",
+                  "exit",
+                  "filter",
+                  "stopped",
+                  "stranded",
+                  null
+                ],
+                "description": "completed is a natural ending; exit is an Exit step; filter is a failed Filter or saved guard; stopped is cancellation; stranded is a paused edit that removed or changed the next step. Running and failed runs have null; failed is not an exit reason."
               }
             },
             "additionalProperties": true,
-            "description": "Email events include `email_id`, `created_at`, `from`, `to`, `subject`, `message_id`, and `tags`, plus fields for the event type."
+            "description": "Email events include `email_id`, `created_at`, `from`, `to`, `subject`, `message_id`, and `tags`, plus fields for the event type. Automation lifecycle events require automation_id, run_id, contact_id (nullable), state and exit_reason (nullable). Started events have null exit_reason; failed events have null exit_reason. Completed events cover done and stopped and carry completed, exit, filter, stopped or stranded. Guards and per-step branch choices are available from the run API, not webhook data."
           },
           "created_at": {
             "type": "string",
             "format": "date-time"
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "enum": [
+                    "automation.run.started",
+                    "automation.run.completed",
+                    "automation.run.failed"
+                  ]
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "data": {
+                  "required": [
+                    "automation_id",
+                    "run_id",
+                    "contact_id",
+                    "state",
+                    "exit_reason"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "automation.run.started"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "data": {
+                  "properties": {
+                    "state": {
+                      "const": "ready"
+                    },
+                    "exit_reason": {
+                      "type": "null"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "automation.run.completed"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "data": {
+                  "properties": {
+                    "state": {
+                      "enum": [
+                        "done",
+                        "stopped"
+                      ]
+                    },
+                    "exit_reason": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "automation.run.failed"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "data": {
+                  "properties": {
+                    "state": {
+                      "const": "failed"
+                    },
+                    "exit_reason": {
+                      "type": "null"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "examples": [
+          {
+            "id": "event_123",
+            "request_id": null,
+            "type": "automation.run.completed",
+            "email_id": null,
+            "data": {
+              "automation_id": "auto_123",
+              "run_id": "run_123",
+              "contact_id": "contact_123",
+              "state": "done",
+              "exit_reason": "filter"
+            },
+            "created_at": "2026-10-04T12:00:00.000Z"
+          }
+        ]
       },
       "WebhookEventDetail": {
         "allOf": [
@@ -20371,6 +20533,74 @@
           }
         ]
       },
+      "ExitConfig": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false,
+        "description": "An empty config. Exit ends the run deliberately with exit_reason exit and has no outgoing connections."
+      },
+      "FilterConfig": {
+        "type": "object",
+        "required": [
+          "rule",
+          "scope"
+        ],
+        "properties": {
+          "rule": {
+            "$ref": "#/components/schemas/Rule"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "next",
+              "following"
+            ]
+          }
+        },
+        "description": "next evaluates the rule once. following also saves a guard on the run, evaluated against fresh contact context and the run's triggering event before every later step, including Delay and Wait for event steps and resumed waits. Every saved guard must match. A failed Filter or guard ends the run with exit_reason filter and never follows a default connection. Already queued emails are not cancelled."
+      },
+      "BranchConfig": {
+        "type": "object",
+        "required": [
+          "paths"
+        ],
+        "properties": {
+          "paths": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 10,
+            "items": {
+              "type": "object",
+              "required": [
+                "key",
+                "label",
+                "rule"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 60,
+                  "pattern": "^[A-Za-z0-9_-]{1,60}$",
+                  "not": {
+                    "const": "otherwise"
+                  }
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120,
+                  "description": "Trimmed, nonempty display label."
+                },
+                "rule": {
+                  "$ref": "#/components/schemas/Rule"
+                }
+              }
+            }
+          }
+        },
+        "description": "Two to ten ordered paths with unique keys, validated by the API. Keys are nonempty and otherwise is reserved. Rules use fresh contact context and the run's triggering event. First-match routing evaluates paths in array order and takes the first matching rule; otherwise is implicit and chosen only when no rule matches. Each configured path and otherwise needs exactly one keyed branch connection. The step output records { path }."
+      },
       "AutomationStep": {
         "type": "object",
         "required": [
@@ -20390,6 +20620,9 @@
               "delay",
               "wait_for_event",
               "condition",
+              "filter",
+              "branch",
+              "exit",
               "add_to_segment",
               "contact_update",
               "contact_delete"
@@ -20398,7 +20631,7 @@
           "config": {
             "type": "object",
             "additionalProperties": true,
-            "description": "Depends on `type`. For `send_email`: `template` (required), `from` (optional when the template stores a sender), `to`, `subject`, `reply_to`, `variables`, `variable_mapping`, and `topic_id`. With a `topic_id` the email is subscription mail, and a contact who unsubscribed from everything or opted out of that topic is skipped. Without one the email always sends, as a receipt or a password reset must. Literal variables are not interpreted as field paths. Condition config uses Rule; send_email config uses SendEmailConfig."
+            "description": "Depends on `type`. For `send_email`: `template` (required), `from` (optional when the template stores a sender), `to`, `subject`, `reply_to`, `variables`, `variable_mapping`, and `topic_id`. With a `topic_id` the email is subscription mail, and a contact who unsubscribed from everything or opted out of that topic is skipped. Without one the email always sends, as a receipt or a password reset must. Literal variables are not interpreted as field paths. Condition config uses Rule; send_email config uses SendEmailConfig. Filter config uses FilterConfig; Branch config uses BranchConfig; Exit config is empty and uses ExitConfig. Filters continue only on a matching rule, Branch paths use first-match routing, and Exit has no outgoing connections."
           }
         },
         "allOf": [
@@ -20485,6 +20718,69 @@
                 }
               }
             }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "exit"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "config": {
+                  "$ref": "#/components/schemas/ExitConfig"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "filter"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "config": {
+                  "$ref": "#/components/schemas/FilterConfig"
+                }
+              },
+              "required": [
+                "config"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "branch"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "config": {
+                  "$ref": "#/components/schemas/BranchConfig"
+                }
+              },
+              "required": [
+                "config"
+              ]
+            }
           }
         ]
       },
@@ -20511,10 +20807,45 @@
               "condition_met",
               "condition_not_met",
               "timeout",
-              "event_received"
+              "event_received",
+              "branch"
             ]
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60,
+            "pattern": "^[A-Za-z0-9_-]{1,60}$",
+            "description": "Required only for type branch: a configured path key or otherwise. Other connection types cannot carry path."
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "branch"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "required": [
+                "path"
+              ]
+            },
+            "else": {
+              "not": {
+                "required": [
+                  "path"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Branch connections can start only at a Branch step. Each configured path and otherwise requires exactly one outgoing branch connection, distinguished by from, type and path. Every target must be a real step, including Exit. Exit has no outgoing connections. Filter steps can have only a default connection; a failed filter never follows it."
       },
       "AutomationInput": {
         "type": "object",
@@ -20557,7 +20888,19 @@
             "type": "array",
             "items": {
               "type": "object",
-              "additionalProperties": true
+              "additionalProperties": true,
+              "allOf": [
+                {
+                  "if": {
+                    "required": [
+                      "key"
+                    ]
+                  },
+                  "then": {
+                    "$ref": "#/components/schemas/AutomationStep"
+                  }
+                }
+              ]
             },
             "minItems": 1,
             "maxItems": 100,
@@ -20570,7 +20913,123 @@
             },
             "maxItems": 200
           }
-        }
+        },
+        "description": "Branch steps require exactly one outgoing branch connection per configured path key and one for otherwise. Only Branch steps can use branch connections or path fields. Each target is a real step; Exit has no outgoing connections. Filters can use only a default connection and never follow it on failure. The API validates unique step/path keys, connection sources and targets, and an acyclic graph.",
+        "examples": [
+          {
+            "name": "Onboarding",
+            "status": "disabled",
+            "steps": [
+              {
+                "key": "start",
+                "type": "trigger",
+                "config": {
+                  "type": "contact_created"
+                }
+              },
+              {
+                "key": "audience",
+                "type": "filter",
+                "config": {
+                  "rule": {
+                    "type": "rule",
+                    "field": "contact.activated",
+                    "operator": "eq",
+                    "value": false
+                  },
+                  "scope": "following"
+                }
+              },
+              {
+                "key": "later",
+                "type": "delay",
+                "config": {
+                  "duration": "1 hour"
+                }
+              },
+              {
+                "key": "plan",
+                "type": "branch",
+                "config": {
+                  "paths": [
+                    {
+                      "key": "free",
+                      "label": "Free plan",
+                      "rule": {
+                        "type": "rule",
+                        "field": "contact.plan",
+                        "operator": "eq",
+                        "value": "free"
+                      }
+                    },
+                    {
+                      "key": "pro",
+                      "label": "Pro plan",
+                      "rule": {
+                        "type": "rule",
+                        "field": "contact.plan",
+                        "operator": "eq",
+                        "value": "pro"
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "key": "welcome",
+                "type": "send_email",
+                "config": {
+                  "template": "welcome"
+                }
+              },
+              {
+                "key": "end",
+                "type": "exit",
+                "config": {}
+              }
+            ],
+            "connections": [
+              {
+                "from": "start",
+                "to": "audience",
+                "type": "default"
+              },
+              {
+                "from": "audience",
+                "to": "later",
+                "type": "default"
+              },
+              {
+                "from": "later",
+                "to": "plan",
+                "type": "default"
+              },
+              {
+                "from": "plan",
+                "to": "welcome",
+                "type": "branch",
+                "path": "free"
+              },
+              {
+                "from": "plan",
+                "to": "end",
+                "type": "branch",
+                "path": "pro"
+              },
+              {
+                "from": "plan",
+                "to": "end",
+                "type": "branch",
+                "path": "otherwise"
+              },
+              {
+                "from": "welcome",
+                "to": "end",
+                "type": "default"
+              }
+            ]
+          }
+        ]
       },
       "AutomationUpdate": {
         "type": "object",
@@ -20607,7 +21066,19 @@
             "type": "array",
             "items": {
               "type": "object",
-              "additionalProperties": true
+              "additionalProperties": true,
+              "allOf": [
+                {
+                  "if": {
+                    "required": [
+                      "key"
+                    ]
+                  },
+                  "then": {
+                    "$ref": "#/components/schemas/AutomationStep"
+                  }
+                }
+              ]
             },
             "minItems": 1,
             "maxItems": 100
@@ -20620,7 +21091,7 @@
             "maxItems": 200
           }
         },
-        "description": "Changing steps, connections, or trigger requires an already paused or disabled automation, or disabling in the same request. Previously used keys cannot change type."
+        "description": "Changing steps, connections, or trigger requires an already paused or disabled automation, or disabling in the same request. Previously used keys cannot change type. Branch steps require exactly one outgoing branch connection per configured path key and one for otherwise. Only Branch steps can use branch connections or path fields. Each target is a real step; Exit has no outgoing connections. Filters can use only a default connection and never follow it on failure. The API validates unique step/path keys, connection sources and targets, and an acyclic graph."
       },
       "DryRun": {
         "type": "object",
@@ -20775,7 +21246,9 @@
           "id",
           "automation_id",
           "status",
-          "event"
+          "event",
+          "exit_reason",
+          "guards"
         ],
         "properties": {
           "object": {
@@ -20832,8 +21305,44 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "exit_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "completed",
+              "exit",
+              "filter",
+              "stopped",
+              "stranded",
+              null
+            ],
+            "description": "completed is a natural ending; exit is an Exit step; filter is a failed Filter or saved guard; stopped is cancellation; stranded is a paused edit that removed or changed the next step. Running and failed runs have null; failed is not an exit reason."
+          },
+          "guards": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "filter",
+                "rule"
+              ],
+              "properties": {
+                "filter": {
+                  "type": "string",
+                  "description": "The originating Filter step key."
+                },
+                "rule": {
+                  "$ref": "#/components/schemas/Rule"
+                }
+              }
+            },
+            "description": "Saved following-filter guards, empty when no following filter was saved. Checked against fresh context before every later step, including resumed waits."
           }
-        }
+        },
+        "description": "Exit reasons explain normal completion or cancellation without changing run statuses. Failed runs carry null exit_reason and their failure in error."
       },
       "AutomationRunMetrics": {
         "type": "object",
@@ -20985,7 +21494,20 @@
                     },
                     "output": {
                       "type": "object",
-                      "additionalProperties": true
+                      "additionalProperties": true,
+                      "description": "Step result. Branch records { path: \"<configured key or otherwise>\" }. A failed saved guard records { exited: \"filter\", filter: \"<originating Filter step key>\" } on the later step it prevented.",
+                      "examples": [
+                        {
+                          "path": "free"
+                        },
+                        {
+                          "path": "otherwise"
+                        },
+                        {
+                          "exited": "filter",
+                          "filter": "audience"
+                        }
+                      ]
                     },
                     "error": {
                       "type": [

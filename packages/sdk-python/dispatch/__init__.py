@@ -28,12 +28,14 @@ class ImportColumnMap(TypedDict, total=False):
     properties: dict[str, ImportColumn]
 
 LifecycleEventType = Literal["email.unsubscribed", "automation.run.started", "automation.run.completed", "automation.run.failed"]
+AutomationExitReason = Literal["completed", "exit", "filter", "stopped", "stranded"]
 
 class AutomationRunEvent(TypedDict):
     automation_id: str
     run_id: str
     contact_id: str | None
     state: str
+    exit_reason: AutomationExitReason | None
 
 class SplitEmail(TypedDict):
     id: str
@@ -249,6 +251,84 @@ SendEmailConfig = TypedDict(
     },
 )
 
+Operator = Literal[
+    "eq", "neq", "gt", "gte", "lt", "lte", "contains", "not_contains",
+    "starts_with", "ends_with", "within", "not_within", "exists", "is_empty",
+]
+
+
+class PredicateRule(TypedDict):
+    type: Literal["rule"]
+    field: str
+    operator: Operator
+    value: NotRequired[Any]
+
+
+class RuleGroup(TypedDict):
+    type: Literal["and", "or"]
+    rules: list[Rule]
+
+
+Rule = PredicateRule | RuleGroup
+
+
+class ExitConfig(TypedDict):
+    pass
+
+
+class FilterConfig(TypedDict):
+    """next tests once; following saves a guard checked before every later step."""
+    rule: Rule
+    scope: Literal["next", "following"]
+
+
+class BranchPath(TypedDict):
+    key: str
+    label: str
+    rule: Rule
+
+
+class BranchConfig(TypedDict):
+    """Two to ten ordered paths with unique nonempty keys other than otherwise."""
+    paths: list[BranchPath]
+
+
+class AutomationGuard(TypedDict):
+    filter: str
+    rule: Rule
+
+
+class AutomationRunStep(TypedDict):
+    key: str
+    type: str
+    status: str
+    started_at: str | None
+    completed_at: str | None
+    output: Json
+    error: str | None
+
+
+class AutomationRun(TypedDict):
+    object: Literal["automation_run"]
+    id: str
+    automation_id: str
+    status: Literal["running", "completed", "failed", "cancelled"]
+    exit_reason: AutomationExitReason | None
+    guards: list[AutomationGuard]
+    event: Json
+    error: str | None
+    created_at: str
+    updated_at: str
+    steps: NotRequired[list[AutomationRunStep]]
+    request_id: NotRequired[str]
+
+
+class AutomationRunList(TypedDict):
+    object: Literal["list"]
+    data: list[AutomationRun]
+    has_more: bool
+    request_id: NotRequired[str]
+
 
 class EventTriggerConfig(TypedDict):
     type: Literal["event"]
@@ -345,9 +425,9 @@ class AutomationStepInput(TypedDict, total=False):
     key: str
     type: Literal[
         "trigger", "send_email", "delay", "wait_for_event", "condition",
-        "add_to_segment", "contact_update", "contact_delete",
+        "add_to_segment", "contact_update", "contact_delete", "exit", "filter", "branch",
     ]
-    config: AutomationTriggerConfig | SendEmailConfig | dict[str, Any]
+    config: AutomationTriggerConfig | SendEmailConfig | ExitConfig | FilterConfig | BranchConfig | Rule | dict[str, Any]
 
 
 AutomationConnectionInput = TypedDict(
@@ -355,7 +435,8 @@ AutomationConnectionInput = TypedDict(
     {
         "from": str,
         "to": str,
-        "type": NotRequired[Literal["default", "condition_met", "condition_not_met", "timeout", "event_received"]],
+        "type": NotRequired[Literal["default", "condition_met", "condition_not_met", "timeout", "event_received", "branch"]],
+        "path": NotRequired[str],
     },
 )
 
@@ -990,10 +1071,10 @@ class Dispatch:
         body: Json = {} if reset_reentry is None else {"reset_reentry": reset_reentry}
         return self._request("POST", _path("automations", automation_id, "stop"), body)
 
-    def automation_runs(self, automation_id: str, **query: Any) -> Json:
+    def automation_runs(self, automation_id: str, **query: Any) -> AutomationRunList:
         return self._request("GET", _query(_path("automations", automation_id, "runs"), query))
 
-    def automation_run(self, automation_id: str, run_id: str) -> Json:
+    def automation_run(self, automation_id: str, run_id: str) -> AutomationRun:
         return self._request("GET", _path("automations", automation_id, "runs", run_id))
 
     def automation_run_metrics(self, automation_id: str, **query: Any) -> Json:
@@ -1174,6 +1255,19 @@ __all__ = [
     "ContactActivity",
     "LifecycleEventType",
     "AutomationRunEvent",
+    "AutomationExitReason",
+    "AutomationGuard",
+    "AutomationRun",
+    "AutomationRunList",
+    "AutomationRunStep",
+    "Operator",
+    "Rule",
+    "PredicateRule",
+    "RuleGroup",
+    "ExitConfig",
+    "FilterConfig",
+    "BranchPath",
+    "BranchConfig",
     "EmailUpdateInput",
     "TemplateInput",
     "TemplateUpdateInput",

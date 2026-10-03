@@ -13,7 +13,13 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
 from typing import get_args, get_type_hints
 
-from dispatch import Automation, AutomationDryRun, AutomationInput, AutomationTriggerConfig, AutomationUpdateInput, ContactPropertyInput, Dispatch, DispatchError, ImportColumnMap, SendEmailConfig
+from dispatch import (
+    Automation, AutomationConnectionInput, AutomationDryRun, AutomationExitReason, AutomationGuard,
+    AutomationInput, AutomationRun, AutomationRunEvent, AutomationRunList, AutomationStepInput,
+    AutomationTriggerConfig, AutomationUpdateInput, BranchConfig, BranchPath, ContactPropertyInput,
+    Dispatch, DispatchError, ExitConfig, FilterConfig, ImportColumnMap, PredicateRule, RuleGroup,
+    SendEmailConfig,
+)
 
 
 class Recorder(BaseHTTPRequestHandler):
@@ -159,6 +165,99 @@ class TestDispatch(unittest.TestCase):
                 self.assertNotIn("/v1/", sent["path"])
                 if body is not None:
                     self.assertEqual(sent["body"], body)
+
+    def test_flow_config_contracts(self):
+        self.assertEqual(get_args(get_type_hints(FilterConfig)["scope"]), ("next", "following"))
+        self.assertEqual(get_type_hints(BranchConfig), {"paths": list[BranchPath]})
+        self.assertEqual(get_type_hints(ExitConfig), {})
+        self.assertEqual(get_type_hints(AutomationGuard)["filter"], str)
+        self.assertIn("branch", get_args(get_type_hints(AutomationConnectionInput)["type"]))
+        self.assertEqual(get_type_hints(AutomationConnectionInput)["path"], str)
+        self.assertEqual(get_args(get_type_hints(AutomationStepInput)["type"])[-3:], ("exit", "filter", "branch"))
+        self.assertEqual(get_type_hints(RuleGroup)["rules"], list[PredicateRule | RuleGroup])
+        rule = {"type": "rule", "field": "contact.activated", "operator": "eq", "value": False}
+        paths = [
+            {"key": "free", "label": "Free", "rule": {"type": "rule", "field": "contact.plan", "operator": "eq", "value": "free"}},
+            {"key": "active", "label": "Active", "rule": {"type": "and", "rules": [
+                {"type": "rule", "field": "contact.score", "operator": "gte", "value": 0},
+                {"type": "rule", "field": "event.isTrial", "operator": "eq", "value": True},
+            ]}},
+        ]
+        for scope in ("next", "following"):
+            with self.subTest(scope=scope):
+                Recorder.calls = []
+                create: AutomationInput = {
+                    "name": "Onboarding", "status": "disabled", "reentry": "once",
+                    "steps": [
+                        {"key": "start", "type": "trigger", "config": {"type": "contact_created"}},
+                        {"key": "audience", "type": "filter", "config": {"rule": rule, "scope": scope}},
+                        {"key": "choose", "type": "branch", "config": {"paths": paths}},
+                        {"key": "end", "type": "exit", "config": {}},
+                    ],
+                    "connections": [
+                        {"from": "start", "to": "audience"},
+                        {"from": "audience", "to": "choose", "type": "default"},
+                        *[{"from": "choose", "to": "end", "type": "branch", "path": key} for key in ("free", "active", "otherwise")],
+                    ],
+                }
+                self.client.create_automation(create)
+                self.client.update_automation("a/1", create)
+                self.client.dry_run_automation("a/1", create)
+                self.assertEqual([call["path"] for call in Recorder.calls], [
+                    "/automations", "/automations/a%2F1", "/automations/a%2F1?dry_run=true",
+                ])
+                for call in Recorder.calls:
+                    self.assertEqual(call["body"], create)
+
+    def test_flow_run_contracts(self):
+        reasons = ("completed", "exit", "filter", "stopped", "stranded")
+        self.assertEqual(get_args(AutomationExitReason), reasons)
+        self.assertEqual(get_type_hints(AutomationRun)["exit_reason"], AutomationExitReason | None)
+        self.assertEqual(get_type_hints(AutomationRun)["guards"], list[AutomationGuard])
+        self.assertIs(get_type_hints(Dispatch.automation_run)["return"], AutomationRun)
+        self.assertIs(get_type_hints(Dispatch.automation_runs)["return"], AutomationRunList)
+        for status, reason in [
+            ("running", None), ("failed", None), ("completed", "completed"), ("completed", "exit"),
+            ("completed", "filter"), ("cancelled", "stopped"), ("cancelled", "stranded"),
+        ]:
+            with self.subTest(status=status, reason=reason):
+                run = {
+                    "object": "automation_run", "id": "r/1", "automation_id": "a/1",
+                    "status": status, "exit_reason": reason, "error": "Send failed" if status == "failed" else None,
+                    "guards": [{"filter": "audience", "rule": {
+                        "type": "rule", "field": "contact.activated", "operator": "eq", "value": False,
+                    }}],
+                    "event": {"id": "ev1", "name": "user.created", "email": None, "payload": {"isTrial": True}},
+                    "created_at": "2026-10-04T00:00:00Z", "updated_at": "2026-10-04T00:01:00Z",
+                    "steps": [
+                        {"key": "choose", "type": "branch", "status": "completed", "output": {"path": "active"}},
+                        {"key": "send", "type": "send_email", "status": "completed", "output": {"exited": "filter", "filter": "audience"}},
+                    ],
+                }
+                listing = {"object": "list", "has_more": False, "data": [run]}
+                Recorder.responses = {
+                    ("GET", "/automations/a%2F1/runs/r%2F1"): (200, run),
+                    ("GET", f"/automations/a%2F1/runs?status={status}"): (200, listing),
+                }
+                result = self.client.automation_run("a/1", "r/1")
+                self.assertEqual(result, run)
+                self.assertEqual(self.client.automation_runs("a/1", status=status)["data"], [run])
+                Recorder.responses[("GET", "/automations/a%2F1/runs/r%2F1")] = (200, {**run, "guards": []})
+                self.assertEqual(self.client.automation_run("a/1", "r/1")["guards"], [])
+
+    def test_flow_webhook_contracts(self):
+        hints = get_type_hints(AutomationRunEvent)
+        self.assertEqual(hints["exit_reason"], AutomationExitReason | None)
+        self.assertIn("exit_reason", AutomationRunEvent.__required_keys__)
+        self.assertNotIn("failed", get_args(AutomationExitReason))
+        for state, reason in [
+            ("ready", None), ("failed", None), ("done", "completed"), ("done", "exit"),
+            ("done", "filter"), ("stopped", "stopped"), ("stopped", "stranded"),
+        ]:
+            event: AutomationRunEvent = {
+                "automation_id": "a1", "run_id": "r1", "contact_id": None, "state": state, "exit_reason": reason,
+            }
+            self.assertEqual(json.loads(json.dumps(event)), event)
 
     def test_automation_pause_contracts(self):
         self.assertEqual(get_args(get_type_hints(AutomationInput)["status"]), ("enabled", "disabled"))
