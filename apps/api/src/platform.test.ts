@@ -107,6 +107,26 @@ describe("platform routes", () => {
     return { app, queries, last };
   }
 
+  it.each([
+    { vercel: "1", host: undefined, expected: null },
+    { vercel: "1", host: "smtp.acme.com", expected: { host: "smtp.acme.com", port: 2587, tls_port: 2465 } },
+    { vercel: undefined, host: undefined, expected: { host: null, port: 2587, tls_port: 2465 } },
+  ])("reports SMTP availability for Vercel=$vercel and host=$host", async ({ vercel, host, expected }) => {
+    vi.stubEnv("VERCEL", vercel);
+    vi.stubEnv("SMTP_HOST", host);
+    vi.stubEnv("SMTP_PORT", "2587");
+    vi.stubEnv("SMTP_TLS_PORT", "2465");
+    const { app } = await build();
+    try {
+      const response = await app.inject({ method: "GET", url: "/system" });
+      expect(response.statusCode).toBe(200);
+      expect(response.json().smtp).toEqual(expected);
+    } finally {
+      await app.close();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("serves the moved routes without /v1 and filters email jobs on $2", async () => {
     const { app, queries } = await build();
     for (const url of ["/setup", "/me", "/users", "/roles", "/memberships", "/sessions", "/audit-logs", "/usage", "/timeline", "/system"]) {

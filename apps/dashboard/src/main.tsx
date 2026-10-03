@@ -105,7 +105,7 @@ export const routes = [
           { path: "webhooks", element: <Webhooks /> },
           { path: "webhooks/:id", element: <Webhook /> },
 
-          { path: "settings", element: <Navigate to="/settings/team" replace /> },
+          { path: "settings", element: <Navigate to="/settings/general" replace /> },
           { path: "settings/usage", element: <Usage /> },
           { path: "settings/general", element: <General /> },
           { path: "settings/team", element: <Team /> },

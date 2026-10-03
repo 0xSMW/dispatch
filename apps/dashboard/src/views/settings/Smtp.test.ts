@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, screen } from "@testing-library/react";
+import { cleanup, fireEvent, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { h } from "../../testing";
 import { calls, show, Status, stubApi } from "../audience/stub";
@@ -35,11 +35,32 @@ describe("Smtp", () => {
     expect(screen.getByText("587")).toBeTruthy();
   });
 
-  it("uses the default ports when /system fails", async () => {
-    stubApi({ "GET /system": new Status(500, { name: "application_error", message: "Boom" }) });
+  it.each([null, undefined])("hides relay details when SMTP is unavailable (%s)", async (smtp) => {
+    stubApi({ "GET /system": system(smtp) });
     show(h(Smtp), "/settings/smtp");
-    expect(await screen.findByText(/ports are the defaults/)).toBeTruthy();
-    expect(screen.getByText("465")).toBeTruthy();
+    expect(await screen.findByText("SMTP is unavailable on this deployment.")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Test send" }).getAttribute("href")).toBe("/emails/send");
+    expect(screen.queryByText("Host")).toBeNull();
+    expect(screen.queryByText("587")).toBeNull();
+    expect(screen.queryByText("465")).toBeNull();
+    expect(screen.queryByText(/An API key/)).toBeNull();
+    expect(screen.queryByText(/SMTP_PASS=/)).toBeNull();
+    expect(screen.queryByText(/anything that speaks SMTP/)).toBeNull();
+  });
+
+  it("shows an error without relay details and retries /system", async () => {
+    let attempts = 0;
+    const fetch = stubApi({ "GET /system": () => ++attempts === 1
+      ? new Status(500, { name: "application_error", message: "Boom" })
+      : system({ host: "smtp.acme.com", port: 2587, tls_port: 2465 }) });
+    show(h(Smtp), "/settings/smtp");
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(screen.queryByText("Host")).toBeNull();
+    expect(screen.queryByText("465")).toBeNull();
+    expect(screen.queryByText(/SMTP_PASS=/)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect((await screen.findAllByText("smtp.acme.com")).length).toBeGreaterThan(0);
+    expect(calls(fetch).filter((call) => call === "GET /system")).toHaveLength(2);
   });
 });
 

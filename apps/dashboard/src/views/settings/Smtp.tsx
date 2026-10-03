@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { Code } from "../../components/Code";
+import { Failed } from "../../components/Empty";
 import { Facts } from "../../components/Facts";
 import { PageHeader } from "../../components/PageHeader";
 import { Panel } from "../../components/Panel";
@@ -34,7 +35,6 @@ export function relay(smtp: System["smtp"], apiUrl: string | undefined) {
 export function Smtp() {
   const { session } = useSession();
   const system = useResource<System>("/system");
-  const loaded = Boolean(system.data) || Boolean(system.error);
   const { host, guessed, port, tlsPort } = relay(system.data?.smtp, session?.apiUrl);
 
   return (
@@ -43,11 +43,18 @@ export function Smtp() {
       <Tabs tabs={settingsTabs} />
       <Panel title="SMTP">
         <div className="stack">
-          <p className="muted">Send through Dispatch from anything that speaks SMTP. Messages take the same path as the API.</p>
-          {!loaded ? (
+          {system.loading ? (
             <Skeleton lines={4} />
+          ) : system.error ? (
+            <Failed message={system.error} onRetry={system.reload} />
+          ) : !system.data?.smtp ? (
+            <>
+              <p>SMTP is unavailable on this deployment.</p>
+              <p className="muted">Send messages through the HTTP API. <Link to="/emails/send">Test send</Link>.</p>
+            </>
           ) : (
             <>
+              <p className="muted">Send through Dispatch from anything that speaks SMTP. Messages take the same path as the API.</p>
               <Facts
                 columns={2}
                 items={[
@@ -70,7 +77,6 @@ export function Smtp() {
                 {guessed
                   ? "The relay host is not configured, so this shows the API's host name. The operator can set SMTP_HOST to show the real one. "
                   : null}
-                {system.error ? "Could not read the relay settings, so the ports are the defaults. " : null}
                 Port {tlsPort} is open only when the relay has a TLS certificate.
               </p>
               <Code

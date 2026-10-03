@@ -594,7 +594,7 @@ export function registerPlatform(
     const quota = deps.quota ? await deps.quota(region).catch(() => null) : null;
     return presentSystem({
       sending: quota ? { region, ...quota } : null,
-      smtp: {
+      smtp: process.env.VERCEL && !process.env.SMTP_HOST ? undefined : {
         host: process.env.SMTP_HOST || null,
         // Each setting may list several ports. The first is the one to show people.
         port: Number.parseInt(process.env.SMTP_PORT || "587", 10) || 587,

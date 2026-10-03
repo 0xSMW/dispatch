@@ -17,7 +17,6 @@ import {
   Moon,
   Rocket,
   ScrollText,
-  Send,
   Settings,
   Sun,
   Users,
@@ -68,7 +67,7 @@ export function Shell() {
       <aside className="sidebar">
         <div className="brand">
           <span className="brandMark" aria-hidden>
-            <Send size={14} />
+            <img src="/logo.svg" alt="" />
           </span>
           <span>Dispatch</span>
         </div>

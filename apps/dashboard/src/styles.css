@@ -503,8 +503,12 @@ button.switch.on {
   width: 24px;
   height: 24px;
   border-radius: 6px;
-  background: var(--primary);
-  color: var(--on-primary);
+}
+
+.brandMark img {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 .sidebar nav {

@@ -28,7 +28,7 @@ export function timelineHref(item: TimelineItem): string | null {
     case "webhook_attempt":
       return item.summary ? `/webhooks/${item.summary}` : null;
     case "automation_run":
-      return item.summary ? `/automations/${item.summary}/editor` : null;
+      return item.summary ? `/automations/${encodeURIComponent(item.summary)}/editor?tab=runs&run=${encodeURIComponent(item.id)}` : null;
     case "api_log":
       return `/logs/${item.id}`;
     default:

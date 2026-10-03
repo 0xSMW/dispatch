@@ -1,6 +1,5 @@
 import { useState, type FormEvent } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
-import { Send } from "lucide-react";
 import { Field } from "../components/Field";
 import { defaultApiUrl, errorMessage } from "../lib/client";
 import { useSession } from "./session";
@@ -38,7 +37,7 @@ export function Login() {
       <form className="loginCard" onSubmit={submit}>
         <div className="brand">
           <span className="brandMark" aria-hidden>
-            <Send size={14} />
+            <img src="/logo.svg" alt="" />
           </span>
           <span>Dispatch</span>
         </div>

@@ -65,7 +65,7 @@ export function apiBase(value: string): string {
   if (!["http:", "https:"].includes(url.protocol) || !trusted) {
     throw new ApiError("invalid_api_url", 0, "API URL is not allowed");
   }
-  return url.origin;
+  return `${url.origin}${url.pathname.replace(/\/+$/, "")}`;
 }
 
 export function withQuery(path: string, query?: Query): string {
