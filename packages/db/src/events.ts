@@ -37,17 +37,20 @@ export async function appendEvent(
   data: Record<string, unknown>;
 } | null> {
   const mode = input.mode ?? "api";
-  // Tracking and unsubscribe paths inherit persisted attribution, including one recipient
-  // of a mixed email. Webhooks retain it even when tenant settings subsequently change.
-  if (input.emailId) {
+  // Provider activity is real unless explicitly simulated. Tracking and unsubscribe
+  // inherit current routing, but the stored boolean is historical, not a live flag lookup.
+  const providerActivity = mode === "delivery" && input.provider && input.provider !== "sandbox";
+  if (input.emailId && typeof input.data.sandbox !== "boolean" && !providerActivity) {
     const attribution = await client.query<{ sandbox: boolean }>(
       `select (e.sandbox or coalesce(r.sandbox, false)) as sandbox from emails e
        left join email_recipients r on r.tenant_id = e.tenant_id and r.email_id = e.id and r.id = $3
        where e.tenant_id = $1 and e.id = $2`,
       [input.tenantId, input.emailId, input.recipientId ?? null],
     );
-    if (attribution.rows[0]?.sandbox) input = { ...input, data: { ...input.data, sandbox: true } };
+    input = { ...input, data: { ...input.data, sandbox: attribution.rows[0]?.sandbox ?? false } };
   }
+  if (input.emailId && typeof input.data.sandbox !== "boolean")
+    input = { ...input, data: { ...input.data, sandbox: false } };
   const sandbox = input.data.sandbox === true;
   const row = await client.query<{
     id: string;

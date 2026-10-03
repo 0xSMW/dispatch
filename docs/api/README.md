@@ -151,7 +151,9 @@ The email flag is true only when all original recipients are sandbox recipients.
 
 Sandbox emails keep normal `queued`, `scheduled`, and `delivered` statuses. The worker records `email.delivered` with `data.sandbox: true` to identify simulated delivery. It does not call the provider or invent a provider message ID for an all-sandbox email. For mixed emails, the simulated delivery event names only sandbox recipients, while real recipients still get provider delivery events. Webhook payloads carry the same `data.sandbox` marker. Do not treat that marker as confirmation of real delivery.
 
-Sandbox activity is excluded from real sending, delivery, and engagement metrics, including automation step metrics. This is separate from the **SES account sandbox**, which restricts real delivery until AWS grants production access. Dispatch's sandbox recipients bypass the provider whether or not your SES account has production access.
+Sandbox activity is excluded from real sending, delivery, and engagement metrics, including automation step metrics. Adding a sandbox domain before queued delivery also reconciles the broadcast's real Sent count. If a previously real email is explicitly retried after its domain becomes sandbox, the simulated retry does not remove earlier real metrics or click history. Stored sandbox routing remains sandbox even after a setting is removed.
+
+This is separate from the **SES account sandbox**, which restricts real delivery until AWS grants production access. Dispatch's sandbox recipients bypass the provider whether or not your SES account has production access.
 
 ## Broadcasts and automations
 
@@ -165,7 +167,7 @@ An event is often the first time Dispatch hears of a person, such as a signup. W
 
 ## Email metrics
 
-`GET /emails/metrics` counts real `email_events` for the tenant, excluding sandbox emails and simulated sandbox-recipient events from totals and rates. With no dates it covers the 7 days before now. `end_date` is exclusive. `opened` counts every open event, and `unique_opened` counts distinct emails, so the two differ once one email is opened twice.
+`GET /emails/metrics` counts real `email_events` for the tenant, excluding simulated email and sandbox-recipient activity from totals and rates. Attribution belongs to each event, so later sandbox routing changes do not erase historical real activity. With no dates it covers the 7 days before now. `end_date` is exclusive. `opened` counts every open event, and `unique_opened` counts distinct emails, so the two differ once one email is opened twice.
 
 Rates are percentages rounded to two decimals. A zero denominator gives 0.
 

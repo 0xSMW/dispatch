@@ -3040,7 +3040,7 @@
         "tags": [
           "Metrics"
         ],
-        "description": "Counts real `email_events` for the tenant. Sandbox emails and simulated sandbox-recipient events are excluded from totals and rates, including automation and step breakdowns. Without dates it covers the 7 days before now. `end_date` is exclusive. Rates are percentages rounded to two decimals, and 0 when the denominator is 0. `unsubscribed` counts `email.unsubscribed` events from Marketing and broadcast links. Automation attribution is worker-owned; legacy messages can have a null step key.",
+        "description": "Counts real `email_events` for the tenant. Simulated email and sandbox-recipient activity is excluded from totals and rates, including automation and step breakdowns. Event attribution preserves historical real metrics when a later retry becomes sandbox. Without dates it covers the 7 days before now. `end_date` is exclusive. Rates are percentages rounded to two decimals, and 0 when the denominator is 0. `unsubscribed` counts `email.unsubscribed` events from Marketing and broadcast links. Automation attribution is worker-owned; legacy messages can have a null step key.",
         "x-scope": "full",
         "parameters": [
           {

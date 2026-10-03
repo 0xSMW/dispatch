@@ -136,6 +136,31 @@ describe("deliverJob", () => {
     expect(provider.send).not.toHaveBeenCalled();
   });
 
+  it("freezes history before late broadcast reclassification and reconciles its real aggregate", async () => {
+    const fixture = sandboxFixture([{ email: "preview@qa.dispatch-fixture.net", kind: "to" }], ["qa.dispatch-fixture.net"]);
+    const query = fixture.query.getMockImplementation()!;
+    fixture.query.mockImplementation(async (sql, params = []) => {
+      const result = await query(sql, params);
+      if (sql.includes("from emails")) {
+        return { ...result, rows: result.rows.map((row) => ({ ...row, broadcast_id: "broadcast_1" })) } as never;
+      }
+      return result;
+    });
+    await deliverJob(fixture.db, storage(), fixture.provider, job);
+    expect(fixture.provider.quota).not.toHaveBeenCalled();
+    expect(fixture.provider.send).not.toHaveBeenCalled();
+    const calls = fixture.query.mock.calls;
+    const frozen = calls.findIndex(([sql]) => sql.includes("update email_events ev set data"));
+    const routing = calls.findIndex(([sql]) => sql.includes("update email_recipients set sandbox"));
+    const aggregate = calls.findIndex(([sql]) => sql.includes("sent_count = ("));
+    expect(frozen).toBeGreaterThan(-1);
+    expect(routing).toBeGreaterThan(frozen);
+    expect(aggregate).toBeGreaterThan(routing);
+    const lock = calls.findIndex(([sql]) => sql.includes("from broadcasts") && sql.includes("for update"));
+    expect(lock).toBeGreaterThan(-1);
+    expect(lock).toBeLessThan(frozen);
+  });
+
   it("hands only real To/Cc/Bcc recipients to SES for mixed mail", async () => {
     const { db, query, provider } = sandboxFixture([
       { email: "preview@example.org", kind: "to" },
@@ -237,6 +262,6 @@ describe("handleSendFailure", () => {
     expect(queries.some((entry) => entry.sql.includes("state = 'failed'"))).toBe(true);
     expect(queries.some((entry) => entry.sql.includes("make_interval"))).toBe(false);
     const event = queries.find((entry) => entry.sql.includes("insert into email_events"));
-    expect(JSON.parse(String(event?.params[7]))).toEqual({ failed: { reason: "MessageRejected" } });
+    expect(JSON.parse(String(event?.params[7]))).toEqual({ failed: { reason: "MessageRejected" }, sandbox: false });
   });
 });

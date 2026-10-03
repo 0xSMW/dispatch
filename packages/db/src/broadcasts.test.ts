@@ -274,10 +274,17 @@ describe("broadcast worker queries", () => {
     expect(db.queries).toHaveLength(1);
   });
 
-  it("finishes a chunk by adding the sent count", async () => {
+  it("recalculates the sent count under a lock before finishing a chunk", async () => {
     const db = client(() => ({ rows: [{ status: "sent" }] }));
-    expect(await finishChunk(db, "tenant_1", "broadcast_1", 3)).toBe("sent");
-    expect(db.queries[0].params).toEqual(["tenant_1", "broadcast_1", 3]);
+    expect(await finishChunk(db, "tenant_1", "broadcast_1")).toBe("sent");
+    expect(db.queries[0]).toEqual({
+      sql: "select id from broadcasts where tenant_id = $1 and id = $2 for update",
+      params: ["tenant_1", "broadcast_1"],
+    });
+    expect(db.queries[1].sql).toContain("sent_count = (");
+    expect(db.queries[1].sql).toContain("ev.type = 'email.sent'");
+    expect(db.queries[1].sql).not.toContain("sent_count +");
+    expect(db.queries[2].sql).toContain("coalesce(b.sent_at, now())");
   });
 });
 

@@ -35,6 +35,7 @@ function fakeDb(count: number, overrides: Record<string, unknown> = {}) {
     ...overrides,
   };
   const failures: string[] = [];
+  const sandboxEmails = new Set<string>();
   const recipients: Recipient[] = Array.from({ length: count }, (_, index) => ({
     id: `br_${String(index).padStart(4, "0")}`,
     contact_id: `contact_${index}`,
@@ -45,6 +46,11 @@ function fakeDb(count: number, overrides: Record<string, unknown> = {}) {
 
   const query = vi.fn(async (sql: string, params: unknown[] = []) => {
     if (["begin", "commit", "rollback"].includes(sql)) return { rows: [] };
+    if (sql === "select id from broadcasts where tenant_id = $1 and id = $2 for update") return { rows: [{ id: broadcast.id }] };
+    if (sql.includes("sent_count = (")) {
+      broadcast.sent_count = recipients.filter((row) => row.status === "sent" && !sandboxEmails.has(row.email_id!)).length;
+      return { rows: [] };
+    }
     if (sql.includes("for update of b skip locked")) {
       const due = broadcast.status === "sending" || (broadcast.status === "scheduled" && broadcast.scheduled_at! <= new Date());
       return { rows: due && !(params[0] as string[]).includes(broadcast.id) ? [{ ...broadcast }] : [] };
@@ -75,7 +81,6 @@ function fakeDb(count: number, overrides: Record<string, unknown> = {}) {
       return { rows: [] };
     }
     if (sql.includes("update broadcasts b set")) {
-      broadcast.sent_count += params[2] as number;
       if (!recipients.some((row) => row.status === "queued")) {
         broadcast.status = "sent";
         broadcast.sent_at = new Date();
@@ -85,7 +90,7 @@ function fakeDb(count: number, overrides: Record<string, unknown> = {}) {
     throw new Error(`unexpected query: ${sql}`);
   });
   const db = { query, connect: async () => ({ query, release: () => {} }) } as unknown as Db;
-  return { db, broadcast, recipients, query, failures };
+  return { db, broadcast, recipients, query, failures, sandboxEmails };
 }
 
 function ingest() {
@@ -96,10 +101,12 @@ function ingest() {
 
 describe("sendBroadcasts", () => {
   it("keeps simulated emails inspectable without counting them as real sends", async () => {
-    const { db, broadcast, recipients } = fakeDb(2);
-    const send = vi.fn(async (_client: unknown, input: { to: string }) => ({
-      email: { id: `email_${input.to}`, status: "queued", sandbox: input.to === "user0@example.net" },
-    }));
+    const { db, broadcast, recipients, sandboxEmails } = fakeDb(2);
+    const send = vi.fn(async (_client: unknown, input: { to: string }) => {
+      const email = { id: `email_${input.to}`, status: "queued", sandbox: input.to === "user0@example.net" };
+      if (email.sandbox) sandboxEmails.add(email.id);
+      return { email };
+    });
     await sendBroadcasts(db, { ...options, ingest: send as never });
     expect(recipients.every((row) => row.email_id)).toBe(true);
     expect(broadcast.status).toBe("sent");

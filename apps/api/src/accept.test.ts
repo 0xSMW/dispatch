@@ -24,10 +24,11 @@ import {
   type Provider,
   type ProviderEmail,
 } from "@dispatchmail/core";
-import { appendEvent, connect, executeAutomationRun, tx, unsubscribeToken, type Db } from "@dispatchmail/db";
+import { appendEvent, connect, executeAutomationRun, reconcileBroadcastSent, tx, unsubscribeToken, type Db } from "@dispatchmail/db";
 import type { Storage } from "@dispatchmail/storage";
 import { schema } from "../../../packages/db/src/schema.js";
 import { deliverJob, type Job } from "../../worker/src/deliver.js";
+import { applySesEvent } from "../../worker/src/events.js";
 import type { FastifyInstance } from "fastify";
 
 // Live tests against a real Postgres and Redis, named in the environment or the local .env:
@@ -496,6 +497,441 @@ describe.skipIf(!live)("accept", () => {
     expect(batch.json.data[2].emails.map((email: { sandbox: boolean }) => email.sandbox)).toEqual([true, false, true, false]);
     expect((await post(fullKey, "/emails/batch", batchBody, { "idempotency-key": "sandbox-batch" })).json).toEqual({ ...batch.json, request_id: expect.any(String) });
     expect((await db.query("select id from emails")).rows).toHaveLength(10);
+  });
+
+  describe("sandbox history", () => {
+    it("calculates broadcast counts after waiting for the current classification transaction", async () => {
+      const broadcast = await queuedBroadcast("locked@locked.dispatch-fixture.net");
+      const job = await sendJob(broadcast.emailId);
+      const writer = await db.connect();
+      const reader = await db.connect();
+      let pending: Promise<void> | undefined;
+      try {
+        await writer.query("begin");
+        await writer.query("select id from broadcasts where tenant_id = $1 and id = $2 for update", [job.tenant_id, broadcast.id]);
+        await reader.query("begin");
+        const pid = (await reader.query<{ pid: number }>("select pg_backend_pid() as pid")).rows[0]!.pid;
+        pending = reconcileBroadcastSent(reader, job.tenant_id, broadcast.id);
+        let waiting = false;
+        for (let attempt = 0; attempt < 100; attempt++) {
+          waiting = (await db.query("select wait_event_type = 'Lock' as waiting from pg_stat_activity where pid = $1", [pid])).rows[0]?.waiting === true;
+          if (waiting) break;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect(waiting).toBe(true);
+        // The aggregate's snapshot must follow this committed classification, not the
+        // earlier snapshot it had while blocked behind the broadcast row lock.
+        await writer.query("update emails set sandbox = true where tenant_id = $1 and id = $2", [job.tenant_id, broadcast.emailId]);
+        await writer.query("commit");
+        await pending;
+        await reader.query("commit");
+        expect((await call(fullKey, "GET", `/broadcasts/${broadcast.id}`)).json.sent_count).toBe(0);
+        await appendEvent(db, {
+          tenantId: job.tenant_id, requestId: job.request_id, emailId: broadcast.emailId,
+          type: "email.sent", providerEventId: "historical:locked:sent",
+          data: { sandbox: false }, mode: "delivery", provider: "ses",
+        });
+        await Promise.all(Array.from({ length: 3 }, () => tx(db, (client) =>
+          reconcileBroadcastSent(client, job.tenant_id, broadcast.id))));
+        expect((await call(fullKey, "GET", `/broadcasts/${broadcast.id}`)).json.sent_count).toBe(1);
+        await tx(db, (client) => reconcileBroadcastSent(client, "other_tenant", broadcast.id));
+        expect((await call(fullKey, "GET", `/broadcasts/${broadcast.id}`)).json.sent_count).toBe(1);
+      } finally {
+        await writer.query("rollback");
+        await pending?.catch(() => undefined);
+        await reader.query("rollback");
+        writer.release();
+        reader.release();
+      }
+    });
+
+    it("reconciles a queued real broadcast to zero after late sandbox routing and keeps retries and setting removal stable", async () => {
+      const capture = await captureWebhook();
+      try {
+        const webhook = await post(fullKey, "/webhooks", {
+          url: `${capture.base}/ok`, events: ["email.delivered"],
+        });
+        expect(webhook.status).toBe(200);
+        const broadcast = await queuedBroadcast("late@late.dispatch-fixture.net");
+        const job = await sendJob(broadcast.emailId);
+        const count = async (expected: number) => {
+          const detail = await call(fullKey, "GET", `/broadcasts/${broadcast.id}`);
+          expect(detail.status).toBe(200);
+          expect(detail.json).toMatchObject({ sent_count: expected, recipient_count: 1 });
+          const list = await call(fullKey, "GET", "/broadcasts");
+          expect(list.status).toBe(200);
+          expect(list.json.data.find((row: { id: string }) => row.id === broadcast.id)).toMatchObject({ id: broadcast.id });
+          expect((await db.query("select sent_count from broadcasts where id = $1", [broadcast.id])).rows).toEqual([{ sent_count: expected }]);
+        };
+        // Ordinary real broadcasts count at queue time, before SES acceptance.
+        await count(1);
+        expect((await db.query("select sandbox, status, provider_message_id from emails where id = $1", [broadcast.emailId])).rows).toEqual([{
+          sandbox: false, status: "queued", provider_message_id: null,
+        }]);
+        expect((await call(fullKey, "PATCH", "/settings", {
+          sandbox_domains: ["late.dispatch-fixture.net"],
+        })).status).toBe(200);
+        const ses = recordingSes({ refuse: true });
+        await productionDelivery(job, ses.provider);
+        await count(0);
+        expect((await call(fullKey, "GET", `/emails/${broadcast.emailId}`)).json).toMatchObject({
+          sandbox: true, last_event: "delivered",
+          recipients: [{ email: "late@late.dispatch-fixture.net", sandbox: true, status: "delivered" }],
+        });
+        const events = (await db.query("select id, type, data from email_events where email_id = $1 order by id", [broadcast.emailId])).rows;
+        expect(events).toEqual([{
+          id: expect.any(String), type: "email.delivered",
+          data: { sandbox: true, recipients: ["late@late.dispatch-fixture.net"] },
+        }]);
+        const attempts = (await db.query("select id, event_id, attempt from webhook_attempts where webhook_id = $1", [webhook.json.id])).rows;
+        expect(attempts).toEqual([{ id: expect.any(String), event_id: events[0]!.id, attempt: 1 }]);
+        for (let repeat = 0; repeat < 2; repeat++) {
+          await productionDelivery(job, ses.provider);
+          await count(0);
+        }
+        expect((await call(fullKey, "PATCH", "/settings", { sandbox_domains: [] })).status).toBe(200);
+        await db.query(schema);
+        await db.query(schema);
+        await productionDelivery(job, ses.provider);
+        await count(0);
+        expect((await db.query("select id, type, data from email_events where email_id = $1 order by id", [broadcast.emailId])).rows).toEqual(events);
+        expect((await db.query("select id, event_id, attempt from webhook_attempts where webhook_id = $1", [webhook.json.id])).rows).toEqual(attempts);
+        expect((await db.query("select state from send_jobs where id = $1", [job.id])).rows).toEqual([{ state: "done" }]);
+        expect((await db.query("select status from broadcast_recipients where broadcast_id = $1", [broadcast.id])).rows).toEqual([{ status: "sent" }]);
+        expect((await db.query("select id from provider_events_raw where tenant_id = $1", [job.tenant_id])).rows).toEqual([]);
+        expect((await db.query("select value from usage_counters where tenant_id = $1 and name = 'emails.sent'", [job.tenant_id])).rows).toEqual([]);
+        const metrics = await call(fullKey, "GET", `/emails/metrics?broadcast_id=${broadcast.id}&metrics=sent,delivered,opened,clicked`);
+        expect(metrics.status).toBe(200);
+        expect(metrics.json.totals).toEqual({ sent: 0, delivered: 0, opened: 0, clicked: 0 });
+        await tick();
+        await productionDelivery(job, ses.provider);
+        await tick();
+        await count(0);
+        expect(capture.received).toHaveLength(1);
+        const delivered = capture.received[0]!;
+        expect(JSON.parse(delivered.body)).toMatchObject({ id: events[0]!.id, type: "email.delivered", data: events[0]!.data });
+        expect(verify(delivered.body, webhook.json.signing_secret, delivered.id, delivered.timestamp, delivered.signature)).toBe(true);
+        expect(ses.quotas).toEqual([]);
+        expect(ses.sent).toEqual([]);
+      } finally {
+        await capture.close();
+      }
+    });
+
+    it.each(["explicit", "legacy"] as const)(
+      "preserves %s real broadcast email automation step and click history when an API retry becomes sandbox",
+      async (attribution) => {
+        const broadcast = await queuedBroadcast("history@history.dispatch-fixture.net");
+        const job = await sendJob(broadcast.emailId);
+        const flow = await post(fullKey, "/automations", {
+          name: "Historical broadcast", enabled: false,
+          steps: [{ key: "start", type: "trigger", config: { event_name: "sandbox.history" } }],
+          connections: [],
+        });
+        expect(flow.status).toBe(200);
+        await db.query("update emails set automation_id = $1, automation_step = 'welcome' where id = $2", [flow.json.id, broadcast.emailId]);
+        const ses = recordingSes();
+        await productionDelivery(job, ses.provider);
+        const callback = {
+          mail: {
+            messageId: `ses_${broadcast.emailId}`, destination: ["history@history.dispatch-fixture.net"],
+            tags: { dispatch_email_id: [broadcast.emailId], dispatch_tenant_id: [job.tenant_id] },
+          },
+        };
+        expect(await tx(db, (client) => applySesEvent(client, {
+          ...callback, eventType: "Delivery", delivery: { recipients: ["history@history.dispatch-fixture.net"] },
+        }))).toHaveLength(1);
+        const tracked = await stored(broadcast.emailId);
+        const open = new URL(tracked.html_tracked.match(/src="([^"]+\/open\/[^"]+)"/)![1]!);
+        const click = new URL(tracked.html_tracked.match(/href="([^"]+\/click\/[^"]+)"/)![1]!);
+        expect((await app.inject({ method: "GET", url: open.pathname })).statusCode).toBe(200);
+        expect((await app.inject({ method: "GET", url: click.pathname })).statusCode).toBe(302);
+        // Tracking deduplicates within the same millisecond; these are two genuine clicks.
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        expect((await app.inject({ method: "GET", url: click.pathname })).statusCode).toBe(302);
+        const bounce = {
+          ...callback, eventType: "Bounce",
+          bounce: { bounceType: "Transient", bounceSubType: "General", bouncedRecipients: [{ emailAddress: "history@history.dispatch-fixture.net" }] },
+        };
+        expect(await tx(db, (client) => applySesEvent(client, bounce))).toHaveLength(1);
+        expect(await tx(db, (client) => applySesEvent(client, bounce))).toEqual([]);
+        expect((await stored(broadcast.emailId)).status).toBe("bounced");
+        // Permanent bounce/suppression would mask the retry routing regression.
+        expect((await db.query("select id from suppressions where tenant_id = $1 and removed_at is null", [job.tenant_id])).rows).toEqual([]);
+        if (attribution === "legacy")
+          await db.query("update email_events set data = data - 'sandbox' where email_id = $1", [broadcast.emailId]);
+        const history = (await db.query<{ id: string; type: string; data: Record<string, unknown> }>(
+          "select id, type, data from email_events where email_id = $1 order by id", [broadcast.emailId],
+        )).rows;
+        expect(history).toHaveLength(6);
+        expect(history.every((event) => attribution === "legacy"
+          ? !Object.hasOwn(event.data, "sandbox") : event.data.sandbox === false)).toBe(true);
+        const metricsQuery = new URLSearchParams({
+          metrics: "sent,delivered,bounced,bounced_transient,opened,unique_opened,clicked,unique_clicked,delivery_rate,open_rate,click_rate,bounce_rate",
+          automation_id: flow.json.id,
+        });
+        const totals = {
+          sent: 1, delivered: 1, bounced: 1, bounced_transient: 1,
+          opened: 1, unique_opened: 1, clicked: 2, unique_clicked: 1,
+          delivery_rate: 100, open_rate: 100, click_rate: 100, bounce_rate: 100,
+        };
+        const reports = async () => {
+          for (const dimensions of ["", "email", "automation", "step"]) {
+            metricsQuery.set("dimensions", dimensions);
+            const metrics = await call(fullKey, "GET", `/emails/metrics?${metricsQuery}`);
+            expect(metrics.status).toBe(200);
+            expect(metrics.json.totals).toEqual(totals);
+            if (dimensions)
+              expect(metrics.json.data).toEqual([{
+                ...(dimensions === "email" ? { email_id: broadcast.emailId } : { automation_id: flow.json.id }),
+                ...(dimensions === "step" ? { automation_step: "welcome" } : {}),
+                ...totals,
+              }]);
+          }
+          const clicks = await call(fullKey, "GET", `/broadcasts/${broadcast.id}/clicked-links`);
+          expect(clicks.status).toBe(200);
+          expect(clicks.json.data).toEqual([{
+            object: "clicked_link", id: expect.any(String), url: "https://dispatch-fixture.net/docs",
+            clicks: 2, unique_clicks: 1,
+          }]);
+          expect((await call(fullKey, "GET", `/broadcasts/${broadcast.id}`)).json.sent_count).toBe(1);
+        };
+        await reports();
+        const webhook = await post(fullKey, "/webhooks", {
+          url: "http://127.0.0.1:9/history", events: ["email.delivered"],
+        });
+        expect(webhook.status).toBe(200);
+        expect((await call(fullKey, "PATCH", "/settings", { sandbox_domains: ["history.dispatch-fixture.net"] })).status).toBe(200);
+        const retried = await post(fullKey, `/emails/${broadcast.emailId}/retry`, {});
+        expect(retried.status).toBe(200);
+        expect(retried.json.job).toMatchObject({ id: expect.any(String), email_id: broadcast.emailId, state: "ready" });
+        expect((await db.query("select provider_message_id, status, sandbox from emails where id = $1", [broadcast.emailId])).rows).toEqual([{
+          provider_message_id: null, status: "queued", sandbox: false,
+        }]);
+        const retryJob = (await db.query<Job>("select id, tenant_id, email_id, request_id from send_jobs where id = $1", [retried.json.job.id])).rows[0]!;
+        const blocked = recordingSes({ refuse: true });
+        await productionDelivery(retryJob, blocked.provider);
+        expect((await call(fullKey, "GET", `/emails/${broadcast.emailId}`)).json).toMatchObject({
+          sandbox: true, last_event: "delivered",
+          recipients: [{ email: "history@history.dispatch-fixture.net", sandbox: true }],
+        });
+        expect((await db.query("select provider_message_id from emails where id = $1", [broadcast.emailId])).rows).toEqual([{ provider_message_id: null }]);
+        expect((await db.query("select id, type, data from email_events where id = any($1::text[]) order by id", [history.map((event) => event.id)])).rows).toEqual(
+          history.map((event) => ({ ...event, data: { ...event.data, sandbox: false } })),
+        );
+        await reports();
+        expect((await post(fullKey, `/emails/${broadcast.emailId}/retry`, {})).status).toBe(409);
+        expect((await app.inject({ method: "GET", url: open.pathname })).statusCode).toBe(200);
+        expect((await app.inject({ method: "GET", url: click.pathname })).statusCode).toBe(302);
+        const simulated = (await db.query("select type, data from email_events where email_id = $1 and data->>'sandbox' = 'true'", [broadcast.emailId])).rows;
+        expect(simulated.map((event) => event.type).sort()).toEqual(["email.clicked", "email.delivered", "email.opened"]);
+        await reports();
+        const snapshot = (await db.query("select id, type, data from email_events where email_id = $1 order by id", [broadcast.emailId])).rows;
+        const attempts = (await db.query("select id, event_id, attempt from webhook_attempts where webhook_id = $1", [webhook.json.id])).rows;
+        expect(attempts).toEqual([{ id: expect.any(String), event_id: expect.any(String), attempt: 1 }]);
+        await productionDelivery(retryJob, blocked.provider);
+        await productionDelivery(job, blocked.provider);
+        expect((await call(fullKey, "PATCH", "/settings", { sandbox_domains: [] })).status).toBe(200);
+        await db.query(schema);
+        await db.query(schema);
+        await productionDelivery(retryJob, blocked.provider);
+        await reports();
+        expect((await db.query("select id, type, data from email_events where email_id = $1 order by id", [broadcast.emailId])).rows).toEqual(snapshot);
+        expect((await db.query("select id, event_id, attempt from webhook_attempts where webhook_id = $1", [webhook.json.id])).rows).toEqual(attempts);
+        expect((await db.query("select value from usage_counters where tenant_id = $1 and name = 'emails.sent'", [job.tenant_id])).rows).toEqual([{ value: "1" }]);
+        expect(ses.quotas).toEqual(["us-west-2"]);
+        expect(ses.sent).toHaveLength(1);
+        expect(blocked.quotas).toEqual([]);
+        expect(blocked.sent).toEqual([]);
+      },
+    );
+
+    it.each(["partial", "all"] as const)(
+      "preserves explicit and legacy mixed-recipient history when %s real recipients become simulated on an API retry",
+      async (routing) => {
+        const webhook = await post(fullKey, "/webhooks", {
+          url: "http://127.0.0.1:9/mixed-history", events: ["email.delivered"],
+        });
+        expect(webhook.status).toBe(200);
+        const segment = await post(fullKey, "/segments", { name: "Mixed history" });
+        expect(segment.status).toBe(200);
+        const broadcast = await post(fullKey, "/broadcasts", {
+          name: "Mixed clicks", segment_id: segment.json.id, from: "hello@dispatch-fixture.net",
+          subject: "History", html: '<a href="https://dispatch-fixture.net/docs">Docs</a>',
+        });
+        const flow = await post(fullKey, "/automations", {
+          name: "Mixed history", enabled: false,
+          steps: [{ key: "start", type: "trigger", config: { event_name: "sandbox.mixed.history" } }],
+          connections: [],
+        });
+        expect([broadcast.status, flow.status]).toEqual([200, 200]);
+        const accepted = await post(fullKey, "/emails", letter({
+          to: ["preview@example.com", "new@new.dispatch-fixture.net", "remaining@remaining.dispatch-fixture.net"],
+          html: '<a href="https://dispatch-fixture.net/docs">Docs</a>',
+        }));
+        expect(accepted.status).toBe(200);
+        const job = await sendJob(accepted.json.id);
+        await db.query("update emails set broadcast_id = $1, automation_id = $2, automation_step = 'mixed' where id = $3", [
+          broadcast.json.id, flow.json.id, accepted.json.id,
+        ]);
+        const ses = recordingSes();
+        await productionDelivery(job, ses.provider);
+        expect(ses.sent[0]!.recipients).toEqual(expect.arrayContaining([
+          { email: "new@new.dispatch-fixture.net", kind: "to" },
+          { email: "remaining@remaining.dispatch-fixture.net", kind: "to" },
+        ]));
+        expect(ses.sent[0]!.recipients).toHaveLength(2);
+        const callback = {
+          mail: {
+            messageId: `ses_${accepted.json.id}`,
+            tags: { dispatch_email_id: [accepted.json.id], dispatch_tenant_id: [job.tenant_id] },
+          },
+        };
+        expect(await tx(db, (client) => applySesEvent(client, {
+          ...callback, eventType: "Delivery",
+          delivery: { recipients: ["new@new.dispatch-fixture.net", "remaining@remaining.dispatch-fixture.net"] },
+        }))).toHaveLength(2);
+        const recipients = (await db.query<{ id: string; email: string; sandbox: boolean }>(
+          "select id, email, sandbox from email_recipients where email_id = $1 order by email", [accepted.json.id],
+        )).rows;
+        const history: Array<{ id: string; sandbox: boolean }> = [];
+        for (const recipient of recipients) {
+          for (const type of ["email.opened", "email.clicked"]) {
+            const event = await appendEvent(db, {
+              tenantId: job.tenant_id, requestId: job.request_id, emailId: accepted.json.id, recipientId: recipient.id,
+              type, providerEventId: `history:${recipient.id}:${type}`,
+              data: type === "email.clicked" ? { url: "https://dispatch-fixture.net/docs" } : {},
+            });
+            expect(event).not.toBeNull();
+            expect(event!.data.sandbox).toBe(recipient.sandbox);
+            history.push({ id: event!.id, sandbox: recipient.sandbox });
+            // One real recipient and the original sandbox recipient predate explicit markers.
+            // The other real recipient keeps explicit false even as current routing changes.
+            if (recipient.email !== "remaining@remaining.dispatch-fixture.net")
+              await db.query("update email_events set data = data - 'sandbox' where id = $1", [event!.id]);
+          }
+        }
+        const tracked = await stored(accepted.json.id);
+        const open = new URL(tracked.html_tracked.match(/src="([^"]+\/open\/[^"]+)"/)![1]!);
+        const click = new URL(tracked.html_tracked.match(/href="([^"]+\/click\/[^"]+)"/)![1]!);
+        expect((await app.inject({ method: "GET", url: open.pathname })).statusCode).toBe(200);
+        expect((await app.inject({ method: "GET", url: click.pathname })).statusCode).toBe(302);
+        const bounce = {
+          ...callback, eventType: "Bounce",
+          bounce: { bounceType: "Transient", bouncedRecipients: [
+            { emailAddress: "new@new.dispatch-fixture.net" }, { emailAddress: "remaining@remaining.dispatch-fixture.net" },
+          ] },
+        };
+        expect(await tx(db, (client) => applySesEvent(client, bounce))).toHaveLength(2);
+        expect(await tx(db, (client) => applySesEvent(client, bounce))).toEqual([]);
+        expect((await stored(accepted.json.id)).status).toBe("bounced");
+        expect((await db.query("select id from suppressions where tenant_id = $1 and removed_at is null", [job.tenant_id])).rows).toEqual([]);
+        // Also preserve legacy provider events with no recipient_id.
+        await db.query(
+          "update email_events set data = data - 'sandbox' where email_id = $1 and type in ('email.sent', 'email.bounced')",
+          [accepted.json.id],
+        );
+        const metricsQuery = new URLSearchParams({
+          metrics: "sent,delivered,bounced,bounced_transient,opened,unique_opened,clicked,unique_clicked",
+          automation_id: flow.json.id,
+        });
+        const original = { sent: 1, delivered: 2, bounced: 2, bounced_transient: 2, opened: 3, unique_opened: 1, clicked: 3, unique_clicked: 1 };
+        const after = routing === "all" ? original
+          : { sent: 2, delivered: 3, bounced: 2, bounced_transient: 2, opened: 4, unique_opened: 1, clicked: 4, unique_clicked: 1 };
+        const reports = async (totals: typeof original) => {
+          for (const dimensions of ["", "email", "automation", "step"]) {
+            metricsQuery.set("dimensions", dimensions);
+            const metrics = await call(fullKey, "GET", `/emails/metrics?${metricsQuery}`);
+            expect(metrics.status).toBe(200);
+            expect(metrics.json.totals).toEqual(totals);
+            if (dimensions)
+              expect(metrics.json.data).toEqual([{
+                ...(dimensions === "email" ? { email_id: accepted.json.id } : { automation_id: flow.json.id }),
+                ...(dimensions === "step" ? { automation_step: "mixed" } : {}),
+                ...totals,
+              }]);
+          }
+          const clicks = await call(fullKey, "GET", `/broadcasts/${broadcast.json.id}/clicked-links`);
+          expect(clicks.status).toBe(200);
+          expect(clicks.json.data).toEqual([{
+            object: "clicked_link", id: expect.any(String), url: "https://dispatch-fixture.net/docs",
+            clicks: totals.clicked, unique_clicks: 1,
+          }]);
+        };
+        await reports(original);
+        expect((await call(fullKey, "PATCH", "/settings", {
+          sandbox_domains: routing === "all"
+            ? ["new.dispatch-fixture.net", "remaining.dispatch-fixture.net"] : ["new.dispatch-fixture.net"],
+        })).status).toBe(200);
+        const retried = await post(fullKey, `/emails/${accepted.json.id}/retry`, {});
+        expect(retried.status).toBe(200);
+        expect((await db.query("select provider_message_id, status from emails where id = $1", [accepted.json.id])).rows).toEqual([{
+          provider_message_id: null, status: "queued",
+        }]);
+        const retryJob = (await db.query<Job>("select id, tenant_id, email_id, request_id from send_jobs where id = $1", [retried.json.job.id])).rows[0]!;
+        const retrySes = recordingSes({ refuse: routing === "all" });
+        const send = retrySes.provider.send;
+        retrySes.provider.send = async (email) => {
+          const result = await send(email);
+          const messageId = `ses_retry_${email.id}`;
+          return { ...result, provider_message_id: messageId, events: result.events.map((event) => ({
+            ...event, provider_event_id: `${messageId}:sent`, data: { provider_message_id: messageId },
+          })) };
+        };
+        await productionDelivery(retryJob, retrySes.provider);
+        if (routing === "partial") {
+          expect(retrySes.quotas).toEqual(["us-west-2"]);
+          expect(retrySes.sent.map((email) => email.recipients)).toEqual([[{ email: "remaining@remaining.dispatch-fixture.net", kind: "to" }]]);
+          const delivery = {
+            ...callback, mail: { ...callback.mail, messageId: `ses_retry_${accepted.json.id}` },
+            eventType: "Delivery", delivery: { recipients: ["remaining@remaining.dispatch-fixture.net"] },
+          };
+          expect(await tx(db, (client) => applySesEvent(client, delivery))).toHaveLength(1);
+          expect(await tx(db, (client) => applySesEvent(client, delivery))).toEqual([]);
+        } else {
+          expect(retrySes.quotas).toEqual([]);
+          expect(retrySes.sent).toEqual([]);
+        }
+        const detail = await call(fullKey, "GET", `/emails/${accepted.json.id}`);
+        expect(detail.json).toMatchObject({ sandbox: routing === "all", last_event: "delivered" });
+        expect(detail.json.recipients).toEqual(expect.arrayContaining([
+          expect.objectContaining({ email: "preview@example.com", sandbox: true, status: "delivered" }),
+          // The old bounce remains a terminal recipient status; routing is independent.
+          expect.objectContaining({ email: "new@new.dispatch-fixture.net", sandbox: true }),
+          expect.objectContaining({ email: "remaining@remaining.dispatch-fixture.net", sandbox: routing === "all" }),
+        ]));
+        expect((await db.query("select id, data->'sandbox' as sandbox from email_events where id = any($1::text[]) order by id", [history.map((event) => event.id)])).rows).toEqual(
+          [...history].sort((a, b) => a.id.localeCompare(b.id)),
+        );
+        const newlySandbox = recipients.find((recipient) => recipient.email === "new@new.dispatch-fixture.net")!;
+        for (const type of ["email.opened", "email.clicked"]) {
+          const event = await appendEvent(db, {
+            tenantId: job.tenant_id, requestId: job.request_id, emailId: accepted.json.id, recipientId: newlySandbox.id,
+            type, providerEventId: `simulated:${newlySandbox.id}:${type}`,
+            data: type === "email.clicked" ? { url: "https://dispatch-fixture.net/docs" } : {},
+          });
+          expect(event!.data.sandbox).toBe(true);
+        }
+        expect((await app.inject({ method: "GET", url: open.pathname })).statusCode).toBe(200);
+        expect((await app.inject({ method: "GET", url: click.pathname })).statusCode).toBe(302);
+        await reports(after);
+        const snapshot = (await db.query("select id, type, data from email_events where email_id = $1 order by id", [accepted.json.id])).rows;
+        const attempts = (await db.query("select id, event_id, attempt from webhook_attempts where webhook_id = $1 order by id", [webhook.json.id])).rows;
+        expect(attempts).toHaveLength(routing === "all" ? 3 : 4);
+        expect(attempts.every((attempt) => attempt.attempt === 1)).toBe(true);
+        await productionDelivery(retryJob, retrySes.provider);
+        expect((await call(fullKey, "PATCH", "/settings", { sandbox_domains: [] })).status).toBe(200);
+        await db.query(schema);
+        await db.query(schema);
+        await productionDelivery(retryJob, retrySes.provider);
+        await reports(after);
+        expect((await db.query("select id, type, data from email_events where email_id = $1 order by id", [accepted.json.id])).rows).toEqual(snapshot);
+        expect((await db.query("select id, event_id, attempt from webhook_attempts where webhook_id = $1 order by id", [webhook.json.id])).rows).toEqual(attempts);
+        expect(retrySes.sent).toHaveLength(routing === "all" ? 0 : 1);
+        expect(retrySes.quotas).toHaveLength(routing === "all" ? 0 : 1);
+        expect((await db.query("select value from usage_counters where tenant_id = $1 and name = 'emails.sent'", [job.tenant_id])).rows).toEqual([{ value: routing === "all" ? "1" : "2" }]);
+      },
+    );
   });
 
   it("hand-counts only real sending and engagement metrics including mixed recipients and automation steps", async () => {
@@ -2255,6 +2691,27 @@ function letter(overrides: Record<string, unknown> = {}) {
     text: "Hi",
     ...overrides,
   };
+}
+
+async function queuedBroadcast(email: string) {
+  const segment = await post(fullKey, "/segments", { name: "Sandbox history" });
+  expect(segment.status).toBe(200);
+  expect((await post(fullKey, `/segments/${segment.json.id}/contacts`, { email })).status).toBe(200);
+  const broadcast = await post(fullKey, "/broadcasts", {
+    name: "Sandbox history", segment_id: segment.json.id,
+    from: "hello@dispatch-fixture.net", subject: "History",
+    html: '<a href="https://dispatch-fixture.net/docs">Docs</a>', send: true,
+  });
+  expect(broadcast.status).toBe(200);
+  // A tick queues broadcast recipients after processing ready send jobs. Stop here so
+  // the fixture can change settings before its first production-configured delivery.
+  expect((await tick()).jobs).toBe(0);
+  const recipients = await db.query<{ email_id: string; status: string }>(
+    "select email_id, status from broadcast_recipients where broadcast_id = $1",
+    [broadcast.json.id],
+  );
+  expect(recipients.rows).toEqual([{ email_id: expect.any(String), status: "sent" }]);
+  return { id: broadcast.json.id as string, emailId: recipients.rows[0]!.email_id };
 }
 
 async function sendJob(emailId: string) {

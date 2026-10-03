@@ -1,6 +1,6 @@
 import { setTimeout as sleep } from "node:timers/promises";
 import { backoffSecs, ProviderError, sandboxAddress, type Provider, type ProviderEmail } from "@dispatchmail/core";
-import { appendEvent, fanoutEvent, tx, type Db, type Queryable } from "@dispatchmail/db";
+import { appendEvent, fanoutEvent, reconcileBroadcastSent, tx, type Db, type Queryable } from "@dispatchmail/db";
 import type { Storage } from "@dispatchmail/storage";
 
 export type Job = {
@@ -81,6 +81,11 @@ export async function loadProviderEmail(
   );
   const row = email.rows[0];
   if (!row || row.status === "cancelled") return null;
+  // Match the broadcast chunk/cancel lock order before changing its email attribution.
+  if (row.broadcast_id) await db.query(
+    "select id from broadcasts where tenant_id = $1 and id = $2 for update",
+    [job.tenant_id, row.broadcast_id],
+  );
   // Checked again at the moment of sending. An email can wait in the queue, or be scheduled
   // days ahead, and in that time the address may have bounced or the person unsubscribed.
   // Suppression applies to every email. Marketing mail also rechecks current opt-outs.
@@ -136,6 +141,18 @@ export async function loadProviderEmail(
   const sandboxRecipients = recipients.rows.filter((recipient) =>
     row.sandbox || recipient.sandbox || (!row.provider_message_id && sandboxAddress(recipient.email, row.settings?.sandbox_domains)));
   if (sandboxRecipients.length) {
+    // Legacy events did not store a real boolean. Freeze their existing attribution
+    // before changing routing, including recipient-specific mixed-send history.
+    await db.query(
+      `update email_events ev set data = jsonb_set(ev.data, '{sandbox}', to_jsonb(
+         e.sandbox or exists (select 1 from email_recipients r
+           where r.tenant_id = ev.tenant_id and r.id = ev.recipient_id and r.sandbox)
+       ))
+       from emails e where ev.tenant_id = $1 and ev.email_id = $2
+         and e.tenant_id = ev.tenant_id and e.id = ev.email_id
+         and coalesce(ev.data->>'sandbox', '') not in ('true', 'false')`,
+      [job.tenant_id, job.email_id],
+    );
     await db.query(
       `update email_recipients set sandbox = true where tenant_id = $1 and email_id = $2
        and lower(email) = any($3::text[]) and not sandbox`,
@@ -146,6 +163,7 @@ export async function loadProviderEmail(
        and not exists (select 1 from email_recipients r where r.tenant_id = e.tenant_id and r.email_id = e.id and not r.sandbox)`,
       [job.tenant_id, job.email_id],
     );
+    if (row.broadcast_id) await reconcileBroadcastSent(db, job.tenant_id, row.broadcast_id);
   }
   const attachments = await db.query<{
     filename: string;

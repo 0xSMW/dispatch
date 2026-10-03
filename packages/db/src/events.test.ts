@@ -28,6 +28,56 @@ function client() {
 }
 
 describe("appendEvent", () => {
+  it("persists real provider attribution even after retry routing becomes sandbox", async () => {
+    const db = client();
+    const query = db.query.getMockImplementation()!;
+    db.query.mockImplementation(async (sql, params = []) => {
+      if (sql.includes("as sandbox from emails")) return { rows: [{ sandbox: true }] } as never;
+      return query(sql, params);
+    });
+    const event = await appendEvent(db, {
+      tenantId: "tenant_1", requestId: "req_1", emailId: "email_1",
+      type: "email.bounced", providerEventId: "old-provider:late-bounce",
+      data: { bounce: { type: "Transient" } }, mode: "delivery", provider: "ses",
+    });
+    expect(event?.data).toEqual({ bounce: { type: "Transient" }, sandbox: false });
+    expect(db.queries.some(({ sql }) => sql.includes("provider_events_raw"))).toBe(true);
+  });
+
+  it("records explicit real tracking attribution without consulting mutable routing", async () => {
+    const db = client();
+    const event = await appendEvent(db, {
+      tenantId: "tenant_1", requestId: "req_1", emailId: "email_1", recipientId: "recipient_1",
+      type: "email.clicked", providerEventId: "click_1", data: { sandbox: false, url: "https://dispatch-fixture.net" },
+    });
+    expect(event?.data.sandbox).toBe(false);
+    expect(db.queries.some(({ sql }) => sql.includes("as sandbox from emails"))).toBe(false);
+  });
+
+  it("freezes real API activity with a false marker for future routing changes", async () => {
+    const db = client();
+    const event = await appendEvent(db, {
+      tenantId: "tenant_1", requestId: "req_1", emailId: "email_1",
+      type: "email.opened", providerEventId: "open_1", data: {},
+    });
+    expect(event?.data).toEqual({ sandbox: false });
+  });
+
+  it("keeps a pre-provider failure simulated when current routing is sandbox", async () => {
+    const db = client();
+    const query = db.query.getMockImplementation()!;
+    db.query.mockImplementation(async (sql, params = []) => {
+      if (sql.includes("as sandbox from emails")) return { rows: [{ sandbox: true }] } as never;
+      return query(sql, params);
+    });
+    const event = await appendEvent(db, {
+      tenantId: "tenant_1", requestId: "req_1", emailId: "email_1",
+      type: "email.failed", providerEventId: "job_1:failed",
+      data: { failed: { reason: "storage unavailable" } }, mode: "delivery",
+    });
+    expect(event?.data).toEqual({ failed: { reason: "storage unavailable" }, sandbox: true });
+    expect(db.queries.some(({ sql }) => sql.includes("provider_events_raw") || sql.includes("usage_counters"))).toBe(false);
+  });
   it("reconciles sandbox statuses on deduplication without repeating usage or provider records", async () => {
     const db = client();
     const query = db.query.getMockImplementation()!;

@@ -2,6 +2,7 @@ import { ApiError, assertBlocks, brandContext, contactField, id, missingVariable
 import type { Queryable } from "./index.js";
 import { publishedTemplate } from "./index.js";
 import { loadBrand } from "./emails.js";
+import { realEmailEvent } from "./sandbox.js";
 
 export type BroadcastRow = {
   id: string;
@@ -703,13 +704,32 @@ export async function markRecipients(client: Queryable, tenantId: string, result
   );
 }
 
-// Adds this chunk's sends and marks the broadcast sent once no queued recipients remain.
-export async function finishChunk(client: Queryable, tenantId: string, broadcastId: string, sent: number) {
+// Keep the ordinary queued-send count, but retain genuine sends when a later retry
+// becomes simulated. Lock before calculating so concurrent chunks/reclassification
+// cannot overwrite the aggregate with an older snapshot. Call inside a transaction.
+export async function reconcileBroadcastSent(client: Queryable, tenantId: string, broadcastId: string) {
+  await client.query("select id from broadcasts where tenant_id = $1 and id = $2 for update", [tenantId, broadcastId]);
+  await client.query(
+    `update broadcasts b set sent_count = (
+       select count(*) from broadcast_recipients br
+       left join emails e on e.tenant_id = br.tenant_id and e.id = br.email_id
+       where br.tenant_id = b.tenant_id and br.broadcast_id = b.id and br.status = 'sent'
+         and (not coalesce(e.sandbox, false) or exists (
+           select 1 from email_events ev where ev.tenant_id = e.tenant_id and ev.email_id = e.id
+             and ev.type = 'email.sent' and ${realEmailEvent()}
+         ))
+     ), updated_at = now() where b.tenant_id = $1 and b.id = $2`,
+    [tenantId, broadcastId],
+  );
+}
+
+// Marks the broadcast sent once no queued recipients remain.
+export async function finishChunk(client: Queryable, tenantId: string, broadcastId: string) {
+  await reconcileBroadcastSent(client, tenantId, broadcastId);
   const row = await client.query<{ status: string }>(
     `update broadcasts b set
-       sent_count = b.sent_count + $3,
        status = case when q.queued then b.status else 'sent' end,
-       sent_at = case when q.queued then b.sent_at else now() end,
+       sent_at = case when q.queued then b.sent_at else coalesce(b.sent_at, now()) end,
        updated_at = now()
      from (
        select exists (
@@ -718,7 +738,7 @@ export async function finishChunk(client: Queryable, tenantId: string, broadcast
      ) q
      where b.tenant_id = $1 and b.id = $2
      returning b.status`,
-    [tenantId, broadcastId, sent],
+    [tenantId, broadcastId],
   );
   return row.rows[0]?.status ?? null;
 }
@@ -785,8 +805,7 @@ export async function clickedLinks(db: Queryable, tenantId: string, broadcastId:
      join emails e on e.tenant_id = ev.tenant_id and e.id = ev.email_id
      cross join lateral (select coalesce(ev.data->'click'->>'link', ev.data->>'url') as url) link
      where ev.tenant_id = $1 and e.broadcast_id = $2 and ev.type = 'email.clicked' and link.url is not null
-       and not e.sandbox and coalesce(ev.data->>'sandbox', 'false') <> 'true'
-       and not exists (select 1 from email_recipients r where r.tenant_id = ev.tenant_id and r.id = ev.recipient_id and r.sandbox)
+       and ${realEmailEvent()}
      group by link.url
      order by clicks desc, link.url`,
     [tenantId, broadcastId],

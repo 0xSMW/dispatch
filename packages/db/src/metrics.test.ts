@@ -14,7 +14,9 @@ describe("email metrics", () => {
     const db = dbReturning([{}]);
     await emailMetrics(db, "tenant_1", parseMetricsQuery({}));
     const sql = db.query.mock.calls[0]![0];
-    expect(sql).toContain("coalesce(e.sandbox, false) = false");
+    expect(sql).toContain("case when ev.data->>'sandbox' in ('true', 'false')");
+    expect(sql).toContain("then ev.data->>'sandbox' = 'false'");
+    expect(sql).toContain("else not coalesce(e.sandbox, false)");
     expect(sql).toContain("ev.data->>'sandbox'");
     expect(sql).toContain("r.id = ev.recipient_id and r.sandbox");
   });
