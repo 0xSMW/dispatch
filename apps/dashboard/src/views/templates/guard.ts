@@ -1,5 +1,6 @@
 // The round-trip guard for the visual editor. Nothing here imports the editor
 // package, so the code editor can use these checks without loading it.
+import { encodeInlineDefaults, mapText } from "./inline";
 
 /** `{{{KEY}}}`, `{{{KEY|fallback}}}`, block tags such as `{{{#if X}}}`, and `{{key}}`, in source order. */
 const tokenPattern = /\{\{\{[\s\S]*?\}\}\}|\{\{[^{}]+\}\}/g;
@@ -16,7 +17,13 @@ function decode(value: string) {
 }
 
 export function tokens(html: string | null | undefined): string[] {
-  return [...(html ?? "").matchAll(tokenPattern)].map((match) => decode(match[0]));
+  const out: string[] = [];
+  const collect = (source: string, attribute: boolean) => {
+    for (const match of source.matchAll(tokenPattern)) out.push(attribute ? decode(match[0]) : match[0]);
+    return source;
+  };
+  mapText(html ?? "", (text) => collect(text, false), (markup) => collect(markup, true));
+  return out;
 }
 
 export function blocks(html: string | null | undefined): string[] {
@@ -43,7 +50,7 @@ function same(left: string[], right: string[]) {
 type Parts = { links: string[]; images: string[]; styles: string[] };
 
 function parts(html: string): Parts {
-  const doc = new DOMParser().parseFromString(html, "text/html");
+  const doc = new DOMParser().parseFromString(encodeInlineDefaults(html), "text/html");
   return {
     links: [...doc.querySelectorAll("a[href]")].map((element) => element.getAttribute("href") ?? ""),
     images: [...doc.querySelectorAll("img[src]")].map((element) => element.getAttribute("src") ?? ""),
@@ -90,7 +97,7 @@ const safeLink = /^(?:https?:\/\/|mailto:|tel:|#|\/|\{\{)/i;
 const overPage = /(?:^|;)\s*(?:position\s*:\s*(?:fixed|absolute|sticky)|z-index\s*:)/i;
 
 function unsafe(html: string): string | null {
-  const doc = new DOMParser().parseFromString(html, "text/html");
+  const doc = new DOMParser().parseFromString(encodeInlineDefaults(html), "text/html");
   for (const element of doc.querySelectorAll("[style]")) {
     if (overPage.test(element.getAttribute("style") ?? "")) {
       return "This HTML places content over the page with position or z-index, which visual mode does not open.";
@@ -128,7 +135,7 @@ export function unsafePaste(html: string): boolean {
  * Null when `html` is not shaped like the editor's own output.
  */
 export function unwrap(html: string): string | null {
-  const doc = new DOMParser().parseFromString(html, "text/html");
+  const doc = new DOMParser().parseFromString(encodeInlineDefaults(html), "text/html");
   const outer = doc.body.children.length === 1 ? doc.body.children[0]! : null;
   if (!outer || outer.tagName !== "TABLE" || outer.getAttribute("role") !== "presentation") return null;
   const cell = outer.querySelector(":scope > tbody > tr > td");

@@ -75,6 +75,8 @@ If opening the content would lose placeholders, links, images, or unsupported co
 
 Place the cursor in a visible placeholder to open its side panel. Name changes only that occurrence; Required/Optional and the saved fallback use the same settings as the variable table. **List item** shows whether the placeholder reads a field inside an `each` block. Its scope comes from the block, not a separate stored flag. For an item field, Optional edits that occurrence's inline fallback instead of declaring a global variable. Edit block boundaries and attribute placeholders (such as link URLs) in Code mode. Selecting a placeholder alone never rewrites the HTML.
 
+An item field keeps its hidden fallback when you dismiss and reopen the panel in the same visual document. Repeated fields keep separate fallbacks, including after nearby text edits or renaming a field. Loading a replacement document clears hidden item defaults. Inline defaults are literal text: `R&D`, `<em>plain</em>`, and `&amp;` keep those exact values after saving and reloading. Dispatch escapes them when rendering, so they do not become markup.
+
 Image-file uploads, pastes, and drops are not supported. Add an image URL in Code mode. Preview with real sample values and send a test before publishing.
 
 ## Brand

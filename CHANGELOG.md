@@ -7,6 +7,7 @@
 - Keep canvas step and ending buttons clickable inside React Flow's non-selectable wrappers.
 
 - Show Required/Optional template variable controls with saved fallbacks, keep lists fixed Required, and add a visual placeholder panel for names, requirements, fallbacks, and list-item scope. The stored variable model and rendering rules are unchanged.
+- Keep each visual list-item fallback when its inspector is dismissed and reopened. Preserve literal inline defaults, including ampersands, quotes, angle brackets, and entity-looking text, through visual saves and reloads.
 
 - Add public automation, template, audience, and domain guides, with Learn chips pinned to the dashboard version or a configured docs directory. Unavailable guides and anchors stay hidden.
 

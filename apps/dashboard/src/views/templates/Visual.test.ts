@@ -458,6 +458,96 @@ describe("Visual placeholder controls", () => {
     expect(tokens(String(onHtml.mock.calls.at(-1)![0]))).toEqual(["{{{#each ITEMS}}}", "{{{name|Product}}}", "{{{/each}}}"]);
     expect(changed).not.toHaveBeenCalled();
   });
+  it("restores a hidden item fallback after dismissing and reselecting the inspector", async () => {
+    const { onHtml, changed } = setup("<p>Intro</p><p>{{{#each ITEMS}}}</p><p>{{{name|Widget}}}</p><p>{{{/each}}}</p>");
+    const current = await select("name");
+    fireEvent.click(within(screen.getByRole("complementary")).getByRole("button", { name: "Required" }));
+    expect(current.state.doc.textContent).toContain("{{{name}}}");
+    await waitFor(() => expect(String(onHtml.mock.calls.at(-1)?.[0])).toContain("{{{name}}}"));
+    act(() => void current.commands.setTextSelection(1));
+    expect(screen.queryByRole("complementary")).toBeNull();
+    await select("name");
+    const panel = within(screen.getByRole("complementary"));
+    fireEvent.click(panel.getByRole("button", { name: "Optional" }));
+    expect((panel.getByLabelText("Fallback for name") as HTMLInputElement).value).toBe("Widget");
+    expect((panel.getByLabelText("List item") as HTMLInputElement).value).toBe("Item in ITEMS");
+    await waitFor(() => expect(String(onHtml.mock.calls.at(-1)?.[0])).toContain("{{{name|Widget}}}"));
+    expect(changed).not.toHaveBeenCalled();
+  });
+  it("keeps same-name item occurrences independent through nearby edits and renaming", async () => {
+    setup("<p>Intro</p><p>{{{#each ITEMS}}}</p><p>{{{name|First}}}</p><p>{{{name|Second}}}</p><p>{{{/each}}}</p>");
+    const current = await select("name", 0);
+    fireEvent.click(within(screen.getByRole("complementary")).getByRole("button", { name: "Required" }));
+    await select("name", 1);
+    fireEvent.click(within(screen.getByRole("complementary")).getByRole("button", { name: "Required" }));
+    act(() => {
+      current.commands.setTextSelection(1);
+      current.commands.insertContent("Nearby & ");
+    });
+    expect(screen.queryByRole("complementary")).toBeNull();
+    await select("name", 0);
+    let panel = within(screen.getByRole("complementary"));
+    fireEvent.change(panel.getByLabelText("Name"), { target: { value: "description" } });
+    fireEvent.blur(panel.getByLabelText("Name"));
+    act(() => void current.commands.setTextSelection(1));
+    await select("description");
+    panel = within(screen.getByRole("complementary"));
+    fireEvent.click(panel.getByRole("button", { name: "Optional" }));
+    expect((panel.getByLabelText("Fallback for description") as HTMLInputElement).value).toBe("First");
+    await select("name");
+    panel = within(screen.getByRole("complementary"));
+    fireEvent.click(panel.getByRole("button", { name: "Optional" }));
+    expect((panel.getByLabelText("Fallback for name") as HTMLInputElement).value).toBe("Second");
+    expect(current.state.doc.textContent).toContain("{{{description|First}}}{{{name|Second}}}");
+  });
+  it("does not give a deleted occurrence's hidden fallback to a new token at that position", async () => {
+    setup("<p>{{{#each ITEMS}}}</p><p>{{{name|Old}}}</p><p>{{{/each}}}</p>");
+    const current = await select("name");
+    fireEvent.click(within(screen.getByRole("complementary")).getByRole("button", { name: "Required" }));
+    let from = 0;
+    current.state.doc.descendants((node, pos) => {
+      if (node.text === "{{{name}}}") from = pos;
+    });
+    act(() => {
+      current.view.dispatch(current.state.tr.replaceWith(from, from + "{{{name}}}".length, current.schema.text("{{{name}}}")));
+    });
+    await select("name");
+    const panel = within(screen.getByRole("complementary"));
+    fireEvent.click(panel.getByRole("button", { name: "Optional" }));
+    expect((panel.getByLabelText("Fallback for name") as HTMLInputElement).value).toBe("");
+  });
+  it("clears hidden item defaults when the document is replaced", async () => {
+    const controls = { variables: [], fallbacks: { current: new Map<string, string | number>() }, onChange: vi.fn() };
+    const props = { convert: true, onHtml: vi.fn(), onReject: vi.fn(), placeholders: controls };
+    const page = render(h(Visual, { ...props, html: "<p>{{{#each ITEMS}}}</p><p>{{{name|Old}}}</p><p>{{{/each}}}</p>" }));
+    await select("name");
+    fireEvent.click(within(screen.getByRole("complementary")).getByRole("button", { name: "Required" }));
+    page.rerender(h(Visual, { ...props, html: "<p>Replacement</p><p>{{{#each ITEMS}}}</p><p>{{{name}}}</p><p>{{{/each}}}</p>" }));
+    await waitFor(() => expect(document.querySelector(".visualCanvas:not(.checking) .tiptap")?.textContent).toContain("Replacement"));
+    await select("name");
+    const panel = within(screen.getByRole("complementary"));
+    fireEvent.click(panel.getByRole("button", { name: "Optional" }));
+    expect((panel.getByLabelText("Fallback for name") as HTMLInputElement).value).toBe("");
+  });
+  it("saves sensitive inspector defaults literally and reloads them without interpreting markup", async () => {
+    const { onHtml } = setup("<p>{{{#each ITEMS}}}</p><p>{{{name|Widget}}}</p><p>{{{/each}}}</p>");
+    await select("name");
+    const fallback = `R&D "<em>plain</em>" &amp; &#39;`;
+    fireEvent.change(within(screen.getByRole("complementary")).getByLabelText("Fallback for name"), { target: { value: fallback } });
+    await waitFor(() => expect(onHtml).toHaveBeenCalled());
+    const saved = String(onHtml.mock.calls.at(-1)![0]);
+    expect(saved).toContain(`{{{name|${fallback}}}}`);
+    expect(document.querySelector(".tiptap em")).toBeNull();
+    cleanup();
+    // No conversion is needed for the actual saved HTML. Ordinary edits still work.
+    const write = vi.fn();
+    render(h(Visual, { html: saved, onHtml: write, onReject: vi.fn() }));
+    await type(" Ordinary & <safe>");
+    await waitFor(() => expect(write).toHaveBeenCalled());
+    expect(String(write.mock.calls.at(-1)![0])).toContain(`{{{name|${fallback}}}}`);
+    expect(String(write.mock.calls.at(-1)![0])).toMatch(/Ordinary\s+&amp;\s+&lt;safe&gt;/);
+    expect(document.querySelector(".tiptap em")).toBeNull();
+  });
   it("renames a list whose name is each without changing the block command", async () => {
     const { onHtml } = setup("<p>{{{#each each}}}</p><p>{{{name}}}</p><p>{{{/each}}}</p>", [{ key: "each", type: "list", fallback_value: null }]);
     const current = await editor() as TipTap;

@@ -61,6 +61,7 @@ function replacePlaceholder(editor: Editor, token: Placeholder, raw: string) {
   if (!editor.isEditable || editor.state.doc.textBetween(token.from, token.to, "", "\ufffc") !== token.raw) return false;
   const marks = editor.state.doc.nodeAt(token.from)?.marks ?? [];
   return editor.chain().command(({ tr }) => {
+    tr.setMeta("placeholderEdit", { from: token.from, to: token.to });
     tr.replaceWith(token.from, token.to, editor.state.schema.text(raw, marks));
     return true;
   }).setTextSelection(token.from + 2).run();

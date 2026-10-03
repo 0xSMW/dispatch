@@ -3,6 +3,7 @@ import { Field } from "../../components/Field";
 import { builtIn, declarable, type Variable } from "./render";
 import { inlineFallback, renamePlaceholder, type Editor, type Placeholder } from "./placeholders";
 import { Requirement, type Fallbacks } from "./Variables";
+import type { ItemFallbacks } from "./ItemFallbacks";
 
 export type PlaceholderControls = {
   variables: Variable[];
@@ -10,7 +11,7 @@ export type PlaceholderControls = {
   fallbacks: Fallbacks;
 };
 
-export function PlaceholderPanel({ token, editor, controls }: { token: Placeholder; editor: Editor; controls: PlaceholderControls }) {
+export function PlaceholderPanel({ token, editor, controls, items }: { token: Placeholder; editor: Editor; controls: PlaceholderControls; items: ItemFallbacks }) {
   const [name, setName] = useState(token.key);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -53,7 +54,8 @@ export function PlaceholderPanel({ token, editor, controls }: { token: Placehold
       ) : local ? (
         <Requirement
           variable={{ key: token.key, type: token.kind === "each" ? "list" : "string", fallback_value: token.inline }}
-          memoryKey={`${token.list}:${token.from}:${token.key}`}
+          memoryKey={items.key(token)}
+          fallbacks={items.fallbacks}
           disabled={!editor.isEditable || !token.raw.startsWith("{{{") || token.kind !== "value"}
           onChange={(value) => inlineFallback(editor, token, value === null ? null : String(value))}
         />
