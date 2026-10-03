@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
 from typing import get_args, get_type_hints
 
-from dispatch import Automation, AutomationInput, AutomationTriggerConfig, AutomationUpdateInput, ContactPropertyInput, Dispatch, DispatchError, ImportColumnMap, SendEmailConfig
+from dispatch import Automation, AutomationDryRun, AutomationInput, AutomationTriggerConfig, AutomationUpdateInput, ContactPropertyInput, Dispatch, DispatchError, ImportColumnMap, SendEmailConfig
 
 
 class Recorder(BaseHTTPRequestHandler):
@@ -190,6 +190,44 @@ class TestDispatch(unittest.TestCase):
         with self.assertRaises(DispatchError) as caught:
             self.client.update_automation("a1", {"status": "paused"})
         self.assertEqual(caught.exception.status, 409)
+
+    def test_automation_dry_run_contracts(self):
+        self.assertIs(get_type_hints(Dispatch.dry_run_automation)["return"], AutomationDryRun)
+        self.assertEqual(get_type_hints(AutomationDryRun), {"stranded_runs": int, "by_step": dict[str, int]})
+        self.assertNotIn("used_keys", get_type_hints(Automation))
+        self.assertNotIn("used_keys", get_type_hints(AutomationUpdateInput))
+        update: AutomationUpdateInput = {
+            "name": "Edited", "reentry": "once",
+            "steps": [
+                {"key": "start", "type": "trigger", "config": {"type": "contact_updated", "field": "activated", "from": False, "to": True}},
+                {"key": "send", "type": "send_email", "config": {"template": "welcome", "variables": {"camelKey": "literal"}}},
+            ],
+            "connections": [{"from": "start", "to": "send", "type": "default"}],
+        }
+        saved = {"id": "a/1", "status": "paused", "version": 5}
+        for preview in ({"stranded_runs": 3, "by_step": {"removed": 2, "send/email": 1}}, {"stranded_runs": 0, "by_step": {}}):
+            with self.subTest(preview=preview):
+                Recorder.calls = []
+                Recorder.responses = {
+                    ("PATCH", "/automations/a%2F1?dry_run=true"): (200, preview),
+                    ("PATCH", "/automations/a%2F1"): (200, saved),
+                }
+                self.assertEqual(self.client.dry_run_automation("a/1", update), preview)
+                self.assertEqual(Recorder.calls[0]["method"], "PATCH")
+                self.assertEqual(Recorder.calls[0]["path"], "/automations/a%2F1?dry_run=true")
+                self.assertEqual(Recorder.calls[0]["body"], update)
+                self.assertEqual(self.client.update_automation("a/1", update), saved)
+                self.assertEqual(Recorder.calls[1]["body"], update)
+
+    def test_automation_dry_run_errors(self):
+        for status in (403, 409, 422):
+            with self.subTest(status=status):
+                Recorder.responses[("PATCH", "/automations/a1?dry_run=true")] = (
+                    status, {"name": "conflict", "message": "Cannot save this graph"}
+                )
+                with self.assertRaises(DispatchError) as caught:
+                    self.client.dry_run_automation("a1", {"steps": []})
+                self.assertEqual(caught.exception.status, status)
 
     def test_send_headers(self):
         result = self.client.send({"from": "a@x.com", "to": "b@x.com", "subject": "Hi", "text": "Yo"}, idempotency_key="idem-1")

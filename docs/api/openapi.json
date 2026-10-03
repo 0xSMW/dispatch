@@ -11551,6 +11551,7 @@
       "patch": {
         "operationId": "updateAutomation",
         "summary": "Update an automation",
+        "description": "Graph edits are allowed while paused or disabled. Saving commits the graph, version and stranded-run cancellations together. Step keys permanently reserve their type. Set dry_run=true to preview affected counts without changing any state.",
         "tags": [
           "Automations"
         ],
@@ -11564,6 +11565,13 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "dry_run",
+            "in": "query",
+            "required": false,
+            "description": "Preview stranded-run counts without saving any changes.",
+            "schema": { "type": "boolean" }
           },
           {
             "$ref": "#/components/parameters/RequestIdHeader"
@@ -11599,12 +11607,18 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "allOf": [
+                  "oneOf": [
                     {
-                      "$ref": "#/components/schemas/Automation"
+                      "allOf": [
+                        { "$ref": "#/components/schemas/Automation" },
+                        { "$ref": "#/components/schemas/RequestId" }
+                      ]
                     },
                     {
-                      "$ref": "#/components/schemas/RequestId"
+                      "allOf": [
+                        { "$ref": "#/components/schemas/DryRun" },
+                        { "$ref": "#/components/schemas/RequestId" }
+                      ]
                     }
                   ]
                 }
@@ -20606,7 +20620,15 @@
             "maxItems": 200
           }
         },
-        "description": "Changing `steps`, `connections`, or `trigger` requires the automation to be disabled, or disabled in the same request."
+        "description": "Changing steps, connections, or trigger requires an already paused or disabled automation, or disabling in the same request. Previously used keys cannot change type."
+      },
+      "DryRun": {
+        "type": "object",
+        "required": ["stranded_runs", "by_step"],
+        "properties": {
+          "stranded_runs": { "type": "integer", "minimum": 0 },
+          "by_step": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } }
+        }
       },
       "Automation": {
         "type": "object",

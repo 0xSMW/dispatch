@@ -936,4 +936,48 @@ alter table automations drop constraint if exists automations_pause_check;
 alter table automations add constraint automations_pause_check check (enabled or paused_at is null);
 create index if not exists automations_active_trigger_idx on automations (tenant_id, trigger_type, trigger)
   where deleted_at is null and enabled and paused_at is null;
+
+-- Keys are permanent type reservations, including writes by future installers.
+alter table automations add column if not exists used_keys jsonb not null default '{}';
+create or replace function automation_keys(steps jsonb) returns jsonb
+language sql immutable as $$
+  select coalesce(jsonb_object_agg(
+    coalesce(step->>'key', 'step_' || ordinal::text),
+    case step->>'type' when 'wait' then 'wait_for_event' when 'update_contact' then 'contact_update' else step->>'type' end
+  ), '{}'::jsonb) || case when not exists (select 1 from jsonb_array_elements(steps) s where s ? 'key')
+    then '{"trigger":"trigger"}'::jsonb else '{}'::jsonb end
+  from jsonb_array_elements(steps) with ordinality s(step, ordinal)
+$$;
+update automations set used_keys = automation_keys(steps) where used_keys = '{}'::jsonb;
+create or replace function reserve_automation_keys() returns trigger language plpgsql as $$
+declare
+  history jsonb;
+  entry record;
+begin
+  history := case when TG_OP = 'UPDATE' then OLD.used_keys else '{}'::jsonb end;
+  for entry in select * from jsonb_each_text(automation_keys(NEW.steps)) loop
+    if history ? entry.key and history->>entry.key <> entry.value then
+      raise exception 'Step key % was already used for %. Use a new key for %.',
+        entry.key, history->>entry.key, entry.value using errcode = '23514';
+    end if;
+  end loop;
+  NEW.used_keys := history || automation_keys(NEW.steps);
+  return NEW;
+end
+$$;
+drop trigger if exists automations_reserve_keys on automations;
+create trigger automations_reserve_keys before insert or update of steps, used_keys on automations
+  for each row execute function reserve_automation_keys();
+
+-- Waiting rows own their matching config. Only old waiting rows are backfilled once.
+update automation_steps s set data = coalesce(s.data, '{}'::jsonb) || jsonb_build_object('wait_config', coalesce((
+  select case when step ? 'key' then coalesce(step->'config', '{}'::jsonb) else step - 'type' end
+  from jsonb_array_elements(a.steps) with ordinality e(step, ordinal)
+  where (s.step_key is not null and coalesce(step->>'key', 'step_' || ordinal::text) = s.step_key)
+    or (s.step_key is null and not (step ? 'key') and ordinal = s.step_index + 1)
+  limit 1
+), '{}'::jsonb))
+from automation_runs r join automations a on a.tenant_id = r.tenant_id and a.id = r.automation_id
+where s.tenant_id = r.tenant_id and s.run_id = r.id and s.state = 'waiting'
+  and not (coalesce(s.data, '{}'::jsonb) ? 'wait_config');
 `;

@@ -11,6 +11,8 @@ import { keys, type TriggerConfig } from "./graph";
 beforeEach(() => {
   let next = 0;
   vi.spyOn(keys, "suffix").mockImplementation(() => String(++next));
+  vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+  vi.stubGlobal("DOMMatrixReadOnly", class { m22 = 1; });
 });
 
 const automation = {
@@ -77,20 +79,14 @@ describe("AutomationEditor", () => {
     sessionStorage.clear();
     vi.unstubAllGlobals();
   });
-  it.each(["full", "viewer"])("shows paused status to %s without offering graph saves before paused editing ships", async (role) => {
-    if (role === "viewer") signIn("sess_viewer", ["read"]);
-    api((url) => url.pathname === "/automations/automation_1" ? { body: { ...automation, status: "paused", version: 2 } } : undefined);
-    open();
-    expect(await screen.findByText("paused")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
-    if (role === "viewer") expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
-  });
-  it("uses a status-only update when starting a paused graph", async () => {
+  it("uses a status-only update when resuming a clean paused graph", async () => {
     const fetch = api((url, init) => url.pathname === "/automations/automation_1" ? {
       body: { ...automation, status: init.method === "PATCH" ? "enabled" : "paused", version: 2 },
     } : undefined);
     open();
-    fireEvent.click(await screen.findByRole("button", { name: "Start" }));
+    const resume = await screen.findByRole("button", { name: "Resume" }) as HTMLButtonElement;
+    await waitFor(() => expect(resume.disabled).toBe(false));
+    fireEvent.click(resume);
     await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
     expect(JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "PATCH")![1]!.body))).toEqual({ status: "enabled" });
   });
@@ -401,17 +397,18 @@ describe("AutomationEditor", () => {
     expect(screen.getByTestId("location").textContent).toBe("/automations/automation_1/editor");
   });
 
-  it("explains a 409 conflict: stop the automation first", async () => {
+  it.each(["Disable the automation before changing its steps", "Pause or stop the automation before changing its steps"])
+  ("explains the enabled graph conflict %s: pause first to keep runs", async (message) => {
     api((url, init) =>
       init.method === "PATCH"
-        ? { status: 409, body: { name: "conflict", statusCode: 409, message: "Disable the automation before changing its steps" } }
+        ? { status: 409, body: { name: "conflict", statusCode: 409, message } }
         : undefined,
     );
     open();
     const card = await screen.findByRole("article", { name: "Step welcome" });
     fireEvent.change(within(card).getByLabelText("Subject"), { target: { value: "Hello" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    const alert = await screen.findByText(/Stop it first, or duplicate it/, { selector: ".alert" });
+    const alert = await screen.findByText(/Pause it first to keep its runs, or duplicate it/, { selector: ".alert" });
     expect(alert).toBeTruthy();
   });
 

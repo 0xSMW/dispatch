@@ -60,6 +60,39 @@ describe("Automations", () => {
     expect(automationCsv.find((column) => column.header === "status")!.value(paused)).toBe("paused");
   });
 
+  it.each([
+    { status: "enabled", action: "Pause", target: "paused" },
+    { status: "paused", action: "Resume", target: "enabled" },
+  ])("offers $action and destructive Stop for an $status row", async ({ status, action, target }) => {
+    const fetch = mockFetch((raw, init) => init.method === "PATCH"
+      ? { body: { ...rows[0], status: target } }
+      : { body: { object: "list", has_more: false, data: new URL(raw).pathname === "/automations" ? [{ ...rows[0], status }] : [] } });
+    open();
+    const row = (await screen.findByText("Welcome")).closest("tr")!;
+    fireEvent.click(within(row).getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menuitem", { name: "Stop and cancel runs" })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: "Start" })).toBeNull();
+    fireEvent.click(screen.getByRole("menuitem", { name: action }));
+    await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
+    const patch = fetch.mock.calls.find(([, init]) => init?.method === "PATCH")!;
+    expect(new URL(String(patch[0])).pathname).toBe("/automations/automation_1");
+    expect(JSON.parse(String(patch[1]!.body))).toEqual({ status: target });
+    expect(fetch.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+  });
+
+  it.each(["enabled", "paused"])("does not expose lifecycle writes to a viewer on a %s row", async (status) => {
+    signIn("sess_viewer", ["read"]);
+    const fetch = mockFetch((raw) => ({ body: { object: "list", has_more: false,
+      data: new URL(raw).pathname === "/automations" ? [{ ...rows[0], status }] : [] } }));
+    open();
+    const row = (await screen.findByText("Welcome")).closest("tr")!;
+    fireEvent.click(within(row).getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menuitem", { name: "Open builder" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "View runs" })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: /Pause|Resume|Stop and cancel runs|Start|Delete|Duplicate/ })).toBeNull();
+    expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH" || init?.method === "POST")).toBe(false);
+  });
+
   it("creates a disabled automation with only its trigger, then opens the builder", async () => {
     const fetch = mockFetch((url, init) => {
       if (init.method === "POST") return { body: { id: "automation_3", name: "Onboarding", status: "disabled", steps: [], created_at: "" } };
@@ -182,20 +215,21 @@ describe("Automations", () => {
     expect(JSON.parse(String(patch[1]!.body))).toEqual({ status: "enabled" });
   });
 
-  it("stops an enabled automation after confirming", async () => {
+  it.each(["enabled", "paused"])("stops a %s automation after confirming its active count and reset choice", async (status) => {
     const fetch = mockFetch((url, init) => {
       if (new URL(url).pathname.endsWith("/runs/metrics")) return { body: { totals: { running: 3 } } };
-      return init.method === "POST" ? { body: { ...rows[0], status: "disabled" } } : { body: { object: "list", has_more: false, data: rows } };
+      return init.method === "POST" ? { body: { ...rows[0], status: "disabled" } } : { body: { object: "list", has_more: false, data: [{ ...rows[0], status }, rows[1]] } };
     });
     open();
     const row = (await screen.findByText("Welcome")).closest("tr")!;
     fireEvent.click(within(row).getByRole("button", { name: "Actions" }));
     fireEvent.click(await screen.findByRole("menuitem", { name: "Stop and cancel runs" }));
     expect(await screen.findByText("3 runs in progress will be cancelled.")).toBeTruthy();
+    if (status === "paused") fireEvent.click(screen.getByLabelText("Let cancelled contacts enter again"));
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /Stop/ }));
     await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "POST")).toBe(true));
     expect(String(fetch.mock.calls.find(([, init]) => init?.method === "POST")![0])).toBe("http://localhost:3100/automations/automation_1/stop");
-    expect(JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "POST")![1]!.body))).toEqual({ reset_reentry: false });
+    expect(JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "POST")![1]!.body))).toEqual({ reset_reentry: status === "paused" });
   });
 
   it("selects every row with Cmd+A and opens delete with Backspace", async () => {

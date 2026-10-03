@@ -322,6 +322,7 @@ export * from "./accept.js";
 export * from "./activity.js";
 export * from "./audience.js";
 export * from "./automations.js";
+export * from "./automation-edits.js";
 export * from "./contact-triggers.js";
 export * from "./enrollment-jobs.js";
 export * from "./claims.js";

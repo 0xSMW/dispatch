@@ -52,6 +52,7 @@ export type AutomationRow = {
   enabled: boolean;
   paused_at?: string | null;
   version?: number;
+  used_keys?: Record<string, string>;
   created_at: string;
   updated_at: string;
 };
@@ -61,7 +62,7 @@ export type Outcome = Connection["type"];
 export const stepLimit = 100;
 export const activeStates = ["ready", "running", "waiting"];
 
-export const automationColumns = "id, name, trigger, trigger_type, reentry, steps, connections, enabled, paused_at, version, created_at, updated_at";
+export const automationColumns = "id, name, trigger, trigger_type, reentry, steps, connections, enabled, paused_at, version, used_keys, created_at, updated_at";
 
 export function automationStatus(row: Pick<AutomationRow, "enabled" | "paused_at">) {
   return !row.enabled ? "disabled" : row.paused_at ? "paused" : "enabled";
@@ -341,11 +342,11 @@ async function pauseAutomation(db: Db, tenantId: string, runId: string, index: n
   if (step.type === "delay") {
     const config = step.config as StepConfig<"delay">;
     resumeAt = new Date(Date.now() + durationSeconds(config.duration) * 1_000);
-    data = { duration: config.duration, resume_at: resumeAt.toISOString() };
+    data = { duration: config.duration, resume_at: resumeAt.toISOString(), wait_config: config };
   } else {
     const config = step.config as StepConfig<"wait_for_event">;
     resumeAt = config.timeout ? new Date(Date.now() + durationSeconds(config.timeout) * 1_000) : null;
-    data = { event_name: config.event_name, timeout_at: resumeAt?.toISOString() ?? null };
+    data = { event_name: config.event_name, timeout_at: resumeAt?.toISOString() ?? null, wait_config: config };
     waitEvent = config.event_name;
   }
 
@@ -679,8 +680,12 @@ export async function fireEvent(
       trigger: string;
       steps: Array<Record<string, unknown>>;
       connections: unknown[] | null;
+      wait_config: { filter_rule?: Rule } | null;
     }>(
-      `select r.id, r.next_step_key, a.trigger, a.steps, a.connections
+      `select r.id, r.next_step_key, a.trigger, a.steps, a.connections,
+         (select s.data->'wait_config' from automation_steps s
+          where s.tenant_id = r.tenant_id and s.run_id = r.id and s.state = 'waiting'
+          order by s.created_at desc, s.id desc limit 1) as wait_config
        from automation_runs r
        join automations a on a.id = r.automation_id
        join custom_events started on started.id = r.event_id
@@ -690,8 +695,8 @@ export async function fireEvent(
            (started.email is null and $3::text is null)
            or lower(started.email) = $3
          )
-       order by r.updated_at, r.id
-       for update of r skip locked`,
+       order by r.id
+       for update of r`,
       [tenantId, input.name, email]
     );
     const resumed = waiting.rows.filter((run) => matchesFilter(run, { event: eventContext(fired.data, fired.created_at), contact })).map((run) => run.id);
@@ -708,9 +713,10 @@ export async function fireEvent(
 }
 
 function matchesFilter(
-  run: { next_step_key: string | null; trigger: string; steps: Array<Record<string, unknown>>; connections: unknown[] | null },
+  run: { next_step_key: string | null; trigger: string; steps: Array<Record<string, unknown>>; connections: unknown[] | null; wait_config?: { filter_rule?: Rule } | null },
   context: Record<string, unknown>
 ) {
+  if (run.wait_config) return run.wait_config.filter_rule ? evaluate(run.wait_config.filter_rule, context) : true;
   if (!run.next_step_key) return true;
   try {
     const step = automationGraph(run).steps.find((item) => item.key === run.next_step_key);

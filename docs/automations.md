@@ -2,7 +2,7 @@
 
 Automations run a sequence of steps when your application fires an event or a contact changes. They are optional: sending a transactional email does not require an automation or an audience.
 
-Build and save an automation while it is disabled, then start it. Use its Runs view to inspect each step's result. Email metrics show real sending and engagement per automation and send step; [sandbox activity](api/README.md#sandbox-recipients) is excluded.
+Build and save an automation while it is disabled, then start it. Pause a running automation to edit it without losing everyone's place. Use its Runs view to inspect each step's result. Email metrics show real sending and engagement per automation and send step; [sandbox activity](api/README.md#sandbox-recipients) is excluded.
 
 ## Triggers
 
@@ -98,7 +98,7 @@ For exact From and To filters, use a graph definition in `--file`:
 }
 ```
 
-`--trigger` names an event and cannot be combined with a contact trigger type. `--topic` requires `topic_subscribed`; `--segment` requires `segment_added`. For keyed graph steps, flags replace the existing trigger step's config while preserving keys and connections. Update a disabled automation's contact trigger through `automations update --steps` and `--connections`; `--trigger` changes an event trigger name. Human-readable automation lists show contact triggers in words, not internal keys.
+`--trigger` names an event and cannot be combined with a contact trigger type. `--topic` requires `topic_subscribed`; `--segment` requires `segment_added`. For keyed graph steps, flags replace the existing trigger step's config while preserving keys and connections. Update a disabled or paused automation's contact trigger through `automations update --steps` and `--connections`; `--trigger` changes an event trigger name. Human-readable automation lists show contact triggers in words, not internal keys.
 
 See [Audience history](audience.md#change-history) and [the API guide](api/README.md#broadcasts-and-automations).
 
@@ -263,7 +263,7 @@ Mapped values retain their JSON type and must match the template variable's decl
 
 Set a Topic on the send step for Marketing email. It skips deleted contacts, global unsubscribes, and topic opt-outs, adds recipient-specific unsubscribe links and one-click headers, and checks opt-outs again at delivery. With no topic, the step is Transactional and does not enforce marketing subscriptions, including for a deleted contact's address. A template that prints an unsubscribe link needs a topic.
 
-Update contact and Add to segment skip deleted contacts rather than reviving them. Changing steps on an enabled automation is refused; stop it before editing.
+Update contact and Add to segment skip deleted contacts rather than reviving them. Changing steps on an enabled automation is refused with `409`; [pause it before editing](#editing-while-paused) to keep existing runs, or stop it to cancel them.
 
 ## Re-entry
 
@@ -316,7 +316,63 @@ Existing explicit enrollment jobs hold their remaining pages while paused and co
 
 Resumed steps use current contact state. For time-sensitive flows, check freshness with conditions on `event.received_at` or contact date properties rather than assuming a pause resets the clock. To enroll contacts missed during a pause, use the explicit [enrollment action](#enroll-existing-contacts) after resuming.
 
-Graph editing still requires a disabled automation. Pause does not yet add paused editing, edit previews, or dashboard Pause/Resume controls.
+The dashboard has dedicated Pause and Resume controls in the automation header. A paused builder stays editable and shows: "Paused. Runs hold their place. New triggers are not started." Stop and cancel runs is a separate action with confirmation and the optional [re-entry reset](#stop-and-cancel-runs). Viewers can inspect automations but cannot pause, resume, edit, preview saves, or stop them.
+
+### Editing while paused
+
+Save `steps` and `connections` through the ordinary `PATCH /automations/{id}` body while disabled or paused. Enabled graph saves still return `409`. A paused save is atomic: Dispatch locks the automation and its active runs, validates the graph, updates it, and maps each run's next step in one transaction.
+
+Step keys identify a run's place. Keep the same key and step type when editing a step's config. Each automation permanently reserves every saved key for its original type, even after the step is removed. Reusing that key for a different type returns `409`, both on a save and a dry run. Use a new key for a different step type, and remove the old key if you mean to replace that step. Reservation history is internal and is not returned by the API.
+
+- A run whose next key still exists with the same type keeps its place.
+- Removing its next key strands the run. Replacing a step with a different type under a new key also removes the old place. Saving stops affected runs with the exact error `Its next step was removed or changed while the automation was paused`, and closes their waiting step rows as cancelled.
+- A run already waiting on a Delay or Wait for event keeps its stored wait config, including event name, matching rule, and timeout or due time. Editing that step does not reconfigure its existing waits. Runs that reach it later use the new config.
+- Other config edits, such as changing a template, apply to runs that reach the step after saving. Completed steps are not repeated.
+
+Legacy linear definitions with index keys are converted to explicit keys on their first paused graph edit, with existing runs mapped by their original index. When editing through the API or CLI, prefer the explicit graph returned by GET and keep its keys stable.
+
+Preview the same update with `PATCH /automations/{id}?dry_run=true`. It applies the same write permissions and validation as saving and returns:
+
+```json
+{ "stranded_runs": 12, "by_step": { "old_send": 10, "old_wait": 2 } }
+```
+
+`stranded_runs` counts affected active runs; `by_step` groups them by their next step key. No graph, status, version, key reservations, or run state changes during a dry run. A normal update still returns an automation, not preview counts. The preview is not a save reservation; saving checks the current runs again.
+
+The paused builder previews before saving and asks for confirmation when steps were removed: "12 runs are waiting at steps you removed or changed. They will stop." Cancelling the confirmation does not save the graph.
+
+```sh
+dispatch automations update auto_123 --status paused
+dispatch automations update auto_123 --steps "$STEPS" --connections "$CONNECTIONS" --dry-run
+# After reviewing the counts, send the same definition without --dry-run:
+dispatch automations update auto_123 --steps "$STEPS" --connections "$CONNECTIONS"
+dispatch automations update auto_123 --status enabled
+```
+
+The SDKs expose separate preview methods, using the same input as their ordinary update method:
+
+```ts
+const { data: preview, error } = await dispatch.automations.dryRun(id, { steps, connections });
+if (error) throw new Error(error.message);
+// Review preview!.stranded_runs and preview!.by_step before saving:
+await dispatch.automations.update(id, { steps, connections });
+```
+
+```python
+preview = dispatch.dry_run_automation(id, {"steps": steps, "connections": connections})
+# Review preview["stranded_runs"] and preview["by_step"] before saving:
+dispatch.update_automation(id, {"steps": steps, "connections": connections})
+```
+
+```go
+input := dispatch.AutomationUpdate{Steps: &steps, Connections: &connections}
+preview, err := client.DryRunAutomation(id, input)
+if err != nil { return err }
+// Review preview.StrandedRuns and preview.ByStep before saving:
+_, err = client.UpdateAutomation(id, input)
+```
+
+Saving while paused does not resume the automation. Resume explicitly when the edits are ready. Neither saving nor resuming replays missed triggers; new arrivals after resume use the edited definition.
 
 ### Stop and cancel runs
 

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { signWebhook } from "@dispatchmail/core";
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
-import { Dispatch, WebhookVerificationError, type Automation, type AutomationCreate, type AutomationUpdate, type AutomationStatus, type AutomationReentry, type AutomationTriggerConfig, type ImportColumnMap, type Operator, type PropertyType, type PropertyValue, type Result, type Rule, type SendEmailConfig } from "./index.js";
+import { Dispatch, WebhookVerificationError, type Automation, type AutomationCreate, type AutomationDryRun, type AutomationUpdate, type AutomationStatus, type AutomationReentry, type AutomationTriggerConfig, type ImportColumnMap, type Operator, type PropertyType, type PropertyValue, type Result, type Rule, type SendEmailConfig } from "./index.js";
 
 const base = "http://localhost:3100";
 
@@ -58,6 +58,42 @@ describe("constructor", () => {
 });
 
 describe("transport", () => {
+  it.each([
+    { stranded_runs: 3, by_step: { removed: 2, "send/email": 1 } },
+    { stranded_runs: 0, by_step: {} },
+  ])("previews the ordinary automation update body with a distinct typed response: %j", async (preview) => {
+    const client = new Dispatch({ apiKey: "sk_test" });
+    const payload: AutomationUpdate = {
+      name: "Edited", reentry: "once",
+      steps: [
+        { key: "start", type: "trigger", config: { type: "contact_updated", field: "activated", from: false, to: true } },
+        { key: "send", type: "send_email", config: { template: "welcome", variables: { camelKey: "literal" } } },
+      ],
+      connections: [{ from: "start", to: "send", type: "default" }],
+    };
+    const fetch = stub(preview);
+    const result = await client.automations.dryRun("a/1", payload);
+    expectTypeOf(result).toEqualTypeOf<Result<AutomationDryRun>>();
+    expectTypeOf(result.data!.by_step).toEqualTypeOf<Record<string, number>>();
+    expect(result.data).toEqual(preview);
+    expect(request(fetch)).toMatchObject({
+      method: "PATCH", url: `${base}/automations/a%2F1?dry_run=true`, body: payload,
+    });
+    await client.automations.update("a/1", payload);
+    expect(request(fetch, 1)).toMatchObject({
+      method: "PATCH", url: `${base}/automations/a%2F1`, body: payload,
+    });
+    expectTypeOf<Awaited<ReturnType<typeof client.automations.update>>>().toEqualTypeOf<Result<Automation>>();
+  });
+
+  it.each([403, 409, 422])("preserves automation dry-run permission and validation errors (%s)", async (status) => {
+    const error = { name: status === 409 ? "conflict" : status === 403 ? "forbidden" : "validation_error", statusCode: status, message: "Cannot save this graph" };
+    globalThis.fetch = vi.fn(async () => reply(error, { status })) as never;
+    const result = await new Dispatch({ apiKey: "sk_test" }).automations.dryRun("a1", { steps: [] });
+    expect(result.data).toBeNull();
+    expect(result.error).toEqual(error);
+  });
+
   it("preserves pause statuses and graph versions without widening creation choices", async () => {
     expectTypeOf<AutomationCreate["status"]>().toEqualTypeOf<"enabled" | "disabled" | undefined>();
     expectTypeOf<AutomationUpdate["status"]>().toEqualTypeOf<AutomationStatus | undefined>();

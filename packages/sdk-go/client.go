@@ -306,6 +306,11 @@ type Automation struct {
 	UpdatedAt     string                  `json:"updated_at,omitempty"`
 }
 
+type AutomationDryRun struct {
+	StrandedRuns int            `json:"stranded_runs"`
+	ByStep       map[string]int `json:"by_step"`
+}
+
 // Automation statuses. Pausing a disabled automation returns 409.
 const (
 	AutomationEnabled  = "enabled"
@@ -1426,6 +1431,11 @@ func (c *Client) Automation(id string) (*Automation, error) {
 
 func (c *Client) UpdateAutomation(id string, automation any) (*Automation, error) {
 	return patch[Automation](c, at("automations", id), automation)
+}
+
+// DryRunAutomation previews an ordinary update with the same validation, without saving changes.
+func (c *Client) DryRunAutomation(id string, automation any) (*AutomationDryRun, error) {
+	return patch[AutomationDryRun](c, with(at("automations", id), []url.Values{{"dry_run": {"true"}}}), automation)
 }
 
 func (c *Client) DeleteAutomation(id string) (*Deleted, error) {

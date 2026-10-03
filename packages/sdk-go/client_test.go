@@ -120,6 +120,56 @@ func TestAutomationPauseContracts(t *testing.T) {
 	}
 }
 
+func TestAutomationDryRunContracts(t *testing.T) {
+	for _, want := range []AutomationDryRun{
+		{StrandedRuns: 3, ByStep: map[string]int{"removed": 2, "send/email": 1}},
+		{StrandedRuns: 0, ByStep: map[string]int{}},
+	} {
+		client, calls := recorder(t, map[string]canned{
+			"PATCH /automations/a%2F1?dry_run=true": {200, want},
+			"PATCH /automations/a%2F1":              {200, Automation{ID: "a/1", Status: AutomationPaused, Version: 5}},
+		})
+		steps := []AutomationStep{
+			{Key: "start", Type: "trigger", Config: AutomationTriggerConfig{Type: TriggerContactUpdated, Field: "activated", From: json.RawMessage("false"), To: json.RawMessage("true")}},
+			{Key: "send", Type: "send_email", Config: SendEmailConfig{Template: "welcome", Variables: map[string]any{"camelKey": "literal"}}},
+		}
+		connections := []AutomationConnection{{From: "start", To: "send", Type: "default"}}
+		input := AutomationUpdate{Name: "Edited", Reentry: ReentryOnce, Steps: &steps, Connections: &connections}
+		result, err := client.DryRunAutomation("a/1", input)
+		if err != nil || !reflect.DeepEqual(result, &want) {
+			t.Fatalf("preview: %+v, %v", result, err)
+		}
+		expected := Map{
+			"name": "Edited", "reentry": "once",
+			"steps": []any{
+				Map{"key": "start", "type": "trigger", "config": Map{"type": "contact_updated", "field": "activated", "from": false, "to": true}},
+				Map{"key": "send", "type": "send_email", "config": Map{"template": "welcome", "variables": Map{"camelKey": "literal"}}},
+			},
+			"connections": []any{Map{"from": "start", "to": "send", "type": "default"}},
+		}
+		if !reflect.DeepEqual((*calls)[0].Body, expected) {
+			t.Fatalf("preview body: %#v", (*calls)[0].Body)
+		}
+		updated, err := client.UpdateAutomation("a/1", input)
+		if err != nil || updated.ID != "a/1" || updated.Version != 5 {
+			t.Fatalf("save: %+v, %v", updated, err)
+		}
+		if !reflect.DeepEqual((*calls)[1].Body, expected) {
+			t.Fatalf("save body: %#v", (*calls)[1].Body)
+		}
+	}
+	for _, status := range []int{403, 409, 422} {
+		client, _ := recorder(t, map[string]canned{
+			"PATCH /automations/a1?dry_run=true": {status, Map{"name": "conflict", "message": "Cannot save this graph"}},
+		})
+		result, err := client.DryRunAutomation("a1", AutomationUpdate{})
+		var apiErr *Error
+		if result != nil || !errors.As(err, &apiErr) || apiErr.Status != status {
+			t.Fatalf("error %d: %+v, %v", status, result, err)
+		}
+	}
+}
+
 func TestEnrollmentContracts(t *testing.T) {
 	job := Map{
 		"object": "automation_enrollment_job", "id": "j/1", "automation_id": "a/1",

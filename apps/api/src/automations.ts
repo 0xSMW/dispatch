@@ -11,6 +11,8 @@ import {
   presentEnrollmentJob,
   findAutomation,
   emitRunEvent,
+  editRuns,
+  usedKeys,
   paginate,
   softDelete,
   tx,
@@ -228,8 +230,8 @@ export function registerAutomations(
       const config = (input.steps as Array<{ type: string; config: TriggerConfig }>).find((step) => step.type === "trigger")!.config;
       await assertTriggerConfig(client, tenantId, config);
       const row = await client.query<AutomationRow>(
-        `insert into automations (id, tenant_id, name, trigger, steps, connections, enabled, trigger_type, reentry)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        `insert into automations (id, tenant_id, name, trigger, steps, connections, enabled, trigger_type, reentry, used_keys)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        on conflict (tenant_id, name) where deleted_at is null do nothing
        returning ${automationColumns}`,
         [
@@ -242,6 +244,7 @@ export function registerAutomations(
           input.enabled,
           input.trigger_type,
           input.reentry,
+          JSON.stringify(usedKeys(automationGraph({ steps: input.steps as Array<Record<string, unknown>>, trigger: input.trigger, connections: input.connections }).steps)),
         ],
       );
       return row.rows[0] ?? null;
@@ -278,6 +281,11 @@ export function registerAutomations(
     const tenantId = request.auth!.tenant_id;
     const automationId = (request.params as { id: string }).id;
     const input = automationUpdateSchema.parse(request.body ?? {});
+    const rawDryRun = (request.query as { dry_run?: string }).dry_run;
+    if (rawDryRun !== undefined && rawDryRun !== "true" && rawDryRun !== "false") {
+      throw new ApiError("validation_error", 422, "dry_run must be true or false");
+    }
+    const dryRun = rawDryRun === "true";
     // Read and write under one row lock. Two requests at once (an editor saving steps while
     // the user presses Start) would otherwise each write back what the other had just changed.
     const row = await tx(db, async (client) => {
@@ -299,13 +307,17 @@ export function registerAutomations(
         const config = (graph ?? automationGraph(current)).steps.find((step) => step.type === "trigger")!.config as TriggerConfig;
         await assertTriggerConfig(client, tenantId, config);
       }
-      if (graph && current.enabled && enabled) {
-        throw new ApiError("conflict", 409, "Stop the automation before changing its steps");
+      if (graph && automationStatus(current) === "enabled" && enabled) {
+        throw new ApiError("conflict", 409, "Pause or stop the automation before changing its steps");
       }
+      const keys = graph ? usedKeys(graph.steps, usedKeys(automationGraph(current).steps, current.used_keys)) : current.used_keys ?? {};
+      // Disabling cancels all active runs below, rather than completing or stranding a subset.
+      const preview = graph ? await editRuns(client, tenantId, current, graph.steps, dryRun || !enabled) : { stranded_runs: 0, by_step: {} };
+      if (dryRun) return preview;
       const updated = await client.query<AutomationRow>(
         `update automations set name = $3, trigger = $4, steps = $5, connections = $6, enabled = $7, trigger_type = $8, reentry = $9,
            paused_at = case when $10::text = 'paused' then coalesce(paused_at, now()) else null end,
-           version = version + $11::integer, updated_at = now()
+           version = version + $11::integer, used_keys = $12::jsonb, updated_at = now()
          where tenant_id = $1 and id = $2
          returning ${automationColumns}`,
         [
@@ -320,6 +332,7 @@ export function registerAutomations(
           input.reentry ?? current.reentry ?? "every_time",
           status,
           graph ? 1 : 0,
+          JSON.stringify(keys),
         ],
       );
       // Disabling stops the runs in flight, as POST /stop does. A run left waiting would resume
@@ -327,7 +340,7 @@ export function registerAutomations(
       if (current.enabled && !enabled) await stopRuns(client, tenantId, automationId);
       return updated.rows[0]!;
     });
-    return presentAutomation(row);
+    return "stranded_runs" in row ? row : presentAutomation(row);
   });
 
   app.delete("/automations/:id", async (request) => {

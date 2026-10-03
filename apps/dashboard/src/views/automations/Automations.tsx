@@ -40,7 +40,7 @@ export const automationCsv: Array<CsvColumn<Automation>> = [
   { header: "created_at", value: (row) => row.created_at },
 ];
 
-/** `/automations`: the list, with status filter, create, duplicate, start and stop, and delete. */
+/** `/automations`: the list, with status filter and automation controls. */
 export function Automations() {
   const client = useClient();
   const can = useCan();
@@ -68,7 +68,13 @@ export function Automations() {
   useBulkKeys(selection, list.rows.length, deleteSelected);
 
   const start = useMutation((row: Automation) => client.patch<Automation>(`/automations/${row.id}`, { status: "enabled" }), {
-    success: "Automation started.",
+    onSuccess: (_result, row) => {
+      toast.success(row.status === "paused" ? "Automation resumed." : "Automation started.");
+      void list.reload();
+    },
+  });
+  const pause = useMutation((row: Automation) => client.patch<Automation>(`/automations/${row.id}`, { status: "paused" }), {
+    success: "Automation paused.",
     onSuccess: () => list.reload(),
   });
   const duplicate = useMutation((row: Automation) => client.post<Automation>(`/automations/${row.id}/duplicate`), {
@@ -130,9 +136,17 @@ export function Automations() {
             { label: "View runs", read: true, onSelect: () => navigate(`/automations/${row.id}/editor?tab=runs`) },
             { label: "Duplicate", onSelect: () => void duplicate.mutate(row) },
             ...(can && canEnroll(row) ? [{ label: "Enroll contacts", onSelect: () => setEnrolling(row) }] : []),
-            isEnabled(row)
-              ? { label: "Stop and cancel runs", onSelect: () => setStopping(row) }
-              : { label: "Start", disabled: cannotStart(row), onSelect: () => void start.mutate(row) },
+            ...(isEnabled(row)
+              ? [
+                { label: "Pause", disabled: pause.isLoading || start.isLoading, onSelect: () => void pause.mutate(row) },
+                { label: "Stop and cancel runs", onSelect: () => setStopping(row) },
+              ]
+              : row.status === "paused"
+                ? [
+                  { label: "Resume", disabled: cannotStart(row) || start.isLoading || pause.isLoading, onSelect: () => void start.mutate(row) },
+                  { label: "Stop and cancel runs", onSelect: () => setStopping(row) },
+                ]
+                : [{ label: "Start", disabled: cannotStart(row) || start.isLoading, onSelect: () => void start.mutate(row) }]),
             "divider",
             { label: "Delete", danger: true, onSelect: () => setDeleting([row]) },
           ]}

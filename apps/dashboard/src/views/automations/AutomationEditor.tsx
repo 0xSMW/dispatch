@@ -20,7 +20,7 @@ import { useMutation } from "../../hooks/useMutation";
 import { useResource } from "../../hooks/useResource";
 import { ApiError } from "../../lib/client";
 import { useCan, useClient } from "../../shell/session";
-import type { Automation, ContactProperty, EventDefinition, Segment, Template, Topic } from "../../types";
+import type { Automation, AutomationPreview, ContactProperty, EventDefinition, Segment, Template, Topic } from "../../types";
 import {
   descendants,
   insertStep,
@@ -39,7 +39,6 @@ import {
   triggerSummary,
   triggerWarning,
   updateNode,
-  type Graph,
   type ListPath,
   type Node,
   type Tree,
@@ -55,16 +54,18 @@ import { countsByStep, useEmailMetrics } from "./EmailMetrics";
 import { Enroll, canEnroll } from "./Enroll";
 
 type Draft = { name: string; tree: Tree; reentry: Reentry };
+type SaveRequest = { body: Record<string, unknown>; draft: Draft | null; id: string };
+type Confirmation = SaveRequest & { preview: AutomationPreview };
 
 /** What the API would store, to tell saved from unsaved. */
 function snapshot(draft: Draft) {
   return JSON.stringify({ name: draft.name.trim(), reentry: draft.reentry, ...toGraph(draft.tree) });
 }
 
-/** Explains a failed save. A 409 `conflict` means the automation is enabled. */
+/** Only the graph-lock conflict gets editor guidance. Other conflicts keep their precise message. */
 export function saveError(error: Error) {
-  if (error instanceof ApiError && error.name === "conflict") {
-    return "This automation is enabled, so its steps cannot change. Stop it first, or duplicate it and edit the copy.";
+  if (error instanceof ApiError && error.name === "conflict" && /^(Disable|Stop|Pause(?: or stop)?) the automation before changing its steps\.?$/.test(error.message)) {
+    return "This automation is enabled, so its steps cannot change. Pause it first to keep its runs, or duplicate it and edit the copy.";
   }
   return error.message;
 }
@@ -95,8 +96,6 @@ export function AutomationEditor() {
   const [apiError, setApiError] = useState<string | null>(null);
   // Issues from the last failed save, placed on the step cards their paths name.
   const [apiIssues, setApiIssues] = useState<Record<string, Record<string, string>>>({});
-  const sent = useRef<Graph["steps"]>([]);
-  const sentDraft = useRef<Draft | null>(null);
   const loaded = useRef<string | null>(null);
   const [checked, setChecked] = useState(false);
   const [removing, setRemoving] = useState<{ path: ListPath; index: number; node: Node } | null>(null);
@@ -104,6 +103,7 @@ export function AutomationEditor() {
   const [enrolling, setEnrolling] = useState(false);
   const enrollmentJob = params.get("enroll_job");
   const [deleting, setDeleting] = useState(false);
+  const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
 
   // What the API has stored, for the run drawer. The draft may hold unsaved edits.
   const stored = useMemo(() => (row ? toTree(row.steps ?? [], row.connections ?? []) : null), [row]);
@@ -149,9 +149,10 @@ export function AutomationEditor() {
   );
 
   const enabled = row ? isEnabled(row) : false;
+  const paused = row?.status === "paused";
   const can = useCan();
   // A viewer sees the builder read-only, the same way as an enabled automation.
-  const locked = !can || enabled || row?.status === "paused" || Boolean(problem);
+  const locked = !can || enabled || Boolean(problem);
   const dirty = Boolean(draft) && snapshot(draft!) !== saved;
   const issues = useMemo(() => (draft ? treeIssues(draft.tree, {
     events: events.rows, ...triggerSources(options),
@@ -161,36 +162,65 @@ export function AutomationEditor() {
   const triggerPending = trigger ? triggerLoading(trigger, options) : false;
   const nameIssue = draft && !draft.name.trim() ? "Enter a name." : null;
   const valid = !nameIssue && Object.keys(issues).length === 0;
+  const current = useRef({ draft, id: row?.id, paused, can });
+  current.current = { draft, id: row?.id, paused, can };
+
+  function failedSave(error: Error, request: SaveRequest) {
+    const message = saveError(error);
+    const issues = error instanceof ApiError ? error.issues : [];
+    if (issues.length) {
+      const { cards, rest } = placeIssues(request.draft ? toGraph(request.draft.tree).steps : [], issues);
+      setApiIssues(cards);
+      setApiError(rest.length ? rest.join(" ") : null);
+      toast.error(Object.keys(cards).length ? "Fix the highlighted steps first." : message);
+      return;
+    }
+    setApiIssues({});
+    setApiError(message);
+    toast.error(message);
+  }
 
   const save = useMutation(
-    (body: Record<string, unknown>) => client.patch<Automation>(`/automations/${id}`, body),
+    (request: SaveRequest) => client.patch<Automation>(`/automations/${request.id}`, request.body),
     {
-      success: (result) => (isEnabled(result) ? "Automation started." : "Automation saved."),
-      onSuccess: (result) => {
+      success: (result) => (isEnabled(result) ? paused ? "Automation resumed." : "Automation started." : "Automation saved."),
+      onSuccess: (result, request) => {
         setApiError(null);
         setApiIssues({});
         setChecked(false);
+        setConfirmation(null);
         // Saved is what was sent. Anything typed since stays in the draft and shows as unsaved.
-        if (sentDraft.current) setSaved(snapshot(sentDraft.current));
-        sentDraft.current = null;
+        if (request.draft) setSaved(snapshot(request.draft));
         automation.setData(result);
       },
-      onError: (error) => {
-        const message = saveError(error);
-        const issues = error instanceof ApiError ? error.issues : [];
-        if (issues.length) {
-          const { cards, rest } = placeIssues(sent.current, issues);
-          setApiIssues(cards);
-          setApiError(rest.length ? rest.join(" ") : null);
-          toast.error(Object.keys(cards).length ? "Fix the highlighted steps first." : message);
-          return;
-        }
-        setApiIssues({});
-        setApiError(message);
-        toast.error(message);
+      onError: failedSave,
+    },
+  );
+
+  function isCurrent(request: SaveRequest) {
+    const latest = current.current;
+    return latest.can && latest.paused && latest.id === request.id && latest.draft === request.draft;
+  }
+
+  const preview = useMutation(
+    (request: SaveRequest) => client.patch<AutomationPreview>(`/automations/${request.id}?dry_run=true`, request.body),
+    {
+      onSuccess: (result, request) => {
+        // Edits made while the preview was loading require a new preview, even after reverting.
+        if (!isCurrent(request)) return;
+        if (result.stranded_runs > 0) setConfirmation({ ...request, preview: result });
+        else void save.mutate(request);
+      },
+      onError: (error, request) => {
+        if (isCurrent(request)) failedSave(error, request);
       },
     },
   );
+  const pause = useMutation(() => client.patch<Automation>(`/automations/${id}`, { status: "paused" }), {
+    success: "Automation paused.",
+    onSuccess: (result) => automation.setData(result),
+  });
+  const busy = save.isLoading || preview.isLoading || pause.isLoading;
 
   const duplicate = useMutation(() => client.post<Automation>(`/automations/${id}/duplicate`), {
     success: "Automation duplicated.",
@@ -198,26 +228,33 @@ export function AutomationEditor() {
   });
 
   function submit(start: boolean) {
-    if (!can || !draft || save.isLoading || triggerPending || (start && resourceWarning)) return;
-    sentDraft.current = null;
-    if (problem || row?.status === "paused") {
-      if (start) void save.mutate({ status: "enabled" });
+    if (!can || !row || !draft || busy || confirmation || enabled || triggerPending || (start && resourceWarning)) return;
+    if (start && (problem || (paused && !dirty))) {
+      void save.mutate({ id: row.id, body: { status: "enabled" }, draft: null });
       return;
     }
+    if (problem || (!start && !dirty)) return;
     if (!valid) {
       setChecked(true);
       toast.error("Fix the highlighted fields first.");
       return;
     }
     const graph = toGraph(draft.tree);
-    sent.current = graph.steps;
-    sentDraft.current = draft;
-    void save.mutate({ name: draft.name.trim(), reentry: draft.reentry, ...graph, ...(start ? { status: "enabled" } : {}) });
+    const request: SaveRequest = {
+      id: row.id,
+      draft,
+      body: { name: draft.name.trim(), reentry: draft.reentry, ...graph, ...(start ? { status: "enabled" } : {}) },
+    };
+    setApiError(null);
+    if (paused) void preview.mutate(request);
+    else void save.mutate(request);
   }
 
   useHotkey(shortcuts.save.combo, () => submit(false), { enabled: tab === "builder" && !locked && dirty });
 
   const edit = (change: (tree: Tree) => Tree) => {
+    if (locked) return;
+    setConfirmation(null);
     setApiIssues({});
     setDraft((current) => (current ? { ...current, tree: change(current.tree) } : current));
   };
@@ -247,19 +284,24 @@ export function AutomationEditor() {
               {can && canEnroll(row) ? <button type="button" className="secondary" onClick={() => setEnrolling(true)}>Enroll contacts</button> : null}
               {!locked && draft ? <span className="dim saveState">{dirty ? "Unsaved changes" : "Saved"}</span> : null}
               {!locked ? (
-                <button type="button" className="secondary" disabled={!dirty || save.isLoading} onClick={() => submit(false)}>
+                <button type="button" className="secondary" disabled={!dirty || busy || Boolean(confirmation)} onClick={() => submit(false)}>
                   Save
                 </button>
               ) : null}
               {!can ? null : enabled ? (
-                <button type="button" className="secondary" onClick={() => setStopping(true)}>
-                  Stop and cancel runs
+                <button type="button" className="secondary" disabled={busy} onClick={() => void pause.mutate()}>
+                  Pause
                 </button>
               ) : (
-                <button type="button" disabled={save.isLoading || !draft || triggerPending || Boolean(resourceWarning)} aria-busy={save.isLoading} onClick={() => submit(true)}>
-                  Start
+                <button type="button" disabled={busy || Boolean(confirmation) || !draft || triggerPending || Boolean(resourceWarning)} aria-busy={busy} onClick={() => submit(true)}>
+                  {paused ? "Resume" : "Start"}
                 </button>
               )}
+              {can && (enabled || paused) ? (
+                <button type="button" className="secondary" disabled={busy} onClick={() => setStopping(true)}>
+                  Stop and cancel runs
+                </button>
+              ) : null}
               {can ? (
                 <Menu
                   items={[
@@ -293,22 +335,31 @@ export function AutomationEditor() {
       ) : (
         <ReentryContext.Provider value={{ value: draft.reentry, onChange: (reentry) => {
           if (locked) return;
+          setConfirmation(null);
           setApiError(null);
           setDraft((current) => current ? { ...current, reentry } : current);
         } }}>
         <div className={view === "canvas" && !problem ? "builder wide" : "builder"}>
           {enabled && can ? (
             <div className="notice" role="status">
-              <span>Enabled automations cannot be edited. Stop it to change its steps, or duplicate it and edit the copy.</span>
+              <span>Enabled automations cannot be edited. Pause it to change its steps while keeping runs, or duplicate it and edit the copy.</span>
+              <button type="button" className="secondary small" onClick={() => void pause.mutate()} disabled={busy}>
+                Pause
+              </button>
               <button type="button" className="secondary small" onClick={() => void duplicate.mutate()} disabled={duplicate.isLoading}>
                 Duplicate
               </button>
             </div>
           ) : null}
+          {paused ? (
+            <div className="notice" role="status">
+              <span>Paused. Runs hold their place. New triggers are not started.</span>
+            </div>
+          ) : null}
           {problem ? (
             <div className="notice warning" role="status">
               <span>
-                {problem} The list builder cannot edit this automation without losing steps. Change it through the API or CLI. You can still start and stop it here.
+                {problem} The list builder cannot edit this automation without losing steps. Change it through the API or CLI. You can still pause, resume, start and stop it here.
               </span>
             </div>
           ) : null}
@@ -325,7 +376,11 @@ export function AutomationEditor() {
             <Field
               label="Name"
               value={draft.name}
-              onChange={(name) => setDraft({ ...draft, name })}
+              onChange={(name) => {
+                if (locked) return;
+                setConfirmation(null);
+                setDraft({ ...draft, name });
+              }}
               error={checked ? nameIssue : null}
               disabled={locked}
               required
@@ -384,6 +439,24 @@ export function AutomationEditor() {
       )}
 
       <LeaveGuard when={dirty && !locked} />
+      {confirmation && confirmation.draft === draft && paused && can ? (
+        <Modal
+          isOpen
+          title={confirmation.body.status === "enabled" ? "Save and resume automation" : "Save paused automation"}
+          onClose={() => setConfirmation(null)}
+          onSubmit={() => {
+            if (busy || !isCurrent(confirmation)) return;
+            void save.mutate(confirmation);
+          }}
+          submitLabel={confirmation.body.status === "enabled" ? "Save and resume" : "Save changes"}
+          submitting={save.isLoading}
+          submitDisabled={!isCurrent(confirmation)}
+          danger
+          size="small"
+        >
+          <p className="muted">{confirmation.preview.stranded_runs.toLocaleString()} runs are waiting at steps you removed or changed. They will stop.</p>
+        </Modal>
+      ) : null}
       {(enrolling || enrollmentJob) && row ? <Enroll key={row.id} automation={row} jobId={enrollmentJob}
         onJob={(jobId) => setParams((previous) => { const next = new URLSearchParams(previous); next.set("enroll_job", jobId); return next; })}
         onClose={() => { setEnrolling(false); setParams((previous) => { const next = new URLSearchParams(previous); next.delete("enroll_job"); return next; }); }} /> : null}

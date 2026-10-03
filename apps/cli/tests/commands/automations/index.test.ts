@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { automations } from "../../../src/commands/automations/index.js";
-import { captureExit, errorJson, list, method, run, setNonInteractive, spies } from "../../helpers.js";
+import { captureExit, err, errorJson, list, method, ok, run, setNonInteractive, spies } from "../../helpers.js";
 
 vi.mock("@dispatchmail/sdk", async () => (await import("../../helpers.js")).sdk);
 
@@ -176,6 +176,50 @@ describe("automations", () => {
     const steps = [{ key: "start", type: "trigger", config: { type: "contact_updated", field: "project_count", from: 0, to: 3 } }];
     await run(automations, ["update", "auto_1", "--steps", JSON.stringify(steps), "--connections", "[]"]);
     expect(method("automations.update")).toHaveBeenLastCalledWith("auto_1", { steps, connections: [] });
+  });
+
+  it.each([
+    { stranded_runs: 3, by_step: { removed: 2, send: 1 } },
+    { stranded_runs: 0, by_step: {} },
+  ])("dry-run validates the ordinary graph body and returns the preview without saving: %j", async (preview) => {
+    method("automations.dryRun").mockResolvedValue(ok(preview));
+    const { stdout } = spies();
+    const steps = [{ key: "start", type: "trigger", config: { type: "contact_updated", field: "activated", from: false, to: true } }];
+    const flags = ["--steps", JSON.stringify(steps), "--connections", "[]", "--name", "Edited", "--reentry", "once"];
+    expect(await run(automations, ["update", "auto_1", ...flags, "--dry-run"])).toBe(0);
+    const payload = { steps, connections: [], name: "Edited", reentry: "once" };
+    expect(method("automations.dryRun")).toHaveBeenCalledWith("auto_1", payload);
+    expect(method("automations.update")).not.toHaveBeenCalled();
+    expect(JSON.parse(stdout())).toEqual(preview);
+    expect(await run(automations, ["update", "auto_1", ...flags])).toBe(0);
+    expect(method("automations.update")).toHaveBeenCalledWith("auto_1", payload);
+    expect(method("automations.dryRun")).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders a dry-run as a preview, not a saved update", async () => {
+    method("automations.dryRun").mockResolvedValue(ok({ stranded_runs: 2, by_step: { removed: 2 } }));
+    Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true, writable: true });
+    const { stdout } = spies();
+    expect(await run(automations, ["update", "auto_1", "--dry-run"])).toBe(0);
+    expect(stdout()).toContain("Preview: 2 runs would stop. No changes saved.");
+    expect(stdout()).not.toContain("Updated automation");
+    expect(method("automations.update")).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid preview JSON before making a request", async () => {
+    const { stderr } = spies();
+    expect(await run(automations, ["update", "auto_1", "--steps", "broken", "--dry-run"])).toBe(1);
+    expect(errorJson(stderr()).error.code).toBe("invalid_json");
+    expect(method("automations.dryRun")).not.toHaveBeenCalled();
+    expect(method("automations.update")).not.toHaveBeenCalled();
+  });
+
+  it.each([403, 409, 422])("propagates dry-run errors without falling back to saving (%s)", async (status) => {
+    method("automations.dryRun").mockResolvedValue(err("conflict", status, "Cannot save this graph"));
+    const { stderr } = spies();
+    expect(await run(automations, ["update", "auto_1", "--dry-run"])).toBe(1);
+    expect(errorJson(stderr()).error).toMatchObject({ code: "conflict", statusCode: status, message: "Cannot save this graph" });
+    expect(method("automations.update")).not.toHaveBeenCalled();
   });
 
   it("update, duplicate, stop, get, and delete", async () => {

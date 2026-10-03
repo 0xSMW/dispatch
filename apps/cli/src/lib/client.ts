@@ -63,6 +63,7 @@ export type Api = {
     resume: Call;
   };
   automations: Crud & {
+    dryRun: Call;
     duplicate: Call;
     stop: Call;
     enroll: Call;

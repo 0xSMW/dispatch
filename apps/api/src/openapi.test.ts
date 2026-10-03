@@ -249,6 +249,35 @@ describe("docs/api/openapi.json", () => {
     });
   });
 
+  it("documents non-mutating automation previews using the ordinary update body", () => {
+    const operation = spec.paths["/automations/{id}"].patch;
+    expect(operation).toMatchObject({
+      parameters: expect.arrayContaining([{
+        name: "dry_run", in: "query", required: false, description: expect.any(String),
+        schema: { type: "boolean" },
+      }]),
+      requestBody: { content: { "application/json": { schema: { $ref: "#/components/schemas/AutomationUpdate" } } } },
+      responses: {
+        "200": { content: { "application/json": { schema: { oneOf: [
+          { allOf: [{ $ref: "#/components/schemas/Automation" }, { $ref: "#/components/schemas/RequestId" }] },
+          { allOf: [{ $ref: "#/components/schemas/DryRun" }, { $ref: "#/components/schemas/RequestId" }] },
+        ] } } } },
+        "409": { $ref: "#/components/responses/Conflict" },
+      },
+    });
+    const schemas = spec.components.schemas as unknown as Record<string, { properties: Record<string, unknown> }>;
+    expect(schemas.DryRun).toMatchObject({
+      type: "object", required: ["stranded_runs", "by_step"],
+      properties: {
+        stranded_runs: { type: "integer", minimum: 0 },
+        by_step: { type: "object", additionalProperties: { type: "integer", minimum: 0 } },
+      },
+    });
+    for (const name of ["Automation", "AutomationSummary", "AutomationInput", "AutomationUpdate", "DryRun"]) {
+      expect(schemas[name].properties.used_keys).toBeUndefined();
+    }
+  });
+
   it("documents exact enrollment audiences, asynchronous progress and both cancellation responses", () => {
     const schemas = spec.components.schemas as unknown as Record<string, { properties: Record<string, unknown> }>;
     expect(schemas.AutomationEnrollInput).toMatchObject({ oneOf: [

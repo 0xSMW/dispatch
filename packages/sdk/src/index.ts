@@ -269,6 +269,11 @@ export type AutomationTriggerConfig =
 export type AutomationReentry = "once" | "every_time";
 export type AutomationStatus = "enabled" | "paused" | "disabled";
 
+export type AutomationDryRun = {
+  stranded_runs: number;
+  by_step: Record<string, number>;
+};
+
 export type AutomationEnrollment = { segmentId: string; all?: never } | { all: true; segmentId?: never };
 
 export type AutomationEnrollmentJob = {
@@ -1139,6 +1144,11 @@ class Automations extends Resource {
 
   update(id: string, payload: AutomationUpdate) {
     return this.client.call<Automation>("PATCH", `/automations/${seg(id)}`, wire(payload));
+  }
+
+  /** Preview an ordinary update with the same validation, without saving any changes. */
+  dryRun(id: string, payload: AutomationUpdate) {
+    return this.client.call<AutomationDryRun>("PATCH", `/automations/${seg(id)}?dry_run=true`, wire(payload));
   }
 
   remove(id: string) {

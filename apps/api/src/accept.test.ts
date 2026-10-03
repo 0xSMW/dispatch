@@ -123,6 +123,241 @@ afterAll(async () => {
 });
 
 describe.skipIf(!live)("accept", () => {
+  describe("paused editing", () => {
+    const wait = { key: "wait", type: "wait_for_event", config: {
+      event_name: "edit.wake", timeout: "1 day",
+      filter_rule: { type: "rule", field: "event.plan", operator: "eq", value: "pro" },
+    } };
+    const start = { key: "start", type: "trigger", config: { event_name: "edit.start" } };
+    const after = { key: "after", type: "contact_update", config: { last_name: "Kept" } };
+    const connections = [{ from: "start", to: "wait" }, { from: "wait", to: "after", type: "event_received" }];
+    async function fixture(step: unknown = wait, edges: unknown[] = connections) {
+      const flow = await post(fullKey, "/automations", { name: "Editing", enabled: true, steps: [start, step, after], connections: edges });
+      expect(flow.status, JSON.stringify(flow.json)).toBe(200);
+      await post(fullKey, "/events/send", { event: "edit.start", email: "edit@dispatch-fixture.net" });
+      const run = (await db.query<{ id: string; tenant_id: string }>("select id,tenant_id from automation_runs")).rows[0]!;
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect((await call(fullKey, "PATCH", `/automations/${flow.json.id}`, { status: "paused" })).status).toBe(200);
+      return { flow: flow.json, run };
+    }
+    const patch = (flowId: string, body: unknown, preview = false) =>
+      call(fullKey, "PATCH", `/automations/${flowId}${preview ? "?dry_run=true" : ""}`, body);
+    const removed = { steps: [start, after], connections: [{ from: "start", to: "after" }] };
+
+    it("previews exact stranded counts without changing graph, runs, waits, keys or fanout, and enforces roles and tenants", async () => {
+      const { flow, run } = await fixture();
+      const snapshot = async () => (await db.query(`select
+        (select to_jsonb(a) from automations a where id=$1) as graph,
+        (select to_jsonb(r) from automation_runs r where id=$2) as run,
+        (select jsonb_agg(to_jsonb(s)) from automation_steps s where run_id=$2) as steps,
+        (select count(*) from email_events) as events`, [flow.id, run.id])).rows[0];
+      const before = await snapshot();
+      expect((await patch(flow.id, { ...removed, name: "Preview only", status: "enabled" }, true)).json)
+        .toMatchObject({ stranded_runs: 1, by_step: { wait: 1 } });
+      expect(await snapshot()).toEqual(before);
+      expect((await patch(flow.id, { steps: [start, wait, after], connections }, true)).json).toMatchObject({ stranded_runs: 0, by_step: {} });
+      const viewer = await teammate("Viewer");
+      const session = await signInAs(viewer.email, viewer.password);
+      expect((await call(session.token, "PATCH", `/automations/${flow.id}?dry_run=true`, removed)).status).toBe(403);
+      const foreign = await seedTenant();
+      expect((await call(foreign, "PATCH", `/automations/${flow.id}?dry_run=true`, removed)).status).toBe(404);
+      expect((await call(fullKey, "PATCH", `/automations/${flow.id}?dry_run=yes`, removed)).status).toBe(422);
+    });
+
+    it("atomically strands removed keys, closes waits, emits once and shows the exact visible reason", async () => {
+      const { flow, run } = await fixture();
+      const saved = await patch(flow.id, removed);
+      expect(saved.json).toMatchObject({ status: "paused", version: 1 });
+      const error = "Its next step was removed or changed while the automation was paused";
+      expect((await db.query("select state,error,resume_at,wait_event from automation_runs where id=$1", [run.id])).rows[0])
+        .toEqual({ state: "stopped", error, resume_at: null, wait_event: null });
+      expect((await db.query("select state,error,completed_at from automation_steps where run_id=$1", [run.id])).rows[0])
+        .toMatchObject({ state: "failed", error: "cancelled", completed_at: expect.any(Date) });
+      expect((await call(fullKey, "GET", `/automations/${flow.id}/runs/${run.id}`)).json)
+        .toMatchObject({ status: "cancelled", error });
+      await patch(flow.id, removed);
+      expect((await db.query("select id from email_events where data->>'run_id'=$1 and type='automation.run.completed'", [run.id])).rows).toHaveLength(1);
+    });
+
+    it("preserves stored event rules, names and deadlines, then lets new arrivals use changed config", async () => {
+      const { flow, run } = await fixture();
+      const original = (await db.query("select resume_at,wait_event from automation_runs where id=$1", [run.id])).rows[0];
+      const edited = { ...wait, config: { event_name: "new.wake", timeout: "1 hour",
+        filter_rule: { type: "rule", field: "event.plan", operator: "eq", value: "free" } } };
+      expect((await patch(flow.id, { steps: [start, edited, { ...after, config: { last_name: "New config" } }], connections })).status).toBe(200);
+      expect((await db.query("select resume_at,wait_event from automation_runs where id=$1", [run.id])).rows[0]).toEqual(original);
+      await post(fullKey, "/events/send", { event: "edit.wake", email: "edit@dispatch-fixture.net", payload: { plan: "free" } });
+      expect((await db.query("select state from automation_runs where id=$1", [run.id])).rows[0].state).toBe("waiting");
+      await post(fullKey, "/events/send", { event: "edit.wake", email: "edit@dispatch-fixture.net", payload: { plan: "pro" } });
+      expect((await db.query("select state from automation_runs where id=$1", [run.id])).rows[0].state).toBe("ready");
+      await patch(flow.id, { status: "enabled" });
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect((await db.query("select state from automation_runs where id=$1", [run.id])).rows[0].state).toBe("done");
+      expect((await db.query("select last_name from contacts where email='edit@dispatch-fixture.net'")).rows[0].last_name).toBe("New config");
+      await post(fullKey, "/events/send", { event: "edit.start", email: "new@dispatch-fixture.net" });
+      const next = (await db.query("select id from automation_runs where id<>$1", [run.id])).rows[0].id;
+      await executeAutomationRun(db, run.tenant_id, next);
+      expect((await db.query("select wait_event,resume_at from automation_runs where id=$1", [next])).rows[0])
+        .toMatchObject({ wait_event: "new.wake", resume_at: expect.any(Date) });
+      await post(fullKey, "/events/send", { event: "new.wake", email: "new@dispatch-fixture.net", payload: { plan: "free" } });
+      expect((await db.query("select state from automation_runs where id=$1", [next])).rows[0].state).toBe("ready");
+    });
+
+    it("keeps a changed delay's original due time and follows the reordered kept key", async () => {
+      const { flow, run } = await fixture({ key: "wait", type: "delay", config: { duration: "1 hour" } },
+        [{ from: "start", to: "wait" }, { from: "wait", to: "after" }]);
+      const before = (await db.query("select resume_at from automation_runs where id=$1", [run.id])).rows[0].resume_at;
+      const edited = { steps: [start, after, { key: "wait", type: "delay", config: { duration: "2 days" } }],
+        connections: [{ from: "start", to: "wait" }, { from: "wait", to: "after" }] };
+      expect((await patch(flow.id, edited)).status).toBe(200);
+      expect((await db.query("select resume_at from automation_runs where id=$1", [run.id])).rows[0].resume_at).toEqual(before);
+      await db.query("update automation_runs set resume_at=now()-interval '1 second' where id=$1", [run.id]);
+      await patch(flow.id, { status: "enabled" });
+      const { claimAutomationRuns } = await import("../../../packages/db/src/claims.js");
+      expect((await claimAutomationRuns(db, 20)).map((r) => r.id)).toEqual([run.id]);
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect((await db.query("select state from automation_runs where id=$1", [run.id])).rows[0].state).toBe("done");
+    });
+
+    it("permanently reserves key types after removal, across API and direct installer writes and repeated migrations", async () => {
+      const { flow } = await fixture();
+      const changed = { steps: [start, { key: "wait", type: "contact_delete", config: {} }, after],
+        connections: [{ from: "start", to: "wait" }, { from: "wait", to: "after" }] };
+      for (const preview of [true, false]) expect((await patch(flow.id, changed, preview)).status).toBe(409);
+      await patch(flow.id, removed);
+      await db.query(schema);
+      await db.query(schema);
+      expect((await patch(flow.id, changed)).json.message).toContain("Step key wait was already used for wait_for_event");
+      await expect(db.query("update automations set steps=$2,used_keys='{}' where id=$1", [flow.id, JSON.stringify(changed.steps)]))
+        .rejects.toMatchObject({ code: "23514" });
+      expect((await db.query("select used_keys from automations where id=$1", [flow.id])).rows[0].used_keys.wait).toBe("wait_for_event");
+      expect((await patch(flow.id, { ...changed, steps: [start, { ...changed.steps[1], key: "new_delete" }, after],
+        connections: [{ from: "start", to: "new_delete" }] })).status).toBe(200);
+    });
+
+    it("maps legacy waiting and nonwaiting indices against the old graph before reordering", async () => {
+      const created = await post(fullKey, "/automations", { name: "Legacy editing", enabled: true, trigger: "edit.start",
+        steps: [{ type: "delay", seconds: 60 }, { type: "contact_update", last_name: "Legacy kept" }] });
+      const flow = created.json;
+      // Simulate an installation predating explicit keys; reserve canonical legacy keys.
+      await db.query("update automations set steps=$2,connections='[]' where id=$1",
+        [flow.id, JSON.stringify([{ type: "delay", seconds: 60 }, { type: "contact_update", last_name: "Legacy kept" }])]);
+      for (const email of ["wait@dispatch-fixture.net", "ready@dispatch-fixture.net"])
+        await post(fullKey, "/events/send", { event: "edit.start", email });
+      const runs = (await db.query("select id,tenant_id from automation_runs order by id")).rows;
+      await db.query("update automation_runs set state='waiting',next_step_index=1,next_step_key=null,resume_at=now()-interval '1 hour' where id=$1", [runs[0].id]);
+      await db.query("insert into automation_steps(id,tenant_id,run_id,step_index,type,state,data) values($1,$2,$3,0,'delay','waiting','{}')",
+        [id("step"), runs[0].tenant_id, runs[0].id]);
+      await db.query("update automation_runs set next_step_index=1,next_step_key=null where id=$1", [runs[1].id]);
+      await patch(flow.id, { status: "paused" });
+      const steps = flow.steps.slice().reverse();
+      expect((await patch(flow.id, { steps, connections: flow.connections }, true)).json.stranded_runs).toBe(0);
+      expect((await db.query("select step_key from automation_steps where run_id=$1", [runs[0].id])).rows[0].step_key).toBeNull();
+      expect((await patch(flow.id, { steps, connections: flow.connections })).status).toBe(200);
+      expect((await db.query("select next_step_key from automation_runs where id=$1", [runs[0].id])).rows[0].next_step_key).toBe("step_1");
+      expect((await db.query("select next_step_key from automation_runs where id=$1", [runs[1].id])).rows[0].next_step_key).toBe("step_2");
+      expect((await db.query("select step_key from automation_steps where run_id=$1", [runs[0].id])).rows[0].step_key).toBe("step_1");
+      await patch(flow.id, { status: "enabled" });
+      const { claimAutomationRuns } = await import("../../../packages/db/src/claims.js");
+      await claimAutomationRuns(db, 20);
+      for (const run of runs) await executeAutomationRun(db, run.tenant_id, run.id);
+      expect((await db.query("select state from automation_runs")).rows).toEqual([{ state: "done" }, { state: "done" }]);
+    });
+
+    it("rolls back graph, version, legacy mapping, cancellations and events when a later graph write fails", async () => {
+      const { flow, run } = await fixture();
+      expect((await post(fullKey, "/automations", { name: "Name conflict",
+        steps: [{ key: "start", type: "trigger", config: { event_name: "other" } }], connections: [] })).status).toBe(200);
+      const before = (await db.query("select version,steps,used_keys from automations where id=$1", [flow.id])).rows[0];
+      expect((await patch(flow.id, { ...removed, name: "Name conflict" })).status).toBe(409);
+      expect((await db.query("select version,steps,used_keys from automations where id=$1", [flow.id])).rows[0]).toEqual(before);
+      expect((await db.query("select state,error from automation_runs where id=$1", [run.id])).rows[0]).toEqual({ state: "waiting", error: null });
+      expect((await db.query("select state from automation_steps where run_id=$1", [run.id])).rows[0].state).toBe("waiting");
+      expect((await db.query("select id from email_events where data->>'run_id'=$1 and type='automation.run.completed'", [run.id])).rows).toHaveLength(0);
+    });
+
+    it("locks active runs before saving and does not miss a wake event arriving during the save", async () => {
+      const { flow, run } = await fixture();
+      const locker = await db.connect();
+      let pending: ReturnType<typeof post> | undefined;
+      try {
+        await locker.query("begin");
+        await locker.query("select id from automations where id=$1 for update", [flow.id]);
+        await locker.query("select id from automation_runs where id=$1 for update", [run.id]);
+        pending = post(fullKey, "/events/send", { event: "edit.wake", email: "edit@dispatch-fixture.net", payload: { plan: "pro" } });
+        let waiting = false;
+        for (let n = 0; n < 100 && !waiting; n++) {
+          waiting = (await db.query("select 1 from pg_stat_activity where wait_event_type='Lock' and query like '%as wait_config%'")).rows.length > 0;
+          if (!waiting) await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect(waiting).toBe(true);
+        await locker.query("commit");
+        expect((await pending).status).toBe(202);
+        expect((await db.query("select state from automation_runs where id=$1", [run.id])).rows[0].state).toBe("ready");
+        expect((await patch(flow.id, { steps: [start, wait, after], connections })).json.version).toBe(1);
+      } finally {
+        await locker.query("rollback");
+        locker.release();
+        await pending;
+      }
+    });
+    it("cannot expose a new graph or version until it obtains every active run lock", async () => {
+      const { flow, run } = await fixture();
+      const locker = await db.connect();
+      let pending: ReturnType<typeof patch> | undefined;
+      try {
+        await locker.query("begin");
+        await locker.query("select id from automation_runs where id=$1 for update", [run.id]);
+        pending = patch(flow.id, removed);
+        let waiting = false;
+        for (let n = 0; n < 100 && !waiting; n++) {
+          waiting = (await db.query(`select 1 from pg_stat_activity where wait_event_type='Lock'
+            and query like 'select id, next_step_key, next_step_index%'`)).rows.length > 0;
+          if (!waiting) await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect(waiting).toBe(true);
+        expect((await db.query("select version from automations where id=$1", [flow.id])).rows[0].version).toBe(0);
+        expect((await db.query("select state from automation_runs where id=$1", [run.id])).rows[0].state).toBe("waiting");
+        await locker.query("commit");
+        expect((await pending).json.version).toBe(1);
+        expect((await db.query("select state from automation_runs where id=$1", [run.id])).rows[0].state).toBe("stopped");
+      } finally {
+        await locker.query("rollback");
+        locker.release();
+        await pending;
+      }
+    });
+    it("cancels every active run when disabling and saving a graph together", async () => {
+      const flow = await post(fullKey, "/automations", { name: "No work yet", enabled: true, steps: [start], connections: [] });
+      await post(fullKey, "/events/send", { event: "edit.start", email: "empty@dispatch-fixture.net" });
+      const run = (await db.query("select id from automation_runs")).rows[0];
+      expect((await patch(flow.json.id, { status: "disabled", connections: [] })).status).toBe(200);
+      expect((await db.query("select state,error from automation_runs where id=$1", [run.id])).rows[0])
+        .toEqual({ state: "stopped", error: null });
+    });
+    it("backfills an already keyed legacy wait's stored rule once across repeated migrations", async () => {
+      const legacySteps = [{ type: "wait", event: "edit.wake", timeout_seconds: 3600, filter_rule: wait.config.filter_rule }];
+      const flow = await post(fullKey, "/automations", { name: "Old wait", enabled: true, trigger: "edit.start", steps: legacySteps });
+      expect(flow.status).toBe(200);
+      await db.query("update automations set steps=$2,connections='[]' where id=$1", [flow.json.id, JSON.stringify(legacySteps)]);
+      await post(fullKey, "/events/send", { event: "edit.start", email: "legacy-wait@dispatch-fixture.net" });
+      const run = (await db.query("select id,tenant_id from automation_runs")).rows[0];
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      await db.query("update automation_steps set data=data-'wait_config' where run_id=$1", [run.id]);
+      await db.query(schema);
+      await db.query(schema);
+      expect((await db.query("select data->'wait_config' as config from automation_steps where run_id=$1", [run.id])).rows[0].config)
+        .toMatchObject({ filter_rule: wait.config.filter_rule });
+      await patch(flow.json.id, { status: "paused" });
+      const graph = flow.json.steps;
+      graph[1].config.filter_rule.value = "free";
+      expect((await patch(flow.json.id, { steps: graph, connections: flow.json.connections })).status).toBe(200);
+      await post(fullKey, "/events/send", { event: "edit.wake", email: "legacy-wait@dispatch-fixture.net", payload: { plan: "free" } });
+      expect((await db.query("select state from automation_runs where id=$1", [run.id])).rows[0].state).toBe("waiting");
+      await post(fullKey, "/events/send", { event: "edit.wake", email: "legacy-wait@dispatch-fixture.net", payload: { plan: "pro" } });
+      expect((await db.query("select state from automation_runs where id=$1", [run.id])).rows[0].state).toBe("ready");
+    });
+  });
   describe("pause execution", () => {
     async function flow(steps: unknown[] = [], connections: unknown[] = [], config: unknown = { event_name: "pause.start" }) {
       const response = await post(fullKey, "/automations", {

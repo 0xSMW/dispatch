@@ -320,6 +320,10 @@ class AutomationEnrollmentJob(TypedDict):
 
 AutomationStatus = Literal["enabled", "paused", "disabled"]
 
+class AutomationDryRun(TypedDict):
+    stranded_runs: int
+    by_step: dict[str, int]
+
 
 class Automation(TypedDict):
     id: str
@@ -971,6 +975,10 @@ class Dispatch:
     def update_automation(self, automation_id: str, automation: AutomationUpdateInput | Json) -> Json:
         return self._request("PATCH", _path("automations", automation_id), automation)
 
+    def dry_run_automation(self, automation_id: str, automation: AutomationUpdateInput | Json) -> AutomationDryRun:
+        """Preview an ordinary update with the same validation, without saving changes."""
+        return self._request("PATCH", _query(_path("automations", automation_id), {"dry_run": "true"}), automation)
+
     def delete_automation(self, automation_id: str) -> Json:
         return self._request("DELETE", _path("automations", automation_id))
 
@@ -1188,6 +1196,7 @@ __all__ = [
     "BroadcastUpdateInput",
     "AutomationInput",
     "Automation",
+    "AutomationDryRun",
     "AutomationTriggerConfig",
     "AutomationReentry",
     "AutomationEnrollment",

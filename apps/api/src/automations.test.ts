@@ -199,7 +199,8 @@ describe("automation routes", () => {
     });
     const insert = query.mock.calls.find(([sql]) => sql.includes("insert into automations"))!;
     expect(insert[1]![3]).toBe("user.created");
-    expect(insert[1]!.slice(7)).toEqual(["event", "every_time"]);
+    expect(insert[1]!.slice(7, 9)).toEqual(["event", "every_time"]);
+    expect(JSON.parse(insert[1]![9] as string)).toEqual({ start: "trigger", hi: "send_email" });
     expect(query.mock.calls.map(([sql]) => sql)).toContain("commit");
   });
 
@@ -238,7 +239,7 @@ describe("automation routes", () => {
     expect(created.json()).toMatchObject({ trigger: null, trigger_config: config, reentry: "once", status: "disabled" });
     const insert = query.mock.calls.find(([sql]) => sql.includes("insert into automations"))!;
     expect(insert[1]![3]).toBe("@contact.updated");
-    expect(insert[1]!.slice(7)).toEqual(["contact_updated", "once"]);
+    expect(insert[1]!.slice(7, 9)).toEqual(["contact_updated", "once"]);
     const automationId = created.json().id;
     const patched = await app.inject({ method: "PATCH", url: `/automations/${automationId}`, payload: { name: "Renamed" } });
     expect(patched.statusCode).toBe(200);
@@ -246,7 +247,7 @@ describe("automation routes", () => {
     const copy = await app.inject({ method: "POST", url: `/automations/${automationId}/duplicate` });
     expect(copy.statusCode).toBe(200);
     expect(copy.json()).toMatchObject({ name: "Renamed (copy)", trigger: null, trigger_config: config, reentry: "once", status: "disabled" });
-    expect(query.mock.calls.filter(([sql]) => sql.includes("insert into automations")).at(-1)![1]!.slice(7)).toEqual(["contact_updated", "once"]);
+    expect(query.mock.calls.filter(([sql]) => sql.includes("insert into automations")).at(-1)![1]!.slice(7, 9)).toEqual(["contact_updated", "once"]);
   });
 
   it.each([
@@ -265,22 +266,25 @@ describe("automation routes", () => {
 
   it("refuses to change steps while enabled, and allows it while disabling", async () => {
     const { app, query } = harness((sql) => {
-      if (sql.startsWith("select")) return { rows: [stored()] };
+      if (sql.includes("from automations")) return { rows: [stored()] };
       if (sql.startsWith("update automations")) return { rows: [stored({ enabled: false })] };
       return { rows: [] };
     });
-    const steps = [{ type: "send_email", from: "hello@acme.com", template: "other" }];
-    const blocked = await app.inject({ method: "PATCH", url: "/automations/automation_1", payload: { steps } });
+    const steps = [
+      { key: "trigger", type: "trigger", config: { event_name: "user.created" } },
+      { key: "new_send", type: "send_email", config: { from: "hello@acme.com", template: "other" } },
+    ];
+    const blocked = await app.inject({ method: "PATCH", url: "/automations/automation_1", payload: { steps, connections: [] } });
     expect(blocked.statusCode).toBe(409);
     expect(query.mock.calls.some((call) => String(call[0]).startsWith("update"))).toBe(false);
 
     const renamed = await app.inject({ method: "PATCH", url: "/automations/automation_1", payload: { name: "Renamed" } });
     expect(renamed.statusCode).toBe(200);
 
-    const allowed = await app.inject({ method: "PATCH", url: "/automations/automation_1", payload: { status: "disabled", steps } });
+    const allowed = await app.inject({ method: "PATCH", url: "/automations/automation_1", payload: { status: "disabled", steps, connections: [] } });
     expect(allowed.statusCode).toBe(200);
     const update = query.mock.calls.filter((call) => String(call[0]).includes("update automations")).at(-1)!;
-    expect(JSON.parse(update[1]![4] as string)[1]).toMatchObject({ key: "step_1", type: "send_email" });
+    expect(JSON.parse(update[1]![4] as string)[1]).toMatchObject({ key: "new_send", type: "send_email" });
     expect(update[1]![6]).toBe(false);
   });
 

@@ -420,6 +420,9 @@ export type RunMetrics = {
 
 export type AutomationStep = { type: string; key?: string; config?: Record<string, unknown>; [field: string]: unknown };
 
+/** `PATCH /automations/:id?dry_run=true`: runs affected by a proposed graph, without saving. */
+export type AutomationPreview = { stranded_runs: number; by_step: Record<string, number> };
+
 export type Automation = {
   object?: "automation";
   id: string;

@@ -671,7 +671,7 @@ describe("fireEvent", () => {
         steps: [{ key: "start", type: "trigger", config: { type: "event", event_name: "plan.changed" } }], connections: [],
       }] };
       if (sql.includes("insert into automation_runs")) return { rows: [{ id: "run_new" }] };
-      if (sql.includes("for update of r skip locked")) {
+      if (sql.includes("for update of r")) {
         return {
           rows: [
             { id: "run_pro", next_step_key: "wait", ...waitStep({ type: "rule", field: "event.plan", operator: "eq", value: "pro" }) },
@@ -690,10 +690,11 @@ describe("fireEvent", () => {
     // The address is stored and matched in lower case.
     const stored = query.mock.calls.find((call) => call[0].includes("insert into custom_events"));
     expect(stored?.[1]?.[4]).toBe("ada@example.com");
-    const waiting = query.mock.calls.find((call) => call[0].includes("for update of r skip locked"));
+    const waiting = query.mock.calls.find((call) => call[0].includes("for update of r"));
     expect(waiting?.[1]).toEqual(["tenant_1", "plan.changed", "ada@example.com"]);
     // A run with no contact is woken only by an event with no contact.
     expect(waiting?.[0]).toContain("started.email is null and $3::text is null");
+    expect(waiting?.[0]).toContain("order by r.id");
 
     // Woken runs are left for the worker, with the event that woke them.
     const wake = query.mock.calls.find((call) => call[0].includes("set state = 'ready'"));
