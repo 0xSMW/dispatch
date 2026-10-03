@@ -5,9 +5,9 @@ import { compact, jsonFlag } from "../../lib/json.js";
 import { pickAutomation } from "../../lib/pickers.js";
 
 export const update = new Command("update")
-  .description("Turn an automation on or off, or change its definition")
+  .description("Start, pause, resume, or stop an automation, or change its definition")
   .argument("[id]", "Automation ID")
-  .addOption(new Option("--status <status>", "enabled or disabled").choices(["enabled", "disabled"] as const))
+  .addOption(new Option("--status <status>", "enabled resumes, paused holds runs, disabled stops runs").choices(["enabled", "paused", "disabled"] as const))
   .addOption(new Option("--reentry <mode>", "Whether a contact can enter once or every time").choices(["once", "every_time"] as const))
   .option("--name <name>", "New name")
   .option("--trigger <event>", "New event trigger name (use --steps for contact triggers)")
@@ -19,6 +19,8 @@ export const update = new Command("update")
       output: '{"object":"automation","id":"..."}',
       codes: ["missing_id", "invalid_json", "update_error"],
       examples: [
+        "dispatch automations update auto_123 --status paused",
+        "dispatch automations update auto_123 --status enabled",
         "dispatch automations update auto_123 --status disabled",
         "dispatch automations update auto_123 --trigger user.activated",
       ],

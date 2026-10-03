@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { signWebhook } from "@dispatchmail/core";
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
-import { Dispatch, WebhookVerificationError, type Automation, type AutomationReentry, type AutomationTriggerConfig, type ImportColumnMap, type Operator, type PropertyType, type PropertyValue, type Result, type Rule, type SendEmailConfig } from "./index.js";
+import { Dispatch, WebhookVerificationError, type Automation, type AutomationCreate, type AutomationUpdate, type AutomationStatus, type AutomationReentry, type AutomationTriggerConfig, type ImportColumnMap, type Operator, type PropertyType, type PropertyValue, type Result, type Rule, type SendEmailConfig } from "./index.js";
 
 const base = "http://localhost:3100";
 
@@ -58,6 +58,43 @@ describe("constructor", () => {
 });
 
 describe("transport", () => {
+  it("preserves pause statuses and graph versions without widening creation choices", async () => {
+    expectTypeOf<AutomationCreate["status"]>().toEqualTypeOf<"enabled" | "disabled" | undefined>();
+    expectTypeOf<AutomationUpdate["status"]>().toEqualTypeOf<AutomationStatus | undefined>();
+    expectTypeOf<AutomationCreate["version"]>().toEqualTypeOf<undefined>();
+    expectTypeOf<AutomationUpdate["version"]>().toEqualTypeOf<undefined>();
+    const client = new Dispatch({ apiKey: "sk_test" });
+    for (const status of ["enabled", "paused", "disabled"] as const) {
+      const automation: Automation = {
+        id: "a/1", status, version: 4, trigger: null,
+        trigger_config: { type: "contact_created" }, reentry: "once",
+      };
+      const fetch = stub(automation);
+      const updated = await client.automations.update("a/1", { status });
+      expect(request(fetch)).toMatchObject({
+        method: "PATCH", url: `${base}/automations/a%2F1`, body: { status },
+      });
+      expect(updated.data).toEqual(automation);
+      expectTypeOf(updated.data!.status).toEqualTypeOf<AutomationStatus>();
+      expectTypeOf(updated.data!.version).toEqualTypeOf<number>();
+      expect((await client.automations.get("a/1")).data).toEqual(automation);
+      const listFetch = stub({ object: "list", has_more: false, data: [automation] });
+      const listed = await client.automations.list({ status });
+      expect(request(listFetch).url).toBe(`${base}/automations?status=${status}`);
+      expect(listed.data?.data[0]).toEqual(automation);
+    }
+    for (const enabled of [false, true]) {
+      const fetch = stub();
+      await client.automations.update("a/1", { enabled });
+      expect(request(fetch).body).toEqual({ enabled });
+      await client.automations.create({ name: "Legacy", steps: [], enabled });
+      expect(request(fetch, 1).body).toEqual({ name: "Legacy", steps: [], enabled });
+    }
+    const fetch = vi.fn(async () => reply({ name: "conflict", message: "Disabled cannot pause" }, { status: 409 }));
+    globalThis.fetch = fetch as never;
+    expect((await client.automations.update("a1", { status: "paused" })).error).toMatchObject({ name: "conflict", statusCode: 409 });
+  });
+
   it("creates, retrieves, and cancels typed enrollment jobs without altering their counts", async () => {
     const job = {
       object: "automation_enrollment_job", id: "j/1", automation_id: "a/1", segment_id: null,
@@ -118,7 +155,7 @@ describe("transport", () => {
     ];
     const client = new Dispatch({ apiKey: "sk_test" });
     for (const config of configs) {
-      const automation: Automation = { id: "a1", trigger: config.type === "event" ? config.event_name : null, trigger_config: config, reentry: "every_time" };
+      const automation: Automation = { id: "a1", status: "disabled", version: 0, trigger: config.type === "event" ? config.event_name : null, trigger_config: config, reentry: "every_time" };
       const fetch = stub(automation);
       const steps = [{ key: "start", type: "trigger", config }];
       const created = await client.automations.create({ name: "Contacts", steps, reentry: "every_time" });

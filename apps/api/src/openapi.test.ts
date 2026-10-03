@@ -210,6 +210,28 @@ describe("docs/api/openapi.json", () => {
     }
   });
 
+  it("documents pause statuses, read-only graph versions, and create/update distinctions", () => {
+    const schemas = spec.components.schemas as unknown as Record<string, { required?: string[]; properties: Record<string, unknown> }>;
+    for (const name of ["Automation", "AutomationSummary"]) {
+      expect(schemas[name].properties.status).toMatchObject({ enum: ["enabled", "paused", "disabled"] });
+      expect(schemas[name].properties.version).toMatchObject({ type: "integer", readOnly: true });
+      expect(schemas[name].required).toEqual(expect.arrayContaining(["status", "version"]));
+    }
+    expect(schemas.AutomationInput.properties.status).toMatchObject({ enum: ["enabled", "disabled"] });
+    expect(schemas.AutomationUpdate.properties.status).toMatchObject({ enum: ["enabled", "paused", "disabled"] });
+    for (const name of ["AutomationInput", "AutomationUpdate"]) {
+      expect(schemas[name].properties.enabled).toMatchObject({ type: "boolean" });
+      expect(schemas[name].properties.version).toBeUndefined();
+    }
+    expect(spec.paths["/automations"].get).toMatchObject({
+      parameters: expect.arrayContaining([{ name: "status", in: "query", required: false,
+        description: expect.any(String), schema: { type: "string", enum: ["enabled", "paused", "disabled"] } }]),
+    });
+    for (const operation of [spec.paths["/automations"].post, spec.paths["/automations/{id}"].patch]) {
+      expect(operation).toMatchObject({ responses: { "409": { $ref: "#/components/responses/Conflict" } } });
+    }
+  });
+
   it("documents resolved import opt-ins and the optional cancelled-contact reset", () => {
     const schemas = spec.components.schemas as unknown as Record<string, { properties: Record<string, unknown> }>;
     expect(schemas.ContactImportInput.properties.trigger_automations).toMatchObject({ enum: ["true", "false"] });

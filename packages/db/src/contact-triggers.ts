@@ -80,12 +80,15 @@ export async function recordEvent(client: Queryable, tenantId: string, requestId
 }
 
 async function candidates(client: Queryable, tenantId: string, options: TriggerOptions) {
+  const parent = await origin(client, tenantId, options.originRunId);
+  // Serialize enrollment with status changes. Exclude the origin before locking, so
+  // a step never waits on its own automation while Stop waits on that step's run.
   const found = await client.query<Candidate>(
     `select id, trigger, trigger_type, reentry, steps, connections from automations
      where tenant_id = $1 and trigger_type = $2 and trigger = $3 and enabled = true and deleted_at is null
-       and to_jsonb(automations)->>'paused_at' is null
-     order by created_at`,
-    [tenantId, options.triggerType, options.key]
+       and paused_at is null and ($4::text is null or id <> $4)
+     order by created_at, id for share`,
+    [tenantId, options.triggerType, options.key, parent.automationId]
   );
   const matching = found.rows.filter((row) => {
     const config = normalizeAutomation(row, true).steps.find((step) => step.type === "trigger")!.config as TriggerConfig;

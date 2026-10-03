@@ -318,6 +318,9 @@ class AutomationEnrollmentJob(TypedDict):
     completed_at: str | None
 
 
+AutomationStatus = Literal["enabled", "paused", "disabled"]
+
+
 class Automation(TypedDict):
     id: str
     trigger: str | None
@@ -325,7 +328,8 @@ class Automation(TypedDict):
     reentry: AutomationReentry
     object: NotRequired[str]
     name: NotRequired[str]
-    status: NotRequired[Literal["enabled", "disabled"]]
+    status: AutomationStatus
+    version: int
     steps: NotRequired[list[dict[str, Any]]]
     connections: NotRequired[list[dict[str, Any]]]
     created_at: NotRequired[str]
@@ -355,6 +359,7 @@ AutomationConnectionInput = TypedDict(
 class AutomationInput(TypedDict, total=False):
     name: str
     status: Literal["enabled", "disabled"]
+    enabled: bool
     steps: list[AutomationStepInput | dict[str, Any]]
     connections: list[AutomationConnectionInput | dict[str, Any]]
     trigger: str
@@ -363,7 +368,8 @@ class AutomationInput(TypedDict, total=False):
 
 class AutomationUpdateInput(TypedDict, total=False):
     name: str
-    status: Literal["enabled", "disabled"]
+    status: AutomationStatus
+    enabled: bool
     steps: list[AutomationStepInput | dict[str, Any]]
     connections: list[AutomationConnectionInput | dict[str, Any]]
     trigger: str

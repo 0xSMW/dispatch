@@ -33,7 +33,8 @@ describe("version-aware public documentation", () => {
     const guides = import.meta.glob<string>("../../../../docs/automations.md", { query: "?raw", import: "default", eager: true });
     const guide = Object.values(guides)[0]!;
     for (const heading of ["Triggers", "Conditions", "Steps", "Re-entry", "Pause"]) expect(guide).toContain(`## ${heading}\n`);
-    expect(guide).toContain("not a pause that preserves runs");
+    expect(guide).toContain('PATCH /automations/{id}');
+    expect(guide).toContain('"status": "paused"');
     expect(guide).toContain("New contact triggers default to `once`");
     expect(guide).toContain("## Enroll existing contacts\n");
     expect(guide).toContain("POST /automations/{id}/enroll");

@@ -1223,14 +1223,17 @@ export type AutomationInput = z.input<typeof automationSchema>;
 export const automationUpdateSchema = z
   .object({
     name: z.string().min(1).max(120).optional(),
-    status: automationStatus.optional(),
+    status: z.enum(["enabled", "paused", "disabled"]).optional(),
     enabled: z.boolean().optional(),
     reentry: z.enum(["once", "every_time"]).optional(),
     trigger: graphFields.trigger,
     steps: graphFields.steps.optional(),
     connections: graphFields.connections
   })
-  .transform(({ status, enabled, ...rest }) => ({ ...rest, enabled: status ? status === "enabled" : enabled }));
+  .transform(({ status, enabled, ...rest }) => ({
+    ...rest, status: status ?? (enabled === undefined ? undefined : enabled ? "enabled" : "disabled"),
+    enabled: status ? status !== "disabled" : enabled
+  }));
 export type AutomationUpdateInput = z.input<typeof automationUpdateSchema>;
 export const automationStopSchema = z.object({ reset_reentry: z.boolean().default(false) }).strict();
 

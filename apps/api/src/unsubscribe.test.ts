@@ -147,7 +147,7 @@ describe("unsubscribe routes", () => {
     ]);
     const candidates = queries.filter((query) => query.sql.includes("from automations"));
     expect(candidates).toHaveLength(1);
-    expect(candidates[0]!.params).toEqual(["tenant_1", "topic_subscribed", "@topic.subscribed:topic_news"]);
+    expect(candidates[0]!.params).toEqual(["tenant_1", "topic_subscribed", "@topic.subscribed:topic_news", null]);
     const before = queries.length;
     const repeated = await server.inject({ method: "POST", url: `/unsubscribe/${token}`, payload });
     expect(repeated.statusCode).toBe(200);

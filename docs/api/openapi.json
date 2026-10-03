@@ -11396,6 +11396,7 @@
               "type": "string",
               "enum": [
                 "enabled",
+                "paused",
                 "disabled"
               ]
             }
@@ -20569,6 +20570,7 @@
             "type": "string",
             "enum": [
               "enabled",
+              "paused",
               "disabled"
             ]
           },
@@ -20617,7 +20619,8 @@
           "trigger_config",
           "reentry",
           "steps",
-          "connections"
+          "connections",
+          "version"
         ],
         "properties": {
           "object": {
@@ -20634,6 +20637,7 @@
             "type": "string",
             "enum": [
               "enabled",
+              "paused",
               "disabled"
             ]
           },
@@ -20673,6 +20677,11 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "version": {
+            "type": "integer",
+            "readOnly": true,
+            "minimum": 0
           }
         }
       },
@@ -20685,7 +20694,8 @@
           "trigger",
           "trigger_config",
           "reentry",
-          "run_count"
+          "run_count",
+          "version"
         ],
         "properties": {
           "id": {
@@ -20698,6 +20708,7 @@
             "type": "string",
             "enum": [
               "enabled",
+              "paused",
               "disabled"
             ]
           },
@@ -20727,6 +20738,11 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "version": {
+            "type": "integer",
+            "readOnly": true,
+            "minimum": 0
           }
         }
       },

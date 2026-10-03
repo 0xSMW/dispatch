@@ -11,6 +11,7 @@ from email.parser import BytesParser
 from email.policy import default
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
+from typing import get_args, get_type_hints
 
 from dispatch import Automation, AutomationInput, AutomationTriggerConfig, AutomationUpdateInput, ContactPropertyInput, Dispatch, DispatchError, ImportColumnMap, SendEmailConfig
 
@@ -159,6 +160,37 @@ class TestDispatch(unittest.TestCase):
                 if body is not None:
                     self.assertEqual(sent["body"], body)
 
+    def test_automation_pause_contracts(self):
+        self.assertEqual(get_args(get_type_hints(AutomationInput)["status"]), ("enabled", "disabled"))
+        self.assertEqual(get_args(get_type_hints(AutomationUpdateInput)["status"]), ("enabled", "paused", "disabled"))
+        self.assertIs(get_type_hints(Automation)["version"], int)
+        self.assertNotIn("version", get_type_hints(AutomationInput))
+        self.assertNotIn("version", get_type_hints(AutomationUpdateInput))
+        for status in ("enabled", "paused", "disabled"):
+            with self.subTest(status=status):
+                automation: Automation = {
+                    "id": "a/1", "status": status, "version": 4, "trigger": None,
+                    "trigger_config": {"type": "contact_created"}, "reentry": "once",
+                }
+                Recorder.responses = {
+                    ("PATCH", "/automations/a%2F1"): (200, automation),
+                    ("GET", "/automations/a%2F1"): (200, automation),
+                    ("GET", f"/automations?status={status}"): (200, {"object": "list", "data": [automation]}),
+                }
+                self.assertEqual(self.client.update_automation("a/1", {"status": status}), automation)
+                self.assertEqual(Recorder.calls[-1]["body"], {"status": status})
+                self.assertEqual(self.client.automation("a/1"), automation)
+                self.assertEqual(self.client.automations(status=status)["data"], [automation])
+        for enabled in (False, True):
+            self.client.update_automation("a1", {"enabled": enabled})
+            self.assertEqual(Recorder.calls[-1]["body"], {"enabled": enabled})
+            self.client.create_automation({"name": "Legacy", "steps": [], "enabled": enabled})
+            self.assertEqual(Recorder.calls[-1]["body"], {"name": "Legacy", "steps": [], "enabled": enabled})
+        Recorder.responses[("PATCH", "/automations/a1")] = (409, {"name": "conflict", "message": "Disabled cannot pause"})
+        with self.assertRaises(DispatchError) as caught:
+            self.client.update_automation("a1", {"status": "paused"})
+        self.assertEqual(caught.exception.status, 409)
+
     def test_send_headers(self):
         result = self.client.send({"from": "a@x.com", "to": "b@x.com", "subject": "Hi", "text": "Yo"}, idempotency_key="idem-1")
         self.assertEqual(result["id"], "x")
@@ -205,6 +237,7 @@ class TestDispatch(unittest.TestCase):
             with self.subTest(config=config):
                 automation: Automation = {
                     "id": "a1", "trigger": config.get("event_name"),
+                    "status": "disabled", "version": 0,
                     "trigger_config": config, "reentry": "every_time",
                 }
                 for route in [

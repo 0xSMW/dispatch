@@ -47,6 +47,18 @@ describe("Automations", () => {
     expect(learn.getByRole("link", { name: "Conditions" }).getAttribute("href")).toContain("automations.md#conditions");
     expect(learn.queryByRole("link", { name: "Lifecycle recipes" })).toBeNull();
   });
+  it("displays and exports paused status without treating it as disabled", async () => {
+    const paused = { ...rows[0], status: "paused" as const, version: 2, steps: [] };
+    const fetch = mockFetch((raw) => ({ body: { object: "list", has_more: false,
+      data: new URL(raw).pathname === "/automations" ? [paused] : [] } }));
+    open("/automations?status=paused");
+    expect(await screen.findByText("Welcome")).toBeTruthy();
+    const row = screen.getByText("Welcome").closest("tr")!;
+    expect(within(row).getByText("paused")).toBeTruthy();
+    expect(screen.getByRole("option", { name: "paused" })).toBeTruthy();
+    expect(callAt(fetch).url).toContain("status=paused");
+    expect(automationCsv.find((column) => column.header === "status")!.value(paused)).toBe("paused");
+  });
 
   it("creates a disabled automation with only its trigger, then opens the builder", async () => {
     const fetch = mockFetch((url, init) => {

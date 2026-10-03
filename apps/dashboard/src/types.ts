@@ -428,6 +428,7 @@ export type Automation = {
   trigger_config?: import("./views/automations/graph").TriggerConfig;
   reentry?: "once" | "every_time";
   status?: "enabled" | "disabled" | "paused";
+  version?: number;
   enabled?: boolean;
   steps: AutomationStep[];
   connections?: Array<{ from: string; to: string; type?: string }>;

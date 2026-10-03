@@ -22,15 +22,15 @@ export function presentEnrollmentJob(row: EnrollmentJob) {
     created_at: row.created_at, completed_at: row.completed_at };
 }
 
-async function enrollmentAutomation(client: Queryable, tenantId: string, automationId: string) {
+async function enrollmentAutomation(client: Queryable, tenantId: string, automationId: string, allowPaused = false) {
   const found = await client.query<EnrollmentAutomation>(
-    `select id, trigger, trigger_type, reentry, steps, connections, enabled, to_jsonb(a)->>'paused_at' as paused_at
+    `select id, trigger, trigger_type, reentry, steps, connections, enabled, paused_at
      from automations a where tenant_id = $1 and id = $2 and deleted_at is null for share`,
     [tenantId, automationId],
   );
   const automation = found.rows[0];
   if (!automation) throw new ApiError("not_found", 404, "Automation not found");
-  if (!automation.enabled || automation.paused_at) throw new ApiError("conflict", 409, "Enrollment requires an enabled, unpaused automation");
+  if (!automation.enabled || (automation.paused_at && !allowPaused)) throw new ApiError("conflict", 409, "Enrollment requires an enabled, unpaused automation");
   if (automation.trigger_type === "event") throw new ApiError("conflict", 409, "Event triggers need an event payload and cannot enroll contacts");
   const config = normalizeAutomation(automation, true).steps.find((step) => step.type === "trigger")!.config as TriggerConfig;
   await assertTriggerConfig(client, tenantId, config);
@@ -110,7 +110,8 @@ export async function processEnrollmentBatch(db: Db, tenantId: string, automatio
     const job = found.rows[0];
     if (!job) return null;
     if (job.status !== "queued" && job.status !== "in_progress") return job;
-    const automation = await enrollmentAutomation(client, tenantId, automationId);
+    const automation = await enrollmentAutomation(client, tenantId, automationId, true);
+    if (automation.paused_at) return job;
     await assertSegment(client, tenantId, job.segment_id);
     const contacts = await client.query<ContactRow>(
       `select ${contactColumns} from contacts c where ${audience} and ($4::text is null or c.id > $4)
@@ -148,7 +149,10 @@ export async function processEnrollmentBatch(db: Db, tenantId: string, automatio
 
 export async function processEnrollmentJobs(db: Db, limit = 1) {
   const jobs = await db.query<EnrollmentJob>(
-    "select * from automation_enrollment_jobs where status in ('queued', 'in_progress') order by updated_at, id limit $1", [limit],
+    `select j.* from automation_enrollment_jobs j
+     join automations a on a.tenant_id = j.tenant_id and a.id = j.automation_id
+     where j.status in ('queued', 'in_progress') and a.paused_at is null
+     order by j.updated_at, j.id limit $1`, [limit],
   );
   for (const job of jobs.rows) {
     try { await processEnrollmentBatch(db, job.tenant_id, job.automation_id, job.id); }

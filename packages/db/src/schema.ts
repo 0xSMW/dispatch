@@ -928,4 +928,12 @@ alter table contact_imports drop constraint if exists contact_imports_status_che
 alter table contact_imports add constraint contact_imports_status_check
   check (status in ('queued', 'in_progress', 'completed', 'failed', 'cancelled'));
 alter table contact_imports add column if not exists claim_version integer not null default 0;
+
+-- Pausing holds execution without changing runs, waits or contact/event history.
+alter table automations add column if not exists paused_at timestamptz;
+alter table automations add column if not exists version integer not null default 0;
+alter table automations drop constraint if exists automations_pause_check;
+alter table automations add constraint automations_pause_check check (enabled or paused_at is null);
+create index if not exists automations_active_trigger_idx on automations (tenant_id, trigger_type, trigger)
+  where deleted_at is null and enabled and paused_at is null;
 `;

@@ -114,6 +114,13 @@ describe("automation schema", () => {
     expect(automationUpdateSchema.parse({ status: "disabled" }).enabled).toBe(false);
     expect(automationUpdateSchema.parse({ name: "x" }).enabled).toBeUndefined();
   });
+  it("keeps paused distinct from legacy enabled and gives explicit status precedence", () => {
+    expect(automationUpdateSchema.parse({ status: "paused" })).toMatchObject({ status: "paused", enabled: true });
+    expect(automationUpdateSchema.parse({ enabled: true })).toMatchObject({ status: "enabled", enabled: true });
+    expect(automationUpdateSchema.parse({ enabled: false })).toMatchObject({ status: "disabled", enabled: false });
+    expect(automationUpdateSchema.parse({ status: "paused", enabled: false })).toMatchObject({ status: "paused", enabled: true });
+    expect(automationSchema.safeParse({ ...graph, status: "paused" }).success).toBe(false);
+  });
 
   it("accepts delays up to 30 days in natural language", () => {
     const delay = (duration: string) =>

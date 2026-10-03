@@ -75,6 +75,7 @@ describe("automation presenters", () => {
       id: "automation_1",
       name: "Welcome",
       status: "disabled",
+      version: 0,
       trigger: "user.created",
       trigger_config: { type: "event", event_name: "user.created" },
       reentry: "every_time",
@@ -152,6 +153,23 @@ describe("automation presenters", () => {
 
 describe("automation routes", () => {
   const stored = (row: Partial<AutomationRow> = {}) => ({ ...legacy, ...row });
+  it.each([
+    [true, null, "paused", 200], [true, "2026-10-04T00:00:00Z", "enabled", 200],
+    [true, "2026-10-04T00:00:00Z", "disabled", 200], [false, null, "enabled", 200],
+    [false, null, "paused", 409],
+  ])("transitions enabled=%s paused=%s to %s with response %s", async (enabled, pausedAt, status, code) => {
+    const { app, query } = harness((sql, params) => {
+      if (sql.includes("from automations")) return { rows: [stored({ enabled, paused_at: pausedAt, version: 3 })] };
+      if (sql.startsWith("update automations")) return { rows: [stored({
+        enabled: params[6] as boolean, paused_at: params[9] === "paused" ? "2026-10-04T00:00:00Z" : null, version: 3,
+      })] };
+      return { rows: [] };
+    });
+    const response = await app.inject({ method: "PATCH", url: "/automations/automation_1", payload: { status } });
+    expect(response.statusCode).toBe(code);
+    if (code === 200) expect(response.json()).toMatchObject({ status, version: 3 });
+    if (status !== "disabled") expect(query.mock.calls.some(([sql]) => sql.includes("state = 'stopped'"))).toBe(false);
+  });
 
   it("creates a disabled automation by default from a flat body", async () => {
     const { app, query } = harness((sql, params) =>
@@ -271,7 +289,7 @@ describe("automation routes", () => {
     const response = await app.inject({ method: "GET", url: "/automations?status=enabled" });
     expect(response.json().data[0]).toMatchObject({ status: "enabled", run_count: 3 });
     expect(query.mock.calls[0]![0]).toContain("as run_count");
-    expect(query.mock.calls[0]![1]![1]).toBe(true);
+    expect(query.mock.calls[0]![0]).toContain("enabled and paused_at is null");
   });
 
   it("lists runs with a status filter and reads one run on the nested path", async () => {

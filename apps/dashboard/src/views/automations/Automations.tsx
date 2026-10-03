@@ -31,7 +31,7 @@ import { Enroll, canEnroll } from "./Enroll";
 export const automationCsv: Array<CsvColumn<Automation>> = [
   { header: "id", value: (row) => row.id },
   { header: "name", value: (row) => row.name },
-  { header: "status", value: (row) => isEnabled(row) ? "enabled" : "disabled" },
+  { header: "status", value: (row) => row.status ?? (row.enabled ? "enabled" : "disabled") },
   { header: "trigger", value: (row) => {
     const config = automationTrigger(row);
     return config.type === "event" ? config.event_name : `${triggerLabels[config.type]}: ${triggerSummary(config)}`;
@@ -86,7 +86,7 @@ export function Automations() {
           Create automation
         </button>
       }
-      filters={[{ param: "status", label: "Status", options: ["enabled", "disabled"], all: "All statuses" }]}
+      filters={[{ param: "status", label: "Status", options: ["enabled", "paused", "disabled"], all: "All statuses" }]}
       filterExtra={<CsvExport rows={list.rows} columns={automationCsv} name="automations" />}
       list={list}
       noun="automations"
@@ -119,7 +119,7 @@ export function Automations() {
           const warning = triggerWarning(config, sources);
           return <span title={warning ?? undefined}>{config.type === "event" ? config.event_name : `${triggerLabels[config.type]}: ${triggerSummary(config, sources)}`}{warning ? <span className="fieldError"> · {warning}</span> : null}</span>;
         } },
-        { header: "Status", cell: (row) => <Badge value={isEnabled(row) ? "enabled" : "disabled"} /> },
+        { header: "Status", cell: (row) => <Badge value={row.status ?? (row.enabled ? "enabled" : "disabled")} /> },
         { header: "Runs", cell: (row) => (row.run_count ?? 0).toLocaleString() },
         { header: "Created", cell: (row) => <Time value={row.created_at} /> },
       ]}

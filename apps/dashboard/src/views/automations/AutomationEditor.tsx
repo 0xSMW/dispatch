@@ -151,7 +151,7 @@ export function AutomationEditor() {
   const enabled = row ? isEnabled(row) : false;
   const can = useCan();
   // A viewer sees the builder read-only, the same way as an enabled automation.
-  const locked = !can || enabled || Boolean(problem);
+  const locked = !can || enabled || row?.status === "paused" || Boolean(problem);
   const dirty = Boolean(draft) && snapshot(draft!) !== saved;
   const issues = useMemo(() => (draft ? treeIssues(draft.tree, {
     events: events.rows, ...triggerSources(options),
@@ -200,7 +200,7 @@ export function AutomationEditor() {
   function submit(start: boolean) {
     if (!can || !draft || save.isLoading || triggerPending || (start && resourceWarning)) return;
     sentDraft.current = null;
-    if (problem) {
+    if (problem || row?.status === "paused") {
       if (start) void save.mutate({ status: "enabled" });
       return;
     }
@@ -243,7 +243,7 @@ export function AutomationEditor() {
         actions={
           row ? (
             <>
-              <Badge value={enabled ? "enabled" : "disabled"} />
+              <Badge value={row.status ?? (row.enabled ? "enabled" : "disabled")} />
               {can && canEnroll(row) ? <button type="button" className="secondary" onClick={() => setEnrolling(true)}>Enroll contacts</button> : null}
               {!locked && draft ? <span className="dim saveState">{dirty ? "Unsaved changes" : "Saved"}</span> : null}
               {!locked ? (

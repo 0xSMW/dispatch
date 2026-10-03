@@ -1,4 +1,4 @@
-import { Command } from "@commander-js/extra-typings";
+import { Command, Option } from "@commander-js/extra-typings";
 import { runList } from "../../lib/actions.js";
 import { helpText } from "../../lib/help.js";
 import { compact } from "../../lib/json.js";
@@ -35,13 +35,13 @@ function triggerLabel(item: Automation): string {
 export const list = pageOptions(new Command("list"))
   .alias("ls")
   .description("List automations")
-  .option("--status <status>", "Only automations in this state, such as enabled")
+  .addOption(new Option("--status <status>", "Only automations in this state").choices(["enabled", "paused", "disabled"] as const))
   .addHelpText(
     "after",
     helpText({
       output: '{"object":"list","has_more":false,"data":[{"id":"...","name":"Onboarding","status":"enabled"}]}',
       codes: ["invalid_limit", "invalid_pagination", "list_error"],
-      examples: ["dispatch automations", "dispatch automations list --status enabled"],
+      examples: ["dispatch automations", "dispatch automations list --status enabled", "dispatch automations list --status paused"],
     }),
   )
   .action(async (options, command) => {

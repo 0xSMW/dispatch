@@ -296,6 +296,7 @@ type Automation struct {
 	ID            string                  `json:"id"`
 	Name          string                  `json:"name"`
 	Status        string                  `json:"status,omitempty"`
+	Version       int                     `json:"version"`
 	Trigger       *string                 `json:"trigger"`
 	TriggerConfig AutomationTriggerConfig `json:"trigger_config"`
 	Reentry       AutomationReentry       `json:"reentry"`
@@ -304,6 +305,13 @@ type Automation struct {
 	CreatedAt     string                  `json:"created_at,omitempty"`
 	UpdatedAt     string                  `json:"updated_at,omitempty"`
 }
+
+// Automation statuses. Pausing a disabled automation returns 409.
+const (
+	AutomationEnabled  = "enabled"
+	AutomationPaused   = "paused"
+	AutomationDisabled = "disabled"
+)
 
 type AutomationTriggerType string
 
@@ -628,12 +636,26 @@ type AutomationConnection struct {
 }
 
 type AutomationInput struct {
-	Name        string                 `json:"name"`
+	Name string `json:"name"`
+	// Status on create accepts enabled or disabled, not paused.
 	Status      string                 `json:"status,omitempty"`
+	Enabled     *bool                  `json:"enabled,omitempty"`
 	Steps       []AutomationStep       `json:"steps"`
 	Connections []AutomationConnection `json:"connections,omitempty"`
 	Trigger     string                 `json:"trigger,omitempty"`
 	Reentry     AutomationReentry      `json:"reentry,omitempty"`
+}
+
+// AutomationUpdate pauses/resumes/stops execution or updates a definition.
+// Version is read-only and is returned on Automation, not accepted here.
+type AutomationUpdate struct {
+	Name        string                  `json:"name,omitempty"`
+	Status      string                  `json:"status,omitempty"`
+	Enabled     *bool                   `json:"enabled,omitempty"`
+	Steps       *[]AutomationStep       `json:"steps,omitempty"`
+	Connections *[]AutomationConnection `json:"connections,omitempty"`
+	Trigger     string                  `json:"trigger,omitempty"`
+	Reentry     AutomationReentry       `json:"reentry,omitempty"`
 }
 
 type EventInput struct {

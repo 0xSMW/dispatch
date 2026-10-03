@@ -35,6 +35,8 @@ function fake(run: {
   rows?: StepRow[];
   contacts?: Contact[];
   deleted?: boolean;
+  paused_at?: string | null;
+  version?: number;
   onStep?: (text: string, state: ReturnType<typeof fake>["state"]) => void;
 }) {
   const state = {
@@ -55,6 +57,9 @@ function fake(run: {
       steps: run.steps,
       connections: run.connections ?? [],
       automation_deleted: run.deleted ?? false,
+      enabled: true,
+      paused_at: run.paused_at ?? null,
+      version: run.version ?? 0,
       email: run.email === undefined ? "ada@example.com" : run.email,
       data: run.data ?? {},
       received_at: "2026-10-04T00:00:00Z"
@@ -91,6 +96,9 @@ function fake(run: {
       snapshot = null;
       return { rows: [] };
     }
+    if (text.startsWith("select r.automation_id, e.data")) return { rows: [{ automation_id: state.run.automation_id, trigger_type: "event", data: state.run.data }] };
+    if (text.startsWith("select enabled, paused_at, version")) return { rows: [{ ...state.run, deleted: state.run.automation_deleted }] };
+    if (text.startsWith("select r.id, r.automation_id from automation_runs")) return { rows: running() ? [{ ...state.run }] : [] };
     if (text.includes("from automation_runs r join automations a")) return { rows: [{ ...state.run }] };
     if (text.startsWith("select r.id, r.automation_id")) return { rows: [{
       ...state.run, contact_id: state.contacts.find((contact) => contact.email.toLowerCase() === state.run.email?.toLowerCase())?.id ?? null,
@@ -101,8 +109,12 @@ function fake(run: {
       state.run.state = "stopped";
       return { rows: one };
     }
-    if (text.startsWith("update automation_runs set state = 'running'")) {
-      if (!active()) return { rows: [] };
+    if (text.startsWith("update automation_runs set state = 'ready'")) {
+      if (running()) state.run.state = "ready";
+      return { rows: [] };
+    }
+    if (text.startsWith("update automation_runs r set state = 'running'")) {
+      if (!active() || state.run.paused_at || state.run.version !== params[3]) return { rows: [] };
       Object.assign(state.run, { state: "running", resume_at: null, wait_event: null });
       return { rows: one };
     }
@@ -246,6 +258,47 @@ beforeEach(() => {
 });
 
 describe("executeAutomationRun", () => {
+  it.each(["pause", "version"])("holds the next step after %s changes without repeating the completed step", async (change) => {
+    let interrupted = false;
+    const { db, state } = fake({
+      steps: [
+        { key: "start", type: "trigger", config: { event_name: "e" } },
+        { key: "first", type: "contact_update", config: { first_name: "First" } },
+        { key: "later", type: "delay", config: { duration: "1 hour" } },
+      ],
+      connections: [{ from: "start", to: "first" }, { from: "first", to: "later" }],
+      onStep: (sql, current) => {
+        if (sql === "commit" && current.steps.length === 1 && !interrupted) {
+          interrupted = true;
+          if (change === "pause") current.run.paused_at = "2026-10-04T00:00:00Z";
+          else current.run.version += 1;
+        }
+      },
+    });
+    await executeAutomationRun(db, "tenant_1", "run_1");
+    expect(state.run).toMatchObject({ state: "ready", next_step_key: "later", resume_at: null });
+    expect(state.steps.map((step) => step.step_key)).toEqual(["first"]);
+    state.run.paused_at = null;
+    await executeAutomationRun(db, "tenant_1", "run_1");
+    expect(state.run.state).toBe("waiting");
+    expect(state.steps.map((step) => step.step_key)).toEqual(["first", "later"]);
+  });
+  it("does not consume a stored event decision or close a wait while paused", async () => {
+    const { db, state } = fake({
+      steps: [{ key: "start", type: "trigger", config: { event_name: "e" } },
+        { key: "wait", type: "wait_for_event", config: { event_name: "wake" } }],
+      connections: [{ from: "start", to: "wait" }],
+      state: "ready", paused_at: "2026-10-04T00:00:00Z", next_step_key: "wait",
+      resume_data: { event_id: "ce_wake" }, rows: [{ step_key: "wait", step_index: 1, type: "wait_for_event", state: "waiting", data: {} }],
+    });
+    await executeAutomationRun(db, "tenant_1", "run_1");
+    expect(state.run).toMatchObject({ state: "ready", resume_data: { event_id: "ce_wake" } });
+    expect(state.steps[0].state).toBe("waiting");
+    state.run.paused_at = null;
+    await executeAutomationRun(db, "tenant_1", "run_1");
+    expect(state.run.state).toBe("done");
+    expect(state.steps[0]).toMatchObject({ state: "done", data: { event_id: "ce_wake" } });
+  });
   it("emits one completion transition and does not emit it again on a retry", async () => {
     emit.mockClear();
     const { db } = fake({ ...branch, data: { plan: "pro" }, contacts: [{ id: "contact_1", email: "ada@example.com" }] });
@@ -448,7 +501,7 @@ describe("executeAutomationRun", () => {
     const history = query.mock.calls.filter(([sql]) => sql.includes("insert into contact_changes"));
     expect(history).toHaveLength(1);
     expect(history[0]![1]!.slice(1)).toEqual(["tenant_1", "contact_1", "first_name", "null", '"Ada"', "req_1"]);
-    expect(query.mock.calls.find(([sql]) => sql.includes("from automations"))![1]).toEqual(["tenant_1", "contact_updated", "@contact.updated"]);
+    expect(query.mock.calls.find(([sql]) => sql.includes("trigger_type = $2"))![1]).toEqual(["tenant_1", "contact_updated", "@contact.updated", "automation_1"]);
   });
 
   it("records no history or trigger candidates when contact_update leaves fields unchanged", async () => {
@@ -460,7 +513,7 @@ describe("executeAutomationRun", () => {
     await executeAutomationRun(db, "tenant_1", "run_1");
     expect(state.run.state).toBe("done");
     expect(state.steps[0]).toMatchObject({ state: "done", data: { contact_id: "contact_1" } });
-    expect(query.mock.calls.some(([sql]) => sql.includes("insert into contact_changes") || sql.includes("from automations"))).toBe(false);
+    expect(query.mock.calls.some(([sql]) => sql.includes("insert into contact_changes") || sql.includes("trigger_type = $2"))).toBe(false);
   });
   it("does not bring a deleted contact back", async () => {
     const flow = {
@@ -698,7 +751,7 @@ describe("fireEvent", () => {
       ["first_name", "null", '"Ada"', "req_1"],
       ["unsubscribed", "null", "false", "req_1"],
     ]);
-    expect(query.mock.calls.find(([sql]) => sql.includes("from automations"))![1]).toEqual(["tenant_1", "contact_created", "@contact.created"]);
+    expect(query.mock.calls.find(([sql]) => sql.includes("from automations"))![1]).toEqual(["tenant_1", "contact_created", "@contact.created", null]);
   });
 
   it("finds a deleted contact by its address and does not bring it back", async () => {

@@ -69,7 +69,7 @@ export const create = new Command("create")
   .option("--steps <json>", "Steps as a JSON array")
   .option("--connections <json>", "Connections between steps as a JSON array")
   .option("--file <path>", "Whole definition as JSON, or - for stdin. Flags override its fields")
-  .addOption(new Option("--status <status>", "Start enabled or disabled").choices(["enabled", "disabled"] as const))
+  .addOption(new Option("--status <status>", "Start enabled or disabled (pause after enabling)").choices(["enabled", "disabled"] as const))
   .addOption(new Option("--reentry <mode>", "Whether a contact can enter once or every time").choices(["once", "every_time"] as const))
   .addHelpText(
     "after",

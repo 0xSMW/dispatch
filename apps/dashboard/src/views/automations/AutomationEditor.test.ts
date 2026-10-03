@@ -77,6 +77,23 @@ describe("AutomationEditor", () => {
     sessionStorage.clear();
     vi.unstubAllGlobals();
   });
+  it.each(["full", "viewer"])("shows paused status to %s without offering graph saves before paused editing ships", async (role) => {
+    if (role === "viewer") signIn("sess_viewer", ["read"]);
+    api((url) => url.pathname === "/automations/automation_1" ? { body: { ...automation, status: "paused", version: 2 } } : undefined);
+    open();
+    expect(await screen.findByText("paused")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    if (role === "viewer") expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
+  });
+  it("uses a status-only update when starting a paused graph", async () => {
+    const fetch = api((url, init) => url.pathname === "/automations/automation_1" ? {
+      body: { ...automation, status: init.method === "PATCH" ? "enabled" : "paused", version: 2 },
+    } : undefined);
+    open();
+    fireEvent.click(await screen.findByRole("button", { name: "Start" }));
+    await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
+    expect(JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "PATCH")![1]!.body))).toEqual({ status: "enabled" });
+  });
 
   it.each(["", "?view=canvas"])("offers enrollment for an enabled native flow in the %s builder", async (query) => {
     const config = { type: "contact_created" };

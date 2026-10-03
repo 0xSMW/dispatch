@@ -59,7 +59,7 @@ describe("contact transitions", () => {
     });
     expect(query.mock.calls.filter(([sql]) => sql.includes("insert into contact_changes"))).toHaveLength(3);
     expect(query.mock.calls.some(([sql]) => sql.includes("custom_events"))).toBe(false);
-    expect(query.mock.calls.find(([sql]) => sql.includes("from automations"))![1]).toEqual(["tenant_1", "contact_updated", "@contact.updated"]);
+    expect(query.mock.calls.find(([sql]) => sql.includes("from automations"))![1]).toEqual(["tenant_1", "contact_updated", "@contact.updated", null]);
   });
   it.each([undefined, "normal", "bulk"] as const)("persists %s priority on an actual matching contact run", async (priority) => {
     const { client, query } = triggerClient();
@@ -71,8 +71,8 @@ describe("contact transitions", () => {
     const candidates = query.mock.calls.find(([sql]) => sql.includes("from automations"))!;
     expect(candidates[0]).toContain("order by created_at");
     expect(candidates[0]).toContain("enabled = true and deleted_at is null");
-    expect(candidates[0]).toContain("to_jsonb(automations)->>'paused_at' is null");
-    expect(candidates[1]).toEqual(["tenant_1", "contact_created", "@contact.created"]);
+    expect(candidates[0]).toContain("paused_at is null");
+    expect(candidates[1]).toEqual(["tenant_1", "contact_created", "@contact.created", null]);
     const enrollment = query.mock.calls.find(([sql]) => sql.includes("insert into automation_enrollments"))!;
     expect(enrollment[1]).toEqual(["tenant_1", "automation_1", contact.id]);
     const run = query.mock.calls.find(([sql]) => sql.includes("insert into automation_runs"))!;

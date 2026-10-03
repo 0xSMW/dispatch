@@ -50,6 +50,8 @@ export type AutomationRow = {
   steps: Array<Record<string, unknown>>;
   connections: unknown[] | null;
   enabled: boolean;
+  paused_at?: string | null;
+  version?: number;
   created_at: string;
   updated_at: string;
 };
@@ -59,7 +61,11 @@ export type Outcome = Connection["type"];
 export const stepLimit = 100;
 export const activeStates = ["ready", "running", "waiting"];
 
-export const automationColumns = "id, name, trigger, trigger_type, reentry, steps, connections, enabled, created_at, updated_at";
+export const automationColumns = "id, name, trigger, trigger_type, reentry, steps, connections, enabled, paused_at, version, created_at, updated_at";
+
+export function automationStatus(row: Pick<AutomationRow, "enabled" | "paused_at">) {
+  return !row.enabled ? "disabled" : row.paused_at ? "paused" : "enabled";
+}
 
 export async function findAutomation(db: Queryable, tenantId: string, automationId: string) {
   return findBy<AutomationRow>(db, "automations", tenantId, automationId, { select: automationColumns });
@@ -89,9 +95,42 @@ type RunRow = AutomationRun & {
   steps: Array<Record<string, unknown>>;
   connections: unknown[] | null;
   automation_deleted: boolean;
+  enabled: boolean;
+  paused_at: string | null;
+  version: number;
 };
 
 const stopped = Symbol("stopped");
+const held = Symbol("held");
+
+// Lock only the run. A pause can commit while a current step finishes; the next step
+// observes it. Paused graph saves also lock runs before changing their positions.
+async function guard(client: Queryable, tenantId: string, runId: string, version: number) {
+  const locked = await client.query<{ automation_id: string }>(
+    `select r.id, r.automation_id
+     from automation_runs r join automations a on a.tenant_id = r.tenant_id and a.id = r.automation_id
+     where r.tenant_id = $1 and r.id = $2 and r.state = 'running' for update of r`,
+    [tenantId, runId]
+  );
+  if (!locked.rows[0]) return stopped;
+  // A graph save may have held this run lock without changing its tuple. Read
+  // status/version in a new snapshot after acquiring the lock, not before waiting.
+  const current = await client.query<{ enabled: boolean; paused_at: string | null; version: number; deleted: boolean }>(
+    `select enabled, paused_at, version, (deleted_at is not null) as deleted
+     from automations where tenant_id = $1 and id = $2`,
+    [tenantId, locked.rows[0].automation_id]
+  );
+  const row = current.rows[0];
+  if (!row) return stopped;
+  if (!row.enabled || row.deleted || row.paused_at || row.version !== version) {
+    await client.query(
+      "update automation_runs set state = 'ready', updated_at = now() where tenant_id = $1 and id = $2 and state = 'running'",
+      [tenantId, runId]
+    );
+    return held;
+  }
+  return null;
+}
 
 // Runs one automation run until it finishes, pauses, or is stopped.
 //
@@ -107,10 +146,11 @@ export async function executeAutomationRun(db: Db, tenantId: string, runId: stri
     const loaded = await db.query<RunRow>(
       `select r.id, r.tenant_id, r.automation_id, r.event_id, coalesce(e.request_id, r.id) as request_id,
          r.state, r.next_step_index, r.next_step_key, r.resume_data, a.trigger, a.steps, a.connections,
-         (a.deleted_at is not null) as automation_deleted, e.email, e.data, e.created_at as received_at
+         (a.deleted_at is not null) as automation_deleted, a.enabled, a.paused_at, a.version,
+         e.email, e.data, e.created_at as received_at
        from automation_runs r
-       join automations a on a.id = r.automation_id
-       join custom_events e on e.id = r.event_id
+       join automations a on a.tenant_id = r.tenant_id and a.id = r.automation_id
+       join custom_events e on e.tenant_id = r.tenant_id and e.id = r.event_id
        where r.tenant_id = $1 and r.id = $2`,
       [tenantId, runId]
     );
@@ -128,15 +168,33 @@ export async function executeAutomationRun(db: Db, tenantId: string, runId: stri
       });
       return;
     }
+    if (!run.enabled || run.paused_at) {
+      // Claims can race a pause. Preserve waiting timers and event decisions, and
+      // release an already claimed run without advancing its position.
+      await db.query(
+        "update automation_runs set state = 'ready', updated_at = now() where tenant_id = $1 and id = $2 and state = 'running'",
+        [tenantId, runId]
+      );
+      return;
+    }
 
     const claimed = await db.query(
-      `update automation_runs
+      `update automation_runs r
        set state = 'running', resume_at = null, wait_event = null, updated_at = now()
-       where tenant_id = $1 and id = $2 and state = any($3)
-       returning id`,
-      [tenantId, runId, activeStates]
+       from automations a
+       where r.tenant_id = $1 and r.id = $2 and r.state = any($3)
+         and a.tenant_id = r.tenant_id and a.id = r.automation_id
+         and a.enabled and a.paused_at is null and a.deleted_at is null and a.version = $4
+       returning r.id`,
+      [tenantId, runId, activeStates, run.version]
     );
-    if (!claimed.rows[0]) return;
+    if (!claimed.rows[0]) {
+      await db.query(
+        "update automation_runs set state = 'ready', updated_at = now() where tenant_id = $1 and id = $2 and state = 'running'",
+        [tenantId, runId]
+      );
+      return;
+    }
 
     const graph = automationGraph(run);
     const walk = walker(graph);
@@ -152,12 +210,14 @@ export async function executeAutomationRun(db: Db, tenantId: string, runId: stri
       // Closing the wait step and moving the run past it commit together. If the wait was the
       // last step, the run is marked done in the same statement.
       const moved = await tx(db, async (client) => {
+        const blocked = await guard(client, tenantId, runId, run.version);
+        if (blocked) return blocked;
         const resumed = start ? await finishWaiting(client, tenantId, runId, start, resumeData) : false;
         const next = resumed && paused ? walk.next(paused.key, resumeOutcome(paused, resumeData)) : start;
         const advanced = await advance(client, tenantId, runId, next);
         return advanced ? next : stopped;
       });
-      if (moved === stopped) return;
+      if (moved === stopped || moved === held) return;
       key = moved;
     }
 
@@ -168,20 +228,17 @@ export async function executeAutomationRun(db: Db, tenantId: string, runId: stri
       const index = walk.index(key);
 
       if (step.type === "delay" || step.type === "wait_for_event") {
-        await pauseAutomation(db, tenantId, runId, index, step);
+        await pauseAutomation(db, tenantId, runId, index, step, run.version);
         return;
       }
 
       const startedAt = new Date();
-      let next: string | null | typeof stopped;
+      let next: string | null | typeof stopped | typeof held;
       try {
         next = await tx(db, async (client) => {
           // The lock also makes a concurrent stop wait until this step has committed.
-          const alive = await client.query(
-            "select id from automation_runs where tenant_id = $1 and id = $2 and state = 'running' for update",
-            [tenantId, runId]
-          );
-          if (!alive.rows[0]) return stopped;
+          const blocked = await guard(client, tenantId, runId, run.version);
+          if (blocked) return blocked;
           const output = await executeStep(client, run, step, options);
           const following = walk.next(step.key, stepOutcome(step, output));
           await client.query(
@@ -201,12 +258,15 @@ export async function executeAutomationRun(db: Db, tenantId: string, runId: stri
         );
         throw error;
       }
-      if (next === stopped) return;
+      if (next === stopped || next === held) return;
       key = next;
     }
 
     // Reached with nothing left to run: a graph with only a trigger, or a resume past the last step.
-    await tx(db, (client) => advance(client, tenantId, runId, null));
+    await tx(db, async (client) => {
+      if (await guard(client, tenantId, runId, run.version)) return;
+      await advance(client, tenantId, runId, null);
+    });
   } catch (error) {
     await tx(db, async (client) => {
       const failed = await client.query(
@@ -274,7 +334,7 @@ async function finishWaiting(db: Queryable, tenantId: string, runId: string, key
   return (row.rowCount ?? row.rows.length) > 0;
 }
 
-async function pauseAutomation(db: Db, tenantId: string, runId: string, index: number, step: Step) {
+async function pauseAutomation(db: Db, tenantId: string, runId: string, index: number, step: Step, version: number) {
   let resumeAt: Date | null;
   let data: Record<string, unknown>;
   let waitEvent: string | null = null;
@@ -290,6 +350,7 @@ async function pauseAutomation(db: Db, tenantId: string, runId: string, index: n
   }
 
   await tx(db, async (client) => {
+    if (await guard(client, tenantId, runId, version)) return;
     // Only a run that is still running may wait. A stopped run stays stopped.
     const paused = await client.query(
       `update automation_runs

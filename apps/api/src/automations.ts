@@ -3,6 +3,7 @@ import {
   activeStates,
   automationColumns,
   automationGraph,
+  automationStatus,
   assertTriggerConfig,
   createEnrollmentJob,
   findEnrollmentJob,
@@ -82,7 +83,8 @@ export function presentAutomation(row: AutomationRow) {
     object: "automation",
     id: row.id,
     name: row.name,
-    status: row.enabled ? "enabled" : "disabled",
+    status: automationStatus(row),
+    version: row.version ?? 0,
     trigger: row.trigger_type && row.trigger_type !== "event" ? null : row.trigger,
     trigger_config: graph.steps.find((step) => step.type === "trigger")!.config as TriggerConfig,
     reentry: row.reentry ?? "every_time",
@@ -97,7 +99,8 @@ export function presentAutomationRow(row: AutomationRow & { run_count?: number }
   return {
     id: row.id,
     name: row.name,
-    status: row.enabled ? "enabled" : "disabled",
+    status: automationStatus(row),
+    version: row.version ?? 0,
     trigger: row.trigger_type && row.trigger_type !== "event" ? null : row.trigger,
     trigger_config: automationGraph(row).steps.find((step) => step.type === "trigger")!.config as TriggerConfig,
     reentry: row.reentry ?? "every_time",
@@ -254,15 +257,14 @@ export function registerAutomations(
 
   app.get("/automations", async (request) => {
     const status = (request.query as { status?: string }).status;
-    if (status && status !== "enabled" && status !== "disabled") {
-      throw new ApiError("validation_error", 422, "status must be enabled or disabled");
+    if (status && !["enabled", "paused", "disabled"].includes(status)) {
+      throw new ApiError("validation_error", 422, "status must be enabled, paused, or disabled");
     }
     const page = await paginate<AutomationRow & { run_count: number }>(db, "automations", request.auth!.tenant_id, paging(request), {
       select: `${automationColumns}, (select count(*)::integer from automation_runs r
         where r.tenant_id = automations.tenant_id and r.automation_id = automations.id) as run_count`,
       deletedCol: "deleted_at",
-      where: status ? "enabled = $2" : undefined,
-      params: status ? [status === "enabled"] : undefined,
+      where: status === "disabled" ? "not enabled" : status === "paused" ? "enabled and paused_at is not null" : status === "enabled" ? "enabled and paused_at is null" : undefined,
     });
     return { object: page.object, has_more: page.has_more, data: page.data.map(presentAutomationRow) };
   });
@@ -288,16 +290,22 @@ export function registerAutomations(
       const current = locked.rows[0];
       if (!current) throw new ApiError("not_found", 404, "Automation not found");
       const graph = mergeGraph(current, input);
-      const enabled = input.enabled ?? current.enabled;
-      if (graph || enabled) {
+      const status = input.status ?? automationStatus(current);
+      if (status === "paused" && !current.enabled) {
+        throw new ApiError("conflict", 409, "Enable the automation before pausing it");
+      }
+      const enabled = status !== "disabled";
+      if (graph || status === "enabled") {
         const config = (graph ?? automationGraph(current)).steps.find((step) => step.type === "trigger")!.config as TriggerConfig;
         await assertTriggerConfig(client, tenantId, config);
       }
       if (graph && current.enabled && enabled) {
-        throw new ApiError("conflict", 409, "Disable the automation before changing its steps");
+        throw new ApiError("conflict", 409, "Stop the automation before changing its steps");
       }
       const updated = await client.query<AutomationRow>(
-        `update automations set name = $3, trigger = $4, steps = $5, connections = $6, enabled = $7, trigger_type = $8, reentry = $9, updated_at = now()
+        `update automations set name = $3, trigger = $4, steps = $5, connections = $6, enabled = $7, trigger_type = $8, reentry = $9,
+           paused_at = case when $10::text = 'paused' then coalesce(paused_at, now()) else null end,
+           version = version + $11::integer, updated_at = now()
          where tenant_id = $1 and id = $2
          returning ${automationColumns}`,
         [
@@ -310,6 +318,8 @@ export function registerAutomations(
           enabled,
           graph?.trigger_type ?? current.trigger_type ?? "event",
           input.reentry ?? current.reentry ?? "every_time",
+          status,
+          graph ? 1 : 0,
         ],
       );
       // Disabling stops the runs in flight, as POST /stop does. A run left waiting would resume
@@ -352,7 +362,7 @@ export function registerAutomations(
     const automation = await findAutomation(db, tenantId, (request.params as { id: string }).id);
     const row = await tx(db, async (client) => {
       const updated = await client.query<AutomationRow>(
-        `update automations set enabled = false, updated_at = now() where tenant_id = $1 and id = $2
+        `update automations set enabled = false, paused_at = null, updated_at = now() where tenant_id = $1 and id = $2
          returning ${automationColumns}`,
         [tenantId, automation.id],
       );

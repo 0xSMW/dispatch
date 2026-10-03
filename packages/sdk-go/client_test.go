@@ -65,6 +65,61 @@ func TestNewClient(t *testing.T) {
 	}
 }
 
+func TestAutomationPauseContracts(t *testing.T) {
+	for _, status := range []string{AutomationEnabled, AutomationPaused, AutomationDisabled} {
+		t.Run(status, func(t *testing.T) {
+			want := Automation{ID: "a/1", Status: status, Version: 4, TriggerConfig: AutomationTriggerConfig{Type: TriggerContactCreated}, Reentry: ReentryOnce}
+			client, calls := recorder(t, map[string]canned{
+				"PATCH /automations/a%2F1":          {200, want},
+				"GET /automations/a%2F1":            {200, want},
+				"GET /automations?status=" + status: {200, ListResponse[Automation]{Object: "list", Data: []Automation{want}}},
+			})
+			updated, err := client.UpdateAutomation("a/1", AutomationUpdate{Status: status})
+			if err != nil || !reflect.DeepEqual(updated, &want) {
+				t.Fatalf("update: %+v, %v", updated, err)
+			}
+			if !reflect.DeepEqual((*calls)[0].Body, Map{"status": status}) {
+				t.Fatalf("update body: %#v", (*calls)[0].Body)
+			}
+			got, err := client.Automation("a/1")
+			if err != nil || !reflect.DeepEqual(got, &want) {
+				t.Fatalf("get: %+v, %v", got, err)
+			}
+			list, err := client.Automations(url.Values{"status": {status}})
+			if err != nil || len(list.Data) != 1 || !reflect.DeepEqual(list.Data[0], want) {
+				t.Fatalf("list: %+v, %v", list, err)
+			}
+		})
+	}
+	for _, enabled := range []bool{false, true} {
+		client, calls := recorder(t, nil)
+		if _, err := client.UpdateAutomation("a1", AutomationUpdate{Enabled: Ptr(enabled)}); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual((*calls)[0].Body, Map{"enabled": enabled}) {
+			t.Fatalf("legacy update: %#v", (*calls)[0].Body)
+		}
+		if _, err := client.CreateAutomation(AutomationInput{Name: "Legacy", Steps: []AutomationStep{}, Enabled: Ptr(enabled)}); err != nil {
+			t.Fatal(err)
+		}
+		body := (*calls)[1].Body.(map[string]any)
+		if body["enabled"] != enabled {
+			t.Fatalf("legacy create: %#v", body)
+		}
+		if _, exists := body["version"]; exists {
+			t.Fatal("create sent read-only version")
+		}
+	}
+	client, _ := recorder(t, map[string]canned{
+		"PATCH /automations/a1": {409, Map{"name": "conflict", "message": "Disabled cannot pause"}},
+	})
+	_, err := client.UpdateAutomation("a1", AutomationUpdate{Status: AutomationPaused})
+	var apiErr *Error
+	if !errors.As(err, &apiErr) || apiErr.Status != 409 {
+		t.Fatalf("conflict: %v", err)
+	}
+}
+
 func TestEnrollmentContracts(t *testing.T) {
 	job := Map{
 		"object": "automation_enrollment_job", "id": "j/1", "automation_id": "a/1",

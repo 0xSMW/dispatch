@@ -277,7 +277,50 @@ Starting an automation does not replay events or contact changes recorded while 
 
 ## Pause
 
-Automations currently have Start and Stop, not a pause that preserves runs. Stop, `POST /automations/{id}/stop`, and changing an enabled automation to `enabled: false` disable new triggers and stop runs in progress, including runs waiting on a delay or event.
+Automation responses report `status` as `enabled`, `paused`, or `disabled`, and a read-only integer `version`. Every graph save increments the version. Before each step, the executor checks the loaded version; if it has changed, execution holds at the next step and reloads the fresh graph on its next execution.
+
+Use `PATCH /automations/{id}` to change status:
+
+| Status | Effect |
+|:---|:---|
+| `paused` | Holds existing runs at their next step without cancelling them. Allowed only from enabled or paused. |
+| `enabled` | Starts accepting new triggers and resumes held runs. Stopped runs do not restart. |
+| `disabled` | Stops runs in progress and stops accepting new triggers. |
+
+Legacy request bodies with `enabled: true` or `enabled: false` map to enabled or disabled respectively. Create an automation enabled or disabled; creating it paused is rejected, and changing disabled to paused returns `409`. Filter lists with `GET /automations?status=paused` (enabled and disabled are also accepted).
+
+```sh
+dispatch automations update auto_123 --status paused
+dispatch automations list --status paused
+dispatch automations update auto_123 --status enabled
+```
+
+```ts
+await dispatch.automations.update(id, { status: "paused" });
+await dispatch.automations.update(id, { status: "enabled" });
+```
+
+```python
+dispatch.update_automation(id, {"status": "paused"})
+dispatch.update_automation(id, {"status": "enabled"})
+```
+
+```go
+client.UpdateAutomation(id, dispatch.AutomationUpdate{Status: dispatch.AutomationPaused})
+client.UpdateAutomation(id, dispatch.AutomationUpdate{Status: dispatch.AutomationEnabled})
+```
+
+Pause holds execution, not data updates: contact writes and event history continue normally. New triggers do not start or queue runs for the paused automation, and resume does not replay missed triggers. Existing event waits can still receive their matching event while paused; their chosen path executes after resume. Timers keep their original due times, so overdue waits can continue immediately after resume.
+
+Existing explicit enrollment jobs hold their remaining pages while paused and continue after resume. New enrollment requests are refused while paused. Already queued emails are separate resources and are not cancelled by pause.
+
+Resumed steps use current contact state. For time-sensitive flows, check freshness with conditions on `event.received_at` or contact date properties rather than assuming a pause resets the clock. To enroll contacts missed during a pause, use the explicit [enrollment action](#enroll-existing-contacts) after resuming.
+
+Graph editing still requires a disabled automation. Pause does not yet add paused editing, edit previews, or dashboard Pause/Resume controls.
+
+### Stop and cancel runs
+
+Stop, `POST /automations/{id}/stop`, and changing status to disabled (or `enabled: false`) clear any pause and stop runs in progress, including runs waiting on a delay or event.
 
 The Stop dialog loads the current count of every run in progress before confirmation. The count can change before you stop; Stop cancels all runs still in progress, not just that displayed count.
 

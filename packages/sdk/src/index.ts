@@ -267,6 +267,7 @@ export type AutomationTriggerConfig =
   | { type: "segment_added"; segment_id: string };
 
 export type AutomationReentry = "once" | "every_time";
+export type AutomationStatus = "enabled" | "paused" | "disabled";
 
 export type AutomationEnrollment = { segmentId: string; all?: never } | { all: true; segmentId?: never };
 
@@ -283,6 +284,8 @@ export type AutomationEnrollmentJob = {
 };
 
 export type Automation = Row & {
+  status: AutomationStatus;
+  readonly version: number;
   trigger: string | null;
   trigger_config: AutomationTriggerConfig;
   reentry: AutomationReentry;
@@ -291,7 +294,22 @@ export type Automation = Row & {
 export type AutomationCreate = {
   name: string;
   status?: "enabled" | "disabled";
+  enabled?: boolean;
+  version?: never;
   steps: Array<Record<string, unknown>>;
+  connections?: Array<{ from: string; to: string; type?: string }>;
+  trigger?: string;
+  reentry?: AutomationReentry;
+  [key: string]: unknown;
+};
+
+export type AutomationUpdate = {
+  name?: string;
+  /** Pause holds runs; enabling resumes them; disabling stops them. */
+  status?: AutomationStatus;
+  enabled?: boolean;
+  version?: never;
+  steps?: Array<Record<string, unknown>>;
   connections?: Array<{ from: string; to: string; type?: string }>;
   trigger?: string;
   reentry?: AutomationReentry;
@@ -1111,7 +1129,7 @@ class Automations extends Resource {
     return this.client.call<Automation>("POST", "/automations", wire(payload));
   }
 
-  list(page: Page & { status?: string } = {}) {
+  list(page: Page & { status?: AutomationStatus } = {}) {
     return this.client.call<List<Automation>>("GET", `/automations${query(page)}`);
   }
 
@@ -1119,7 +1137,7 @@ class Automations extends Resource {
     return this.client.call<Automation>("GET", `/automations/${seg(id)}`);
   }
 
-  update(id: string, payload: Partial<AutomationCreate>) {
+  update(id: string, payload: AutomationUpdate) {
     return this.client.call<Automation>("PATCH", `/automations/${seg(id)}`, wire(payload));
   }
 
