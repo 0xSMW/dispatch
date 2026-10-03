@@ -209,29 +209,6 @@ export async function acceptEmail(
             attachment.bytes,
           );
       }
-      if (stored.length > 0) {
-        await client.query(
-          `insert into email_attachments (
-          id, tenant_id, email_id, filename, content_type, content_id, disposition, size_bytes, content_hash, storage_key
-        )
-         select * from unnest(
-          $1::text[], $2::text[], $3::text[], $4::text[], $5::text[],
-          $6::text[], $7::text[], $8::integer[], $9::text[], $10::text[]
-        )`,
-          [
-            stored.map((attachment) => attachment.id),
-            stored.map(() => context.tenant_id),
-            stored.map(() => emailId),
-            stored.map((attachment) => attachment.filename),
-            stored.map((attachment) => attachment.content_type),
-            stored.map((attachment) => attachment.content_id ?? null),
-            stored.map((attachment) => attachment.disposition),
-            stored.map((attachment) => attachment.size_bytes),
-            stored.map((attachment) => attachment.content_hash),
-            stored.map((attachment) => attachment.storage_key),
-          ],
-        );
-      }
 
       const { email } = await ingestEmail(client, {
         tenantId: context.tenant_id,
@@ -279,6 +256,30 @@ export async function acceptEmail(
         publicUrl: options.publicUrl,
         restrictDomain: context.domain_name,
       });
+      if (stored.length > 0) {
+        await client.query(
+          `insert into email_attachments (
+          id, tenant_id, email_id, filename, content_type, content_id, disposition, size_bytes, content_hash, storage_key
+        )
+         select * from unnest(
+          $1::text[], $2::text[], $3::text[], $4::text[], $5::text[],
+          $6::text[], $7::text[], $8::integer[], $9::text[], $10::text[]
+        )`,
+          [
+            stored.map((attachment) => attachment.id),
+            stored.map(() => context.tenant_id),
+            stored.map(() => emailId),
+            stored.map((attachment) => attachment.filename),
+            stored.map((attachment) => attachment.content_type),
+            stored.map((attachment) => attachment.content_id ?? null),
+            stored.map((attachment) => attachment.disposition),
+            stored.map((attachment) => attachment.size_bytes),
+            stored.map((attachment) => attachment.content_hash),
+            stored.map((attachment) => attachment.storage_key),
+          ],
+        );
+      }
+
       accepted.push(email);
     }
 

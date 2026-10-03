@@ -241,6 +241,40 @@ describe("acceptEmail", () => {
     expect(client.query).toHaveBeenCalledWith(expect.stringContaining("insert into emails"), expect.any(Array));
   });
 
+  it("creates the parent email before inserting inline attachment metadata", async () => {
+    const client = emailDb();
+    const originalQuery = client.query.getMockImplementation()!;
+    const emailIds = new Set<string>();
+    client.query.mockImplementation((sql: string, params: unknown[]) => {
+      if (sql.includes("insert into emails")) emailIds.add(params[0] as string);
+      if (sql.includes("insert into email_attachments")) {
+        for (const emailId of params[2] as string[]) {
+          if (!emailIds.has(emailId)) throw new Error("email_attachments_email_id_fkey");
+        }
+      }
+      return originalQuery(sql);
+    });
+    const storeAttachment = vi.fn().mockResolvedValue(undefined);
+    await acceptEmail(
+      client as never,
+      {
+        from: "hello@example.com", to: "ada@example.com", subject: "Hi", text: "Hello",
+        attachments: [{ filename: "a.txt", content: "YQ==", disposition: "inline", content_id: "logo" }],
+      },
+      { tenant_id: "tenant_1", request_id: "req_1" },
+      { client, storeAttachment },
+    );
+    const insert = client.query.mock.calls.find((call) => String(call[0]).includes("insert into email_attachments"))!;
+    const params = insert[1] as unknown[];
+    expect(params[2]).toEqual([...emailIds]);
+    expect(params[3]).toEqual(["a.txt"]);
+    expect(params[5]).toEqual(["logo"]);
+    expect(params[6]).toEqual(["inline"]);
+    expect(params[7]).toEqual([1]);
+    expect(storeAttachment).toHaveBeenCalledWith((params[9] as string[])[0], Buffer.from("a"));
+    expect(client.connect).not.toHaveBeenCalled();
+  });
+
   it("rejects a reused idempotency key that carries a different payload", async () => {
     const client = emailDb();
     client.query.mockImplementation((sql: string) => {

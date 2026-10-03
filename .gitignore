@@ -20,3 +20,5 @@ examples/go/dispatch-example
 apps/api/src/accept.test.ts
 .vercel
 .env*
+
+.pnpm-store/

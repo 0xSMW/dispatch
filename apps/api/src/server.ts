@@ -2143,7 +2143,7 @@ async function flushTelemetryNow() {
       auditQueue.unshift(...audits);
       for (const row of usage)
         addUsageDelta(row.tenant_id, row.name, row.amount);
-      app.log.warn({ error }, "failed to flush telemetry");
+      app.log.warn({ err: error }, "failed to flush telemetry");
       break;
     }
   }
@@ -2358,6 +2358,7 @@ function domainRecords(
 export async function close() {
   if (telemetryTimer) clearInterval(telemetryTimer);
   await app.close();
+  await flushTelemetry();
   redis?.disconnect();
   await db.end();
 }

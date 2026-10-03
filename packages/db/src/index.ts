@@ -18,7 +18,7 @@ export function connect(
     connectionString: databaseUrl,
     max: Number(process.env.DB_POOL_SIZE ?? 20),
     idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 5_000,
+    connectionTimeoutMillis: Number(process.env.DB_CONNECT_TIMEOUT_MS ?? 15_000),
   });
 }
 
