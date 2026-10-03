@@ -136,6 +136,20 @@ describe("pick", () => {
     expect(blocked(`<p>${raw}</p><div style="position:fixed">x</div>`)).toMatch(/over the page/);
   });
 
+  it("checks raw clipboard HTML while shielding defaults on the saved-document path", () => {
+    for (const markup of [
+      '<span style="position:fixed;z-index:99999">Overlay</span>',
+      '<a href="javascript:alert(1)">Link</a>',
+      '<img src="data:image/png;base64,AAAA">',
+      "<script>alert(1)</script>",
+    ]) {
+      const html = `<p>{{{NAME|${markup}}}}</p>`;
+      expect(blocked(html)).toBeNull();
+      expect(unsafePaste(html)).toBe(true);
+    }
+    expect(unsafePaste('<p>R&amp;D &lt;span&gt;literal&lt;/span&gt; &amp;amp;</p>')).toBe(false);
+  });
+
   it("finds the editor's own container, and nothing in hand-written HTML", () => {
     const inner = '<table align="center" role="presentation" style="max-width:600px;width:100%"><tbody><tr><td><p>Hi</p></td></tr></tbody></table>';
     const own = `<html><head></head><body><!--$--><table role="presentation" width="100%"><tbody><tr><td style="font-size:1em">${inner}</td></tr></tbody></table><!--/$--></body></html>`;

@@ -97,7 +97,7 @@ const safeLink = /^(?:https?:\/\/|mailto:|tel:|#|\/|\{\{)/i;
 const overPage = /(?:^|;)\s*(?:position\s*:\s*(?:fixed|absolute|sticky)|z-index\s*:)/i;
 
 function unsafe(html: string): string | null {
-  const doc = new DOMParser().parseFromString(encodeInlineDefaults(html), "text/html");
+  const doc = new DOMParser().parseFromString(html, "text/html");
   for (const element of doc.querySelectorAll("[style]")) {
     if (overPage.test(element.getAttribute("style") ?? "")) {
       return "This HTML places content over the page with position or z-index, which visual mode does not open.";
@@ -121,10 +121,11 @@ function unsafe(html: string): string | null {
 export function blocked(html: string): string | null {
   const tag = stranded(html);
   if (tag) return `${tag} sits between list items or table rows, which visual mode cannot keep.`;
-  return unsafe(html);
+  // Saved documents load defaults as literal text; native clipboard HTML does not.
+  return unsafe(encodeInlineDefaults(html));
 }
 
-/** True for pasted HTML that visual mode must not take: a data image, or a link that is not a web or mail address. */
+/** Check raw clipboard HTML, since native paste/drop consumes it without shielding inline defaults. */
 export function unsafePaste(html: string): boolean {
   return unsafe(html) !== null;
 }

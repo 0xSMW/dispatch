@@ -189,6 +189,61 @@ describe("what visual mode opens", () => {
     expect(unsafePaste('<p><a href="https://acme.test">ok</a> and <img src="https://acme.test/a.png"></p>')).toBe(false);
   });
 
+  for (const eventType of ["paste", "drop"] as const) {
+    it(`rejects raw native ${eventType} markup hidden in a fallback without changing the document or selection`, async () => {
+      const onHtml = vi.fn();
+      render(h(Visual, { html: "<p>Keep this sentence.</p>", convert: true, onHtml, onReject: vi.fn() }));
+      const current = (await editor()) as TipTap;
+      act(() => void current.commands.setTextSelection({ from: 2, to: 7 }));
+      const before = current.state.doc.toJSON();
+      const selection = current.state.selection.toJSON();
+      const target = document.querySelector(".tiptap")!;
+      const markups = [
+        '<span style="position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:99999;background:red">Overlay</span>',
+        '<a href="java&#x73;cript:alert(1)">Link</a>',
+        '<img src="data:image/png;base64,AAAA">',
+        '<img src="blob:https://acme.test/image">',
+        "<script>alert(1)</script>",
+        "<iframe src='/frame'></iframe>",
+        "<form>Form</form>",
+      ];
+      for (const markup of markups) {
+        const html = `<p>{{{name|${markup}}}}</p>`;
+        const event = new Event(eventType, { bubbles: true, cancelable: true });
+        Object.defineProperty(event, eventType === "paste" ? "clipboardData" : "dataTransfer", {
+          value: { files: [], types: ["text/html", "text/plain"], getData: (type: string) => type === "text/html" ? html : type === "text/plain" ? "{{{name|Text}}}" : "" },
+        });
+        expect(fireEvent(target, event), markup).toBe(false);
+        expect(current.state.doc.toJSON(), markup).toEqual(before);
+        expect(current.state.selection.toJSON(), markup).toEqual(selection);
+        expect(target.querySelector("span[style*='position'], a, img, script, iframe, form"), markup).toBeNull();
+      }
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(onHtml).not.toHaveBeenCalled();
+    });
+  }
+
+  it("accepts safe native HTML and plain-text paste", async () => {
+    const onHtml = vi.fn();
+    render(h(Visual, { html: "<p>Start.</p>", convert: true, onHtml, onReject: vi.fn() }));
+    const current = await editor();
+    const target = document.querySelector(".tiptap")!;
+    const paste = (html: string, text: string) => {
+      act(() => void current.commands.focus("end"));
+      return fireEvent.paste(target, {
+        clipboardData: { files: [], types: html ? ["text/html", "text/plain"] : ["text/plain"], getData: (type: string) => type === "text/html" ? html : type === "text/plain" ? text : "" },
+      });
+    };
+    paste('<p>Safe &amp; <strong>ordinary</strong> <a href="https://acme.test">link</a></p>', "Safe & ordinary link");
+    expect(target.textContent).toContain("Safe & ordinary link");
+    expect(target.querySelector("strong")?.textContent).toBe("ordinary");
+    expect(target.querySelector("a")?.getAttribute("href")).toBe("https://acme.test");
+    paste("", 'Plain <span>literal</span> & "quoted"');
+    expect(target.textContent).toContain('Plain <span>literal</span> & "quoted"');
+    expect(target.querySelector("span")).toBeNull();
+    await waitFor(() => expect(onHtml).toHaveBeenCalled());
+  });
+
   it("writes nothing from a read-only editor, whatever its menus let through", async () => {
     const onHtml = vi.fn();
     render(h(Visual, { html: "<p>Sent already</p>", convert: true, editable: false, onHtml, onReject: vi.fn() }));
