@@ -1,5 +1,6 @@
 import pg from "pg";
 import { ApiError, id, list, type TemplateVariable } from "@dispatchmail/core";
+export { settings, updateSettings } from "./settings.js";
 
 const { Pool } = pg;
 
@@ -326,6 +327,7 @@ export * from "./automations.js";
 export * from "./broadcasts.js";
 export * from "./emails.js";
 export * from "./events.js";
+export * from "./run-events.js";
 export * from "./imports.js";
 export * from "./keys.js";
 export * from "./metrics.js";

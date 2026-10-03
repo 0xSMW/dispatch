@@ -47,6 +47,7 @@ CASES = [
     ("email_attachments", lambda c: c.email_attachments("e1"), "GET", "/emails/e1/attachments", None),
     ("email_events", lambda c: c.email_events("e1"), "GET", "/emails/e1/events", None),
     ("email_metrics", lambda c: c.email_metrics(metrics=["sent", "open_rate"]), "GET", "/emails/metrics?metrics=sent&metrics=open_rate", None),
+    ("automation_email_metrics", lambda c: c.email_metrics(dimensions="step", automation_id="a1"), "GET", "/emails/metrics?dimensions=step&automation_id=a1", None),
     ("share_email", lambda c: c.share_email("e1", "10m"), "POST", "/emails/e1/share", {"expires_in": "10m"}),
     ("received_emails", lambda c: c.received_emails(), "GET", "/emails/receiving", None),
     ("received_email", lambda c: c.received_email("r1", html_format="cid"), "GET", "/emails/receiving/r1?html_format=cid", None),
@@ -59,6 +60,8 @@ CASES = [
     ("update_api_key", lambda c: c.update_api_key("k1", "ci"), "PATCH", "/api-keys/k1", {"name": "ci"}),
     ("delete_api_key", lambda c: c.delete_api_key("k1"), "DELETE", "/api-keys/k1", None),
     ("brand", lambda c: c.brand(), "GET", "/brand", None),
+    ("settings", lambda c: c.settings(), "GET", "/settings", None),
+    ("update_settings", lambda c: c.update_settings({"import_trigger_automations": True}), "PATCH", "/settings", {"import_trigger_automations": True}),
     ("update_brand", lambda c: c.update_brand({"product_name": "Acme"}), "PATCH", "/brand", {"product_name": "Acme"}),
     ("template_library", lambda c: c.template_library(), "GET", "/template-library", None),
     ("install_template", lambda c: c.install_template("welcome"), "POST", "/template-library/welcome/install", {}),
@@ -156,6 +159,17 @@ class TestDispatch(unittest.TestCase):
         self.assertEqual(sent["path"], "/emails")
         self.assertEqual(sent["headers"]["idempotency-key"], "idem-1")
         self.assertEqual(sent["headers"]["authorization"], "Bearer sk_test")
+
+    def test_marketing_split_response(self):
+        result = {"id": "email_1", "emails": [
+            {"id": "email_1", "to": "ada@example.com"},
+            {"id": "email_2", "to": "bob@example.com"},
+        ]}
+        Recorder.responses[("POST", "/emails")] = (200, result)
+        Recorder.responses[("POST", "/emails/batch")] = (200, {"data": [result]})
+        email = {"from": "a@example.com", "to": ["ada@example.com", "bob@example.com"], "topic_id": "topic_1", "text": "Hi"}
+        self.assertEqual(self.client.send(email)["emails"], result["emails"])
+        self.assertEqual(self.client.batch([email])["data"][0]["emails"], result["emails"])
 
     def test_batch_sends_a_bare_array(self):
         emails = [{"from": "a@x.com", "to": "b@x.com", "subject": "Hi", "text": "Yo"}]

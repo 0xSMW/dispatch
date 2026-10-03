@@ -1,0 +1,47 @@
+import { useEffect, useState, type FormEvent } from "react";
+import { Failed, PageHeader, Panel, Skeleton, Switch, Tabs, TextArea } from "../../components";
+import { useMutation } from "../../hooks/useMutation";
+import { useResource } from "../../hooks/useResource";
+import { useCan, useClient } from "../../shell/session";
+import { settingsTabs } from "../tabs";
+
+type Settings = { import_trigger_automations: boolean; sandbox_domains: string[] };
+
+export function General() {
+  const client = useClient();
+  const can = useCan();
+  const saved = useResource<Settings>("/settings");
+  const [imports, setImports] = useState(false);
+  const [domains, setDomains] = useState("");
+  useEffect(() => {
+    if (!saved.data) return;
+    setImports(saved.data.import_trigger_automations);
+    setDomains(saved.data.sandbox_domains.join("\n"));
+  }, [saved.data]);
+  const names = domains.split(/[\s,]+/).filter(Boolean);
+  const dirty = saved.data && (imports !== saved.data.import_trigger_automations || names.join("\n") !== saved.data.sandbox_domains.join("\n"));
+  const save = useMutation(() => client.patch<Settings>("/settings", { import_trigger_automations: imports, sandbox_domains: names }), {
+    success: "Settings saved.", onSuccess: (data) => saved.setData(data),
+  });
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    if (can && dirty) void save.mutate();
+  }
+  return (
+    <div className="page">
+      <PageHeader title="Settings" />
+      <Tabs tabs={settingsTabs} />
+      {saved.error ? <Failed message={saved.error} onRetry={saved.reload} /> : null}
+      {!saved.data && !saved.error ? <Skeleton lines={4} /> : null}
+      {saved.data ? <Panel title="General">
+        <form className="stack" onSubmit={submit}>
+          <fieldset className="form" disabled={!can}>
+            <Switch label="Start automations for imported contacts by default" checked={imports} onChange={setImports} hint="Each import can override this choice. Matching flows may send emails immediately." />
+            <TextArea label="Additional sandbox domains" value={domains} onChange={setDomains} rows={4} hint="One hostname per line. Mail to these domains is stored for testing and never sent to SES." />
+          </fieldset>
+          {can ? <button type="submit" disabled={!dirty || save.isLoading} aria-busy={save.isLoading}>Save</button> : null}
+        </form>
+      </Panel> : null}
+    </div>
+  );
+}

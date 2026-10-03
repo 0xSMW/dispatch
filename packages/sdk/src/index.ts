@@ -18,6 +18,16 @@ export type Result<T> = ({ data: T; error: null } | { data: null; error: ErrorBo
 export type Page = { limit?: number } & ({ after?: string; before?: never } | { before?: string; after?: never });
 export type List<T = Row> = { object: "list"; has_more: boolean; data: T[] };
 export type Row = { id: string; object?: string; [key: string]: unknown };
+export type ContactActivity = Row & {
+  object: "contact_activity";
+  type: string;
+  resource_id: string | null;
+  label: string | null;
+  email_id: string | null;
+  automation_id?: string | null;
+  run_id?: string | null;
+  created_at: string;
+};
 export type Deleted = { object: string; id: string; deleted: true };
 
 type Body = Record<string, unknown>;
@@ -76,6 +86,7 @@ export type MetricsOptions = {
   domainId?: string[];
   emailId?: string[];
   broadcastId?: string[];
+  automationId?: string[];
 };
 
 export type DomainCreate = {
@@ -97,6 +108,9 @@ export type ApiKeyCreate = {
   scope?: "full" | "send";
   domainId?: string;
 };
+
+export type LifecycleEventType = "email.unsubscribed" | "automation.run.started" | "automation.run.completed" | "automation.run.failed";
+export type AutomationRunEvent = { automation_id: string; run_id: string; contact_id: string | null; state: string };
 
 export type WebhookCreate = {
   endpoint?: string;
@@ -282,6 +296,7 @@ export class Dispatch {
   readonly events = new Events(this);
   readonly logs = new Logs(this);
   readonly brand = new Brand(this);
+  readonly settings = new Settings(this);
   readonly usage = new Single(this, "/usage");
   readonly system = new Single(this, "/system");
   // Sent with the key. Where public setup is on the route ignores it, and in production the route needs it.
@@ -459,13 +474,15 @@ class EmailJobs extends Resource {
   }
 }
 
+export type SendResult = { id: string; emails?: Array<{ id: string; to: string }> };
+
 class Emails extends Resource {
   readonly attachments = new EmailAttachments(this.client);
   readonly receiving = new Receiving(this.client);
   readonly jobs = new EmailJobs(this.client);
 
   async send(payload: SendOptions, options: { idempotencyKey?: string } = {}) {
-    return this.client.call<{ id: string }>("POST", "/emails", wire(await content(payload)), options);
+    return this.client.call<SendResult>("POST", "/emails", wire(await content(payload)), options);
   }
 
   create(payload: SendOptions, options: { idempotencyKey?: string } = {}) {
@@ -517,7 +534,7 @@ class Batch extends Resource {
     const emails = Array.isArray(payload) ? payload : payload.emails;
     const body = [];
     for (const email of emails) body.push(wire(await content(email)));
-    return this.client.call<{ data: Array<{ id: string }>; errors?: Array<{ index: number; message: string }> }>(
+    return this.client.call<{ data: SendResult[]; errors?: Array<{ index: number; message: string }> }>(
       "POST",
       "/emails/batch",
       body,
@@ -810,7 +827,7 @@ class Contacts extends Resource {
   }
 
   activity(idOrEmail: string, page: Page = {}) {
-    return this.client.call<List>("GET", `/contacts/${seg(idOrEmail)}/activity${query(page)}`);
+    return this.client.call<List<ContactActivity>>("GET", `/contacts/${seg(idOrEmail)}/activity${query(page)}`);
   }
 }
 
@@ -1074,6 +1091,22 @@ class Brand extends Resource {
 
   update(payload: Body) {
     return this.client.call<Row>("PATCH", "/brand", wire(payload));
+  }
+}
+
+export type TenantSettings = {
+  object: "settings";
+  import_trigger_automations: boolean;
+  sandbox_domains: string[];
+};
+
+class Settings extends Resource {
+  get() {
+    return this.client.call<TenantSettings>("GET", "/settings");
+  }
+
+  update(payload: { importTriggerAutomations?: boolean; sandboxDomains?: string[] }) {
+    return this.client.call<TenantSettings>("PATCH", "/settings", wire(payload));
   }
 }
 

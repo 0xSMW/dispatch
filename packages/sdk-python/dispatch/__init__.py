@@ -7,10 +7,39 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from typing import Any, Literal, NotRequired, TypedDict
+from typing import Any, Literal, NotRequired, TypedDict, cast
 
 
 Json = dict[str, Any]
+
+LifecycleEventType = Literal["email.unsubscribed", "automation.run.started", "automation.run.completed", "automation.run.failed"]
+
+class AutomationRunEvent(TypedDict):
+    automation_id: str
+    run_id: str
+    contact_id: str | None
+    state: str
+
+class SplitEmail(TypedDict):
+    id: str
+    to: str
+
+
+class SendResult(TypedDict):
+    id: str
+    emails: NotRequired[list[SplitEmail]]
+    request_id: NotRequired[str]
+
+class ContactActivity(TypedDict):
+    object: str
+    id: str
+    type: str
+    created_at: str
+    resource_id: NotRequired[str | None]
+    label: NotRequired[str | None]
+    email_id: NotRequired[str | None]
+    automation_id: NotRequired[str | None]
+    run_id: NotRequired[str | None]
 
 
 class AttachmentInput(TypedDict, total=False):
@@ -307,6 +336,12 @@ class Dispatch:
     def me(self) -> Json:
         return self._request("GET", "/me")
 
+    def settings(self) -> Json:
+        return self._request("GET", "/settings")
+
+    def update_settings(self, settings: Json) -> Json:
+        return self._request("PATCH", "/settings", settings)
+
     def users(self, **query: Any) -> Json:
         return self._request("GET", _query("/users", query))
 
@@ -353,8 +388,8 @@ class Dispatch:
         return self._request("GET", _query("/audit-logs", query))
 
     # Emails
-    def send(self, email: SendInput | Json, idempotency_key: str | None = None) -> Json:
-        return self._request("POST", "/emails", email, idempotency_key=idempotency_key)
+    def send(self, email: SendInput | Json, idempotency_key: str | None = None) -> SendResult:
+        return cast(SendResult, self._request("POST", "/emails", email, idempotency_key=idempotency_key))
 
     def batch(
         self,
@@ -952,6 +987,11 @@ __all__ = [
     "Dispatch",
     "DispatchError",
     "SendInput",
+    "SendResult",
+    "SplitEmail",
+    "ContactActivity",
+    "LifecycleEventType",
+    "AutomationRunEvent",
     "EmailUpdateInput",
     "TemplateInput",
     "TemplateUpdateInput",

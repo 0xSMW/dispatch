@@ -205,6 +205,7 @@ export function Canvas({ tree, actions, disabled = false, errors = {}, options, 
             <Flow
               nodes={nodes}
               edges={edges}
+              emailCounts={options?.emailCounts}
               label={run ? "Run canvas" : "Automation canvas"}
               selected={found ? found.node.key : selected === tree.trigger ? tree.trigger : null}
               adding={adding && editable ? slotId(adding) : null}

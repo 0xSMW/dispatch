@@ -5,3 +5,5 @@ See init.md for the complete strategy.
 Use Computer Use > Chrome — NEVER Playwright.
 
 Use the cleanest, simplest naming structure, Rails-style: prefer clear conventional names that can be assumed from context over overly verbose names.
+
+Internal docs (plans, specs, competitor research) stay local: list each one in `.git/info/exclude` and never commit it.

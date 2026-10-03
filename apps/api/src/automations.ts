@@ -4,6 +4,7 @@ import {
   automationColumns,
   automationGraph,
   findAutomation,
+  emitRunEvent,
   paginate,
   softDelete,
   tx,
@@ -396,5 +397,6 @@ async function stopRuns(client: { query: Db["query"] }, tenantId: string, automa
        where tenant_id = $1 and run_id = any($2) and state = 'waiting'`,
       [tenantId, runIds],
     );
+    for (const runId of runIds) await emitRunEvent(client, tenantId, runId, "automation.run.completed");
   });
 }

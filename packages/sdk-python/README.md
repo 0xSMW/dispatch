@@ -17,3 +17,5 @@ email = client.send(
 )
 ```
 
+Set `topic_id` for Marketing sends. Multiple recipients become separate To-only emails with recipient-specific unsubscribe links. The response keeps `id` and adds an optional `emails` list of `{id, to}` entries. Each split batch item has the same shape. A retry with the same idempotency key returns the same IDs. Transactional sends without `topic_id` are unchanged.
+

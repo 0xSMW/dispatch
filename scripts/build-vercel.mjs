@@ -1,0 +1,10 @@
+import { execFileSync } from "node:child_process";
+import { cpSync, existsSync, mkdirSync } from "node:fs";
+import { resolve } from "node:path";
+const root = resolve(import.meta.dirname, "..");
+execFileSync("pnpm", ["--filter", "@dispatchmail/dashboard", "build"], { cwd: root, stdio: "inherit", env: { ...process.env, VITE_API_URL: process.env.VITE_API_URL ?? "https://dispatch.smw.ai/api" } });
+execFileSync("pnpm", ["exec", "nitro", "build"], { cwd: resolve(root, "apps/api"), stdio: "inherit", env: { ...process.env, NITRO_PRESET: "vercel" } });
+const source = resolve(root, "apps/api/.vercel/output");
+if (!existsSync(resolve(source, "config.json"))) throw new Error("Nitro did not produce Vercel output");
+mkdirSync(resolve(root, ".vercel"), { recursive: true });
+cpSync(source, resolve(root, ".vercel/output"), { recursive: true, dereference: true });

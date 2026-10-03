@@ -30,7 +30,7 @@ export const rateMetrics = [
 ] as const;
 
 export const metricNames = [...countMetrics, ...rateMetrics] as const;
-export const dimensionNames = ["period", "domain", "email", "broadcast"] as const;
+export const dimensionNames = ["period", "domain", "email", "broadcast", "automation", "step"] as const;
 
 const units = { hourly: "hour", daily: "day", weekly: "week", monthly: "month" } as const;
 const periodFormats = {
@@ -55,6 +55,7 @@ export type MetricsInput = {
   domainIds: string[];
   emailIds: string[];
   broadcastIds: string[];
+  automationIds: string[];
 };
 
 type Counts = Record<CountMetric, number>;
@@ -96,6 +97,7 @@ export function parseMetricsQuery(query: Record<string, unknown>, now = new Date
     domainIds: listed(query, "domain_id"),
     emailIds: listed(query, "email_id"),
     broadcastIds: listed(query, "broadcast_id"),
+    automationIds: listed(query, "automation_id"),
   };
   validateMetrics(input);
   return input;
@@ -108,10 +110,14 @@ export function validateMetrics(input: MetricsInput) {
   if (input.dimensions.includes("email") && input.dimensions.includes("broadcast")) {
     throw new ApiError("validation_error", 422, "email and broadcast cannot be combined");
   }
+  if (input.dimensions.includes("step") && input.automationIds.length === 0) {
+    throw new ApiError("validation_error", 422, "step requires an automation_id filter");
+  }
   for (const [name, values] of [
     ["domain_id", input.domainIds],
     ["email_id", input.emailIds],
     ["broadcast_id", input.broadcastIds],
+    ["automation_id", input.automationIds],
   ] as const) {
     if (values.length > 100) throw new ApiError("validation_error", 422, `${name} accepts at most 100 values`);
   }
@@ -134,6 +140,7 @@ export async function emailMetrics(db: Queryable, tenantId: string, input: Metri
   if (input.domainIds.length > 0) where.push(`d.id = any(${bind(input.domainIds)}::text[])`);
   if (input.emailIds.length > 0) where.push(`ev.email_id = any(${bind(input.emailIds)}::text[])`);
   if (input.broadcastIds.length > 0) where.push(`e.broadcast_id = any(${bind(input.broadcastIds)}::text[])`);
+  if (input.automationIds.length > 0) where.push(`e.automation_id = any(${bind(input.automationIds)}::text[])`);
 
   // The dimension binds below belong to the grouped query only.
   const whereParams = [...params];
@@ -158,6 +165,14 @@ export async function emailMetrics(db: Queryable, tenantId: string, input: Metri
   if (input.dimensions.includes("broadcast")) {
     select.push("e.broadcast_id as broadcast_id");
     group.push("e.broadcast_id");
+  }
+  if (input.dimensions.includes("automation") || input.dimensions.includes("step")) {
+    select.push("e.automation_id as automation_id");
+    group.push("e.automation_id");
+  }
+  if (input.dimensions.includes("step")) {
+    select.push("e.automation_step as automation_step");
+    group.push("e.automation_step");
   }
   select.push(countSql);
   const grouped = group.length > 0 ? ` group by ${group.join(", ")}` : "";
@@ -240,6 +255,8 @@ function dimensionFields(row: Record<string, unknown>, dimensions: DimensionName
   }
   if (dimensions.includes("email")) out.email_id = row.email_id ?? null;
   if (dimensions.includes("broadcast")) out.broadcast_id = row.broadcast_id ?? null;
+  if (dimensions.includes("automation") || dimensions.includes("step")) out.automation_id = row.automation_id ?? null;
+  if (dimensions.includes("step")) out.automation_step = row.automation_step ?? null;
   return out;
 }
 

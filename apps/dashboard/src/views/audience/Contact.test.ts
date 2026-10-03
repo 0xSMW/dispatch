@@ -42,6 +42,8 @@ function api() {
     "GET /contacts/contact_ada/activity": list([
       { object: "contact_activity", id: "ev_1", type: "email.delivered", resource_id: "email_1", label: "Welcome", email_id: "email_1", created_at: "2026-09-02T00:00:00.000Z" },
       { object: "contact_activity", id: "sc_1", type: "segment.added", resource_id: "seg_vip", label: "VIP", email_id: null, created_at: "2026-09-01T00:00:00.000Z" },
+      { object: "contact_activity", id: "run_1:started", type: "automation.run.started", resource_id: "run_1", label: "Onboarding", email_id: null, automation_id: "automation_1", run_id: "run_1", created_at: "2026-09-01T00:00:00.000Z" },
+      { object: "contact_activity", id: "fired_1", type: "event.fired", resource_id: "fired_1", label: "user.joined", email_id: null, created_at: "2026-09-01T00:00:00.000Z" },
     ]),
   });
 }
@@ -76,6 +78,8 @@ describe("Contact", () => {
     expect(screen.getByText("Default: opt out")).toBeTruthy();
     expect(await screen.findByText("Added to segment")).toBeTruthy();
     expect(screen.getByRole("link", { name: "Welcome" }).getAttribute("href")).toBe("/emails/email_1");
+    expect(screen.getByRole("link", { name: "Onboarding" }).getAttribute("href")).toBe("/automations/automation_1/editor?tab=runs&run=run_1");
+    expect(screen.getByText("Event received")).toBeTruthy();
     expect(((await screen.findByLabelText("seats")) as HTMLInputElement).value).toBe("3");
     expect(screen.getByText("Not a defined property.")).toBeTruthy();
   });

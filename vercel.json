@@ -1,0 +1,13 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "buildCommand": "pnpm build:vercel",
+  "regions": [
+    "pdx1"
+  ],
+  "crons": [
+    {
+      "path": "/api/internal/reconcile",
+      "schedule": "*/15 * * * *"
+    }
+  ]
+}

@@ -370,6 +370,9 @@ const activityLabels: Record<string, string> = {
   "segment.added": "Added to segment",
   "topic.opted_in": "Opted in",
   "topic.opted_out": "Opted out",
+  "event.fired": "Event received",
+  "automation.run.started": "Automation run started",
+  "automation.run.completed": "Automation run ended",
 };
 
 const activityTone = (type: string) =>
@@ -402,6 +405,8 @@ function Activity({ contactId }: { contactId: string }) {
             cell: (row) =>
               row.email_id ? (
                 <Link to={`/emails/${row.email_id}`}>{row.label || row.email_id}</Link>
+              ) : row.automation_id && row.run_id ? (
+                <Link to={`/automations/${encodeURIComponent(row.automation_id)}/editor?tab=runs&run=${encodeURIComponent(row.run_id)}`}>{row.label || row.run_id}</Link>
               ) : row.type.startsWith("segment.") ? (
                 <Link to="/audience/segments">{row.label}</Link>
               ) : row.type.startsWith("topic.") ? (

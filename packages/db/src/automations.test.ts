@@ -82,6 +82,9 @@ function fake(run: {
       return { rows: [] };
     }
     if (text.includes("from automation_runs r join automations a")) return { rows: [{ ...state.run }] };
+    if (text.startsWith("select r.id, r.automation_id")) return { rows: [{
+      ...state.run, contact_id: state.contacts.find((contact) => contact.email.toLowerCase() === state.run.email?.toLowerCase())?.id ?? null,
+    }] };
     if (text.startsWith("select id from automation_runs")) return { rows: running() ? one : [] };
     if (text.startsWith("update automation_runs set state = 'stopped'")) {
       if (!active()) return { rows: [] };
@@ -224,11 +227,23 @@ beforeEach(() => {
 });
 
 describe("executeAutomationRun", () => {
+  it("emits one completion transition and does not emit it again on a retry", async () => {
+    emit.mockClear();
+    const { db } = fake({ ...branch, data: { plan: "pro" }, contacts: [{ id: "contact_1", email: "ada@example.com" }] });
+    await executeAutomationRun(db, "tenant_1", "run_1");
+    await executeAutomationRun(db, "tenant_1", "run_1");
+    const events = emit.mock.calls.filter((call) => call[1]?.type === "automation.run.completed");
+    expect(events).toHaveLength(1);
+    expect(events[0]![1]).toMatchObject({
+      key: "run_1:automation.run.completed", data: { automation_id: "automation_1", run_id: "run_1", contact_id: "contact_1", state: "done" },
+    });
+  });
+
   it("follows condition_met and records keyed steps", async () => {
     const { db, state } = fake({ ...branch, data: { plan: "pro" } });
     await executeAutomationRun(db, "tenant_1", "run_1");
     expect(ingestEmail).toHaveBeenCalledTimes(1);
-    expect(ingestEmail.mock.calls[0]![1]).toMatchObject({ template: "pro-welcome", to: "ada@example.com", variables: { plan: "pro" } });
+    expect(ingestEmail.mock.calls[0]![1]).toMatchObject({ template: "pro-welcome", to: "ada@example.com", variables: { plan: "pro" }, automationId: "automation_1", automationStep: "pro" });
     expect(state.steps.map((step) => [step.step_key, step.state])).toEqual([
       ["check", "done"],
       ["pro", "done"]
@@ -394,8 +409,8 @@ describe("executeAutomationRun", () => {
       connections: [{ from: "start", to: "one" }]
     };
     const { db, state } = fake({ ...flow, email: "ada@example.com", contacts: [{ id: "contact_1", email: "ada@example.com" }] });
-    await executeAutomationRun(db, "tenant_1", "run_1");
-    expect(ingestEmail.mock.calls[0]![1]).toMatchObject({ topicId: "topic_news" });
+    await executeAutomationRun(db, "tenant_1", "run_1", { secret: "test-secret", appUrl: "https://app.example", publicUrl: "https://api.example" });
+    expect(ingestEmail.mock.calls[0]![1]).toMatchObject({ topicId: "topic_news", headers: { "List-Unsubscribe-Post": "List-Unsubscribe=One-Click" } });
     expect(state.steps[0]).toMatchObject({ data: { email_id: "email_x", skipped: "opted_out" } });
     expect(state.run.state).toBe("done");
   });
@@ -407,8 +422,9 @@ describe("executeAutomationRun", () => {
     };
     const { db } = fake({ ...flow, email: "ada@example.com", contacts: [{ id: "contact_1", email: "ada@example.com" }] });
     await executeAutomationRun(db, "tenant_1", "run_1");
-    expect(emit).toHaveBeenCalledTimes(1);
-    expect(emit.mock.calls[0]![1]).toMatchObject({ type: "contact.updated", resourceId: "contact_1", key: "contact_1:contact.updated:run_1:edit" });
+    const changes = emit.mock.calls.filter((call) => call[1]?.type === "contact.updated");
+    expect(changes).toHaveLength(1);
+    expect(changes[0]![1]).toMatchObject({ type: "contact.updated", resourceId: "contact_1", key: "contact_1:contact.updated:run_1:edit" });
   });
 
   it("does not bring a deleted contact back", async () => {

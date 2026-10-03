@@ -7,7 +7,7 @@ import type { RunStep } from "./Steps";
 
 // Node boxes have a fixed size so the layout needs no measuring. `styles/canvas.css` uses the same numbers.
 export const nodeWidth = 248;
-export const nodeHeight = 80;
+export const nodeHeight = 100;
 export const endWidth = 132;
 export const endHeight = 32;
 /** Vertical space between a step and the next one in its list. */

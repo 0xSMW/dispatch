@@ -18,7 +18,7 @@ import { useList } from "../../hooks/useList";
 import { useResource } from "../../hooks/useResource";
 import type { AutomationRun, AutomationRunDetail } from "../../types";
 import { allKeys, stepLabels, type Tree } from "./graph";
-import { StepList, elapsed, type RunStep } from "./Steps";
+import { StepList, elapsed, type RunStep, type StepOptions } from "./Steps";
 import { Canvas, ViewSwitch, type View } from "./Canvas";
 
 export const runStatuses = ["running", "completed", "failed", "cancelled"];
@@ -36,7 +36,7 @@ function finished(run: AutomationRun) {
 }
 
 /** The Runs tab of the builder: `GET /automations/:id/runs` with status and date filters, and a run drawer. */
-export function Runs({ automationId, tree }: { automationId: string; tree: Tree | null }) {
+export function Runs({ automationId, tree, options }: { automationId: string; tree: Tree | null; options?: StepOptions }) {
   const filters = useFilters(["status"]);
   const range = useDateRange();
   const runs = useList<AutomationRun>(`/automations/${automationId}/runs`, { ...filters, start_date: range.start, end_date: range.end });
@@ -85,13 +85,13 @@ export function Runs({ automationId, tree }: { automationId: string; tree: Tree 
           { header: "Duration", cell: (row) => (finished(row) ? elapsed(row.created_at, row.updated_at) : <span className="dim">—</span>) },
         ]}
       />
-      {open ? <RunDrawer automationId={automationId} runId={open} tree={tree} onClose={() => setOpen(null)} /> : null}
+      {open ? <RunDrawer automationId={automationId} runId={open} tree={tree} options={options} onClose={() => setOpen(null)} /> : null}
     </div>
   );
 }
 
 /** One run from `GET /automations/:id/runs/:run_id`: the step list tinted by each step's status, with output. */
-export function RunDrawer({ automationId, runId, tree, onClose }: { automationId: string; runId: string; tree: Tree | null; onClose: () => void }) {
+export function RunDrawer({ automationId, runId, tree, onClose, options }: { automationId: string; runId: string; tree: Tree | null; onClose: () => void; options?: StepOptions }) {
   const run = useResource<AutomationRunDetail>(`/automations/${automationId}/runs/${runId}`);
   const data = run.data;
   const steps = new Map<string, RunStep>((data?.steps ?? []).filter((step) => step.key).map((step) => [step.key!, step]));
@@ -140,7 +140,7 @@ export function RunDrawer({ automationId, runId, tree, onClose }: { automationId
           </Panel>
           {tree ? <ViewSwitch value={view} onChange={setView} /> : null}
           {tree && view === "canvas" ? (
-            <Canvas tree={tree} run={steps} stacked />
+            <Canvas tree={tree} run={steps} options={options} stacked />
           ) : tree ? (
             <div className="builder runView">
               <article className="stepCard tint success" aria-label="Trigger">
@@ -157,7 +157,7 @@ export function RunDrawer({ automationId, runId, tree, onClose }: { automationId
                   When <span className="mono">{eventName(data) || tree.event}</span> fires
                 </p>
               </article>
-              <StepList nodes={tree.steps} run={steps} />
+              <StepList nodes={tree.steps} run={steps} options={options} />
             </div>
           ) : null}
           {others.length ? (

@@ -6,6 +6,8 @@ import { Field, Select, Switch, TextArea, type Option } from "../../components/F
 import { Menu, type MenuItem } from "../../components/Menu";
 import { Tile } from "../../components/PageHeader";
 import { Time } from "../../components/Time";
+import { useResource } from "../../hooks/useResource";
+import { EmailCountLine, type EmailCounts } from "./EmailMetrics";
 import {
   branchLabels,
   branchesOf,
@@ -23,7 +25,11 @@ import "../../styles/automations.css";
 
 // The structured list for the automation builder and its run view.
 
-export type StepOptions = { templates: Option[]; segments: Option[]; events: string[]; topics?: Option[] };
+export type StepOptions = {
+  templates: Option[]; segments: Option[]; events: string[]; topics?: Option[];
+  templateNames?: Record<string, string>;
+  emailCounts?: Record<string, EmailCounts>;
+};
 
 export type StepActions = {
   insert: (path: ListPath, index: number, type: StepType, key?: string) => void;
@@ -221,6 +227,7 @@ function StepCard({
       ) : (
         <StepForm node={node} path={path} index={index} actions={actions} disabled={disabled || !actions} errors={errors} options={options} />
       )}
+      {node.type === "send_email" && options?.emailCounts ? <EmailCountLine counts={options.emailCounts[node.key]} /> : null}
       {!run && errors[stepError] ? (
         <p className="fieldError" role="alert">
           {errors[stepError]}
@@ -345,6 +352,7 @@ export function StepForm({ node, path, index, actions, disabled, errors, options
             hint="With a topic, contacts who unsubscribed or opted out of it are skipped. With none, the email always sends, as a receipt or a password reset should."
             disabled={disabled}
           />
+          {config.topic_id && template.id ? <UnsubscribeWarning templateId={template.id} /> : null}
           <Field
             label="To"
             value={text("to")}
@@ -503,6 +511,17 @@ export function StepForm({ node, path, index, actions, disabled, errors, options
         </div>
       );
   }
+}
+
+function UnsubscribeWarning({ templateId }: { templateId: string }) {
+  type Content = { html?: string | null; text?: string | null };
+  const template = useResource<Content & { published_version_id?: string; current_version_id?: string }>(`/templates/${encodeURIComponent(templateId)}`);
+  const publishedId = template.data?.published_version_id;
+  const needsPublished = Boolean(publishedId && template.data?.current_version_id !== publishedId);
+  const published = useResource<{ data: Array<Content & { id: string }> }>(needsPublished ? `/templates/${encodeURIComponent(templateId)}/versions` : null);
+  const version = needsPublished ? published.data?.data.find((row) => row.id === publishedId) : template.data;
+  if (!version || /\{\{\{?\s*(?:UNSUBSCRIBE_URL|RESEND_UNSUBSCRIBE_URL|DISPATCH_UNSUBSCRIBE_URL)\s*\}\}\}?/.test(`${version.html ?? ""} ${version.text ?? ""}`)) return null;
+  return <p className="fieldHint wide" role="status">This email has no unsubscribe link. The header is added, but most mail apps also expect a link in the body.</p>;
 }
 
 /** A text input with the defined event names as suggestions. */

@@ -9,8 +9,9 @@ describe("schema", () => {
     // A Viewer role for each tenant that never had one. One an admin renamed or deleted is not
     // made again, and no clash can raise. This checks the statement's shape. Only applying the
     // schema twice to a real Postgres proves the second run is clean.
-    expect(schema).toMatch(/'Viewer', '\["read"\]'::jsonb\s+from tenants t\s+where not exists \(/);
-    expect(schema).toContain(`r.id = 'role_' || md5(t.id || ':viewer') or r.name = 'Viewer' or r.permissions = '["read"]'::jsonb`);
-    expect(schema).toMatch(/'Viewer'[\s\S]*?on conflict do nothing;\n`?$/);
+    const viewer = schema.match(/insert into roles[^;]*'Viewer'[^;]*;/)?.[0] ?? "";
+    expect(viewer).toMatch(/'Viewer', '\["read"\]'::jsonb\s+from tenants t\s+where not exists \(/);
+    expect(viewer).toContain(`r.id = 'role_' || md5(t.id || ':viewer') or r.name = 'Viewer' or r.permissions = '["read"]'::jsonb`);
+    expect(viewer).toMatch(/\)\s+on conflict do nothing;$/);
   });
 });

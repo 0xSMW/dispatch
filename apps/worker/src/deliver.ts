@@ -23,6 +23,7 @@ type StoredEmail = {
   headers: Record<string, string> | null;
   status: string;
   broadcast_id: string | null;
+  topic_id: string | null;
   provider_message_id: string | null;
   region: string | null;
   tls: "opportunistic" | "enforced" | null;
@@ -46,6 +47,22 @@ export async function pace(
   if (slot > now) await (options.sleep ?? sleep)(slot - now);
 }
 
+// Unlike the local process map, this reservation survives cold starts and is shared by all
+// serverless invocations. The statement commits before the short pacing delay starts.
+export async function paceDurably(db: Queryable, region: string, maxPerSecond: number, wait: (ms: number) => Promise<void> = sleep) {
+  if (maxPerSecond <= 0) return;
+  const result = await db.query<{ delay_ms: number }>(
+    `insert into send_slots (region, available_at)
+     values ($1, clock_timestamp() + ($2::double precision * interval '1 millisecond'))
+     on conflict (region) do update set available_at = greatest(send_slots.available_at, clock_timestamp())
+       + ($2::double precision * interval '1 millisecond')
+     returning greatest(0, extract(epoch from (available_at - clock_timestamp())) * 1000 - $2) as delay_ms`,
+    [region, 1000 / maxPerSecond],
+  );
+  const delay = Number(result.rows[0]?.delay_ms ?? 0);
+  if (delay > 0) await wait(delay);
+}
+
 export async function loadProviderEmail(
   db: Queryable,
   storage: Storage,
@@ -53,7 +70,7 @@ export async function loadProviderEmail(
 ): Promise<(ProviderEmail & { provider_message_id: string | null }) | null> {
   const email = await db.query<StoredEmail>(
     `select e.id, e.tenant_id, e.from_email, e.from_name, e.reply_to, e.subject, e.html, e.html_tracked, e.text, e.headers, e.status,
-            e.broadcast_id, e.provider_message_id, d.region, d.tls
+            e.broadcast_id, e.topic_id, e.provider_message_id, d.region, d.tls
      from emails e
      left join domains d on d.tenant_id = e.tenant_id and lower(d.name) = lower(split_part(e.from_email, '@', 2)) and d.deleted_at is null
      where e.id = $1 and e.tenant_id = $2`,
@@ -63,7 +80,32 @@ export async function loadProviderEmail(
   if (!row || row.status === "cancelled") return null;
   // Checked again at the moment of sending. An email can wait in the queue, or be scheduled
   // days ahead, and in that time the address may have bounced or the person unsubscribed.
-  // Suppression applies to every email. A global unsubscribe applies to broadcast mail.
+  // Suppression applies to every email. Marketing mail also rechecks current opt-outs.
+  if (row.topic_id || row.broadcast_id) {
+    const dropped = await db.query<{ id: string; email: string }>(
+      `update email_recipients r set status = 'failed', updated_at = now()
+       where r.tenant_id = $2 and r.email_id = $1 and r.status not in ('suppressed', 'failed')
+         and exists (
+           select 1 from contacts c
+           left join topics t on t.tenant_id = c.tenant_id and t.id = $3 and t.deleted_at is null
+           left join topic_subscriptions s on s.tenant_id = c.tenant_id and s.contact_id = c.id and s.topic_id = t.id
+           where c.tenant_id = $2 and lower(c.email) = lower(r.email)
+             and (c.unsubscribed_at is not null or c.deleted_at is not null
+               or ($3::text is not null and coalesce(s.status, t.default_status, 'unsubscribed') <> 'subscribed'))
+         ) returning r.id, r.email`,
+      [job.email_id, job.tenant_id, row.topic_id ?? null],
+    );
+    for (const recipient of dropped.rows) {
+      const event = await appendEvent(db, {
+        tenantId: job.tenant_id, requestId: job.request_id, emailId: job.email_id,
+        recipientId: recipient.id, type: "email.failed",
+        providerEventId: `${job.email_id}:opted_out:${recipient.id}`,
+        data: { email: recipient.email, failed: { reason: "opted_out" } },
+      });
+      if (event) await fanoutEvent(db, event);
+    }
+    if (dropped.rows.length) await db.query("update send_jobs set error = 'opted_out' where id = $1", [job.id]);
+  }
   const recipients = await db.query<{ email: string; kind: "to" | "cc" | "bcc" }>(
     `select r.email, r.kind from email_recipients r
      where r.email_id = $1 and r.status not in ('suppressed', 'failed')
@@ -76,7 +118,7 @@ export async function loadProviderEmail(
          where c.tenant_id = $2 and lower(c.email) = lower(r.email) and c.deleted_at is null and c.unsubscribed_at is not null
        ))
      order by r.created_at`,
-    [job.email_id, job.tenant_id, Boolean(row.broadcast_id)]
+    [job.email_id, job.tenant_id, Boolean(row.broadcast_id || row.topic_id)]
   );
   if (recipients.rows.length === 0) {
     await db.query(
@@ -127,9 +169,9 @@ export async function deliverJob(
   storage: Storage,
   provider: Provider,
   job: Job,
-  options: { sleep?: (ms: number) => Promise<void>; now?: () => number } = {}
+  options: { sleep?: (ms: number) => Promise<void>; now?: () => number; durable?: boolean } = {}
 ) {
-  const message = await loadProviderEmail(db, storage, job);
+  const message = await tx(db, (client) => loadProviderEmail(client, storage, job));
   if (!message) {
     await db.query("update send_jobs set state = $2, updated_at = now() where id = $1", [job.id, "done"]);
     return;
@@ -149,7 +191,15 @@ export async function deliverJob(
           data: { provider_message_id: sentAs }
         }]
       }
-    : await sendOnce(provider, email, options);
+    : await sendOnce(db, provider, email, job, options);
+  if (options.durable && !sentAs) {
+    // Persist acceptance before doing event fanout. An interrupted fanout can safely complete
+    // using this id, without asking SES to send again.
+    await db.query(
+      "update emails set provider_message_id = $3, message_id = $4, updated_at = now() where tenant_id = $1 and id = $2",
+      [job.tenant_id, job.email_id, result.provider_message_id, result.message_id ?? null],
+    );
+  }
   for (const [index, event] of result.events.entries()) {
     if (event.delay_ms > 0) await (options.sleep ?? sleep)(event.delay_ms);
     // The provider id, the event, and its webhook attempts commit together. A crash between
@@ -179,18 +229,42 @@ export async function deliverJob(
 }
 
 async function sendOnce(
+  db: Db,
   provider: Provider,
   email: ProviderEmail,
-  options: { sleep?: (ms: number) => Promise<void>; now?: () => number }
+  job: Job,
+  options: { sleep?: (ms: number) => Promise<void>; now?: () => number; durable?: boolean }
 ) {
   const quota = await provider.quota(email.region);
-  await pace(email.region, quota.max_per_second, { now: options.now?.(), sleep: options.sleep });
+  if (options.durable) {
+    await paceDurably(db, email.region, quota.max_per_second, options.sleep);
+    // The claim is safe to reclaim until this point. Once a request may reach SES, a crash
+    // must require reconciliation rather than another provider call.
+    await db.query("update send_jobs set state = 'sending', locked_at = now(), updated_at = now() where id = $1", [job.id]);
+  } else {
+    await pace(email.region, quota.max_per_second, { now: options.now?.(), sleep: options.sleep });
+  }
   return provider.send(email);
 }
 
-export async function handleSendFailure(db: Db, job: Job, error: unknown) {
+export async function handleSendFailure(db: Db, job: Job, error: unknown, options: { durable?: boolean } = {}) {
   const reason = error instanceof ProviderError ? error.reason : String(error);
   const permanent = error instanceof ProviderError && !error.retryable;
+  if (options.durable) {
+    const current = await db.query<{ state: string; provider_message_id: string | null }>(
+      "select j.state, e.provider_message_id from send_jobs j join emails e on e.id = j.email_id where j.id = $1", [job.id],
+    );
+    if (current.rows[0]?.state === "sending" || current.rows[0]?.state === "uncertain") {
+      if (current.rows[0].provider_message_id) {
+        await db.query("update send_jobs set state = 'ready', available_at = now(), error = $2, updated_at = now() where id = $1", [job.id, reason]);
+        return;
+      }
+      if (!(error instanceof ProviderError && error.rejected)) {
+        await db.query("update send_jobs set state = 'uncertain', error = $2, updated_at = now() where id = $1", [job.id, `SES acceptance is uncertain: ${reason}`]);
+        return;
+      }
+    }
+  }
   const attempts = await db.query<{ attempts: number }>("select attempts from send_jobs where id = $1", [job.id]);
   const next = attempts.rows[0]?.attempts ?? 1;
   if (permanent || next >= 5) {

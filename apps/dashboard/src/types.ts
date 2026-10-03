@@ -592,11 +592,13 @@ export type ContactStats = { object: "contact_stats"; all: number; subscribed: n
 export type ContactActivity = {
   object: "contact_activity";
   id: string;
-  /** contact.created, segment.added, topic.opted_in, topic.opted_out, or an email event type. */
+  /** Contact, subscription, email, fired-event, or automation-run activity. */
   type: string;
   resource_id: string | null;
   label: string | null;
   email_id: string | null;
+  automation_id?: string | null;
+  run_id?: string | null;
   created_at: string;
 };
 

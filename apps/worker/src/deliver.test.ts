@@ -119,8 +119,9 @@ describe("deliverJob", () => {
     expect(update).toContain("message_id");
     expect(query).toHaveBeenCalledWith(expect.stringContaining("provider_message_id"), ["tenant_1", "email_1", "sesmsg", "<sesmsg@us-east-1.amazonses.com>"]);
     // The id, the event, and the webhook attempts are written between one begin and one commit.
-    const begin = queries.indexOf("begin");
-    const commit = queries.indexOf("commit");
+    const write = queries.findIndex((sql) => sql.includes("set provider_message_id"));
+    const begin = queries.lastIndexOf("begin", write);
+    const commit = queries.indexOf("commit", begin);
     const inTx = (text: string) => {
       const at = queries.findIndex((sql) => sql.includes(text));
       return at > begin && at < commit;

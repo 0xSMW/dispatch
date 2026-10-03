@@ -19,6 +19,7 @@ import { Tile } from "../../components/PageHeader";
 import { describe as summary, stepLabels } from "./graph";
 import { slotId, type CanvasEdge, type CanvasNode, type EndNode, type Slot, type StepNode, type TriggerNode } from "./layout";
 import { stepIcons, stepTones } from "./Steps";
+import { EmailCountLine, type EmailCounts } from "./EmailMetrics";
 
 // The React Flow half of the canvas. `Canvas.tsx` loads this file with a dynamic import, so
 // @xyflow/react and its stylesheet stay out of the main bundle.
@@ -29,6 +30,7 @@ type Actions = {
   adding: string | null;
   onSelect: (key: string) => void;
   onAdd: (slot: Slot) => void;
+  emailCounts?: Record<string, EmailCounts>;
 };
 
 // Node and edge components are module-level so React Flow does not remount them on each render.
@@ -50,7 +52,7 @@ function tintOf(status: string | null) {
 }
 
 function StepBox({ data }: NodeProps<StepNode>) {
-  const { selected, onSelect } = useContext(FlowActions);
+  const { selected, onSelect, emailCounts } = useContext(FlowActions);
   const { node, issues, status, error } = data;
   const classes = ["canvasNode", tintOf(status), issues ? "invalid" : "", selected === node.key ? "selected" : ""];
   return (
@@ -77,6 +79,7 @@ function StepBox({ data }: NodeProps<StepNode>) {
         </span>
         <span className={error ? "canvasNodeLine errorText" : "canvasNodeLine"}>{error ?? (summary(node) || node.key)}</span>
         <span className="canvasNodeLine mono dim">{node.key}</span>
+        {node.type === "send_email" && emailCounts ? <span className="canvasNodeLine"><EmailCountLine counts={emailCounts[node.key]} /></span> : null}
       </button>
     </>
   );
@@ -173,8 +176,8 @@ const edgeTypes = { link: Link };
 export type FlowProps = Actions & { nodes: CanvasNode[]; edges: CanvasEdge[]; label: string };
 
 /** The canvas itself: a dot grid you can pan and zoom, with nodes placed by `layout()`. */
-export default function Flow({ nodes, edges, label, selected, adding, onSelect, onAdd }: FlowProps) {
-  const actions = useMemo(() => ({ selected, adding, onSelect, onAdd }), [selected, adding, onSelect, onAdd]);
+export default function Flow({ nodes, edges, label, selected, adding, onSelect, onAdd, emailCounts }: FlowProps) {
+  const actions = useMemo(() => ({ selected, adding, onSelect, onAdd, emailCounts }), [selected, adding, onSelect, onAdd, emailCounts]);
   return (
     <FlowActions.Provider value={actions}>
       <ReactFlow<CanvasNode, CanvasEdge>

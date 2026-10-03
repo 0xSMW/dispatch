@@ -34,6 +34,7 @@ import { NotFound } from "./views/NotFound";
 import { Shared } from "./views/public/Shared";
 import { Unsubscribe } from "./views/public/Unsubscribe";
 import { Brand } from "./views/settings/Brand";
+import { General } from "./views/settings/General";
 import { Smtp } from "./views/settings/Smtp";
 import { Team } from "./views/settings/Team";
 import { UnsubscribePage } from "./views/settings/UnsubscribePage";
@@ -106,6 +107,7 @@ export const routes = [
 
           { path: "settings", element: <Navigate to="/settings/team" replace /> },
           { path: "settings/usage", element: <Usage /> },
+          { path: "settings/general", element: <General /> },
           { path: "settings/team", element: <Team /> },
           { path: "settings/smtp", element: <Smtp /> },
           { path: "settings/brand", element: <Brand /> },

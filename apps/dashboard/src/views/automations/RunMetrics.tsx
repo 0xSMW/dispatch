@@ -5,6 +5,10 @@ import { FilterBar } from "../../components/FilterBar";
 import { Panel } from "../../components/Panel";
 import { Skeleton } from "../../components/Skeleton";
 import { useResource } from "../../hooks/useResource";
+import { Table } from "../../components/Table";
+import type { ResourceState } from "../../hooks/useResource";
+import { emailRows, type EmailReport } from "./EmailMetrics";
+import type { Tree } from "./graph";
 import { withQuery } from "../../lib/client";
 import type { RunCounts, RunMetrics as Metrics } from "../../types";
 import type { Series } from "../../components/chart";
@@ -64,7 +68,9 @@ export function runSeries(days: Metrics["data"]): Series[] {
 }
 
 /** The builder's Metrics tab: status shares and runs per day, from `GET /automations/:id/runs/metrics`. */
-export function RunMetrics({ automationId }: { automationId: string }) {
+export function RunMetrics({ automationId, tree = null, names = {}, emails }: {
+  automationId: string; tree?: Tree | null; names?: Record<string, string>; emails?: ResourceState<EmailReport>;
+}) {
   const range = useDateRange();
   const metrics = useResource<Metrics>(withQuery(`/automations/${automationId}/runs/metrics`, { start_date: range.start, end_date: range.end }));
   const data = metrics.data;
@@ -74,6 +80,24 @@ export function RunMetrics({ automationId }: { automationId: string }) {
       <FilterBar search={false}>
         <DateRange />
       </FilterBar>
+      {emails ? <Panel title="Emails">
+        <Table
+          rows={emailRows(tree, names, emails.data)}
+          rowKey={(row) => row.id}
+          loading={emails.loading}
+          error={emails.error}
+          onRetry={() => void emails.reload()}
+          columns={[
+            { header: "Email", cell: (row) => <><strong>{row.name}</strong><div className="mono dim">{row.key}</div></> },
+            { header: "Sent", cell: (row) => row.sent.toLocaleString() },
+            { header: "Delivered", cell: (row) => row.delivered.toLocaleString() },
+            { header: "Open rate", cell: (row) => `${row.open_rate}%` },
+            { header: "Click rate", cell: (row) => `${row.click_rate}%` },
+            { header: "Bounce rate", cell: (row) => `${row.bounce_rate}%` },
+            { header: "Unsubscribes", cell: (row) => row.unsubscribed.toLocaleString() },
+          ]}
+        />
+      </Panel> : null}
       {metrics.error ? (
         <Failed message={metrics.error} onRetry={() => void metrics.reload()} />
       ) : !data ? (

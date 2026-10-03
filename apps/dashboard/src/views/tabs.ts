@@ -27,6 +27,7 @@ export const templateTabs: Tab[] = [
 ];
 
 export const settingsTabs: Tab[] = [
+  { id: "general", label: "General", to: "/settings/general" },
   { id: "team", label: "Team", to: "/settings/team" },
   { id: "usage", label: "Usage", to: "/settings/usage" },
   { id: "smtp", label: "SMTP", to: "/settings/smtp" },

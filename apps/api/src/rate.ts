@@ -33,4 +33,9 @@ export function signins(redis: Pick<Redis, "multi" | "eval">) {
   };
 }
 
-export type Signins = ReturnType<typeof signins>;
+// Successful PostgreSQL reservations carry their window token through the password check.
+// Redis adapters keep their boolean result for local use.
+export type Signins = {
+  take(email: string): Promise<boolean | string>;
+  release(email: string, reservation?: boolean | string): Promise<void>;
+};

@@ -3,6 +3,7 @@ import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { GitBranch, Zap } from "lucide-react";
 import { Badge } from "../../components/Badge";
 import { Code } from "../../components/Code";
+import { DateRange } from "../../components/DateRange";
 import { ConfirmPhrase } from "../../components/ConfirmPhrase";
 import { Failed } from "../../components/Empty";
 import { Field } from "../../components/Field";
@@ -45,6 +46,7 @@ import { Runs } from "./Runs";
 import { EventInput, StepList, type StepActions, type StepOptions } from "./Steps";
 import { Canvas, ViewSwitch } from "./Canvas";
 import { StopAutomation, isEnabled } from "./Stop";
+import { countsByStep, useEmailMetrics } from "./EmailMetrics";
 
 type Draft = { name: string; tree: Tree };
 
@@ -79,6 +81,7 @@ export function AutomationEditor() {
     });
   const automation = useResource<Automation>(`/automations/${id}`);
   const row = automation.data;
+  const emailMetrics = useEmailMetrics(id);
 
   const [draft, setDraft] = useState<Draft | null>(null);
   const [saved, setSaved] = useState("");
@@ -119,8 +122,12 @@ export function AutomationEditor() {
       segments: segments.rows.map((item) => ({ value: item.id, label: item.name })),
       events: events.rows.map((item) => item.name),
       topics: topics.rows.map((item) => ({ value: item.id, label: item.name })),
+      templateNames: Object.fromEntries(templates.rows.flatMap((item) => [
+        [item.id, item.name], ...(item.alias ? [[item.alias, item.name]] : []),
+      ])),
+      emailCounts: emailMetrics.data && !emailMetrics.error ? countsByStep(emailMetrics.data) : undefined,
     }),
-    [templates.rows, segments.rows, events.rows, topics.rows],
+    [templates.rows, segments.rows, events.rows, topics.rows, emailMetrics.data, emailMetrics.error],
   );
 
   const enabled = row ? isEnabled(row) : false;
@@ -254,9 +261,9 @@ export function AutomationEditor() {
       />
 
       {tab === "runs" && id ? (
-        <Runs automationId={id} tree={stored?.tree ?? null} />
+        <Runs automationId={id} tree={stored?.tree ?? null} options={options} />
       ) : tab === "metrics" && id ? (
-        <RunMetrics automationId={id} />
+        <RunMetrics automationId={id} tree={stored?.tree ?? null} names={options.templateNames} emails={emailMetrics} />
       ) : !draft || !row ? (
         <Skeleton lines={6} />
       ) : (
@@ -293,7 +300,7 @@ export function AutomationEditor() {
             />
           </div>
 
-          {problem ? null : <ViewSwitch value={view} onChange={setView} />}
+          {problem ? null : <div className="toolbar"><ViewSwitch value={view} onChange={setView} /><DateRange /></div>}
 
           {/* The canvas draws the trigger as its first node and edits it in its side panel. */}
           {view === "list" || problem ? (

@@ -405,7 +405,7 @@ describe("acceptEmail with a schedule phrase and a template sender", () => {
         client as never,
         { from: "hello@example.com", to: "ada@example.com", subject: "Hi", text: "Hello", topic_id: "topic_typo" },
         { tenant_id: "tenant_1", request_id: "req_1" },
-        { client }
+        { client, unsubscribe: { secret: "test-secret", appUrl: "https://app.example", publicUrl: "https://api.example" } }
       )
     ).rejects.toMatchObject({ statusCode: 422, message: "Topic not found" });
     expect(client.calls.some((call) => call.sql.includes("insert into emails"))).toBe(false);

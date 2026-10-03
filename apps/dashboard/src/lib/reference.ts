@@ -276,6 +276,13 @@ export const references: Record<string, Reference> = {
     ],
   },
 
+  "/settings/general": {
+    title: "General settings",
+    calls: [
+      get("/settings", "Retrieve settings", "dispatch.settings.get()"),
+      patch("/settings", "Update settings", "dispatch.settings.update({ importTriggerAutomations: false })", { import_trigger_automations: false }),
+    ],
+  },
   "/settings/usage": {
     title: "Usage",
     calls: [get("/usage", "Usage counters", "dispatch.usage.get()"), get("/system", "Sending quota and system state", "dispatch.system.get()")],

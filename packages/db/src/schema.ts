@@ -812,4 +812,43 @@ where not exists (
     and (r.id = 'role_' || md5(t.id || ':viewer') or r.name = 'Viewer' or r.permissions = '["read"]'::jsonb)
 )
 on conflict do nothing;
+
+-- Tenant settings.
+alter table tenants add column if not exists settings jsonb not null default '{}';
+
+-- Recipient links for marketing mail.
+alter table emails add column if not exists contact_id text;
+
+-- Automation email attribution. Old messages have no recoverable step key.
+alter table emails add column if not exists automation_id text;
+alter table emails add column if not exists automation_step text;
+update emails e set automation_id = a.id
+from automations a, automation_runs r
+where e.automation_id is null
+  and e.created_at < '2026-10-04T00:00:00Z'::timestamptz
+  and e.tags ? 'automation_run_id'
+  and a.tenant_id = e.tenant_id and a.id = e.tags->>'automation_id'
+  and r.tenant_id = e.tenant_id and r.id = e.tags->>'automation_run_id' and r.automation_id = a.id;
+
+-- Contact event history, also used by lifecycle attribution.
+create index if not exists custom_events_tenant_email_created_idx
+  on custom_events (tenant_id, lower(email), created_at desc);
+
+-- Shared, expiring counters and bounded workflow coordination.
+create table if not exists counters (
+  key text primary key,
+  value bigint not null check (value >= 0),
+  expires_at timestamptz not null,
+  window_id text not null
+);
+create index if not exists counters_expires_at_idx on counters (expires_at);
+create table if not exists worker_leases (
+  name text primary key,
+  owner text not null,
+  expires_at timestamptz not null
+);
+create table if not exists send_slots (
+  region text primary key,
+  available_at timestamptz not null
+);
 `;

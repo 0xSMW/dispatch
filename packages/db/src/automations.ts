@@ -3,6 +3,9 @@ import { findBy, tx, upsertContact } from "./index.js";
 import { assertPropertyValues, deleteContact, propertyDefinitions } from "./audience.js";
 import { ingestEmail } from "./emails.js";
 import { emit } from "./events.js";
+import { recipientContext } from "./broadcasts.js";
+import { subscriptionLinks, unsubscribeVariables } from "./unsubscribe.js";
+import { emitRunEvent } from "./run-events.js";
 import {
   ApiError,
   durationSeconds,
@@ -30,6 +33,8 @@ export type AutomationRun = {
 export type AutomationRunOptions = {
   resumeData?: Record<string, unknown>;
   publicUrl?: string;
+  secret?: string;
+  appUrl?: string;
 };
 
 export type AutomationRow = {
@@ -107,11 +112,14 @@ export async function executeAutomationRun(db: Db, tenantId: string, runId: stri
     if (!run) throw new ApiError("not_found", 404, "Automation run not found");
     if (run.state === "done" || run.state === "failed" || run.state === "stopped") return;
     if (run.automation_deleted) {
-      await db.query(
-        `update automation_runs set state = 'stopped', resume_at = null, wait_event = null, updated_at = now()
-         where tenant_id = $1 and id = $2 and state = any($3)`,
-        [tenantId, runId, activeStates]
-      );
+      await tx(db, async (client) => {
+        const stoppedRun = await client.query(
+          `update automation_runs set state = 'stopped', resume_at = null, wait_event = null, updated_at = now()
+           where tenant_id = $1 and id = $2 and state = any($3) returning id`,
+          [tenantId, runId, activeStates]
+        );
+        if (stoppedRun.rows[0]) await emitRunEvent(client, tenantId, runId, "automation.run.completed");
+      });
       return;
     }
 
@@ -192,13 +200,16 @@ export async function executeAutomationRun(db: Db, tenantId: string, runId: stri
     }
 
     // Reached with nothing left to run: a graph with only a trigger, or a resume past the last step.
-    await advance(db, tenantId, runId, null);
+    await tx(db, (client) => advance(client, tenantId, runId, null));
   } catch (error) {
-    await db.query(
-      `update automation_runs set state = 'failed', error = $3, resume_at = null, wait_event = null, updated_at = now()
-       where tenant_id = $1 and id = $2 and state = 'running'`,
-      [tenantId, runId, error instanceof Error ? error.message : String(error)]
-    );
+    await tx(db, async (client) => {
+      const failed = await client.query(
+        `update automation_runs set state = 'failed', error = $3, resume_at = null, wait_event = null, updated_at = now()
+         where tenant_id = $1 and id = $2 and state = 'running' returning id`,
+        [tenantId, runId, error instanceof Error ? error.message : String(error)]
+      );
+      if (failed.rows[0]) await emitRunEvent(client, tenantId, runId, "automation.run.failed");
+    });
   }
 }
 
@@ -213,6 +224,7 @@ async function advance(client: Queryable, tenantId: string, runId: string, next:
      returning id`,
     [tenantId, runId, next]
   );
+  if (row.rows[0] && next === null) await emitRunEvent(client, tenantId, runId, "automation.run.completed");
   return Boolean(row.rows[0]);
 }
 
@@ -346,12 +358,12 @@ async function executeStep(db: Queryable, run: AutomationRun, step: Step, option
     const config = step.config as StepConfig<"send_email">;
     const to = config.to ?? run.email;
     if (!to) throw new ApiError("validation_error", 422, "send_email step needs a recipient");
+    const recipient = await contactContext(db, run.tenant_id, to);
     // An automation can send anything: a receipt, a password reset, a newsletter. Only the step
     // knows which. A step with a topic is subscription mail, so it skips a contact who
     // unsubscribed from everything or opted out of that topic. A step without one always sends,
     // as POST /emails does.
     if (config.topic_id) {
-      const recipient = await contactContext(db, run.tenant_id, to);
       if (recipient?.unsubscribed) return { skipped: "unsubscribed", email: to };
       // A deleted contact is subscribed to nothing.
       if (!recipient) {
@@ -360,12 +372,26 @@ async function executeStep(db: Queryable, run: AutomationRun, step: Step, option
       }
     }
     const variables = { ...run.data, event: run.data, email: run.email, ...config.template.variables };
+    const emailId = id("email");
+    const context = recipientContext({
+      email: to, first_name: recipient?.first_name ?? null, last_name: recipient?.last_name ?? null,
+      properties: recipient ? Object.fromEntries(Object.entries(recipient).filter(([key]) => !["id", "email", "first_name", "last_name", "unsubscribed"].includes(key))) : {},
+    }, "");
+    for (const key of unsubscribeVariables) delete (context as Record<string, unknown>)[key];
+    const links = config.topic_id ? subscriptionLinks({
+      tenantId: run.tenant_id, contactId: recipient?.id, email: to, topicId: config.topic_id,
+      emailId, ...options,
+    }) : null;
     // With no sender on the step, the template's stored sender is used.
     const from = config.from ? parseAddress(config.from) : null;
     // On the step's own transaction, so the email, the step row, and the run's progress commit together.
     const result = await ingestEmail(db, {
       tenantId: run.tenant_id,
       requestId: run.request_id,
+      emailId,
+      contactId: recipient?.id,
+      automationId: run.automation_id,
+      automationStep: step.key,
       from: from?.email ?? "",
       fromName: from?.name,
       to,
@@ -374,6 +400,8 @@ async function executeStep(db: Queryable, run: AutomationRun, step: Step, option
       replyTo: config.reply_to ? toArray(config.reply_to) : undefined,
       template: config.template.id,
       variables,
+      context: { ...context, ...links?.context },
+      headers: links?.headers,
       tags: { automation_id: run.automation_id, automation_run_id: run.id, event_id: run.event_id },
       publicUrl: options.publicUrl
     });
@@ -578,6 +606,7 @@ export async function fireEvent(
         [id("run"), tenantId, automation.id, fired.id]
       );
       runs.push(run.rows[0]!.id);
+      await emitRunEvent(client, tenantId, run.rows[0]!.id, "automation.run.started");
     }
 
     const waiting = await client.query<{

@@ -74,11 +74,11 @@ export function Brand() {
   const can = useCan();
   const brand = useResource<BrandSettings>("/brand");
   const saved = toForm(brand.data);
-  // null until the user edits; a fresh load or a save drops the draft.
-  const [draft, setDraft] = useState<Form | null>(null);
-  const form = draft ?? saved;
+  // A draft belongs to the loaded row. New data replaces it during rendering, not in an
+  // effect that could run after the user's first edit and erase that edit.
+  const [draft, setDraft] = useState<{ source: BrandSettings | null; form: Form } | null>(null);
+  const form = draft && draft.source === brand.data ? draft.form : saved;
   const [preview, setPreview] = useState(0);
-  useEffect(() => setDraft(null), [brand.data]);
 
   const errors = brandErrors(form, saved);
   const body = brandPatch(form, saved);
@@ -99,7 +99,7 @@ export function Brand() {
     if (dirty && !invalid) void save.mutate();
   }
 
-  const set = (key: Key) => (value: string) => setDraft({ ...form, [key]: value });
+  const set = (key: Key) => (value: string) => setDraft({ source: brand.data, form: { ...form, [key]: value } });
   const color = /^#[0-9a-fA-F]{6}$/.test(form.color) ? form.color : fallbackColor;
   const sample = { "--brand": color, "--brand-text": textColor(color) } as CSSProperties;
 

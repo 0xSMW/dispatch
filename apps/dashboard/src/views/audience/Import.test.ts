@@ -82,7 +82,7 @@ describe("ImportContacts", () => {
 
     await screen.findByText("in progress");
     await waitFor(() => expect(screen.getByText("completed")).toBeTruthy(), { timeout: 3000 });
-    expect(onDone).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
     const strip = screen.getByText("created").closest("dl")!;
     expect(within(strip).getByText("2")).toBeTruthy();
   });

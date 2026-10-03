@@ -20,7 +20,13 @@ describe("contact activity", () => {
     expect(sql).toContain("from segment_contacts sc");
     expect(sql).toContain("from topic_subscriptions ts");
     expect(sql).toContain("from email_events ev");
-    expect(sql).toContain("r.email = $3");
+    expect(sql).toContain("lower(r.email) = lower($3)");
+    expect(sql).toContain("where ev.tenant_id = $1 and exists");
+    expect(sql).toContain("'event.fired'");
+    expect(sql).toContain("e.name not like '@%'");
+    expect(sql).toContain("r.id || ':started'");
+    expect(sql).toContain("r.id || ':completed'");
+    expect(sql).toContain("r.state in ('done', 'failed', 'stopped')");
     expect(sql).toContain("order by created_at desc, id desc");
     expect(params).toEqual(["tenant_1", "contact_1", "ada@example.com", 6]);
     expect(page.data.map(presentActivity)[0]).toMatchObject({ object: "contact_activity", type: "email.delivered" });

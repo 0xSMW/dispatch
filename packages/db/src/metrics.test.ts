@@ -10,6 +10,19 @@ function dbReturning(rows: Array<Record<string, unknown>>) {
 }
 
 describe("email metrics", () => {
+  it("groups automation emails by step only with an automation filter", async () => {
+    expect(() => parseMetricsQuery({ dimensions: "step" }, now)).toThrow("automation_id");
+    const db = dbReturning([{ automation_id: "automation_1", automation_step: "welcome", sent: 2, delivered: 2, unique_opened: 1 }]);
+    const report = await emailMetrics(db, "tenant_1", parseMetricsQuery({
+      dimensions: ["automation", "step"], automation_id: ["automation_1"], metrics: ["sent", "open_rate"],
+    }, now));
+    expect(db.query.mock.calls[0]![0]).toContain("group by e.automation_id, e.automation_step");
+    expect(db.query.mock.calls[0]![0]).toContain("e.automation_id = any(");
+    expect(db.query.mock.calls[0]![1]).toContainEqual(["automation_1"]);
+    expect(report.data).toEqual([{ automation_id: "automation_1", automation_step: "welcome", sent: 2, open_rate: 50 }]);
+    expect(() => parseMetricsQuery({ automation_id: Array.from({ length: 101 }, (_, i) => `automation_${i}`) }, now)).toThrow("100");
+  });
+
   it("defaults to the last 7 days and refuses a combined email and broadcast breakdown", () => {
     const parsed = parseMetricsQuery({}, now);
     expect(parsed.start.toISOString()).toBe("2026-07-01T00:00:00.000Z");

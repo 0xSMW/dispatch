@@ -35,7 +35,7 @@ import { verifyDueDomains } from "./domains.js";
 import { applySesEvent, consumeOnce, type SesEvent } from "./events.js";
 import { applyInbound, type SesReceipt } from "./inbound.js";
 import { startImports } from "./imports.js";
-import { pruneLogsIfDue } from "./logs.js";
+import { pruneLogs, pruneLogsIfDue } from "./logs.js";
 
 const db = connect();
 const concurrency = Number(process.env.WORKER_CONCURRENCY ?? 5);
@@ -57,16 +57,16 @@ type AutomationRunRef = {
   wait_event: string | null;
 };
 
-export async function tick() {
+export async function tick(options: { durable?: boolean } = {}) {
   const jobs = await claimJobs();
-  await Promise.all(jobs.map((job) => processJob(job)));
+  await Promise.all(jobs.map((job) => processJob(job, options.durable)));
   const runs = await claimAutomationRuns();
   await Promise.all(
-    runs.map((run) => executeAutomationRun(db, run.tenant_id, run.id, { publicUrl })),
+    runs.map((run) => executeAutomationRun(db, run.tenant_id, run.id, { publicUrl, appUrl, secret: appSecret })),
   );
   const attempts = await processQueuedAttempts();
   // Each of these stands alone. A failure in one is logged and the others still run.
-  await alone("broadcasts", () =>
+  const broadcasts = await alone("broadcasts", () =>
     sendBroadcasts(db, {
       publicUrl,
       appUrl,
@@ -75,14 +75,14 @@ export async function tick() {
       onError: (broadcastId, error) => console.error(`broadcast ${broadcastId ?? "claim"} failed`, error),
     }),
   );
-  await alone("imports", () => startImports(db, storage));
-  await alone("log pruning", () => pruneLogsIfDue(db, logPrune));
-  return { jobs: jobs.length, runs: runs.length, attempts };
+  const imports = await alone("imports", () => startImports(db, storage, undefined, undefined, { bounded: options.durable }));
+  await alone("log pruning", () => options.durable ? pruneLogs(db, undefined, undefined, 1) : pruneLogsIfDue(db, logPrune));
+  return { jobs: jobs.length, runs: runs.length, attempts, broadcasts: broadcasts ?? 0, imports: imports ?? 0 };
 }
 
-async function alone(name: string, run: () => Promise<unknown>) {
+async function alone<T>(name: string, run: () => Promise<T>) {
   try {
-    await run();
+    return await run();
   } catch (error) {
     console.error(`${name} failed`, error);
   }
@@ -170,11 +170,11 @@ async function claimJobs() {
   });
 }
 
-async function processJob(job: Job) {
+async function processJob(job: Job, durable = false) {
   try {
-    await deliverJob(db, storage, provider, job);
+    await deliverJob(db, storage, provider, job, { durable });
   } catch (error) {
-    await handleSendFailure(db, job, error);
+    await handleSendFailure(db, job, error, { durable });
   }
 }
 

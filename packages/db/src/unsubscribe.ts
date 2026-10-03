@@ -1,35 +1,46 @@
-import { ApiError, seal, unseal } from "@dispatchmail/core";
+import { ApiError, id, seal, unseal } from "@dispatchmail/core";
 import type { Queryable } from "./index.js";
 import { setContactTopics, subscriptionStored, subscriptionWire } from "./audience.js";
-import { appendEvent } from "./events.js";
+import { appendEvent, fanoutEvent } from "./events.js";
 
 export type UnsubscribePayload = {
   use: "unsub";
   tenant_id: string;
-  contact_id: string;
+  contact_id: string | null;
+  email?: string | null;
   broadcast_id: string | null;
+  topic_id?: string | null;
+  email_id?: string | null;
 };
 
 // No expiry: an unsubscribe link in a year-old email must still work.
 export function unsubscribeToken(
-  input: { tenant_id: string; contact_id: string; broadcast_id?: string | null },
+  input: { tenant_id: string; contact_id?: string | null; email?: string | null; broadcast_id?: string | null; topic_id?: string | null; email_id?: string | null },
   secret: string,
 ) {
-  return seal(
-    { use: "unsub", tenant_id: input.tenant_id, contact_id: input.contact_id, broadcast_id: input.broadcast_id ?? null },
-    secret,
-  );
+  if (Boolean(input.contact_id) === Boolean(input.email)) throw new Error("An unsubscribe link needs exactly one recipient");
+  return seal({
+    use: "unsub", tenant_id: input.tenant_id, contact_id: input.contact_id ?? null,
+    email: input.email?.toLowerCase() ?? null, broadcast_id: input.broadcast_id ?? null,
+    topic_id: input.topic_id ?? null, email_id: input.email_id ?? null,
+  }, secret);
 }
 
 export function readUnsubscribeToken(token: string, secret: string): UnsubscribePayload | null {
   const payload = unseal<Partial<UnsubscribePayload> & { exp?: number }>(token, secret);
   if (!payload || payload.use !== "unsub") return null;
-  if (typeof payload.tenant_id !== "string" || typeof payload.contact_id !== "string") return null;
+  if (typeof payload.tenant_id !== "string" || !payload.tenant_id) return null;
+  const contactId = typeof payload.contact_id === "string" && payload.contact_id ? payload.contact_id : null;
+  const email = typeof payload.email === "string" && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(payload.email) ? payload.email.toLowerCase() : null;
+  if (Boolean(contactId) === Boolean(email)) return null;
   return {
     use: "unsub",
     tenant_id: payload.tenant_id,
-    contact_id: payload.contact_id,
+    contact_id: contactId,
+    email,
     broadcast_id: typeof payload.broadcast_id === "string" ? payload.broadcast_id : null,
+    topic_id: typeof payload.topic_id === "string" ? payload.topic_id : null,
+    email_id: typeof payload.email_id === "string" ? payload.email_id : null,
   };
 }
 
@@ -47,6 +58,31 @@ export function unsubscribeHeaders(oneClickUrl: string) {
     "List-Unsubscribe": `<${oneClickUrl}>`,
     "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
   };
+}
+
+export const unsubscribeVariables = ["UNSUBSCRIBE_URL", "RESEND_UNSUBSCRIBE_URL", "DISPATCH_UNSUBSCRIBE_URL"] as const;
+
+export function subscriptionLinks(input: {
+  tenantId: string; contactId?: string | null; email?: string | null; broadcastId?: string | null;
+  topicId?: string | null; emailId: string; secret?: string; appUrl?: string; publicUrl?: string;
+}) {
+  if (!input.secret || !input.appUrl || !input.publicUrl) throw new Error("Marketing email needs unsubscribe URLs and a signing secret");
+  const token = unsubscribeToken({
+    tenant_id: input.tenantId, contact_id: input.contactId,
+    email: input.contactId ? null : input.email, broadcast_id: input.broadcastId,
+    topic_id: input.topicId, email_id: input.emailId,
+  }, input.secret);
+  const links = unsubscribeLinks(token, { appUrl: input.appUrl, publicUrl: input.publicUrl });
+  return {
+    context: Object.fromEntries(unsubscribeVariables.map((key) => [key, links.page])),
+    headers: unsubscribeHeaders(links.oneClick),
+  };
+}
+
+export function replaceUnsubscribe(content: string | null | undefined, context: Record<string, unknown>) {
+  return content?.replace(/\{\{\{?\s*(UNSUBSCRIBE_URL|RESEND_UNSUBSCRIBE_URL|DISPATCH_UNSUBSCRIBE_URL)\s*\}\}\}?/g, (placeholder, key: string) =>
+    typeof context[key] === "string" ? context[key] as string : placeholder,
+  );
 }
 
 // RFC 8058 one-click: mail providers post `List-Unsubscribe=One-Click`, urlencoded or as
@@ -84,7 +120,7 @@ export async function visibleTopics(db: Queryable, tenantId: string, contactId: 
 
 export async function unsubscribeContact(db: Queryable, tenantId: string, contactId: string) {
   const row = await db.query<{ id: string; email: string; unsubscribed_at: string | Date | null }>(
-    `select id, email, unsubscribed_at from contacts where tenant_id = $1 and id = $2 and deleted_at is null`,
+    `select id, email, unsubscribed_at from contacts where tenant_id = $1 and id = $2`,
     [tenantId, contactId],
   );
   if (!row.rows[0]) throw new ApiError("not_found", 404, "Unsubscribe link not found");
@@ -92,8 +128,21 @@ export async function unsubscribeContact(db: Queryable, tenantId: string, contac
 }
 
 export async function preferences(db: Queryable, payload: UnsubscribePayload) {
-  const contact = await unsubscribeContact(db, payload.tenant_id, payload.contact_id);
+  const contact = payload.contact_id
+    ? await unsubscribeContact(db, payload.tenant_id, payload.contact_id)
+    : (await db.query<{ id: string; email: string; unsubscribed_at: string | Date | null }>(
+      "select id, email, unsubscribed_at from contacts where tenant_id = $1 and lower(email) = lower($2) order by deleted_at nulls first limit 1",
+      [payload.tenant_id, payload.email],
+    )).rows[0] ?? { id: "", email: payload.email!, unsubscribed_at: null };
   const topics = await visibleTopics(db, payload.tenant_id, contact.id);
+  const topicId = await unsubscribeTopic(db, payload);
+  if (topicId && !topics.some((topic) => topic.id === topicId)) {
+    const topic = await db.query<PreferenceTopic>(
+      "select id, name, description, visibility, default_status as status from topics where tenant_id = $1 and id = $2 and deleted_at is null",
+      [payload.tenant_id, topicId],
+    );
+    if (topic.rows[0]) topics.push(topic.rows[0]);
+  }
   return {
     object: "unsubscribe" as const,
     email: contact.email,
@@ -113,10 +162,7 @@ export type UnsubscribeAction =
   | { kind: "one_click" };
 
 // Applies a preference change and returns the webhook event type it should emit.
-export async function applyUnsubscribe(db: Queryable, payload: UnsubscribePayload, action: UnsubscribeAction) {
-  const contact = await unsubscribeContact(db, payload.tenant_id, payload.contact_id);
-  let next = action;
-  let broadcastTopic: string | null = null;
+async function unsubscribeTopic(db: Queryable, payload: UnsubscribePayload): Promise<string | null> {
   if (payload.broadcast_id) {
     // A topic that has since been deleted counts as no topic, so a one-click from an old email
     // still succeeds and unsubscribes the contact.
@@ -126,10 +172,47 @@ export async function applyUnsubscribe(db: Queryable, payload: UnsubscribePayloa
        where b.tenant_id = $1 and b.id = $2`,
       [payload.tenant_id, payload.broadcast_id],
     );
-    broadcastTopic = broadcast.rows[0]?.topic_id ?? null;
+    return broadcast.rows[0]?.topic_id ?? null;
   }
+  if (!payload.topic_id) return null;
+  const topic = await db.query<{ id: string }>(
+    "select id from topics where tenant_id = $1 and id = $2 and deleted_at is null",
+    [payload.tenant_id, payload.topic_id],
+  );
+  return topic.rows[0]?.id ?? null;
+}
+
+export async function applyUnsubscribe(db: Queryable, payload: UnsubscribePayload, action: UnsubscribeAction) {
+  let next = action;
+  const broadcastTopic = await unsubscribeTopic(db, payload);
   if (next.kind === "one_click") {
     next = broadcastTopic ? { kind: "topics", topics: [{ id: broadcastTopic, subscription: "opt_out" }] } : { kind: "all" };
+  }
+
+  let contact: { id: string; email: string; unsubscribed_at: string | Date | null };
+  if (payload.contact_id) {
+    const row = await db.query<typeof contact>(
+      "select id, email, unsubscribed_at from contacts where tenant_id = $1 and id = $2 for update",
+      [payload.tenant_id, payload.contact_id],
+    );
+    if (!row.rows[0]) throw new ApiError("not_found", 404, "Unsubscribe link not found");
+    contact = row.rows[0];
+  } else {
+    const read = () => db.query<typeof contact>(
+      "select id, email, unsubscribed_at from contacts where tenant_id = $1 and lower(email) = lower($2) order by deleted_at nulls first limit 1 for update",
+      [payload.tenant_id, payload.email],
+    );
+    let row = await read();
+    if (!row.rows[0]) {
+      await db.query(
+        `insert into contacts (id, tenant_id, email, unsubscribed_at)
+         values ($1, $2, $3, case when $4::boolean then now() else null end) on conflict do nothing`,
+        [id("contact"), payload.tenant_id, payload.email, next.kind === "all"],
+      );
+      row = await read();
+    }
+    if (!row.rows[0]) throw new ApiError("not_found", 404, "Unsubscribe link not found");
+    contact = row.rows[0];
   }
 
   let type: "contact.updated" | "contact.topics.updated";
@@ -137,7 +220,7 @@ export async function applyUnsubscribe(db: Queryable, payload: UnsubscribePayloa
   if (next.kind === "all") {
     await db.query(
       `update contacts set unsubscribed_at = coalesce(unsubscribed_at, now()), updated_at = now()
-       where tenant_id = $1 and id = $2 and deleted_at is null`,
+       where tenant_id = $1 and id = $2`,
       [payload.tenant_id, contact.id],
     );
     type = "contact.updated";
@@ -155,6 +238,7 @@ export async function applyUnsubscribe(db: Queryable, payload: UnsubscribePayloa
     );
   }
 
+  let emailId = payload.email_id ?? null;
   if (leftBroadcast && payload.broadcast_id) {
     const left = await db.query<{ email_id: string | null }>(
       `update broadcast_recipients set unsubscribed_at = coalesce(unsubscribed_at, now()), updated_at = now()
@@ -163,9 +247,10 @@ export async function applyUnsubscribe(db: Queryable, payload: UnsubscribePayloa
       [payload.tenant_id, payload.broadcast_id, contact.id],
     );
     // Recorded once on the email, which is what the unsubscribed metric and rate count.
-    const emailId = left.rows[0]?.email_id;
-    if (emailId) {
-      await appendEvent(db, {
+    emailId = emailId ?? left.rows[0]?.email_id ?? null;
+  }
+  if (leftBroadcast && emailId) {
+      const event = await appendEvent(db, {
         tenantId: payload.tenant_id,
         requestId: `unsub_${contact.id}`,
         emailId,
@@ -173,7 +258,7 @@ export async function applyUnsubscribe(db: Queryable, payload: UnsubscribePayloa
         providerEventId: `${emailId}:unsubscribed`,
         data: { email: contact.email, broadcast_id: payload.broadcast_id },
       });
-    }
+      if (event) await fanoutEvent(db, event);
   }
   return { type, contact: { id: contact.id, email: contact.email } };
 }

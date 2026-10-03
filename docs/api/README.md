@@ -122,6 +122,12 @@ Every response to an authenticated request carries `ratelimit-limit`, `ratelimit
 
 `POST /emails` and `POST /emails/batch` accept an `Idempotency-Key` header of 1 to 256 characters. A retry with the same key and body within 24 hours returns the first response without sending again.
 
+Set `topic_id` for Marketing email. Each recipient gets a signed preference link in `{{{UNSUBSCRIBE_URL}}}`, `{{{RESEND_UNSUBSCRIBE_URL}}}`, or `{{{DISPATCH_UNSUBSCRIBE_URL}}}`, and RFC 8058 one-click headers. Raw HTML and text also support `{{UNSUBSCRIBE_URL}}`. Only those placeholders are replaced in raw content. Caller unsubscribe variables and headers cannot replace the signed link; header names are matched case-insensitively. Scheduled content updates get the same protection. Opt-outs are checked again before delivery.
+
+A Marketing request with several recipients across `to`, `cc`, and `bcc` becomes separate emails. Addresses are deduplicated case-insensitively, in that order, with the first role kept as the `split_role` tag. Each email has one `to`, no `cc` or `bcc`, and its own link. The response is `{ "id": "first_email_id", "emails": [{ "id": "...", "to": "..." }] }`. A batch keeps one result per accepted item, with `emails` on each split item. Idempotency covers the whole request and returns the same IDs on retry. Invalid content rolls back every recipient in that item; an opted-out recipient fails independently without rejecting other recipients. Single-recipient responses remain `{ "id": "..." }`.
+
+Without `topic_id`, email is Transactional. Multi-recipient delivery, caller headers, raw content, and the response are unchanged. Neither path creates a contact just to send. Using an unsubscribe link for an unknown address may create an already opted-out contact; it never revives a deleted one. A link for a deleted topic opts that recipient out globally.
+
 `POST /emails/batch` takes up to 100 emails, as an array or as `{ "emails": [...] }`. Batch emails cannot have attachments. The `x-batch-validation` header picks the mode:
 
 - `strict`, the default, rejects the whole batch when one email is invalid.
@@ -150,7 +156,13 @@ Rates are percentages rounded to two decimals. A zero denominator gives 0.
 - `complaint_rate` is complained / delivered.
 - `unsubscribe_rate` is unsubscribed / delivered.
 
-`unsubscribed` counts `email.unsubscribed` events, which are recorded when a recipient unsubscribes through a broadcast's link. `email` and `broadcast` cannot be dimensions together. `timezone` must be an IANA name.
+`unsubscribed` counts `email.unsubscribed` events, recorded once per email when a recipient unsubscribes through a Marketing or broadcast link. `email` and `broadcast` cannot be dimensions together. `timezone` must be an IANA name.
+
+Use `dimensions=automation` to group by `automation_id`. Use `dimensions=step&automation_id=...` to group by an automation's send steps, with `automation_id` and `automation_step` in each row. A step breakdown requires an `automation_id` filter; filters accept at most 100 IDs. Rates and totals follow the same rules as other email metrics. Attribution is stored by the worker, not taken from caller tags. Older automation emails can have a null step key; the dashboard lists those as earlier emails with an unknown step.
+
+## Contact history
+
+`GET /contacts/{id}/activity` lists contact, segment, topic, email, fired-event, and automation-run activity in time order, with ID cursors. Application events appear as `event.fired`; internal `@` events are excluded. Run rows include `automation_id` and `run_id`, with IDs `<run_id>:started` and `<run_id>:completed`. Terminal states `done`, `failed`, and `stopped` appear in the completed row's `label`. Email matching is case-insensitive, and repeated recipient addresses never repeat an activity ID.
 
 ## Sharing an email
 

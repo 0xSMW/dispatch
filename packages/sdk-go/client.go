@@ -105,26 +105,59 @@ type Tag struct {
 }
 
 type Email struct {
-	Object      string   `json:"object,omitempty"`
-	ID          string   `json:"id"`
-	MessageID   *string  `json:"message_id,omitempty"`
-	From        string   `json:"from,omitempty"`
-	To          []string `json:"to,omitempty"`
-	Cc          []string `json:"cc,omitempty"`
-	Bcc         []string `json:"bcc,omitempty"`
-	ReplyTo     []string `json:"reply_to,omitempty"`
-	Subject     string   `json:"subject,omitempty"`
-	HTML        *string  `json:"html,omitempty"`
-	Text        *string  `json:"text,omitempty"`
-	LastEvent   string   `json:"last_event,omitempty"`
-	ScheduledAt *string  `json:"scheduled_at,omitempty"`
-	Tags        []Tag    `json:"tags,omitempty"`
-	CreatedAt   string   `json:"created_at,omitempty"`
+	Object      string       `json:"object,omitempty"`
+	ID          string       `json:"id"`
+	Emails      []SplitEmail `json:"emails,omitempty"`
+	MessageID   *string      `json:"message_id,omitempty"`
+	From        string       `json:"from,omitempty"`
+	To          []string     `json:"to,omitempty"`
+	Cc          []string     `json:"cc,omitempty"`
+	Bcc         []string     `json:"bcc,omitempty"`
+	ReplyTo     []string     `json:"reply_to,omitempty"`
+	Subject     string       `json:"subject,omitempty"`
+	HTML        *string      `json:"html,omitempty"`
+	Text        *string      `json:"text,omitempty"`
+	LastEvent   string       `json:"last_event,omitempty"`
+	ScheduledAt *string      `json:"scheduled_at,omitempty"`
+	Tags        []Tag        `json:"tags,omitempty"`
+	CreatedAt   string       `json:"created_at,omitempty"`
+}
+
+type SplitEmail struct {
+	ID string `json:"id"`
+	To string `json:"to"`
+}
+
+type ContactActivity struct {
+	Object       string  `json:"object"`
+	ID           string  `json:"id"`
+	Type         string  `json:"type"`
+	ResourceID   *string `json:"resource_id"`
+	Label        *string `json:"label"`
+	EmailID      *string `json:"email_id"`
+	AutomationID *string `json:"automation_id"`
+	RunID        *string `json:"run_id"`
+	CreatedAt    string  `json:"created_at"`
+}
+
+const (
+	EmailUnsubscribed      = "email.unsubscribed"
+	AutomationRunStarted   = "automation.run.started"
+	AutomationRunCompleted = "automation.run.completed"
+	AutomationRunFailed    = "automation.run.failed"
+)
+
+type AutomationRunEvent struct {
+	AutomationID string  `json:"automation_id"`
+	RunID        string  `json:"run_id"`
+	ContactID    *string `json:"contact_id"`
+	State        string  `json:"state"`
 }
 
 type BatchResponse struct {
 	Data []struct {
-		ID string `json:"id"`
+		ID     string       `json:"id"`
+		Emails []SplitEmail `json:"emails,omitempty"`
 	} `json:"data"`
 	Errors []struct {
 		Index   int    `json:"index"`
@@ -862,6 +895,18 @@ func (c *Client) DeleteAPIKey(id string) (*Deleted, error) { return remove(c, at
 
 // Brand and template library
 func (c *Client) Brand() (*Brand, error) { return get[Brand](c, "/brand") }
+
+type Settings struct {
+	Object                   string   `json:"object"`
+	ImportTriggerAutomations bool     `json:"import_trigger_automations"`
+	SandboxDomains           []string `json:"sandbox_domains"`
+}
+
+func (c *Client) Settings() (*Settings, error) { return get[Settings](c, "/settings") }
+
+func (c *Client) UpdateSettings(settings any) (*Settings, error) {
+	return patch[Settings](c, "/settings", settings)
+}
 
 func (c *Client) UpdateBrand(brand any) (*Brand, error) { return patch[Brand](c, "/brand", brand) }
 

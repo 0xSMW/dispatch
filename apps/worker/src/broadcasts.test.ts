@@ -154,6 +154,9 @@ describe("sendBroadcasts", () => {
       tenant_id: "tenant_1",
       contact_id: "contact_0",
       broadcast_id: "broadcast_1",
+      email: null,
+      email_id: first.emailId,
+      topic_id: null,
     });
     expect(first.html).toContain(`https://app.test/unsubscribe?token=${encodeURIComponent(token)}`);
 

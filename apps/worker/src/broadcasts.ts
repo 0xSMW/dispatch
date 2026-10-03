@@ -1,4 +1,4 @@
-import { ApiError, brandContext } from "@dispatchmail/core";
+import { ApiError, brandContext, id } from "@dispatchmail/core";
 import {
   claimBroadcast,
   countRecipients,
@@ -12,9 +12,7 @@ import {
   renderBroadcast,
   snapshotBroadcast,
   tx,
-  unsubscribeHeaders,
-  unsubscribeLinks,
-  unsubscribeToken,
+  subscriptionLinks,
   type Db,
   type DueBroadcast,
   type Queryable,
@@ -104,16 +102,18 @@ async function sendClaimed(client: Queryable, broadcast: DueBroadcast, options: 
       results.push({ id: recipient.id, status: "skipped" });
       continue;
     }
-    const token = unsubscribeToken(
-      { tenant_id: tenantId, contact_id: recipient.contact_id, broadcast_id: broadcast.id },
-      options.secret,
-    );
-    const links = unsubscribeLinks(token, options);
+    const emailId = id("email");
+    const links = subscriptionLinks({
+      tenantId, contactId: recipient.contact_id, broadcastId: broadcast.id,
+      topicId: broadcast.topic_id, emailId, ...options,
+    });
     try {
-      const content = renderBroadcast(broadcast, recipient, brandVars, links.page);
+      const content = renderBroadcast(broadcast, recipient, brandVars, links.context.UNSUBSCRIBE_URL!);
       const sent = await ingest(client, {
         tenantId,
         requestId: broadcast.request_id ?? `req_${broadcast.id}`,
+        emailId,
+        contactId: recipient.contact_id,
         from: broadcast.from_email,
         fromName: broadcast.from_name,
         to: recipient.email,
@@ -121,7 +121,7 @@ async function sendClaimed(client: Queryable, broadcast: DueBroadcast, options: 
         subject: content.subject,
         html: content.html,
         text: content.text,
-        headers: unsubscribeHeaders(links.oneClick),
+        headers: links.headers,
         tags: { broadcast_id: broadcast.id },
         topicId: broadcast.topic_id,
         broadcastId: broadcast.id,

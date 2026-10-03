@@ -1,3 +1,4 @@
+export { awsCredentials } from "./aws.js";
 import { createCipheriv, createDecipheriv, createHash, createHmac, hkdfSync, randomBytes, randomUUID, scrypt, timingSafeEqual } from "node:crypto";
 import { lookup as lookupCallback, type LookupAddress } from "node:dns";
 import { lookup } from "node:dns/promises";
@@ -33,6 +34,10 @@ export type EventType =
   | "email.clicked"
   | "email.suppressed"
   | "email.received"
+  | "email.unsubscribed"
+  | "automation.run.started"
+  | "automation.run.completed"
+  | "automation.run.failed"
   | "contact.created"
   | "contact.updated"
   | "contact.deleted"
@@ -58,6 +63,10 @@ export const emailEvents: EventType[] = [
   "email.clicked",
   "email.suppressed",
   "email.received",
+  "email.unsubscribed",
+  "automation.run.started",
+  "automation.run.completed",
+  "automation.run.failed",
   "contact.created",
   "contact.updated",
   "contact.deleted",
@@ -273,11 +282,20 @@ export const batchEnvelopeSchema = z
   .union([z.array(batchItem).min(1).max(100), z.object({ emails: z.array(batchItem).min(1).max(100) })])
   .transform((value) => (Array.isArray(value) ? value : value.emails));
 
-export const domainRegions = ["us-east-1", "eu-west-1", "sa-east-1", "ap-northeast-1"] as const;
+export const domainRegions = ["us-west-2", "us-east-1", "eu-west-1", "sa-east-1", "ap-northeast-1"] as const;
 const subdomain = z.string().regex(/^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/i);
 const capability = z.enum(["enabled", "disabled"]);
 
 const hostnamePattern = /^(?=.{3,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+
+export const settingsSchema = z.object({
+  import_trigger_automations: z.boolean().default(false),
+  sandbox_domains: z.array(
+    z.string().trim().toLowerCase().refine((value) => hostnamePattern.test(value), "Use a hostname"),
+  ).max(50).default([]),
+}).strict();
+export const settingsUpdateSchema = settingsSchema.partial();
+export type Settings = z.infer<typeof settingsSchema>;
 
 export const domainSchema = z.object({
   name: z
@@ -1858,12 +1876,14 @@ export interface Provider {
 export class ProviderError extends Error {
   retryable: boolean;
   reason: string;
+  rejected: boolean;
 
-  constructor(reason: string, retryable: boolean) {
+  constructor(reason: string, retryable: boolean, rejected = false) {
     super(reason);
     this.name = "ProviderError";
     this.reason = reason;
     this.retryable = retryable;
+    this.rejected = rejected;
   }
 }
 
@@ -1871,10 +1891,10 @@ const permanentSesErrors = new Set(["MessageRejected", "MailFromDomainNotVerifie
 
 export function classifySesError(error: { name?: string; message?: string; $metadata?: { httpStatusCode?: number } }) {
   const name = error.name ?? "";
-  if (permanentSesErrors.has(name)) return new ProviderError(name, false);
+  if (permanentSesErrors.has(name)) return new ProviderError(name, false, true);
   const status = error.$metadata?.httpStatusCode ?? 0;
   const retryable = name === "TooManyRequestsException" || status >= 500 || status === 0;
-  return new ProviderError(error.message || name || "SES request failed", retryable);
+  return new ProviderError(error.message || name || "SES request failed", retryable, name === "TooManyRequestsException" || (status >= 400 && status < 500));
 }
 
 const unitSeconds: Record<string, number> = { s: 1, m: 60, h: 3_600, d: 86_400, w: 604_800 };

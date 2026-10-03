@@ -1,8 +1,9 @@
 import { convert } from "html-to-text";
 import type { Queryable } from "./index.js";
 import { findBy, publishedTemplate } from "./index.js";
-import { ApiError, brandContext, id, parseAddress, prepareTracking, renderTemplate, toArray, type BrandRecord } from "@dispatchmail/core";
+import { ApiError, brandContext, id, parseAddress, prepareTracking, renderTemplate, reservedVariables, toArray, type BrandRecord } from "@dispatchmail/core";
 import { appendEvent, fanoutEvent } from "./events.js";
+import { replaceUnsubscribe } from "./unsubscribe.js";
 
 export type IngestEmailRecipient = {
   email: string;
@@ -25,10 +26,14 @@ export type IngestEmailInput = {
   text?: string | null;
   template?: string;
   variables?: Record<string, unknown>;
+  context?: Record<string, unknown>;
   headers?: Record<string, string>;
   tags?: Record<string, string>;
   topicId?: string | null;
   broadcastId?: string | null;
+  contactId?: string | null;
+  automationId?: string | null;
+  automationStep?: string | null;
   scheduledAt?: Date | null;
   idempotencyKey?: string | null;
   apiKeyId?: string | null;
@@ -90,17 +95,32 @@ export async function ingestEmail(
       fromName = stored.name;
     }
     if (!replyTo?.length && template.reply_to?.length) replyTo = template.reply_to;
-    const rendered = renderTemplate(template, input.variables ?? {}, brandContext(brand.brand, {
-      tenantName: brand.name,
-      domain: brand.domain,
-      from: fromAddress,
-    }));
+    const variables = input.context ? Object.fromEntries(Object.entries(input.variables ?? {}).filter(([key]) => !reservedVariables.includes(key))) : input.variables ?? {};
+    let rendered: ReturnType<typeof renderTemplate>;
+    try {
+      rendered = renderTemplate(template, variables, { ...brandContext(brand.brand, {
+        tenantName: brand.name,
+        domain: brand.domain,
+        from: fromAddress,
+      }), ...input.context });
+    } catch (error) {
+      const missing = (error as { missing?: string[] })?.missing;
+      if (!input.topicId && error instanceof ApiError && missing?.some((key) => /^(?:DISPATCH_|RESEND_)?UNSUBSCRIBE_URL$/.test(key))) {
+        throw new ApiError("validation_error", 422, "This template prints an unsubscribe link, so it needs topic_id. Send it as marketing, or remove the link.");
+      }
+      throw error;
+    }
     subject = subject ?? rendered.subject;
     html = html ?? rendered.html;
     text = text ?? rendered.text;
     templateId = template.template_id;
     templateVersionId = template.id;
     templateTrack = template.track !== false;
+  }
+
+  if (input.topicId && !input.template && input.context) {
+    html = replaceUnsubscribe(html, input.context);
+    text = replaceUnsubscribe(text, input.context);
   }
 
   if (!fromAddress) {
@@ -159,7 +179,7 @@ export async function ingestEmail(
        join topics t on t.id = $3 and t.tenant_id = c.tenant_id and t.deleted_at is null
        left join topic_subscriptions s on s.topic_id = t.id and s.contact_id = c.id
        where c.tenant_id = $1 and lower(c.email) = any($2) and c.deleted_at is null
-         and (s.status = 'unsubscribed' or (s.id is null and t.default_status = 'unsubscribed'))`,
+         and (c.unsubscribed_at is not null or s.status <> 'subscribed' or (s.id is null and t.default_status = 'unsubscribed'))`,
       [input.tenantId, lowered, input.topicId],
     );
     for (const row of opted.rows) optedOut.add(row.email.toLowerCase());
@@ -191,9 +211,9 @@ export async function ingestEmail(
   const email = await client.query<IngestEmailResult>(
     `insert into emails (
       id, tenant_id, request_id, idempotency_key, from_email, from_name, reply_to, subject, html, html_tracked, text,
-      template_id, template_version_id, headers, tags, topic_id, broadcast_id, status, scheduled_at, api_key_id
+      template_id, template_version_id, headers, tags, topic_id, broadcast_id, status, scheduled_at, api_key_id, contact_id, automation_id, automation_step
     )
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
      returning id, request_id, from_email as from, subject, status, scheduled_at, created_at`,
     [
       emailId,
@@ -216,6 +236,9 @@ export async function ingestEmail(
       initialStatus,
       scheduledAt,
       input.apiKeyId ?? null,
+      input.contactId ?? null,
+      input.automationId ?? null,
+      input.automationStep ?? null,
     ],
   );
 

@@ -47,10 +47,17 @@ export async function startImports(
   storage: Pick<Storage, "stream">,
   state = running,
   max = Number(process.env.IMPORT_CONCURRENCY ?? 1),
+  options: { bounded?: boolean } = {},
 ) {
   const free = max - state.count;
   if (free <= 0) return 0;
   const imports = await claimImports(db, free);
+  if (options.bounded) {
+    // A serverless step must finish its work before returning. Each pass commits one batch,
+    // then leaves the import queued for another durable step.
+    await Promise.all(imports.map((job) => runImport(db, storage, job, { maxRows: batchSize })));
+    return imports.length;
+  }
   for (const job of imports) {
     state.count += 1;
     void runImport(db, storage, job)
@@ -66,7 +73,7 @@ export async function runImport(
   db: Db,
   storage: Pick<Storage, "stream">,
   job: ImportRow,
-  options: { batchSize?: number } = {},
+  options: { batchSize?: number; maxRows?: number } = {},
 ) {
   const size = options.batchSize ?? batchSize;
   // A job taken over from a worker that stopped has rows already committed. Those rows are read
@@ -117,13 +124,21 @@ export async function runImport(
       const contact = header.columns ? mapRecord(record, header.columns) : null;
       if (!contact) {
         counts.failed += 1;
-        continue;
       }
       if (seen <= done) continue;
-      batch.push(contact);
+      if (contact) batch.push(contact);
       if (batch.length >= size) {
         await flush(db, job, batch, counts, seen);
         batch = [];
+      }
+      if (options.maxRows && seen - done >= options.maxRows) {
+        if (batch.length > 0) await flush(db, job, batch, counts, seen);
+        else await saveImportCounts(db, job.id, counts, seen);
+        await db.query("update contact_imports set status = 'queued', locked_at = null where id = $1", [job.id]);
+        source.pause();
+        if ("destroy" in source && typeof source.destroy === "function") source.destroy();
+        parser.destroy();
+        return counts;
       }
     }
     if (batch.length > 0) await flush(db, job, batch, counts, seen);

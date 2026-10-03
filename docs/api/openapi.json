@@ -2398,6 +2398,64 @@
         }
       }
     },
+    "/settings": {
+      "get": {
+        "operationId": "getSettings",
+        "summary": "Retrieve tenant settings",
+        "tags": ["Settings"],
+        "x-scope": "full",
+        "responses": {
+          "200": {
+            "description": "Effective tenant settings, with defaults applied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["object", "import_trigger_automations", "sandbox_domains"],
+                  "properties": {
+                    "object": {"type": "string", "enum": ["settings"]},
+                    "import_trigger_automations": {"type": "boolean", "default": false},
+                    "sandbox_domains": {"type": "array", "maxItems": 50, "items": {"type": "string"}}
+                  }
+                }
+              }
+            }
+          },
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"}
+        }
+      },
+      "patch": {
+        "operationId": "updateSettings",
+        "summary": "Update tenant settings",
+        "tags": ["Settings"],
+        "x-scope": "full",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "import_trigger_automations": {"type": "boolean"},
+                  "sandbox_domains": {"type": "array", "maxItems": 50, "items": {"type": "string", "format": "hostname"}}
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Effective settings after merging the supplied keys.",
+            "content": {"application/json": {"schema": {"type": "object"}}}
+          },
+          "400": {"$ref": "#/components/responses/BadRequest"},
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "403": {"$ref": "#/components/responses/Forbidden"}
+        }
+      }
+    },
     "/brand": {
       "get": {
         "operationId": "getBrand",
@@ -2536,7 +2594,7 @@
         "tags": [
           "Emails"
         ],
-        "description": "The email is stored and queued before the response. A sending-access key restricted to a domain can only send from that domain (`validation_error`, 403). An unverified sender domain fails with `validation_error` and status 403.",
+        "description": "The email is stored before the response. With topic_id, Marketing sends carry protected unsubscribe headers and recipient-specific links. Multiple To, Cc, and Bcc recipients are deduplicated case-insensitively, first role wins, and split into separate To-only emails. The response retains the first id and adds emails: [{id, to}]. Opted-out recipients fail independently. Idempotency covers the whole request. Transactional sends without topic_id are unchanged. A sending-access key restricted to a domain can only send from that domain (`validation_error`, 403). An unverified sender domain fails with `validation_error` and status 403.",
         "x-scope": "send",
         "parameters": [
           {
@@ -2585,6 +2643,9 @@
                     "id": {
                       "type": "string",
                       "description": "The email ID."
+                    },
+                    "emails": {
+                      "$ref": "#/components/schemas/SplitEmails"
                     },
                     "request_id": {
                       "type": "string",
@@ -2879,7 +2940,7 @@
         "tags": [
           "Metrics"
         ],
-        "description": "Counts `email_events` for the tenant. Without dates it covers the 7 days before now. `end_date` is exclusive. Rates are percentages rounded to two decimals, and 0 when the denominator is 0. `unsubscribed` counts `email.unsubscribed` events, recorded when a recipient unsubscribes through a broadcast's link.",
+        "description": "Counts `email_events` for the tenant. Without dates it covers the 7 days before now. `end_date` is exclusive. Rates are percentages rounded to two decimals, and 0 when the denominator is 0. `unsubscribed` counts `email.unsubscribed` events from Marketing and broadcast links. Automation attribution is worker-owned; legacy messages can have a null step key.",
         "x-scope": "full",
         "parameters": [
           {
@@ -2941,7 +3002,7 @@
             "name": "dimensions",
             "in": "query",
             "required": false,
-            "description": "Comma-separated: `period`, `domain`, `email`, `broadcast`. `email` and `broadcast` cannot be combined.",
+            "description": "Comma-separated: `period`, `domain`, `email`, `broadcast`, `automation`, `step`. `email` and `broadcast` cannot be combined. `step` requires an automation_id filter and returns automation_id and automation_step.",
             "schema": {
               "type": "string"
             }
@@ -2972,6 +3033,13 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "automation_id",
+            "in": "query",
+            "required": false,
+            "description": "Comma-separated automation IDs, 100 at most. Required for the step dimension.",
+            "schema": { "type": "string" }
           },
           {
             "$ref": "#/components/parameters/RequestIdHeader"
@@ -16346,6 +16414,18 @@
         "additionalProperties": false,
         "description": "The same fields as a single send, without `attachments`."
       },
+      "SplitEmails": {
+        "type": "array",
+        "description": "Present on multi-recipient Marketing sends, in first-seen recipient order. Each email has one To recipient and its own unsubscribe link.",
+        "items": {
+          "type": "object",
+          "required": ["id", "to"],
+          "properties": {
+            "id": { "type": "string" },
+            "to": { "type": "string", "format": "email" }
+          }
+        }
+      },
       "BatchResult": {
         "type": "object",
         "required": [
@@ -16362,10 +16442,13 @@
               "properties": {
                 "id": {
                   "type": "string"
+                },
+                "emails": {
+                  "$ref": "#/components/schemas/SplitEmails"
                 }
               }
             },
-            "description": "The accepted emails, in request order."
+            "description": "The accepted items, in request order. A multi-recipient Marketing item retains its first id and includes its own emails array."
           },
           "errors": {
             "type": "array",
@@ -16669,7 +16752,10 @@
               "topic.created",
               "topic.updated",
               "topic.deleted",
-              "email.unsubscribed"
+              "email.unsubscribed",
+              "automation.run.started",
+              "automation.run.completed",
+              "automation.run.failed"
             ],
             "description": "`email.unsubscribed` is recorded for a broadcast recipient who unsubscribes. No webhook fires for it."
           },
@@ -16741,7 +16827,10 @@
             "type": "array",
             "items": {
               "type": "object",
-              "properties": {},
+              "properties": {
+                "automation_id": { "type": ["string", "null"] },
+                "automation_step": { "type": ["string", "null"], "description": "Send-step key. Legacy automation emails can have no step key." }
+              },
               "additionalProperties": true
             },
             "description": "One row per dimension group. Empty without dimensions."
@@ -17367,6 +17456,10 @@
           "email.clicked",
           "email.suppressed",
           "email.received",
+          "email.unsubscribed",
+          "automation.run.started",
+          "automation.run.completed",
+          "automation.run.failed",
           "contact.created",
           "contact.updated",
           "contact.deleted",
@@ -17932,7 +18025,7 @@
           },
           "type": {
             "type": "string",
-            "description": "`contact.created`, `segment.added`, `topic.opted_in`, `topic.opted_out`, or an email event type."
+            "description": "`contact.created`, `segment.added`, `topic.opted_in`, `topic.opted_out`, `event.fired`, `automation.run.started`, `automation.run.completed`, or an email event type. Run completion covers done, failed, and stopped states, reported in label."
           },
           "resource_id": {
             "type": [
@@ -17951,6 +18044,14 @@
               "string",
               "null"
             ]
+          },
+          "automation_id": {
+            "type": ["string", "null"],
+            "description": "Present on automation-run activity."
+          },
+          "run_id": {
+            "type": ["string", "null"],
+            "description": "The run behind a started or completed activity row."
           },
           "created_at": {
             "type": "string",

@@ -64,6 +64,23 @@ func TestNewClient(t *testing.T) {
 	}
 }
 
+func TestMarketingSplitResponse(t *testing.T) {
+	split := []SplitEmail{{ID: "email_1", To: "ada@example.com"}, {ID: "email_2", To: "bob@example.com"}}
+	result := Map{"id": "email_1", "emails": split}
+	client, _ := recorder(t, map[string]canned{
+		"POST /emails":       {200, result},
+		"POST /emails/batch": {200, Map{"data": []any{result}}},
+	})
+	email, err := client.Send(Map{"from": "a@example.com", "to": []string{"ada@example.com", "bob@example.com"}, "topic_id": "topic_1", "text": "Hi"}, "")
+	if err != nil || !reflect.DeepEqual(email.Emails, split) {
+		t.Fatalf("split send: %+v, %v", email, err)
+	}
+	batch, err := client.Batch([]Map{{"to": []string{"ada@example.com", "bob@example.com"}}}, "", "strict")
+	if err != nil || len(batch.Data) != 1 || !reflect.DeepEqual(batch.Data[0].Emails, split) {
+		t.Fatalf("split batch: %+v, %v", batch, err)
+	}
+}
+
 func TestRoutes(t *testing.T) {
 	page := url.Values{"limit": {"5"}}
 	cases := []struct {
@@ -73,6 +90,8 @@ func TestRoutes(t *testing.T) {
 		path   string
 		body   any
 	}{
+		{"Settings", func(c *Client) error { _, err := c.Settings(); return err }, "GET", "/settings", nil},
+		{"UpdateSettings", func(c *Client) error { _, err := c.UpdateSettings(Map{"import_trigger_automations": true}); return err }, "PATCH", "/settings", map[string]any{"import_trigger_automations": true}},
 		{"Emails", func(c *Client) error { _, err := c.Emails(page); return err }, "GET", "/emails?limit=5", nil},
 		{"Email", func(c *Client) error { _, err := c.Email("e1"); return err }, "GET", "/emails/e1", nil},
 		{"UpdateEmail", func(c *Client) error { _, err := c.UpdateEmail("e1", Map{"scheduled_at": "in 1 hour"}); return err }, "PATCH", "/emails/e1", map[string]any{"scheduled_at": "in 1 hour"}},
@@ -80,6 +99,10 @@ func TestRoutes(t *testing.T) {
 		{"EmailJobs", func(c *Client) error { _, err := c.EmailJobs(url.Values{"email_id": {"e1"}}); return err }, "GET", "/email-jobs?email_id=e1", nil},
 		{"EmailJob", func(c *Client) error { _, err := c.EmailJob("j1"); return err }, "GET", "/email-jobs/j1", nil},
 		{"EmailMetrics", func(c *Client) error { _, err := c.EmailMetrics(url.Values{"metrics": {"sent"}}); return err }, "GET", "/emails/metrics?metrics=sent", nil},
+		{"AutomationEmailMetrics", func(c *Client) error {
+			_, err := c.EmailMetrics(url.Values{"automation_id": {"a1"}, "dimensions": {"step"}})
+			return err
+		}, "GET", "/emails/metrics?automation_id=a1&dimensions=step", nil},
 		{"ShareEmail", func(c *Client) error { _, err := c.ShareEmail("e1", "10m"); return err }, "POST", "/emails/e1/share", map[string]any{"expires_in": "10m"}},
 		{"ReceivedEmail", func(c *Client) error { _, err := c.ReceivedEmail("r1", url.Values{"html_format": {"cid"}}); return err }, "GET", "/emails/receiving/r1?html_format=cid", nil},
 		{"ReceivedAttachments", func(c *Client) error { _, err := c.ReceivedAttachments("r1"); return err }, "GET", "/emails/receiving/r1/attachments", nil},

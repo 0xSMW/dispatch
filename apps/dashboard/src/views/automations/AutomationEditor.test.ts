@@ -90,6 +90,60 @@ describe("AutomationEditor", () => {
     expect(screen.getByText("Saved")).toBeTruthy();
   });
 
+  it("loads email counts once for all send steps and refreshes only when the date range changes", async () => {
+    const fetch = api((url) => {
+      if (url.pathname === "/automations/automation_1") return { body: {
+        ...automation,
+        steps: [automation.steps[0], automation.steps[1], { key: "follow", type: "send_email", config: { from: "hi@acme.com", template: "tpl_1" } }],
+        connections: [{ from: "trigger", to: "welcome", type: "default" }, { from: "welcome", to: "follow", type: "default" }],
+      } };
+      if (url.pathname === "/emails/metrics") return { body: { data: [
+        { automation_id: "automation_1", automation_step: "welcome", sent: 4, opened: 2, clicked: 1 },
+      ] } };
+      return undefined;
+    });
+    open();
+    const card = await screen.findByRole("article", { name: "Step welcome" });
+    expect(await within(card).findByText("4 sent · 2 opened · 1 clicked")).toBeTruthy();
+    expect(within(screen.getByRole("article", { name: "Step follow" })).getByText("0 sent · 0 opened · 0 clicked")).toBeTruthy();
+    const requests = () => fetch.mock.calls.filter(([url]) => new URL(String(url)).pathname === "/emails/metrics");
+    expect(requests()).toHaveLength(1);
+    expect(new URL(String(requests()[0]![0])).searchParams.get("automation_id")).toBe("automation_1");
+    expect(new URL(String(requests()[0]![0])).searchParams.get("start_date")).toBe("1970-01-01T00:00:00.000Z");
+    fireEvent.change(screen.getByLabelText("Date range"), { target: { value: "7d" } });
+    await waitFor(() => expect(requests()).toHaveLength(2));
+  });
+
+  it("warns when a marketing template has no body link and clears the warning for transactional sends", async () => {
+    api((url) => {
+      if (url.pathname === "/topics") return list([{ id: "topic_1", name: "News" }]);
+      if (url.pathname === "/templates/tpl_1") return { body: { published_version_id: "v1", current_version_id: "v1", html: "<p>Hello</p>", text: null } };
+      return undefined;
+    });
+    open();
+    const card = await screen.findByRole("article", { name: "Step welcome" });
+    const topic = within(card).getByLabelText("Topic");
+    fireEvent.change(topic, { target: { value: "topic_1" } });
+    expect(await within(card).findByText(/This email has no unsubscribe link/)).toBeTruthy();
+    fireEvent.change(topic, { target: { value: "" } });
+    await waitFor(() => expect(within(card).queryByText(/This email has no unsubscribe link/)).toBeNull());
+  });
+
+  it("checks the published version rather than an unpublished draft for the warning", async () => {
+    api((url) => {
+      if (url.pathname === "/topics") return list([{ id: "topic_1", name: "News" }]);
+      if (url.pathname === "/templates/tpl_1") return { body: {
+        published_version_id: "v1", current_version_id: "v2", html: "{{{UNSUBSCRIBE_URL}}}", text: null,
+      } };
+      if (url.pathname === "/templates/tpl_1/versions") return list([{ id: "v1", html: "<p>Published without link</p>", text: null }]);
+      return undefined;
+    });
+    open();
+    const card = await screen.findByRole("article", { name: "Step welcome" });
+    fireEvent.change(within(card).getByLabelText("Topic"), { target: { value: "topic_1" } });
+    expect(await within(card).findByText(/This email has no unsubscribe link/)).toBeTruthy();
+  });
+
   it("adds a delay into a branch and saves the graph with PATCH", async () => {
     const fetch = api((url, init) =>
       url.pathname === "/automations/automation_1" && init.method === "PATCH" ? { body: { ...automation, ...JSON.parse(String(init.body)) } } : undefined,

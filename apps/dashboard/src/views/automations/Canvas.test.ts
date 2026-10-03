@@ -8,6 +8,7 @@ import { AutomationEditor } from "./AutomationEditor";
 import { Canvas, type CanvasProps } from "./Canvas";
 import { insertStep, keys, toTree, type Graph, type Tree } from "./graph";
 import type { RunStep, StepActions } from "./Steps";
+import { zeroEmails } from "./EmailMetrics";
 
 // jsdom has no layout engine. React Flow needs these two to mount; with them it renders nodes
 // and edges from the sizes and handles `layout()` gives, but nothing is measured, panned, or zoomed.
@@ -60,6 +61,15 @@ afterEach(() => {
 });
 
 describe("Canvas", () => {
+  it("shows shared email counts in builder and run nodes without loading metrics per node", async () => {
+    const options = { templates: [], segments: [], events: [], emailCounts: { welcome: { ...zeroEmails, sent: 4, opened: 2, clicked: 1 } } };
+    const view = show({ actions: spies(), options });
+    const node = await screen.findByRole("button", { name: "Step welcome" });
+    expect(within(node).getByText("4 sent · 2 opened · 1 clicked")).toBeTruthy();
+    view.rerender(h(Canvas, { tree, options, run: new Map([["welcome", { key: "welcome", type: "send_email", status: "completed" }]]) }));
+    expect(within(screen.getByRole("button", { name: "Step welcome" })).getByText("4 sent · 2 opened · 1 clicked")).toBeTruthy();
+  });
+
   it("draws the trigger, each step, branch labels, and an end marker per open list", async () => {
     show({ actions: spies() });
     expect(await screen.findByRole("button", { name: "Trigger" })).toBeTruthy();

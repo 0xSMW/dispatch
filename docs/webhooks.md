@@ -12,7 +12,11 @@ Create, `GET /webhooks/{id}`, `PATCH /webhooks/{id}`, and rotate return `signing
 
 ## Event types
 
-`email.scheduled`, `email.sent`, `email.delivered`, `email.delivery_delayed`, `email.bounced`, `email.complained`, `email.failed`, `email.opened`, `email.clicked`, `email.suppressed`, `email.received`, `contact.created`, `contact.updated`, `contact.deleted`, `contact.topics.updated`, `domain.created`, `domain.updated`, `domain.deleted`, `suppression.added`, `suppression.removed`, `topic.created`, `topic.updated`, `topic.deleted`.
+`email.scheduled`, `email.sent`, `email.delivered`, `email.delivery_delayed`, `email.bounced`, `email.complained`, `email.failed`, `email.opened`, `email.clicked`, `email.suppressed`, `email.received`, `email.unsubscribed`, `automation.run.started`, `automation.run.completed`, `automation.run.failed`, `contact.created`, `contact.updated`, `contact.deleted`, `contact.topics.updated`, `domain.created`, `domain.updated`, `domain.deleted`, `suppression.added`, `suppression.removed`, `topic.created`, `topic.updated`, `topic.deleted`.
+
+An unsubscribe link records one `email.unsubscribed` event per email, even when used again. Automation events carry `automation_id`, `run_id`, `contact_id` (nullable), and `state`. Started means the run was enrolled and queued. Completed covers `done` and `stopped`; failed has state `failed`. Delays and resumed waits do not emit another start. Each transition and its webhook attempts commit with the run's state change.
+
+`all` expands to the supported types when an endpoint is created or updated. Update an existing endpoint's events to `["all"]` to include types added since it was configured.
 
 ## Payload
 

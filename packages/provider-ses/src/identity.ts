@@ -1,3 +1,4 @@
+import { awsCredentials } from "@dispatchmail/core";
 import {
   CreateEmailIdentityCommand,
   DeleteEmailIdentityCommand,
@@ -17,7 +18,7 @@ export type IdentityClient = {
 const clients = new Map<string, SESv2Client>();
 
 export function sesClient(region: string) {
-  return clients.get(region) ?? clients.set(region, new SESv2Client({ region })).get(region)!;
+  return clients.get(region) ?? clients.set(region, new SESv2Client({ region, credentials: awsCredentials(), maxAttempts: 1 })).get(region)!;
 }
 
 export async function createIdentity(client: IdentityClient, input: { name: string; mailFromDomain: string; configurationSetName?: string }) {

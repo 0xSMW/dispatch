@@ -196,7 +196,7 @@ button.canvasNode {
   justify-content: stretch;
   gap: 3px;
   width: 248px;
-  height: 80px;
+  height: 100px;
   padding: 8px 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius);

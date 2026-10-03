@@ -1,5 +1,11 @@
 import "@dispatchmail/core/env";
 import cors from "@fastify/cors";
+import { ConfirmSubscriptionCommand, SNSClient } from "@aws-sdk/client-sns";
+import MessageValidator from "sns-validator";
+import { waitUntil } from "@vercel/functions";
+import { awsCredentials } from "@dispatchmail/core";
+import { applySesEvent, mapSesEvent, type SesEvent } from "../../worker/src/events.js";
+import { countHit as postgresCountHit, postgresSignins, pruneCounters } from "./counters.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { Readable } from "node:stream";
@@ -69,6 +75,8 @@ import {
   publishTemplate,
   publishedTemplate,
   retrackEmail,
+  replaceUnsubscribe,
+  subscriptionLinks,
   textFromHtml,
   templateDetail,
   templateFrom,
@@ -174,7 +182,9 @@ type AuditRecord = {
 };
 
 const db = connect();
-const redis = new Redis(process.env.REDIS_URL ?? "redis://localhost:6379", {
+const vercelRuntime = process.env.WORKER_RUNTIME === "vercel";
+const postgresCounters = process.env.COUNTER_BACKEND === "postgres";
+const redis = postgresCounters ? null : new Redis(process.env.REDIS_URL ?? "redis://localhost:6379", {
   lazyConnect: true,
   maxRetriesPerRequest: 1,
 });
@@ -182,7 +192,7 @@ const pepper = requireSecret("API_KEY_PEPPER");
 const storage = createStorage();
 const appSecret = requireSecret("APP_SECRET");
 const publicUrl = requireUrl("PUBLIC_URL", "http://localhost:3100");
-requireUrl("APP_URL", "http://localhost:5173");
+const appUrl = requireUrl("APP_URL", "http://localhost:5173");
 const bodyLimit = Number(process.env.MAX_BODY_BYTES ?? 50 * 1024 * 1024);
 const authCacheTtlMs = Number(process.env.AUTH_CACHE_TTL_MS ?? 5_000);
 const domainCacheTtlMs = Number(process.env.DOMAIN_CACHE_TTL_MS ?? 5_000);
@@ -230,13 +240,13 @@ await app.register(cors, {
   methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
 });
 
-const telemetryTimer = setInterval(
+const telemetryTimer = vercelRuntime ? null : setInterval(
   () => {
     void flushTelemetry();
   },
   Number(process.env.TELEMETRY_FLUSH_MS ?? 100),
 );
-telemetryTimer.unref();
+telemetryTimer?.unref();
 
 app.addHook("onRequest", async (request, reply) => {
   request.started_at = Date.now();
@@ -251,6 +261,7 @@ app.addHook("onRequest", async (request, reply) => {
 
 app.addHook("preHandler", async (request, reply) => {
   const path = request.url.split("?")[0];
+  if (path === "/internal/reconcile" || path === "/internal/events") return;
   if (
     request.url === "/health" ||
     // Public setup lets a caller with no key ask whether the install is seeded. A caller who
@@ -304,13 +315,18 @@ app.addHook("preSerialization", async (request, reply, payload) => {
   return payload;
 });
 
-app.addHook("onSend", async (request, _reply, payload) => {
+app.addHook("onSend", async (request, reply, payload) => {
+  if (vercelRuntime && reply.statusCode < 400 && ["POST", "PATCH", "DELETE"].includes(request.method) && !request.url.startsWith("/internal/")) {
+    const { wakeWorker } = await import("./workflows/worker.js");
+    await wakeWorker();
+  }
   request.response_text = responseText(payload);
   return payload;
 });
 
 app.addHook("onResponse", async (request, reply) => {
   enqueueTelemetry(request, reply);
+  if (vercelRuntime) waitUntil(flushTelemetry());
 });
 
 app.setErrorHandler((error, request, reply) => {
@@ -366,8 +382,61 @@ app.setErrorHandler((error, request, reply) => {
 
 app.get("/health", async () => {
   await db.query("select 1");
-  await redis.ping();
+  if (redis) await redis.ping();
   return { ok: true, provider: process.env.SES_PROVIDER ?? "fake" };
+});
+
+
+app.get("/internal/reconcile", async (request) => {
+  const secret = process.env.CRON_SECRET;
+  const supplied = request.headers.authorization ?? "";
+  const expected = Buffer.from(`Bearer ${secret}`);
+  const credential = Buffer.from(supplied);
+  if (!secret || credential.length !== expected.length || !timingSafeEqual(credential, expected)) {
+    throw new ApiError("forbidden", 403, "Invalid cron credential");
+  }
+  const { wakeWorker } = await import("./workflows/worker.js");
+  await wakeWorker();
+  if (postgresCounters) await pruneCounters(db);
+  return { ok: true };
+});
+
+// SNS sends application/json or text/plain depending on subscription configuration.
+app.addContentTypeParser("text/plain", { parseAs: "string" }, (_request, body, done) => {
+  try { done(null, JSON.parse(String(body))); }
+  catch { done(new ApiError("validation_error", 400, "Invalid notification JSON")); }
+});
+const snsValidator = new MessageValidator();
+app.post("/internal/events", async (request) => {
+  const body = request.body;
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw new ApiError("validation_error", 400, "Invalid notification");
+  const notification = body as Record<string, unknown>;
+  if (!process.env.SNS_TOPIC_ARN || notification.TopicArn !== process.env.SNS_TOPIC_ARN) throw new ApiError("forbidden", 403, "Unexpected notification topic");
+  await new Promise<void>((resolve, reject) => snsValidator.validate(notification, (error) => error ? reject(new ApiError("forbidden", 403, "Invalid notification signature")) : resolve()));
+  if (notification.Type === "SubscriptionConfirmation") {
+    if (typeof notification.Token !== "string") throw new ApiError("validation_error", 400, "Missing subscription token");
+    const sns = new SNSClient({ region: process.env.AWS_REGION ?? "us-west-2", credentials: awsCredentials() });
+    await sns.send(new ConfirmSubscriptionCommand({ TopicArn: process.env.SNS_TOPIC_ARN, Token: notification.Token }));
+    return { ok: true };
+  }
+  if (notification.Type !== "Notification" || typeof notification.Message !== "string") throw new ApiError("validation_error", 400, "Unsupported notification");
+  let event: SesEvent;
+  try { event = JSON.parse(notification.Message); }
+  catch { throw new ApiError("validation_error", 400, "Invalid event JSON"); }
+  try {
+    if (!event || typeof event !== "object" || Array.isArray(event) || !mapSesEvent(event)) throw new Error("Invalid event");
+  } catch { throw new ApiError("validation_error", 400, "Invalid SES event"); }
+  try {
+    const applied = await tx(db, (client) => applySesEvent(client, event));
+    if (!applied) throw new ApiError("validation_error", 400, "Unmatched SES event");
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    request.log.error(error);
+    throw new ApiError("application_error", 503, "Event processing unavailable; retry notification");
+  }
+  const { wakeWorker } = await import("./workflows/worker.js");
+  await wakeWorker();
+  return { ok: true };
 });
 
 registerPlatform(app, {
@@ -376,7 +445,7 @@ registerPlatform(app, {
   flushTelemetry,
   validKey,
   sessionsEnabled: passwordlessSessionsEnabled,
-  signins: signins(redis),
+  signins: postgresCounters ? postgresSignins(db) : signins(redis!),
   quota: sendingQuota,
 });
 
@@ -888,10 +957,11 @@ app.post(
     const response = await acceptEmail(db, request.body, emailContext(request), {
       prepare: withSchedule,
       publicUrl,
+      unsubscribe: { secret: appSecret, appUrl, publicUrl },
       storeAttachment: writeBlob,
     });
     reply.status(200);
-    return { id: response.email.id };
+    return { id: response.email.id, ...(response.emails ? { emails: response.emails } : {}) };
   },
 );
 
@@ -910,6 +980,7 @@ app.post(
       validation: header === "permissive" ? "permissive" : "strict",
       prepare: withSchedule,
       publicUrl,
+      unsubscribe: { secret: appSecret, appUrl, publicUrl },
       storeAttachment: writeBlob,
     });
     reply.status(200);
@@ -1045,8 +1116,11 @@ app.patch("/emails/:id", { config: { scope: "send" } }, async (request) => {
       status: string;
       scheduled_at: string | null;
       from_email: string;
+      topic_id: string | null;
+      contact_id: string | null;
+      broadcast_id: string | null;
     }>(
-      `select id, subject, html, text, headers, tags, status, scheduled_at, from_email
+      `select id, subject, html, text, headers, tags, status, scheduled_at, from_email, topic_id, contact_id, broadcast_id
        from emails
        where tenant_id = $1 and id = $2
        for update`,
@@ -1078,10 +1152,31 @@ app.patch("/emails/:id", { config: { scope: "send" } }, async (request) => {
       scheduledAt && scheduledAt.getTime() > Date.now()
         ? "scheduled"
         : "queued";
-    const html = input.html === undefined ? email.html : input.html;
+    let html = input.html === undefined ? email.html : input.html;
+    let headers = input.headers ?? email.headers ?? {};
+    let context: Record<string, unknown> = {};
+    if (email.topic_id) {
+      const recipient = await client.query<{ email: string }>(
+        "select email from email_recipients where tenant_id = $1 and email_id = $2 order by created_at, id limit 1",
+        [request.auth!.tenant_id, emailId],
+      );
+      if (!recipient.rows[0]) throw new ApiError("validation_error", 422, "Marketing email needs a recipient");
+      const links = subscriptionLinks({
+        tenantId: request.auth!.tenant_id, emailId, contactId: email.contact_id,
+        email: recipient.rows[0].email, topicId: email.topic_id, broadcastId: email.broadcast_id,
+        secret: appSecret, appUrl, publicUrl,
+      });
+      context = links.context;
+      html = replaceUnsubscribe(html, context) ?? null;
+      headers = {
+        ...Object.fromEntries(Object.entries(headers).filter(([key]) => !["list-unsubscribe", "list-unsubscribe-post"].includes(key.toLowerCase()))),
+        ...links.headers,
+      };
+    }
     const htmlChanged = input.html !== undefined && input.html !== email.html;
     // New HTML with no new text gets its text rebuilt, so the two parts of the message agree.
-    const text = input.text !== undefined ? input.text : htmlChanged && html ? textFromHtml(html) : email.text;
+    let text = input.text !== undefined ? input.text : htmlChanged && html ? textFromHtml(html) : email.text;
+    if (email.topic_id) text = replaceUnsubscribe(text, context) ?? null;
     if (!html && !text)
       throw new ApiError("validation_error", 400, "html or text is required");
     // The worker sends the tracked copy. Left alone, it would still hold the old HTML.
@@ -1106,7 +1201,7 @@ app.patch("/emails/:id", { config: { scope: "send" } }, async (request) => {
         input.subject ?? email.subject,
         html,
         text,
-        JSON.stringify(input.headers ?? email.headers ?? {}),
+        JSON.stringify(headers),
         JSON.stringify(input.tags ?? email.tags ?? {}),
         scheduledAt,
         nextStatus,
@@ -1788,7 +1883,8 @@ async function validKey(secret: string) {
 // Counts a request and sets the key's expiry in one round trip, so a process that stops between
 // the two cannot leave a key behind with no expiry.
 async function countHit(key: string) {
-  const results = await redis.multi().incr(key).expire(key, 2).exec();
+  if (postgresCounters) return postgresCountHit(db, key);
+  const results = await redis!.multi().incr(key).expire(key, 2).exec();
   const count = Number(results?.[0]?.[1] ?? 0);
   if (!Number.isFinite(count) || count < 1) throw new Error("rate limit counter unavailable");
   return count;
@@ -2260,9 +2356,9 @@ function domainRecords(
 }
 
 export async function close() {
-  clearInterval(telemetryTimer);
+  if (telemetryTimer) clearInterval(telemetryTimer);
   await app.close();
-  redis.disconnect();
+  redis?.disconnect();
   await db.end();
 }
 

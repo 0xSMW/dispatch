@@ -58,6 +58,24 @@ describe("constructor", () => {
 });
 
 describe("transport", () => {
+  it("forwards automation and step metric filters", async () => {
+    const fetch = stub({ object: "metrics", data: [] });
+    await new Dispatch({ apiKey: "sk_test" }).emails.metrics({ dimensions: ["step"], automationId: ["automation_1"] });
+    const url = new URL(request(fetch).url);
+    expect(url.searchParams.get("dimensions")).toBe("step");
+    expect(url.searchParams.get("automation_id")).toBe("automation_1");
+  });
+
+  it("preserves recipient-specific marketing results on single and batch sends", async () => {
+    const result = { id: "email_1", emails: [{ id: "email_1", to: "ada@example.com" }, { id: "email_2", to: "bob@example.com" }] };
+    stub(result);
+    const client = new Dispatch({ apiKey: "sk_test" });
+    const body = { from: "a@example.com", to: ["ada@example.com", "bob@example.com"], subject: "News", text: "Hi", topicId: "topic_1" };
+    expect((await client.emails.send(body)).data?.emails).toEqual(result.emails);
+    stub({ data: [result] });
+    expect((await client.batch.send([body])).data?.data[0]?.emails).toEqual(result.emails);
+  });
+
   it("returns data, a null error, and the response headers", async () => {
     globalThis.fetch = vi.fn(async () => reply({ id: "email_1" }, { headers: { "x-request-id": "req_1" } })) as never;
     const result = await new Dispatch({ apiKey: "sk_test" }).emails.send({ from: "a@example.com", to: "b@example.com", subject: "Hi", text: "Yo" });
@@ -326,6 +344,8 @@ const cases: Case[] = [
   ["logs.get", (c) => c.logs.get("log_1"), "GET", "/logs/log_1"],
   ["logs.export", (c) => c.logs.export(), "GET", "/logs/export"],
   ["brand.get", (c) => c.brand.get(), "GET", "/brand"],
+  ["settings.get", (c) => c.settings.get(), "GET", "/settings"],
+  ["settings.update", (c) => c.settings.update({ importTriggerAutomations: true, sandboxDomains: ["qa.test"] }), "PATCH", "/settings", { import_trigger_automations: true, sandbox_domains: ["qa.test"] }],
   ["brand.update", (c) => c.brand.update({ productName: "Acme", logoUrl: null }), "PATCH", "/brand", { product_name: "Acme", logo_url: null }],
   ["usage.get", (c) => c.usage.get(), "GET", "/usage"],
   ["system.get", (c) => c.system.get(), "GET", "/system"],
