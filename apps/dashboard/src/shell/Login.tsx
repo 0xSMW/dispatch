@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
-import { Activity } from "lucide-react";
+import { Send } from "lucide-react";
 import { Field } from "../components/Field";
 import { defaultApiUrl, errorMessage } from "../lib/client";
 import { useSession } from "./session";
@@ -38,7 +38,7 @@ export function Login() {
       <form className="loginCard" onSubmit={submit}>
         <div className="brand">
           <span className="brandMark" aria-hidden>
-            <Activity size={18} />
+            <Send size={14} />
           </span>
           <span>Dispatch</span>
         </div>

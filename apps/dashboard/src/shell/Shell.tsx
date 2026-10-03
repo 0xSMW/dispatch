@@ -17,6 +17,7 @@ import {
   Moon,
   Rocket,
   ScrollText,
+  Send,
   Settings,
   Sun,
   Users,
@@ -67,7 +68,7 @@ export function Shell() {
       <aside className="sidebar">
         <div className="brand">
           <span className="brandMark" aria-hidden>
-            <Activity size={18} />
+            <Send size={14} />
           </span>
           <span>Dispatch</span>
         </div>
@@ -79,10 +80,12 @@ export function Shell() {
             </NavLink>
           ))}
         </nav>
-        <Account />
+        <div className="sidebarFoot">
+          <Tools apiUrl={session.apiUrl} onApi={() => setPanel("api")} onKeys={() => setPanel("keys")} />
+          <Account />
+        </div>
       </aside>
       <div className="main">
-        <TopBar apiUrl={session.apiUrl} onApi={() => setPanel("api")} onKeys={() => setPanel("keys")} />
         <main className="content">
           {location.pathname === "/emails" ? <Onboarding /> : null}
           <Outlet />
@@ -94,29 +97,30 @@ export function Shell() {
   );
 }
 
-function TopBar({ apiUrl, onApi, onKeys }: { apiUrl: string; onApi: () => void; onKeys: () => void }) {
+/** Icon row above the account menu: API reference, shortcuts, and docs. The API host shows on hover. */
+function Tools({ apiUrl, onApi, onKeys }: { apiUrl: string; onApi: () => void; onKeys: () => void }) {
   const docs = import.meta.env.VITE_DOCS_URL as string | undefined;
   return (
-    <header className="topbar">
-      <span className="envChip mono" title="API URL">
-        {new URL(apiUrl).host}
-      </span>
-      <div className="toolbar">
-        <button type="button" className="ghost small" onClick={onApi} title="API reference for this page">
-          <Code2 size={14} />
-          API <kbd>{shortcuts.api.keys[0]}</kbd>
-        </button>
-        <button type="button" className="ghost icon small" onClick={onKeys} aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">
-          <Keyboard size={14} />
-        </button>
-        {docs ? (
-          <a className="button ghost small" href={docs} target="_blank" rel="noreferrer">
-            <BookOpen size={14} />
-            Docs
-          </a>
-        ) : null}
-      </div>
-    </header>
+    <div className="sidebarTools">
+      <button
+        type="button"
+        className="ghost icon small"
+        onClick={onApi}
+        aria-label="API reference"
+        title={`API reference for this page (${shortcuts.api.keys[0]}) · ${new URL(apiUrl).host}`}
+      >
+        <Code2 size={15} />
+      </button>
+      <button type="button" className="ghost icon small" onClick={onKeys} aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">
+        <Keyboard size={15} />
+      </button>
+      <span className="spacer" />
+      {docs ? (
+        <a className="button ghost icon small" href={docs} target="_blank" rel="noreferrer" aria-label="Docs" title="Docs">
+          <BookOpen size={15} />
+        </a>
+      ) : null}
+    </div>
   );
 }
 

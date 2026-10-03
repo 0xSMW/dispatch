@@ -164,10 +164,10 @@ export function Table<T>({
             {noun && rows.length > 0 ? ` · ${rows.length} ${noun}` : ""}
           </span>
           <div className="toolbar">
-            <button type="button" className="secondary small" disabled={page <= 1 || loading} onClick={onPrevious}>
+            <button type="button" className="ghost small" disabled={page <= 1 || loading} onClick={onPrevious}>
               Previous
             </button>
-            <button type="button" className="secondary small" disabled={!hasMore || loading} onClick={onNext}>
+            <button type="button" className="ghost small" disabled={!hasMore || loading} onClick={onNext}>
               Next
             </button>
           </div>
