@@ -123,6 +123,7 @@ export function Source({
   disabled,
   textareaRef,
   flushRef,
+  placeholders,
 }: {
   html: string;
   text: string;
@@ -131,6 +132,7 @@ export function Source({
   disabled?: boolean;
   textareaRef?: Ref<HTMLTextAreaElement>;
   flushRef?: { current: Flush | null };
+  placeholders?: VisualProps["placeholders"];
 }) {
   const [tab, setTab] = useState<"html" | "text">("html");
   const [mode, setMode] = useState<"code" | "visual">("code");
@@ -226,6 +228,7 @@ export function Source({
               html={html}
               convert={convert}
               handle={handle}
+              placeholders={placeholders}
               onHtml={onHtml}
               onReject={(reason, convertible) => {
                 setMode("code");

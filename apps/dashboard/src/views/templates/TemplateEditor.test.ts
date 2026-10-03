@@ -39,13 +39,14 @@ describe("TemplateEditor", () => {
     vi.unstubAllGlobals();
   });
 
-  it("fills the preview live and lists new variables with a warning", async () => {
+  it("fills the preview live and lists new variables as Required", async () => {
     setup();
     await editHtml("<p>{{{GREETING}}} {{{NAME}}} from {{{PRODUCT_NAME}}}</p>");
     expect(preview()).toBe("<p>[GREETING] [NAME] from Acme</p>");
     const table = screen.getByRole("heading", { name: "Variables" }).closest("section")!;
     const row = within(table).getByText("GREETING").closest("tr")!;
-    expect(within(row).getByLabelText("No fallback")).toBeTruthy();
+    expect(within(row).getByRole("button", { name: "Required" }).getAttribute("aria-pressed")).toBe("true");
+    expect(within(row).queryByLabelText("Fallback for GREETING")).toBeNull();
     expect(within(table).getByText(/PRODUCT_NAME/)).toBeTruthy();
 
     fireEvent.change(within(row).getByLabelText("Sample value for GREETING"), { target: { value: "Hello" } });

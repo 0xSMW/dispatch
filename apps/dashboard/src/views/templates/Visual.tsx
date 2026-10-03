@@ -11,6 +11,8 @@ import { composeReactEmail } from "@react-email/editor/core";
 import "@react-email/editor/themes/default.css";
 import { toast } from "../../components/Toast";
 import { loss, pick, sameMarkup, unsafePaste, unwrap } from "./guard";
+import { PlaceholderPanel, type PlaceholderControls } from "./PlaceholderPanel";
+import { selectedPlaceholder, type Editor, type Placeholder } from "./placeholders";
 
 const noImages = "Images cannot be pasted or dropped here. Add the image URL in Code mode.";
 
@@ -58,9 +60,10 @@ export type VisualProps = {
    */
   onReject: (reason: string, convertible: boolean) => void;
   handle?: { current: VisualHandle | null };
+  placeholders?: PlaceholderControls;
 };
 
-export default function Visual({ html, editable = true, convert = false, onHtml, onReject, handle }: VisualProps) {
+export default function Visual({ html, editable = true, convert = false, onHtml, onReject, handle, placeholders }: VisualProps) {
   // The HTML the editor was loaded with, and a counter that remounts the editor when it changes.
   const [loaded, setLoaded] = useState({ html, version: 0 });
   const [checked, setChecked] = useState(false);
@@ -78,6 +81,40 @@ export default function Visual({ html, editable = true, convert = false, onHtml,
   version.current = loaded.version;
   const canEdit = useRef(editable);
   canEdit.current = editable;
+  const [selection, setSelection] = useState<{ token: Placeholder; editor: Editor } | null>(null);
+  const detach = useRef<(() => void) | null>(null);
+  const inspecting = useRef(false);
+
+  function ready(ref: EmailEditorRef) {
+    detach.current?.();
+    setSelection(null);
+    const editor = ref.editor;
+    if (editor && placeholders) {
+      const select = ({ transaction }: { transaction: Editor["state"]["tr"] }) => {
+        // Browser selection can settle on blur. Keep the token while its panel owns focus.
+        if (!transaction.docChanged && (transaction.getMeta("blur") || (!editor.isFocused && !editor.view.hasFocus()))) return;
+        if (inspecting.current) {
+          if (!transaction.docChanged) return;
+          setSelection((current) => {
+            if (!current) return null;
+            const from = transaction.mapping.map(current.token.from, -1) + 2;
+            const token = selectedPlaceholder(editor, { from, to: from });
+            return token ? { token, editor } : null;
+          });
+          return;
+        }
+        const token = selectedPlaceholder(editor);
+        setSelection((current) => {
+          if (current?.editor === editor && JSON.stringify(current.token) === JSON.stringify(token)) return current;
+          if (!current && !token) return current;
+          return token ? { token, editor } : null;
+        });
+      };
+      editor.on("transaction", select);
+      detach.current = () => editor.off("transaction", select);
+    }
+    void check(ref, loaded.version, loaded.html);
+  }
 
   // The HTML changed from outside, for example a restored version or a snippet inserted by the page.
   // The editor reloads it and checks it again.
@@ -141,6 +178,7 @@ export default function Visual({ html, editable = true, convert = false, onHtml,
       // The page flushes before it unmounts this. Anything still waiting here belongs to a page
       // that is going away, and a late write could land on top of what came next.
       alive.current = false;
+      detach.current?.();
       if (pending.current) clearTimeout(pending.current.timer);
       pending.current = null;
     };
@@ -198,16 +236,23 @@ export default function Visual({ html, editable = true, convert = false, onHtml,
           Checking that visual mode keeps this email as it is…
         </p>
       )}
-      <div className={checked ? "visualCanvas" : "visualCanvas checking"}>
-        <EmailEditor
-          key={loaded.version}
-          content={loadable(loaded.html)}
-          editable={editable}
-          onUploadImage={upload}
-          onReady={(ref) => void check(ref, loaded.version, loaded.html)}
-          onUpdate={update}
-          className="visualDoc"
-        />
+      <div
+        className={placeholders && selection && checked ? "visualLayout withPlaceholder" : "visualLayout"}
+        onPointerDownCapture={(event) => { inspecting.current = Boolean((event.target as Element).closest(".placeholderPanel")); }}
+        onFocusCapture={(event) => { inspecting.current = Boolean((event.target as Element).closest(".placeholderPanel")); }}
+      >
+        <div className={checked ? "visualCanvas" : "visualCanvas checking"}>
+          <EmailEditor
+            key={loaded.version}
+            content={loadable(loaded.html)}
+            editable={editable}
+            onUploadImage={upload}
+            onReady={ready}
+            onUpdate={update}
+            className="visualDoc"
+          />
+        </div>
+        {checked && placeholders && selection ? <PlaceholderPanel token={selection.token} editor={selection.editor} controls={placeholders} /> : null}
       </div>
     </div>
   );

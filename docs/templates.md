@@ -32,7 +32,9 @@ Declare custom variables as `string`, `number`, or `list`. Keys are case-sensiti
 
 For a printed placeholder, Dispatch uses the supplied or context value, then an inline fallback such as `{{{NAME|there}}}`, then the variable's saved `fallback_value`. Missing, null, and empty-string values use fallbacks. Without a value or fallback, rendering fails with `422` and names the missing variable. A placeholder inside an omitted conditional block does not need a value.
 
-The editor detects custom placeholders and lets you configure their type, fallback, and sample. Samples are for preview and test sends; they are not saved defaults for production sends. There is no separate required/optional switch: use a fallback or a conditional block to handle missing data.
+The editor detects custom placeholders and lets you configure their type, requirement, and sample. **Required** stores `fallback_value: null`. **Optional** reveals the saved fallback, including an empty string or numeric zero. Switching to Required hides the fallback; switching back during the same editing session restores it. Lists stay fixed Required and have no saved fallback. Samples are for preview and test sends; they are not saved defaults for production sends.
+
+These controls do not change inline fallbacks or conditional rendering. A printed placeholder with an inline fallback can still render without a supplied value even when its saved setting is Required.
 
 Replacement values are HTML-escaped in HTML, even with triple braces; they cannot inject raw HTML. Subject and plain-text replacements are not HTML-escaped.
 
@@ -70,6 +72,8 @@ The HTML tab has Code and Visual modes sharing the same saved HTML. Plain text i
 Visual mode opens an empty template or HTML it previously produced and can reproduce unchanged. Hand-written or React Email HTML may need a confirmed conversion. Conversion rebuilds the layout on your first edit and can lose formatting such as colors, widths, and backgrounds.
 
 If opening the content would lose placeholders, links, images, or unsupported content, Visual mode refuses it. Keep that template in Code mode instead. Switching modes is not permission to silently rewrite your source.
+
+Place the cursor in a visible placeholder to open its side panel. Name changes only that occurrence; Required/Optional and the saved fallback use the same settings as the variable table. **List item** shows whether the placeholder reads a field inside an `each` block. Its scope comes from the block, not a separate stored flag. For an item field, Optional edits that occurrence's inline fallback instead of declaring a global variable. Edit block boundaries and attribute placeholders (such as link URLs) in Code mode. Selecting a placeholder alone never rewrites the HTML.
 
 Image-file uploads, pastes, and drops are not supported. Add an image URL in Code mode. Preview with real sample values and send a test before publishing.
 

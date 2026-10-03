@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Show Required/Optional template variable controls with saved fallbacks, keep lists fixed Required, and add a visual placeholder panel for names, requirements, fallbacks, and list-item scope. The stored variable model and rendering rules are unchanged.
+
 - Add public automation, template, audience, and domain guides, with Learn chips pinned to the dashboard version or a configured docs directory. Unavailable guides and anchors stay hidden.
 
 - Require Node 24 LTS and pnpm 10.28.0 for development and builds.

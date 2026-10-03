@@ -362,6 +362,12 @@ textarea.sourceArea {
   font-size: 13px;
 }
 
+.requirement {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+}
+
 .insertList {
   display: flex;
   flex-wrap: wrap;
