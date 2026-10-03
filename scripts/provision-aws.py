@@ -36,6 +36,21 @@ def aws(service, operation, optional=False, **args):
     return json.loads(result.stdout) if result.stdout.strip() else {}
 
 
+def ensure_configuration_set(name):
+    policy = 'REQUIRE' if name.endswith('tls-required') else 'OPTIONAL'
+    existing = aws('sesv2', 'get-configuration-set', optional=True, configuration_set_name=name)
+    if existing is None:
+        aws('sesv2', 'create-configuration-set', configuration_set_name=name, delivery_options={'TlsPolicy': policy}, reputation_options={'ReputationMetricsEnabled': True})
+    if policy != 'REQUIRE':
+        return
+    # Reconcile existing sets too: a successful creation on an earlier run does not
+    # guarantee the enforced set still requires encrypted delivery.
+    aws('sesv2', 'put-configuration-set-delivery-options', configuration_set_name=name, tls_policy=policy)
+    verified = aws('sesv2', 'get-configuration-set', configuration_set_name=name)
+    if verified.get('DeliveryOptions', {}).get('TlsPolicy') != policy:
+        raise RuntimeError(f'Configuration set {name} did not retain TLS policy {policy}')
+
+
 def main():
     caller = aws('sts', 'get-caller-identity')
     if caller['Account'] != ACCOUNT:
@@ -45,9 +60,7 @@ def main():
     if identity and identity.get('MailFromAttributes', {}).get('MailFromDomain') not in [None, 'send.' + DOMAIN]:
         raise RuntimeError('Existing SES identity uses another MAIL FROM; stop for review')
     for name in CONFIGS:
-        existing = aws('sesv2', 'get-configuration-set', optional=True, configuration_set_name=name)
-        if existing is None:
-            aws('sesv2', 'create-configuration-set', configuration_set_name=name, delivery_options={'TlsPolicy': 'REQUIRE' if name.endswith('tls-required') else 'OPTIONAL'}, reputation_options={'ReputationMetricsEnabled': True})
+        ensure_configuration_set(name)
     if identity is None:
         aws('sesv2', 'create-email-identity', email_identity=DOMAIN, configuration_set_name=CONFIGS[0])
         aws('sesv2', 'put-email-identity-mail-from-attributes', email_identity=DOMAIN, mail_from_domain='send.' + DOMAIN, behavior_on_mx_failure='USE_DEFAULT_VALUE')
