@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { columnMap, guessMapping, parseCsv, propertyKey, readHead, toCsv } from "./csv";
+import { describe, expect, it, vi } from "vitest";
+import { columnMap, countRows, guessMapping, parseCsv, propertyKey, readHead, toCsv } from "./csv";
 
 describe("parseCsv", () => {
   it("handles quotes, doubled quotes, commas and line breaks inside quotes, and CRLF", () => {
@@ -20,6 +20,35 @@ describe("readHead", () => {
   it("reads the header and sample rows, dropping a byte order mark", async () => {
     const file = new Blob(["﻿Email, First Name\nada@example.com,Ada\nbob@example.com,Bob\n"]);
     expect(await readHead(file, 1)).toEqual({ headers: ["Email", "First Name"], rows: [["ada@example.com", "Ada"]] });
+  });
+});
+
+describe("countRows", () => {
+  it.each([1, 2, 7, 64 * 1024])("counts records, not quoted line breaks, across %i-byte chunks", async (chunkSize) => {
+    const text = '\uFEFFemail,note\r\nada@example.com,"Hello, ""world""\r\nagain"\r\n\r\n,\r\n""," "\r\nbob@example.com,"two\nlines"\r\ncarol@example.com,終';
+    expect(await countRows(new Blob([text]), undefined, chunkSize)).toBe(5);
+  });
+
+  it.each(["", "email\n", " \r\nemail\r\n", "email\n  \n"])("has no data records for %j", async (text) => {
+    expect(await countRows(new Blob([text]))).toBe(0);
+  });
+
+  it("counts empty quoted and delimited records and respects the worker's trimmed quoted fields", async () => {
+    expect(await countRows(new Blob(['email,note\n"",""\n,\n \t \nada@example.com,  "two\nlines"\n']))).toBe(3);
+  });
+
+  it("reads only bounded slices even for a large field and counts the final unterminated line", async () => {
+    const file = new Blob([`email,note\nada@example.com,"${"x\n".repeat(100000)}"\nbob@example.com,last`]);
+    const slice = vi.spyOn(file, "slice");
+    expect(await countRows(file)).toBe(2);
+    expect(slice.mock.calls.length).toBeGreaterThan(1);
+    for (const [start, end] of slice.mock.calls) expect(end! - start!).toBeLessThanOrEqual(64 * 1024);
+  });
+
+  it("aborts when a new file replaces the current one", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    await expect(countRows(new Blob(["email\nada@example.com"]), controller.signal)).rejects.toHaveProperty("name", "AbortError");
   });
 });
 

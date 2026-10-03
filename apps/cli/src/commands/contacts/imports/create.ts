@@ -12,6 +12,8 @@ export const create = new Command("create")
   .option("--column-map <json>", 'Map fields to CSV columns, such as {"email":{"column":"E-mail"}}')
   .addOption(new Option("--on-conflict <mode>", "What to do with existing contacts").choices(["upsert", "skip"] as const))
   .option("--segment-id <id>", "Add every imported contact to this segment. Repeatable", collect)
+  .option("--trigger-automations", "Trigger automations for imported contacts (defaults to the tenant setting)")
+  .option("--no-trigger-automations", "Do not trigger automations for imported contacts")
   .addHelpText(
     "after",
     helpText({
@@ -33,6 +35,7 @@ export const create = new Command("create")
           ...compact({
             columnMap: jsonFlag<Record<string, unknown>>(options.columnMap, "--column-map"),
             onConflict: options.onConflict,
+            triggerAutomations: options.triggerAutomations,
             segments: many(options.segmentId)?.map((id) => ({ id })),
           }),
         }),

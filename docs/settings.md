@@ -18,6 +18,14 @@ Changes preserve keys you omit. Set `sandbox_domains` to an empty array to remov
 
 The dashboard exposes these settings under Settings, General.
 
+## Import automations
+
+`import_trigger_automations` defaults to `false`. It supplies the default for a new [contact import](audience.md#start-automations-during-an-import), not a rule applied while the worker processes it.
+
+An import's optional multipart `trigger_automations` boolean overrides the default. Send the field as `true` or `false`; explicit `false` also overrides a tenant default of `true`. Omission resolves and stores the tenant default at import creation. Later settings changes apply to new imports only. Import creation, list entries, and detail responses include the resolved `trigger_automations` boolean.
+
+When enabled, imports can start matching enabled Contact added, Subscribed to topic, and Added to segment automations for actual changes. They do not fire Contact changes. The flag does not create or enable flows, bypass their re-entry rules, or clear opt-outs. Review matching flows before importing: they may send immediately or after their configured waits.
+
 ## Sandbox domains
 
 Dispatch always treats `example.com`, `example.net`, `example.org`, and their subdomains, plus domains under `.test`, `.example`, and `.invalid`, as sandbox recipient domains. Your additions follow the same rule in every environment, including production. Matching is case-insensitive and uses hostname boundaries: `qa.acme.com` includes `team.qa.acme.com`, not `notqa.acme.com`.

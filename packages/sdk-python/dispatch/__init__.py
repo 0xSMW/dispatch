@@ -744,7 +744,12 @@ class Dispatch:
         segments: list[dict[str, str]] | None = None,
         topics: list[dict[str, str]] | None = None,
         filename: str = "contacts.csv",
+        trigger_automations: bool | None = None,
     ) -> Json:
+        """Omit trigger_automations to store the tenant default at creation.
+
+        Create, list and detail responses include the stored trigger_automations boolean.
+        """
         fields: dict[str, str] = {}
         if column_map is not None:
             fields["column_map"] = json.dumps(column_map)
@@ -754,6 +759,8 @@ class Dispatch:
             fields["segments"] = json.dumps(segments)
         if topics is not None:
             fields["topics"] = json.dumps(topics)
+        if trigger_automations is not None:
+            fields["trigger_automations"] = json.dumps(trigger_automations)
         content = file.encode("utf-8") if isinstance(file, str) else file
         body, content_type = _multipart(fields, "file", filename, content)
         return self._request("POST", "/contacts/imports", raw=(body, content_type))
@@ -920,8 +927,10 @@ class Dispatch:
     def duplicate_automation(self, automation_id: str) -> Json:
         return self._request("POST", _path("automations", automation_id, "duplicate"), {})
 
-    def stop_automation(self, automation_id: str) -> Json:
-        return self._request("POST", _path("automations", automation_id, "stop"), {})
+    def stop_automation(self, automation_id: str, reset_reentry: bool | None = None) -> Json:
+        """Optionally reset once enrollments only for contacts whose active runs are cancelled."""
+        body: Json = {} if reset_reentry is None else {"reset_reentry": reset_reentry}
+        return self._request("POST", _path("automations", automation_id, "stop"), body)
 
     def automation_runs(self, automation_id: str, **query: Any) -> Json:
         return self._request("GET", _query(_path("automations", automation_id, "runs"), query))

@@ -3,9 +3,8 @@ import { Failed, PageHeader, Panel, Skeleton, Switch, Tabs, TextArea } from "../
 import { useMutation } from "../../hooks/useMutation";
 import { useResource } from "../../hooks/useResource";
 import { useCan, useClient } from "../../shell/session";
+import type { Settings } from "../../types";
 import { settingsTabs } from "../tabs";
-
-type Settings = { import_trigger_automations: boolean; sandbox_domains: string[] };
 
 export function General() {
   const client = useClient();

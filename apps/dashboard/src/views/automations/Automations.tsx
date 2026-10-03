@@ -24,7 +24,7 @@ import { useCan, useClient } from "../../shell/session";
 import type { Automation, ContactProperty, EventDefinition, Segment, Topic } from "../../types";
 import { automationTabs } from "../tabs";
 import { automationTrigger, triggerIssues, triggerLabels, triggerSummary, triggerWarning, type TriggerConfig } from "./graph";
-import { TriggerForm, triggerLoading, triggerSources } from "./Trigger";
+import { ReentryContext, TriggerForm, triggerLoading, triggerSources, type Reentry } from "./Trigger";
 import { StopAutomation, isEnabled } from "./Stop";
 
 export const automationCsv: Array<CsvColumn<Automation>> = [
@@ -128,7 +128,7 @@ export function Automations() {
             { label: "View runs", read: true, onSelect: () => navigate(`/automations/${row.id}/editor?tab=runs`) },
             { label: "Duplicate", onSelect: () => void duplicate.mutate(row) },
             isEnabled(row)
-              ? { label: "Stop", onSelect: () => setStopping(row) }
+              ? { label: "Stop and cancel runs", onSelect: () => setStopping(row) }
               : { label: "Start", disabled: cannotStart(row), onSelect: () => void start.mutate(row) },
             "divider",
             { label: "Delete", danger: true, onSelect: () => setDeleting([row]) },
@@ -175,6 +175,8 @@ function CreateAutomation({ onClose }: { onClose: () => void }) {
   const properties = useList<ContactProperty>("/contact-properties", {}, { all: true });
   const [name, setName] = useState("");
   const [trigger, setTrigger] = useState<TriggerConfig>({ type: "event", event_name: "" });
+  const [reentryChoice, setReentryChoice] = useState<Reentry | null>(null);
+  const reentry = reentryChoice ?? (trigger.type === "event" ? "every_time" : "once");
   const options = {
     templates: [],
     events: events.rows.map((row) => row.name),
@@ -194,6 +196,7 @@ function CreateAutomation({ onClose }: { onClose: () => void }) {
     () =>
       client.post<Automation>("/automations", {
         name: name.trim(),
+        reentry,
         steps: [{ key: "trigger", type: "trigger", config: trigger.type === "event" ? { ...trigger, event_name: trigger.event_name.trim() } : trigger }],
         connections: [],
       }),
@@ -218,12 +221,14 @@ function CreateAutomation({ onClose }: { onClose: () => void }) {
     >
       <div className="form">
         <Field label="Name" value={name} onChange={setName} placeholder="Welcome series" required autoFocus />
+        <ReentryContext.Provider value={{ value: reentry, onChange: setReentryChoice }}>
         <TriggerForm
           config={trigger}
           onChange={setTrigger}
           eventLabel="Trigger event"
           options={options}
         />
+        </ReentryContext.Provider>
         <p className="fieldHint">New automations start disabled. Add steps in the builder, then start it.</p>
       </div>
     </Modal>

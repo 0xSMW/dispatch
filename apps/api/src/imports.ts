@@ -18,7 +18,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 
 export const importFileLimit = 200 * 1024 * 1024;
 
-const importFields = ["column_map", "on_conflict", "segments", "topics"];
+const importFields = ["column_map", "on_conflict", "segments", "topics", "trigger_automations"];
 
 export function registerImports(
   app: FastifyInstance,
@@ -43,6 +43,7 @@ export function registerImports(
       const storageKey = importKey(tenantId, importId);
       const fields: Record<string, unknown> = {};
       let stored = false;
+      let triggerAutomations = false;
       try {
         for await (const part of request.parts()) {
           if (part.type === "field") {
@@ -61,7 +62,7 @@ export function registerImports(
         if (!stored) throw new ApiError("validation_error", 422, "file is required");
         const input = contactImportSchema.parse(fields);
         await assertImportRefs(db, tenantId, input.segments, input.topics);
-        await createImport(db, {
+        const row = await createImport(db, {
           id: importId,
           tenantId,
           storageKey,
@@ -69,12 +70,14 @@ export function registerImports(
           onConflict: input.on_conflict,
           segments: input.segments,
           topics: input.topics,
+          triggerAutomations: input.trigger_automations,
         });
+        triggerAutomations = row!.trigger_automations ?? false;
       } catch (error) {
         if (stored) await storage.delete(storageKey).catch(() => undefined);
         throw uploadError(error);
       }
-      return { object: "contact_import", id: importId };
+      return { object: "contact_import", id: importId, trigger_automations: triggerAutomations };
     });
   });
 

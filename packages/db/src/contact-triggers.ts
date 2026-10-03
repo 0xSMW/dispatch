@@ -15,6 +15,7 @@ type Candidate = {
 export type TriggerOptions = {
   triggerType: TriggerConfig["type"]; key: string; contact: ContactRow | null;
   changes?: ContactChange[]; originRunId?: string;
+  priority?: "normal" | "bulk";
 };
 
 export function contactDiff(before: ContactRow | null, after: ContactRow): ContactChange[] {
@@ -128,9 +129,9 @@ export async function startRuns(client: Queryable, tenantId: string, event: Fire
       if (!enrolled.rows[0]) continue;
     }
     const run = await client.query<{ id: string }>(
-      `insert into automation_runs (id, tenant_id, automation_id, event_id, state)
-       values ($1, $2, $3, $4, 'ready') returning id`,
-      [id("run"), tenantId, automation.id, event.id]
+      `insert into automation_runs (id, tenant_id, automation_id, event_id, state, priority, contact_id)
+       values ($1, $2, $3, $4, 'ready', $5, $6) returning id`,
+      [id("run"), tenantId, automation.id, event.id, options.priority ?? "normal", options.contact?.id ?? null]
     );
     runs.push(run.rows[0]!.id);
     await emitRunEvent(client, tenantId, run.rows[0]!.id, "automation.run.started");

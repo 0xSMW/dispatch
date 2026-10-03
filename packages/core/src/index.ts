@@ -764,6 +764,7 @@ export type ImportColumnMap = z.infer<typeof importColumnMapSchema>;
 const importRef = z.union([z.string().min(1), z.object({ id: z.string().min(1) })]).transform((value) => (typeof value === "string" ? { id: value } : value));
 
 export const contactImportSchema = z.object({
+  trigger_automations: z.preprocess((value) => value === "true" ? true : value === "false" ? false : value, z.boolean().optional()),
   column_map: z.preprocess(jsonField, importColumnMapSchema.default({})),
   on_conflict: z.enum(["upsert", "skip"]).default("upsert"),
   segments: z.preprocess(jsonField, z.array(importRef).max(100).default([])),
@@ -1226,6 +1227,7 @@ export const automationUpdateSchema = z
   })
   .transform(({ status, enabled, ...rest }) => ({ ...rest, enabled: status ? status === "enabled" : enabled }));
 export type AutomationUpdateInput = z.input<typeof automationUpdateSchema>;
+export const automationStopSchema = z.object({ reset_reentry: z.boolean().default(false) }).strict();
 
 export const eventFieldTypes = ["string", "number", "boolean", "date"] as const;
 

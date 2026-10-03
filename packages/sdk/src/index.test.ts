@@ -58,6 +58,19 @@ describe("constructor", () => {
 });
 
 describe("transport", () => {
+  it.each([undefined, false, true])("preserves the optional stop reset flag: %s", async (resetReentry) => {
+    const fetch = stub({ object: "automation", id: "a1", stopped: 2 });
+    const client = new Dispatch({ apiKey: "sk_test" });
+    const result = resetReentry === undefined
+      ? await client.automations.stop("a/1")
+      : await client.automations.stop("a/1", { resetReentry });
+    const sent = request(fetch);
+    expect(sent.method).toBe("POST");
+    expect(sent.url).toBe(`${base}/automations/a%2F1/stop`);
+    expect(sent.body).toEqual(resetReentry === undefined ? {} : { reset_reentry: resetReentry });
+    expect(result.data?.stopped).toBe(2);
+  });
+
   it("preserves contact trigger configs, primitive transitions, and reentry", async () => {
     const configs: AutomationTriggerConfig[] = [
       { type: "event", event_name: "user.created" },
@@ -575,6 +588,37 @@ describe("resource methods", () => {
     expect(form.get("on_conflict")).toBe("skip");
     expect(JSON.parse(String(form.get("column_map")))).toEqual({ email: { column: "email", type: "string" } });
     expect(await (form.get("file") as Blob).text()).toBe("email\nada@x.com\n");
+  });
+
+  it.each([undefined, false, true])("preserves the optional import automation flag: %s", async (triggerAutomations) => {
+    // Omission must let the API resolve a tenant default, not send the SDK's own default.
+    const imported = { object: "contact_import", id: "imp_1", trigger_automations: triggerAutomations ?? true };
+    const fetch = stub(imported);
+    const client = new Dispatch({ apiKey: "sk_test" });
+    const created = await client.contacts.imports.create({
+      file: "email\nada@x.com\n",
+      ...(triggerAutomations === undefined ? {} : { triggerAutomations })
+    });
+    const sent = request(fetch);
+    expect(sent.method).toBe("POST");
+    expect(sent.url).toBe(`${base}/contacts/imports`);
+    expect(sent.headers.get("content-type")).toBeNull();
+    const form = sent.body as FormData;
+    expect(form.has("trigger_automations")).toBe(triggerAutomations !== undefined);
+    expect(form.get("trigger_automations")).toBe(triggerAutomations === undefined ? null : String(triggerAutomations));
+    expect(await (form.get("file") as Blob).text()).toBe("email\nada@x.com\n");
+    expectTypeOf(created.data!.trigger_automations).toEqualTypeOf<boolean>();
+    expect(created.data).toEqual(imported);
+
+    const detail = await client.contacts.imports.get("imp_1");
+    expectTypeOf(detail.data!.trigger_automations).toEqualTypeOf<boolean>();
+    expect(detail.data).toEqual(imported);
+    expect(request(fetch, 1).url).toBe(`${base}/contacts/imports/imp_1`);
+    const listFetch = stub({ object: "list", has_more: false, data: [imported] });
+    const list = await client.contacts.imports.list();
+    expectTypeOf(list.data!.data[0]!.trigger_automations).toEqualTypeOf<boolean>();
+    expect(list.data?.data[0]).toEqual(imported);
+    expect(request(listFetch).url).toBe(`${base}/contacts/imports`);
   });
 
   it("returns missing_required_field instead of throwing when a contact is not named", async () => {

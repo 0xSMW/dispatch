@@ -6,7 +6,7 @@ import { helpText } from "../../lib/help.js";
 import { compact, jsonFlag } from "../../lib/json.js";
 import { promptMissing } from "../../lib/prompts.js";
 
-type Definition = { name?: string; trigger?: string; steps?: unknown[]; connections?: unknown[]; status?: string };
+type Definition = { name?: string; trigger?: string; steps?: unknown[]; connections?: unknown[]; status?: string; reentry?: "once" | "every_time" };
 
 const triggerTypes = ["event", "contact_created", "contact_updated", "topic_subscribed", "segment_added"] as const;
 type TriggerType = (typeof triggerTypes)[number];
@@ -70,6 +70,7 @@ export const create = new Command("create")
   .option("--connections <json>", "Connections between steps as a JSON array")
   .option("--file <path>", "Whole definition as JSON, or - for stdin. Flags override its fields")
   .addOption(new Option("--status <status>", "Start enabled or disabled").choices(["enabled", "disabled"] as const))
+  .addOption(new Option("--reentry <mode>", "Whether a contact can enter once or every time").choices(["once", "every_time"] as const))
   .addHelpText(
     "after",
     helpText({
@@ -95,6 +96,7 @@ export const create = new Command("create")
             steps: jsonFlag<unknown[]>(options.steps, "--steps"),
             connections: jsonFlag<unknown[]>(options.connections, "--connections"),
             status: options.status,
+            reentry: options.reentry,
           }),
         };
         const asked = await promptMissing({ name: definition.name }, [{ key: "name", flag: "--name", label: "Automation name" }], globals);

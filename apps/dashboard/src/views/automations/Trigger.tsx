@@ -1,9 +1,15 @@
+import { createContext, useContext } from "react";
 import { Select } from "../../components/Field";
 import { TypedValue } from "../../components/TypedValue";
 import type { RuleSources } from "../../lib/rules";
-import type { PropertyType } from "../../types";
+import type { Automation, PropertyType } from "../../types";
 import { EventInput, type StepOptions } from "./Steps";
 import { defaultTrigger, stepError, triggerChoices, triggerFields, triggerWarning, type TriggerConfig, type TriggerType } from "./graph";
+
+export type Reentry = NonNullable<Automation["reentry"]>;
+
+/** Re-entry belongs to the automation, not the trigger step. Both builder views share it. */
+export const ReentryContext = createContext<{ value: Reentry; onChange: (value: Reentry) => void } | null>(null);
 
 /** Only completed resource lists can establish that a trigger's resource was deleted. */
 export function triggerSources(options?: StepOptions): RuleSources {
@@ -32,6 +38,7 @@ export function TriggerForm({
   errors?: Record<string, string>;
   eventLabel?: string;
 }) {
+  const reentry = useContext(ReentryContext);
   const sources = triggerSources(options);
   const warning = triggerWarning(config, sources);
   const fields = triggerFields(options?.contactProperties);
@@ -133,6 +140,16 @@ export function TriggerForm({
       {warning ? <p className="notice warning" role="status">{warning}. Choose another {config.type === "topic_subscribed" ? "topic" : "segment"} before starting this automation.</p> : null}
       {sourceError ? <p className="fieldError" role="alert">Could not load trigger fields: {sourceError}</p> : null}
       {errors[stepError] ? <p className="fieldError" role="alert">{errors[stepError]}</p> : null}
+      {reentry ? (
+        <Select
+          label="Run for each contact"
+          value={reentry.value}
+          onChange={(value) => reentry.onChange(value as Reentry)}
+          options={[{ value: "once", label: "Once" }, { value: "every_time", label: "Every time" }]}
+          disabled={disabled}
+          hint="Once prevents the same contact from entering this automation again."
+        />
+      ) : null}
     </>
   );
 }

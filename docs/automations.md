@@ -14,7 +14,7 @@ Choose one of five trigger types. In a graph definition, the trigger step's `con
 | Contact added | `{ "type": "contact_created" }` | A contact is created or explicitly revived. |
 | Contact changes | `{ "type": "contact_updated", "field": "plan", "from": "free", "to": "pro" }` | A stored field makes that exact transition. |
 | Subscribed to topic | `{ "type": "topic_subscribed", "topic_id": "topic_..." }` | A contact moves from not receiving the topic to receiving it, with its default applied. |
-| Added to segment | `{ "type": "segment_added", "segment_id": "seg_..." }` | A contact joins a static segment for the first time. |
+| Added to segment | `{ "type": "segment_added", "segment_id": "seg_..." }` | A new membership is inserted into a static segment. |
 
 Legacy event configs containing only `{ "event_name": "user.signed_up" }` are still accepted and normalized to `type: "event"`. Automation responses keep `trigger` as the event name for event triggers and return null for contact triggers. `trigger_config` carries the full config for either kind.
 
@@ -62,8 +62,11 @@ These sources dispatch contact triggers:
 | Application event contact resolution | Contact added for a new address; Contact changes when missing names are filled. Deleted contacts stay deleted. |
 | Update contact and Add to segment steps | Actual contact changes, new contacts when needed, and new segment memberships. |
 | Preference page and one-click unsubscribe | Contact changes for global subscription changes; Subscribed to topic when the preference page opts a contact in. |
+| CSV imports with `trigger_automations: true` | Contact added on insert or revival; Subscribed to topic on the effective off-to-on transition; Added to segment on inserted membership. Not Contact changes. |
 
-A contact created only to record an unsubscribe does not fire Contact added. CSV import triggers and explicit enrollment jobs are not shipped yet. Creating or enabling an automation does not enroll existing contacts or replay earlier changes.
+A contact created only to record an unsubscribe does not fire Contact added. [Import triggers](audience.md#start-automations-during-an-import) default off and honor each import's stored flag. Creating or enabling an automation does not enroll existing contacts or replay earlier changes.
+
+Explicit enrollment jobs are not shipped yet.
 
 A step cannot trigger its own automation. Cross-automation trigger chains stop at depth five. If the trigger's topic or segment is deleted, it stops matching and enabling the automation is refused until you change its trigger.
 
@@ -153,7 +156,7 @@ For example, `{ "type": "rule", "field": "contact.topics", "operator": "contains
 | Condition | Chooses the met or not-met path using a rule. |
 | Add to segment | Adds the contact to a static list. |
 | Update contact | Writes configured names, properties, or global subscription status. |
-| Delete contact | Deletes the contact and removes its segment memberships. |
+| Delete contact | Deletes the contact and removes its segment memberships and once enrollments. |
 
 The run ends when its chosen path has no next step. The editor's End marker is not a separate configurable step.
 
@@ -186,7 +189,9 @@ Update contact and Add to segment skip deleted contacts rather than reviving the
 
 ## Re-entry
 
-The API's `reentry` is `once` or `every_time`. New contact triggers default to `once`; new event triggers and existing automations default to `every_time`. Changing a trigger keeps its stored rule. With `once`, an identified contact enters once until it is deleted and explicitly revived. With `every_time`, each matching event or actual contact transition starts a run. There is no active-run exclusion.
+The API's `reentry` is `once` or `every_time`, supplied optionally when creating or updating an automation. Responses include the stored value. New contact triggers default to `once`; new event triggers and existing automations default to `every_time`. Changing a trigger keeps its stored rule unless you explicitly change `reentry` too.
+
+With `once`, an identified contact enters once, even if its run completes or fails. Deleting the contact clears its once enrollments, so explicit revival can enter again. A run without an identified contact is not restricted by `once`. With `every_time`, each matching event or actual contact transition starts a run. There is no active-run exclusion.
 
 Repeated `POST /events/send` calls create separate events and can send again. `x-request-id` is for tracing, not event deduplication. Prevent unwanted repeated events in your application.
 
@@ -197,6 +202,30 @@ Starting an automation does not replay events or contact changes recorded while 
 Automations currently have Start and Stop, not a pause that preserves runs. Stop, `POST /automations/{id}/stop`, and changing an enabled automation to `enabled: false` disable new triggers and stop runs in progress, including runs waiting on a delay or event.
 
 The Stop dialog loads the current count of every run in progress before confirmation. The count can change before you stop; Stop cancels all runs still in progress, not just that displayed count.
+
+Stop accepts an optional JSON body:
+
+```json
+{ "reset_reentry": true }
+```
+
+Omitting the body or field, or sending `false`, keeps once enrollments. Sending `true` lets contacts whose active runs were actually cancelled by this stop enter this automation again after it is started. It deletes only their `once` enrollments, not enrollments for completed runs or other automations. A run that finished before Stop is not reset. Resetting enrollments neither starts a run nor replays a trigger.
+
+The dashboard labels this choice "Let cancelled contacts enter again". SDK calls are backward-compatible:
+
+```ts
+await dispatch.automations.stop(id, { resetReentry: true });
+```
+
+```python
+dispatch.stop_automation(id, reset_reentry=True)
+```
+
+```go
+client.StopAutomation(id, true)
+```
+
+Calling Stop with only the ID preserves enrollments.
 
 Starting again accepts future events; it does not resume stopped runs or replay missed triggers. Already queued emails are separate resources and are not cancelled by stopping the automation. Cancel eligible queued or scheduled emails through the [email API](api/README.md#sending).
 

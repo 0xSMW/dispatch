@@ -8,6 +8,7 @@ export const update = new Command("update")
   .description("Turn an automation on or off, or change its definition")
   .argument("[id]", "Automation ID")
   .addOption(new Option("--status <status>", "enabled or disabled").choices(["enabled", "disabled"] as const))
+  .addOption(new Option("--reentry <mode>", "Whether a contact can enter once or every time").choices(["once", "every_time"] as const))
   .option("--name <name>", "New name")
   .option("--trigger <event>", "New event trigger name (use --steps for contact triggers)")
   .option("--steps <json>", "Steps as a JSON array")
@@ -31,6 +32,7 @@ export const update = new Command("update")
           target,
           compact({
             status: options.status,
+            reentry: options.reentry,
             name: options.name,
             trigger: options.trigger,
             steps: jsonFlag<unknown[]>(options.steps, "--steps"),

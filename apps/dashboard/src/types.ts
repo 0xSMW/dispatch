@@ -13,6 +13,8 @@ export type Deleted = {
   deleted: true;
 };
 
+export type Settings = { import_trigger_automations: boolean; sandbox_domains: string[] };
+
 // Emails
 
 export type Tag = { name: string; value: string };
@@ -627,6 +629,7 @@ export type ImportCounts = { total: number; created: number; updated: number; sk
 export type ContactImport = {
   object: "contact_import";
   id: string;
+  trigger_automations: boolean;
   status: "queued" | "in_progress" | "completed" | "failed";
   counts: ImportCounts;
   error: string | null;

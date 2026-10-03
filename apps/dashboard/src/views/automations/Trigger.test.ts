@@ -3,7 +3,7 @@ import { useState } from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { h } from "../../testing";
-import { TriggerForm } from "./Trigger";
+import { ReentryContext, TriggerForm, type Reentry } from "./Trigger";
 import { triggerChoices, type TriggerConfig } from "./graph";
 import type { StepOptions } from "./Steps";
 
@@ -19,7 +19,10 @@ const options: StepOptions = {
 
 function Harness({ initial = { type: "event", event_name: "signup" } as TriggerConfig, disabled = false }: { initial?: TriggerConfig; disabled?: boolean }) {
   const [config, setConfig] = useState(initial);
-  return h("div", null, h(TriggerForm, { config, onChange: setConfig, options, disabled }), h("output", { "data-testid": "config" }, JSON.stringify(config)));
+  const [reentry, setReentry] = useState<Reentry>("once");
+  return h(ReentryContext.Provider, { value: { value: reentry, onChange: setReentry } },
+    h("div", null, h(TriggerForm, { config, onChange: setConfig, options, disabled }),
+      h("output", { "data-testid": "config" }, JSON.stringify(config)), h("output", { "data-testid": "reentry" }, reentry)));
 }
 const stored = () => JSON.parse(screen.getByTestId("config").textContent!);
 const change = (label: string, value: string) => fireEvent.change(screen.getByLabelText(label), { target: { value } });
@@ -27,6 +30,19 @@ const change = (label: string, value: string) => fireEvent.change(screen.getByLa
 afterEach(cleanup);
 
 describe("TriggerForm", () => {
+  it("edits re-entry separately from the trigger configuration and keeps the choice on trigger changes", () => {
+    render(h(Harness));
+    const selector = screen.getByLabelText<HTMLSelectElement>("Run for each contact");
+    expect([...selector.options].map((option) => option.textContent)).toEqual(["Once", "Every time"]);
+    expect(selector.value).toBe("once");
+    change("Run for each contact", "every_time");
+    expect(screen.getByTestId("reentry").textContent).toBe("every_time");
+    expect(stored()).toEqual({ type: "event", event_name: "signup" });
+    change("Trigger", "contact_created");
+    expect(selector.value).toBe("every_time");
+    expect(stored()).toEqual({ type: "contact_created" });
+  });
+
   it("offers all five shared choices and removes fields from the previous trigger kind", () => {
     render(h(Harness));
     expect([...screen.getByLabelText<HTMLSelectElement>("Trigger").options].map((option) => option.textContent)).toEqual(triggerChoices.map((choice) => choice.label));

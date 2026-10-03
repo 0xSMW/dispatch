@@ -7468,12 +7468,17 @@
                   "required": [
                     "object",
                     "id",
+                    "trigger_automations",
                     "request_id"
                   ],
                   "properties": {
                     "object": {
                       "type": "string",
                       "const": "contact_import"
+                    },
+                    "trigger_automations": {
+                      "type": "boolean",
+                      "description": "The resolved opt-in stored for this import."
                     },
                     "id": {
                       "type": "string"
@@ -11741,6 +11746,24 @@
       "post": {
         "operationId": "stopAutomation",
         "summary": "Disable an automation and stop its active runs",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "reset_reentry": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Let contacts from the active runs cancelled by this request enter again. Completed runs keep their once-only enrollment."
+                  }
+                }
+              }
+            }
+          }
+        },
         "tags": [
           "Automations"
         ],
@@ -18988,6 +19011,11 @@
           "file"
         ],
         "properties": {
+          "trigger_automations": {
+            "type": "string",
+            "enum": ["true", "false"],
+            "description": "Overrides the tenant import_trigger_automations default. Omission resolves and stores that default when this import is created. Enabled imports dispatch actual creation, effective topic subscription and static segment additions, not contact updates. Started runs have bulk priority."
+          },
           "file": {
             "type": "string",
             "description": "The CSV file, 200 MB at most.",
@@ -19025,9 +19053,14 @@
           "object",
           "id",
           "status",
+          "trigger_automations",
           "counts"
         ],
         "properties": {
+          "trigger_automations": {
+            "type": "boolean",
+            "description": "The resolved setting stored when the import was created."
+          },
           "object": {
             "type": "string",
             "const": "contact_import"

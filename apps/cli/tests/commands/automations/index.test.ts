@@ -42,6 +42,30 @@ describe("automations", () => {
     expect(errorJson(stderr()).error.code).toBe("missing_flags");
   });
 
+  it.each(["once", "every_time"])("creates and updates with explicit reentry %s", async (reentry) => {
+    spies();
+    expect(await run(automations, ["create", "Welcome", "--trigger", "user.created", "--steps", "[]", "--reentry", reentry])).toBe(0);
+    expect(method("automations.create")).toHaveBeenCalledWith({
+      name: "Welcome", trigger: "user.created", steps: [], reentry,
+    });
+    expect(await run(automations, ["update", "auto_1", "--reentry", reentry])).toBe(0);
+    expect(method("automations.update")).toHaveBeenCalledWith("auto_1", { reentry });
+  });
+
+  it("preserves file reentry when omitted and allows a flag override", async () => {
+    const file = join(dir, "reentry.json");
+    writeFileSync(file, JSON.stringify({ name: "Welcome", trigger: "user.created", steps: [], reentry: "every_time" }));
+    spies();
+    expect(await run(automations, ["create", "--file", file])).toBe(0);
+    expect(method("automations.create")).toHaveBeenLastCalledWith({
+      name: "Welcome", trigger: "user.created", steps: [], reentry: "every_time",
+    });
+    expect(await run(automations, ["create", "--file", file, "--reentry", "once"])).toBe(0);
+    expect(method("automations.create")).toHaveBeenLastCalledWith({
+      name: "Welcome", trigger: "user.created", steps: [], reentry: "once",
+    });
+  });
+
   it.each([
     ["contact_created", [], { type: "contact_created" }],
     ["contact_updated", [], { type: "contact_updated" }],
@@ -177,5 +201,15 @@ describe("automations", () => {
     expect(method("automations.runs.get")).toHaveBeenCalledWith("auto_1", "run_1");
     await run(automations, ["runs", "get", "auto_2", "run_2"]);
     expect(method("automations.runs.get")).toHaveBeenLastCalledWith("auto_2", "run_2");
+  });
+
+  it("stop resets reentry only when requested and still requires confirmation", async () => {
+    spies();
+    expect(await run(automations, ["stop", "auto_1", "--reset-reentry"])).toBe(1);
+    expect(method("automations.stop")).not.toHaveBeenCalled();
+    expect(await run(automations, ["stop", "auto_1", "--yes", "--reset-reentry"])).toBe(0);
+    expect(method("automations.stop")).toHaveBeenLastCalledWith("auto_1", { resetReentry: true });
+    expect(await run(automations, ["stop", "auto_1", "--yes"])).toBe(0);
+    expect(method("automations.stop")).toHaveBeenLastCalledWith("auto_1");
   });
 });

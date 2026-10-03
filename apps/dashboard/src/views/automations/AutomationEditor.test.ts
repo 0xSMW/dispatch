@@ -112,6 +112,61 @@ describe("AutomationEditor", () => {
     ]);
   });
 
+  it.each(["once", "every_time"])("keeps stored %s re-entry when changing an existing trigger and persists it", async (reentry) => {
+    const fetch = api((url, init) => url.pathname === "/automations/automation_1" ? { body: {
+      ...automation, reentry, steps: [automation.steps[0]], connections: [],
+      ...(init.method === "PATCH" ? JSON.parse(String(init.body)) : {}),
+    } } : undefined);
+    open();
+    const selector = await screen.findByLabelText("Run for each contact");
+    expect(selector).toHaveProperty("value", reentry);
+    fireEvent.change(screen.getByRole("combobox", { name: "Trigger" }), { target: { value: "contact_created" } });
+    expect(selector).toHaveProperty("value", reentry);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
+    expect(JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "PATCH")![1]!.body))).toMatchObject({
+      reentry, steps: [{ key: "trigger", type: "trigger", config: { type: "contact_created" } }],
+    });
+  });
+
+  it("tracks re-entry edits as dirty, saves them, and keeps a newer choice while a save is in flight", async () => {
+    let release!: (reply: Reply) => void;
+    const pending = new Promise<Reply>((resolve) => { release = resolve; });
+    const fetch = mockFetch((raw, init) => {
+      if (init.method === "PATCH") return pending;
+      if (new URL(raw).pathname === "/automations/automation_1") return { body: { ...automation, reentry: "every_time" } };
+      return list([]);
+    });
+    open();
+    const selector = await screen.findByLabelText("Run for each contact");
+    fireEvent.change(selector, { target: { value: "once" } });
+    expect(screen.getByText("Unsaved changes")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
+    const body = JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "PATCH")![1]!.body));
+    expect(body.reentry).toBe("once");
+    fireEvent.change(selector, { target: { value: "every_time" } });
+    release({ body: { ...automation, ...body } });
+    await screen.findByText("Unsaved changes");
+    expect(selector).toHaveProperty("value", "every_time");
+  });
+
+  it("edits the same re-entry value in the canvas trigger panel and saves it", async () => {
+    vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+    vi.stubGlobal("DOMMatrixReadOnly", class { m22 = 1; });
+    const fetch = api((url, init) => url.pathname === "/automations/automation_1" ? { body: {
+      ...automation, reentry: "once", ...(init.method === "PATCH" ? JSON.parse(String(init.body)) : {}),
+    } } : undefined);
+    open("/automations/automation_1/editor?view=canvas");
+    fireEvent.click(await screen.findByRole("button", { name: "Trigger" }));
+    const panel = within(screen.getByRole("region", { name: "Trigger settings" }));
+    expect(panel.getByLabelText("Run for each contact")).toHaveProperty("value", "once");
+    fireEvent.change(panel.getByLabelText("Run for each contact"), { target: { value: "every_time" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
+    expect(JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "PATCH")![1]!.body)).reentry).toBe("every_time");
+  });
+
   it.each([
     { type: "topic_subscribed", topic_id: "missing" },
     { type: "segment_added", segment_id: "missing" },
@@ -357,7 +412,7 @@ describe("AutomationEditor", () => {
     await waitFor(() => expect(patch()).toBeTruthy());
     expect(JSON.parse(String(patch()![1]!.body)).status).toBe("enabled");
     expect(await screen.findByText(/Enabled automations cannot be edited/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Stop and cancel runs" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
     expect(screen.getByLabelText("Event")).toHaveProperty("disabled", true);
   });

@@ -124,4 +124,20 @@ describe("contacts", () => {
     await run(contacts, ["imports", "get", "imp_1"]);
     expect(method("contacts.imports.get")).toHaveBeenCalledWith("imp_1");
   });
+
+  it.each([
+    [[], undefined],
+    [["--no-trigger-automations"], false],
+    [["--trigger-automations"], true],
+  ])("imports preserve the optional trigger-automations flag %j", async (flags, triggerAutomations) => {
+    const file = join(dir, "triggers.csv");
+    writeFileSync(file, "email\nada@example.com\n");
+    spies();
+    expect(await run(contacts, ["imports", "create", "--file", file, ...flags])).toBe(0);
+    expect(method("contacts.imports.create")).toHaveBeenCalledWith({
+      file: "email\nada@example.com\n",
+      filename: "triggers.csv",
+      ...(triggerAutomations === undefined ? {} : { triggerAutomations }),
+    });
+  });
 });

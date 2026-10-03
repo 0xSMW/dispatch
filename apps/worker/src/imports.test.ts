@@ -1,14 +1,18 @@
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
-import type { Db, ImportRow } from "@dispatchmail/db";
+import type { ContactRow, Db, ImportRow } from "@dispatchmail/db";
 import { mapRecord, resolveColumns, runImport, startImports } from "./imports.js";
 
 type Query = { sql: string; params: unknown[] };
 
-// A fake pool: contacts that already exist come back with created = false, like xmax <> 0.
-function fakeDb(existing: string[] = [], options: { skip?: boolean; definitions?: Array<{ key: string; type: string }> } = {}) {
+// Full contact state is returned at each phase: inserts, locked conflict reads, and updates.
+function fakeDb(existing: Array<string | (ContactRow & { deleted_at?: string | null })> = [], options: { definitions?: Array<{ key: string; type: string }> } = {}) {
   const queries: Query[] = [];
-  const known = new Set(existing);
+  const row = (email: string, overrides: Partial<ContactRow> = {}): ContactRow & { deleted_at?: string | null } => ({
+    id: `contact_${email}`, email, first_name: null, last_name: null, properties: {},
+    unsubscribed_at: null, created_at: "2026-10-01", updated_at: "2026-10-01", ...overrides,
+  });
+  const known = new Map(existing.map((value) => typeof value === "string" ? [value, row(value)] : [value.email, value]));
   const query = vi.fn(async (sql: string, params: unknown[] = []) => {
     queries.push({ sql, params });
     if (sql.includes("from contact_properties")) return { rows: options.definitions ?? [{ key: "seats", type: "number" }], rowCount: 1 };
@@ -16,13 +20,46 @@ function fakeDb(existing: string[] = [], options: { skip?: boolean; definitions?
       const emails = params[2] as string[];
       const ids = params[0] as string[];
       const rows = emails.flatMap((email, index) => {
-        const created = !known.has(email);
-        known.add(email);
-        if (!created && options.skip) return [];
-        return [{ id: ids[index], created }];
+        if (known.has(email)) return [];
+        const inserted = row(email, { id: ids[index], first_name: (params[3] as Array<string | null>)[index],
+          last_name: (params[4] as Array<string | null>)[index], properties: JSON.parse((params[5] as string[])[index]),
+          unsubscribed_at: (params[6] as boolean[])[index] ? "2026-10-01" : null });
+        known.set(email, inserted);
+        return [inserted];
       });
       return { rows, rowCount: rows.length };
     }
+    if (sql.includes("deleted_at from contacts")) {
+      const rows = (params[1] as string[]).map((email) => known.get(email)!);
+      return { rows, rowCount: rows.length };
+    }
+    if (sql.includes("update contacts c set")) {
+      const rows = (params[1] as string[]).flatMap((email, index) => {
+        const before = known.get(email)!;
+        if (!params[6] && !before.deleted_at) return [];
+        const first_name = (params[2] as Array<string | null>)[index];
+        const last_name = (params[3] as Array<string | null>)[index];
+        const properties = JSON.parse((params[4] as string[])[index]);
+        const updated = { ...before,
+          first_name: before.deleted_at ? first_name : first_name ?? before.first_name,
+          last_name: before.deleted_at ? last_name : last_name ?? before.last_name,
+          properties: before.deleted_at ? properties : { ...before.properties, ...properties },
+          unsubscribed_at: before.unsubscribed_at ?? ((params[5] as boolean[])[index] ? "2026-10-01" : null),
+          deleted_at: null, updated_at: "2026-10-02" };
+        known.set(email, updated);
+        return [updated];
+      });
+      return { rows, rowCount: rows.length };
+    }
+    if (sql.includes("from automations")) {
+      return { rows: [{ id: "automation_1", trigger: "@contact.created", trigger_type: "contact_created", reentry: "once",
+        steps: [{ key: "start", type: "trigger", config: { type: "contact_created" } }], connections: [] }] };
+    }
+    if (sql.includes("insert into custom_events")) return { rows: [{
+      id: params[0], request_id: params[2], name: params[3], email: params[4], data: JSON.parse(params[5] as string), created_at: "2026-10-01",
+    }] };
+    if (sql.includes("insert into automation_enrollments")) return { rows: [{ contact_id: params[2] }] };
+    if (sql.includes("insert into automation_runs")) return { rows: [{ id: params[0] }] };
     if (sql.includes("from contact_imports") && sql.includes("skip locked")) {
       return { rows: [job()], rowCount: 1 };
     }
@@ -30,7 +67,7 @@ function fakeDb(existing: string[] = [], options: { skip?: boolean; definitions?
   });
   const client = { query, release: vi.fn() };
   const db = { query, connect: vi.fn(async () => client) } as unknown as Db;
-  return { db, queries };
+  return { db, queries, known };
 }
 
 function job(overrides: Partial<ImportRow> = {}): ImportRow {
@@ -43,6 +80,7 @@ function job(overrides: Partial<ImportRow> = {}): ImportRow {
     on_conflict: "upsert",
     segments: [],
     topics: [],
+    trigger_automations: false,
     counts: { total: 0, created: 0, updated: 0, skipped: 0, failed: 0 },
     error: null,
     created_at: "2026-10-01T00:00:00.000Z",
@@ -83,7 +121,7 @@ describe("contact import", () => {
     ]);
     expect(queries.find((query) => query.sql.includes("set status = $2"))?.params[1]).toBe("completed");
   });
-  it("upserts in batches, writes counts after each batch, and counts created and updated from xmax", async () => {
+  it("upserts in batches and writes counts using inserted and locked conflicting rows", async () => {
     const { db, queries } = fakeDb(["b@example.com"]);
     const csv = ["Email,First Name,seats", "a@example.com,Ada,3", "b@example.com,Bo,", "c@example.com,Cy,4", "not-an-email,Dee,1", "d@example.com,,2"].join("\n");
     const counts = await runImport(db, storage(csv), job({ column_map: { properties: { seats: { column: "seats" } } } }), { batchSize: 2 });
@@ -91,7 +129,8 @@ describe("contact import", () => {
     expect(counts).toEqual({ total: 5, created: 3, updated: 1, skipped: 0, failed: 1 });
     const inserts = queries.filter((query) => query.sql.includes("insert into contacts"));
     expect(inserts.map((query) => query.params[2])).toEqual([["a@example.com", "b@example.com"], ["c@example.com", "d@example.com"]]);
-    expect(inserts[0].sql).toContain("returning id, (xmax = 0) as created");
+    expect(inserts[0].sql).toContain("on conflict (tenant_id, email) do nothing");
+    expect(queries.find((query) => query.sql.includes("deleted_at from contacts"))?.params).toEqual(["tenant_1", ["b@example.com"]]);
     expect(inserts[0].params[5]).toEqual([JSON.stringify({ seats: 3 }), JSON.stringify({})]);
     expect(savedCounts(queries)).toEqual([
       { total: 2, created: 1, updated: 1, skipped: 0, failed: 0 },
@@ -128,12 +167,13 @@ describe("contact import", () => {
   });
 
   it("honors skip by leaving a live contact alone and counting the missing rows as skipped", async () => {
-    const { db, queries } = fakeDb(["a@example.com"], { skip: true });
+    const { db, queries } = fakeDb(["a@example.com"]);
     const csv = ["email", "a@example.com", "b@example.com"].join("\n");
     const counts = await runImport(db, storage(csv), job({ on_conflict: "skip" }));
-    const insert = queries.find((query) => query.sql.includes("insert into contacts"))!;
     // Only a deleted contact is written over. A live one is left as it is.
-    expect(insert.sql).toContain("where contacts.deleted_at is not null");
+    const update = queries.find((query) => query.sql.includes("update contacts c set"))!;
+    expect(update.sql).toContain("($7::boolean or c.deleted_at is not null)");
+    expect(update.params[6]).toBe(false);
     expect(counts).toEqual({ total: 2, created: 1, updated: 0, skipped: 1, failed: 0 });
   });
 
@@ -147,6 +187,46 @@ describe("contact import", () => {
     expect(topic.params[4]).toEqual(["unsubscribed"]);
     // An existing opt-out is never turned back into an opt-in by an import.
     expect(topic.sql).toContain("where not (topic_subscriptions.status = 'unsubscribed' and excluded.status = 'subscribed')");
+  });
+
+  it.each([false, true])("records imported contact history and gates bulk entry using the persisted flag %s", async (trigger_automations) => {
+    const { db, queries } = fakeDb();
+    const counts = await runImport(db, storage("email,first_name\na@example.com,Ada"), job({ trigger_automations }));
+    expect(counts).toEqual({ total: 1, created: 1, updated: 0, skipped: 0, failed: 0 });
+    const history = queries.filter((query) => query.sql.includes("insert into contact_changes"));
+    expect(history.map((query) => query.params[3])).toContain("first_name");
+    expect(history.every((query) => query.params[6] === "import_1")).toBe(true);
+    const events = queries.filter((query) => query.sql.includes("insert into custom_events"));
+    expect(events.map((query) => query.params[3])).toEqual(trigger_automations ? ["@contact.created"] : []);
+    const runs = queries.filter((query) => query.sql.includes("insert into automation_runs"));
+    expect(runs.map((query) => query.params[4])).toEqual(trigger_automations ? ["bulk"] : []);
+    const commit = queries.findIndex((query) => query.sql === "commit");
+    const saved = queries.findIndex((query) => query.sql.startsWith("update contact_imports set counts"));
+    expect(saved).toBeLessThan(commit);
+    for (const run of runs) expect(queries.indexOf(run)).toBeLessThan(saved);
+  });
+
+  it.each(["upsert", "skip"] as const)("revives a deleted contact as created in %s mode without restoring old data or consent", async (on_conflict) => {
+    const deleted = { id: "contact_deleted", email: "a@example.com", first_name: "Old", last_name: "Name",
+      properties: { old: true }, deleted_at: "2026-09-01", unsubscribed_at: "2026-08-01",
+      created_at: "2026-07-01", updated_at: "2026-09-01" };
+    const { db, queries, known } = fakeDb([deleted]);
+    const counts = await runImport(db, storage("email,first_name,seats\na@example.com,New,3"), job({
+      on_conflict, trigger_automations: true, column_map: { properties: { seats: { column: "seats" } } },
+    }));
+    expect(counts).toEqual({ total: 1, created: 1, updated: 0, skipped: 0, failed: 0 });
+    expect(known.get(deleted.email)).toMatchObject({ id: deleted.id, first_name: "New", last_name: null,
+      properties: { seats: 3 }, unsubscribed_at: deleted.unsubscribed_at, deleted_at: null });
+    expect(queries.filter((query) => query.sql.includes("insert into custom_events")).map((query) => query.params[3])).toEqual(["@contact.created"]);
+  });
+
+  it("does not re-enroll committed contacts when resuming an import with entry enabled", async () => {
+    const { db, queries } = fakeDb(["a@example.com"]);
+    const counts = await runImport(db, storage("email\na@example.com\nb@example.com"), job({
+      trigger_automations: true, row_offset: 1, counts: { total: 1, created: 1, updated: 0, skipped: 0, failed: 0 },
+    }));
+    expect(counts).toEqual({ total: 2, created: 2, updated: 0, skipped: 0, failed: 0 });
+    expect(queries.filter((query) => query.sql.includes("insert into custom_events")).map((query) => query.params[4])).toEqual(["b@example.com"]);
   });
 
   it("fails an import whose file has an unclosed quote or two columns of one name", async () => {

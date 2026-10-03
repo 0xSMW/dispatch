@@ -538,6 +538,8 @@ type ContactImportInput struct {
 	OnConflict string
 	Segments   []map[string]string
 	Topics     []TopicChoice
+	// Nil uses the tenant default, resolved and stored when the import is created.
+	TriggerAutomations *bool
 }
 
 type TopicInput struct {
@@ -1124,6 +1126,11 @@ func (c *Client) ImportContacts(input ContactImportInput) (Map, error) {
 			return nil, err
 		}
 	}
+	if input.TriggerAutomations != nil {
+		if err := field("trigger_automations", *input.TriggerAutomations); err != nil {
+			return nil, err
+		}
+	}
 	filename := input.Filename
 	if filename == "" {
 		filename = "contacts.csv"
@@ -1359,8 +1366,14 @@ func (c *Client) DuplicateAutomation(id string) (*Automation, error) {
 	return post[Automation](c, at("automations", id, "duplicate"), nil)
 }
 
-func (c *Client) StopAutomation(id string) (Map, error) {
-	return object(post[Map](c, at("automations", id, "stop"), nil))
+// StopAutomation cancels active runs. An optional true resets only once enrollments
+// for contacts whose runs this stop actually cancels, never completed runs.
+func (c *Client) StopAutomation(id string, resetReentry ...bool) (Map, error) {
+	var body any
+	if len(resetReentry) > 0 {
+		body = Map{"reset_reentry": resetReentry[0]}
+	}
+	return object(post[Map](c, at("automations", id, "stop"), body))
 }
 
 func (c *Client) AutomationRuns(id string, query ...url.Values) (*ListResponse[Map], error) {

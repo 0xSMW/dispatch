@@ -29,10 +29,12 @@ describe("Stop confirmation", () => {
     expect(await screen.findByText(`${count.toLocaleString()} ${count === 1 ? "run" : "runs"} in progress will be cancelled.`)).toBeTruthy();
     expect(screen.getByText(/cancels every run in progress, including runs waiting on a delay or event/)).toBeTruthy();
     expect(screen.getByText(/does not restore cancelled runs/)).toBeTruthy();
+    expect(screen.getByLabelText("Let cancelled contacts enter again")).toHaveProperty("checked", false);
     fireEvent.click(screen.getByRole("button", { name: /^Stop/ }));
     await waitFor(() => expect(onDone).toHaveBeenCalledWith({ id: "automation_1", status: "disabled" }));
     expect(onClose).toHaveBeenCalledOnce();
     expect(fetch.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+    expect(JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "POST")![1]!.body))).toEqual({ reset_reentry: false });
   });
 
   it("blocks Stop until counts load and after failure, then retries", async () => {
@@ -54,5 +56,37 @@ describe("Stop confirmation", () => {
     fireEvent.click(screen.getByRole("button", { name: "Retry" }));
     expect(await screen.findByText("2 runs in progress will be cancelled.")).toBeTruthy();
     expect(stop).toHaveProperty("disabled", false);
+  });
+
+  it("posts the explicit cancelled-contact reset choice", async () => {
+    const fetch = mockFetch((_url, init) => ({ body: init.method === "POST" ? { id: "automation_1", status: "disabled" } : { totals: { running: 2 } } }));
+    open();
+    await screen.findByText("2 runs in progress will be cancelled.");
+    fireEvent.click(screen.getByLabelText("Let cancelled contacts enter again"));
+    fireEvent.click(screen.getByRole("button", { name: /^Stop and cancel runs/ }));
+    await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "POST")).toBe(true));
+    const post = fetch.mock.calls.find(([, init]) => init?.method === "POST")!;
+    expect(new URL(String(post[0])).pathname).toBe("/automations/automation_1/stop");
+    expect(JSON.parse(String(post[1]!.body))).toEqual({ reset_reentry: true });
+  });
+
+  it.each([{}, { totals: {} }])("does not stop without a usable active-run count (%j)", async (body) => {
+    const fetch = mockFetch(() => ({ body }));
+    open();
+    await waitFor(() => expect(fetch).toHaveBeenCalled());
+    expect(screen.getByRole("button", { name: /^Stop and cancel runs/ })).toHaveProperty("disabled", true);
+    fireEvent.submit(screen.getByRole("dialog").querySelector("form")!);
+    expect(fetch.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+  });
+
+  it("keeps reset and stop disabled for a viewer even if the dialog is mounted directly", async () => {
+    signIn("sess_viewer", ["read"]);
+    const fetch = mockFetch(() => ({ body: { totals: { running: 2 } } }));
+    open();
+    await screen.findByText("2 runs in progress will be cancelled.");
+    expect(screen.getByLabelText("Let cancelled contacts enter again")).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: /^Stop and cancel runs/ })).toHaveProperty("disabled", true);
+    fireEvent.submit(screen.getByRole("dialog").querySelector("form")!);
+    expect(fetch.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
   });
 });

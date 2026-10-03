@@ -35,7 +35,8 @@ describe("version-aware public documentation", () => {
     for (const heading of ["Triggers", "Conditions", "Steps", "Re-entry", "Pause"]) expect(guide).toContain(`## ${heading}\n`);
     expect(guide).toContain("not a pause that preserves runs");
     expect(guide).toContain("New contact triggers default to `once`");
-    expect(guide).toContain("CSV import triggers and explicit enrollment jobs are not shipped yet");
+    expect(guide).toContain("Explicit enrollment jobs are not shipped yet");
+    expect(guide).toContain("CSV imports with `trigger_automations: true`");
   });
 
   it("hides missing pages and missing anchors, including recipes before they ship", () => {

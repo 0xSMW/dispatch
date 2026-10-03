@@ -28,7 +28,7 @@ import { appendEvent, connect, executeAutomationRun, fireEvent, reconcileBroadca
 import type { Storage } from "@dispatchmail/storage";
 import { schema } from "../../../packages/db/src/schema.js";
 import { contactContext } from "../../../packages/db/src/automations.js";
-import { createImport, claimImports } from "../../../packages/db/src/imports.js";
+import { createImport, claimImports, importBatch } from "../../../packages/db/src/imports.js";
 import { runImport } from "../../worker/src/imports.js";
 import { Readable } from "node:stream";
 import { deliverJob, type Job } from "../../worker/src/deliver.js";
@@ -123,6 +123,185 @@ afterAll(async () => {
 });
 
 describe.skipIf(!live)("accept", () => {
+  it("reentry serializes once and every-time entries, retains defaults across trigger edits, and allows contactless events", async () => {
+    await post(fullKey, "/contact-properties", { key: "plan", type: "string" });
+    const contact = await post(fullKey, "/contacts", { email: "entry@example.com", properties: { plan: "free" } });
+    const create = (name: string, reentry?: string) => post(fullKey, "/automations", { name, enabled: true, reentry, steps: [
+      { key: "start", type: "trigger", config: { type: "contact_updated", field: "plan" } }
+    ] });
+    const once = await create("Once");
+    const every = await create("Every", "every_time");
+    expect(once.json.reentry).toBe("once");
+    const races = await Promise.all(["pro", "business"].map((plan) => call(fullKey, "PATCH", `/contacts/${contact.json.id}`, { properties: { plan } })));
+    expect(races.map((row) => row.status)).toEqual([200, 200]);
+    expect(await flowRuns(once.json.id)).toHaveLength(1);
+    expect(await flowRuns(every.json.id)).toHaveLength(2);
+    await post(fullKey, `/automations/${once.json.id}/stop`, {});
+    expect((await call(fullKey, "PATCH", `/automations/${once.json.id}`, { steps: [
+      { key: "start", type: "trigger", config: { type: "event", event_name: "entry.ping" } }
+    ] })).json.reentry).toBe("once");
+    await call(fullKey, "PATCH", `/automations/${once.json.id}`, { enabled: true });
+    const event = await post(fullKey, "/automations", { name: "Event default", enabled: true, trigger: "entry.ping", steps: [{ type: "delay", seconds: 1 }] });
+    expect(event.json.reentry).toBe("every_time");
+    const sent = await Promise.all([1, 2].map(() => post(fullKey, "/events/send", { event: "entry.ping" })));
+    expect(sent.map((row) => row.status)).toEqual([202, 202]);
+    expect(await flowRuns(once.json.id)).toHaveLength(3);
+    expect((await db.query("select distinct priority from automation_runs")).rows).toEqual([{ priority: "normal" }]);
+  });
+
+  it("reentry reset removes only cancelled contacts, preserves completed entries, and refuses viewer resets", async () => {
+    const once = await post(fullKey, "/automations", { name: "Reset", enabled: true, steps: [
+      { key: "start", type: "trigger", config: { type: "contact_created" } }
+    ] });
+    const finished = await post(fullKey, "/contacts", { email: "done-entry@example.com" });
+    const active = await post(fullKey, "/contacts", { email: "cancel-entry@example.com" });
+    const runs = await db.query<{ id: string; email: string }>("select r.id,e.email from automation_runs r join custom_events e on e.id=r.event_id where r.automation_id=$1", [once.json.id]);
+    const done = runs.rows.find((row) => row.email === "done-entry@example.com")!;
+    await executeAutomationRun(db, (await flowRuns(once.json.id))[0]!.tenant_id, done.id);
+    expect((await db.query("select state from automation_runs where id=$1", [done.id])).rows[0].state).toBe("done");
+    await call(fullKey, "PATCH", `/contacts/${active.json.id}`, { email: "renamed-entry@example.com" });
+    const viewer = await teammate("Viewer");
+    const session = await signInAs(viewer.email, viewer.password);
+    expect((await post(session.token, `/automations/${once.json.id}/stop`, { reset_reentry: true })).status).toBe(403);
+    expect((await post(fullKey, `/automations/${once.json.id}/stop`, { reset_reentry: "true" })).status).toBe(400);
+    expect((await post(fullKey, `/automations/${once.json.id}/stop`, { reset_reentry: true })).status).toBe(200);
+    expect((await db.query("select contact_id from automation_enrollments where automation_id=$1", [once.json.id])).rows).toEqual([{ contact_id: finished.json.id }]);
+    const cancelled = runs.rows.find((row) => row.email === "cancel-entry@example.com")!;
+    expect((await db.query("select state from automation_runs where id=$1", [cancelled.id])).rows[0].state).toBe("stopped");
+    // Repeated reset has no cancelled active runs and cannot erase a completed enrollment.
+    await post(fullKey, `/automations/${once.json.id}/stop`, { reset_reentry: true });
+    expect((await db.query("select contact_id from automation_enrollments where automation_id=$1", [once.json.id])).rows).toEqual([{ contact_id: finished.json.id }]);
+    await call(fullKey, "PATCH", `/automations/${once.json.id}`, { enabled: true, steps: [
+      { key: "start", type: "trigger", config: { type: "contact_updated", field: "first_name" } }
+    ] });
+    for (const contact of [finished, active]) await call(fullKey, "PATCH", `/contacts/${contact.json.id}`, { first_name: "Changed" });
+    expect(await flowRuns(once.json.id)).toHaveLength(3);
+  });
+
+  it("import triggers resolve tenant defaults and explicit overrides once, and persist them through migrations", async () => {
+    const tenant = (await db.query<{ id: string }>("select id from tenants limit 1")).rows[0]!.id;
+    const queue = (triggerAutomations?: boolean) => createImport(db, { id: id("import"), tenantId: tenant, storageKey: id("file"), columnMap: {}, onConflict: "upsert", segments: [], topics: [], triggerAutomations });
+    const off = await queue();
+    expect(off!.trigger_automations).toBe(false);
+    await call(fullKey, "PATCH", "/settings", { import_trigger_automations: true });
+    const on = await queue();
+    const override = await queue(false);
+    await call(fullKey, "PATCH", "/settings", { import_trigger_automations: false });
+    const explicit = await queue(true);
+    const jobs = await claimImports(db, 10);
+    expect(jobs.map((row) => [row.id, row.trigger_automations])).toEqual([
+      [off!.id, false], [on!.id, true], [override!.id, false], [explicit!.id, true]
+    ]);
+    await db.query(schema);
+    await db.query(schema);
+    expect((await call(fullKey, "GET", `/contacts/imports/${on!.id}`)).json.trigger_automations).toBe(true);
+    const other = await seedTenant();
+    expect((await call(other, "GET", `/contacts/imports/${on!.id}`)).status).toBe(404);
+  });
+
+  it("import triggers return actual insert revival topic and segment changes, preserve optouts, and use bulk priority", async () => {
+    const topic = await post(fullKey, "/topics", { name: "Import opt-in", key: "import", default_subscription: "opt_out" });
+    const defaultOn = await post(fullKey, "/topics", { name: "Default receiving", key: "default_on", default_subscription: "opt_in" });
+    const segment = await post(fullKey, "/segments", { name: "Import segment" });
+    const create = await contactFlow({ type: "contact_created" });
+    const update = await contactFlow({ type: "contact_updated" });
+    const subscribed = await contactFlow({ type: "topic_subscribed", topic_id: topic.json.id });
+    const defaults = await contactFlow({ type: "topic_subscribed", topic_id: defaultOn.json.id });
+    const added = await contactFlow({ type: "segment_added", segment_id: segment.json.id });
+    const old = await post(fullKey, "/contacts", { email: "existing-import@example.com", first_name: "Before", topics: [{ id: topic.json.id, subscription: "opt_out" }] });
+    const global = await post(fullKey, "/contacts", { email: "global-import@example.com", unsubscribed: true });
+    const revive = await post(fullKey, "/contacts", { email: "revived-import@example.com", properties: { old: "discard" } });
+    await call(fullKey, "DELETE", `/contacts/${revive.json.id}`);
+    const tenant = (await db.query<{ tenant_id: string }>("select tenant_id from contacts limit 1")).rows[0]!.tenant_id;
+    const job = { id: id("import"), tenant_id: tenant, on_conflict: "upsert" as const, trigger_automations: true,
+      segments: [{ id: segment.json.id }, { id: segment.json.id }],
+      topics: [{ id: topic.json.id, subscription: "opt_in" }, { id: defaultOn.json.id, subscription: "opt_in" }] };
+    const rows = ["new-import@example.com", old.json.email, global.json.email, revive.json.email].map((email) => ({
+      email, first_name: "After", last_name: null, properties: { fresh: true }, unsubscribed: false
+    }));
+    const result = await tx(db, (client) => importBatch(client, job, rows));
+    expect(result).toMatchObject({ created: 2, updated: 2, skipped: 0 });
+    const newRow = result.rows.find((row) => row.contact.email === "new-import@example.com")!;
+    expect(newRow).toMatchObject({ created: true, segments_added: [segment.json.id], topics_subscribed: [topic.json.id] });
+    expect(result.rows.find((row) => row.id === revive.json.id)).toMatchObject({ created: true, contact: { properties: { fresh: true } } });
+    expect(result.rows.find((row) => row.id === old.json.id)!.topics_subscribed).toEqual([]);
+    expect(result.rows.find((row) => row.id === global.json.id)!.topics_subscribed).toEqual([]);
+    expect(await flowRuns(create)).toHaveLength(5); // three route creates plus insert and revival.
+    expect(await flowRuns(update)).toHaveLength(0);
+    expect(await flowRuns(subscribed)).toHaveLength(2);
+    expect(await flowRuns(defaults)).toHaveLength(0);
+    expect(await flowRuns(added)).toHaveLength(4);
+    expect((await db.query("select distinct priority from automation_runs r join custom_events e on e.id=r.event_id where e.request_id=$1", [job.id])).rows).toEqual([{ priority: "bulk" }]);
+    const repeat = await tx(db, (client) => importBatch(client, job, rows));
+    expect(repeat).toMatchObject({ created: 0, updated: 4 });
+    expect(repeat.rows.every((row) => !row.created && !row.segments_added.length && !row.topics_subscribed.length)).toBe(true);
+    expect(await flowRuns(added)).toHaveLength(4);
+    await tx(db, (client) => importBatch(client, { ...job, trigger_automations: false }, [{ ...rows[0], email: "off-import@example.com" }]));
+    expect(await flowRuns(create)).toHaveLength(5);
+  });
+
+  it("import triggers commit with progress, resume without duplicates, and roll back on trigger fanout failure", async () => {
+    const create = await contactFlow({ type: "contact_created" });
+    const tenant = (await db.query<{ tenant_id: string }>("select tenant_id from automations limit 1")).rows[0]!.tenant_id;
+    const importId = id("import");
+    await createImport(db, { id: importId, tenantId: tenant, storageKey: id("file"), columnMap: {}, onConflict: "upsert", segments: [], topics: [], triggerAutomations: true });
+    const job = (await claimImports(db, 1))[0]!;
+    const csv = "email\nimport-retry@example.com\n";
+    const storage = { stream: async () => Readable.from([csv]) };
+    const counts = await runImport(db, storage, job);
+    expect(counts).toMatchObject({ total: 1, created: 1 });
+    expect(await flowRuns(create)).toHaveLength(1);
+    await runImport(db, storage, { ...job, row_offset: 1, counts });
+    expect(await flowRuns(create)).toHaveLength(1);
+    await db.query(`create or replace function reject_import_run() returns trigger language plpgsql as $$
+      begin raise exception 'synthetic import failure'; end $$;
+      create trigger reject_import_run before insert on automation_runs for each row execute function reject_import_run()`);
+    try {
+      await expect(tx(db, (client) => importBatch(client, job, [{ email: "rollback-import@example.com", first_name: null, last_name: null, properties: {}, unsubscribed: false }]))).rejects.toThrow("synthetic import failure");
+    } finally {
+      await db.query("drop trigger reject_import_run on automation_runs; drop function reject_import_run()");
+    }
+    expect((await db.query("select id from contacts where email='rollback-import@example.com'")).rows).toHaveLength(0);
+    expect((await db.query("select id from custom_events where email='rollback-import@example.com'")).rows).toHaveLength(0);
+  });
+
+  it("import triggers report one actual creation under concurrent batches", async () => {
+    const flow = await contactFlow({ type: "contact_created" });
+    const tenant = (await flowRuns(flow))[0]?.tenant_id ?? (await db.query("select tenant_id from automations where id=$1", [flow])).rows[0].tenant_id;
+    const contact = { email: "concurrent-import@example.com", first_name: null, last_name: null, properties: {}, unsubscribed: false };
+    const job = { tenant_id: tenant, on_conflict: "upsert" as const, segments: [], topics: [], trigger_automations: true };
+    const results = await Promise.all([1, 2].map(() => tx(db, (client) => importBatch(client, job, [contact]))));
+    expect(results.map((row) => row.created).sort()).toEqual([0, 1]);
+    expect(results.map((row) => row.updated).sort()).toEqual([0, 1]);
+    expect(new Set(results.flatMap((row) => row.ids)).size).toBe(1);
+    expect(await flowRuns(flow)).toHaveLength(1);
+  });
+
+  it("import triggers accept real multipart overrides, expose stored flags, and protect viewer uploads", async () => {
+    await call(fullKey, "PATCH", "/settings", { import_trigger_automations: true });
+    const upload = (key: string, flag?: string) => {
+      const boundary = "entry-boundary";
+      const field = flag === undefined ? "" : `--${boundary}\r\nContent-Disposition: form-data; name="trigger_automations"\r\n\r\n${flag}\r\n`;
+      return app.inject({ method: "POST", url: "/contacts/imports", headers: {
+        authorization: `Bearer ${key}`, "content-type": `multipart/form-data; boundary=${boundary}`
+      }, payload: `${field}--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="entry.csv"\r\nContent-Type: text/csv\r\n\r\nemail\nmultipart-entry@example.com\n\r\n--${boundary}--\r\n` });
+    };
+    const inherited = await upload(fullKey);
+    const off = await upload(fullKey, "false");
+    const on = await upload(fullKey, "true");
+    expect([inherited.statusCode, off.statusCode, on.statusCode]).toEqual([200, 200, 200]);
+    expect([inherited.json().trigger_automations, off.json().trigger_automations, on.json().trigger_automations]).toEqual([true, false, true]);
+    expect((await upload(fullKey, "1")).statusCode).toBe(400);
+    await call(fullKey, "PATCH", "/settings", { import_trigger_automations: false });
+    expect((await call(fullKey, "GET", `/contacts/imports/${inherited.json().id}`)).json.trigger_automations).toBe(true);
+    const viewer = await teammate("Viewer");
+    const session = await signInAs(viewer.email, viewer.password);
+    expect((await upload(session.token, "true")).statusCode).toBe(403);
+    const list = (await call(session.token, "GET", "/contacts/imports")).json.data;
+    expect(list).toHaveLength(3);
+    expect(list.every((row: { trigger_automations: unknown }) => typeof row.trigger_automations === "boolean")).toBe(true);
+  });
+
   it("contact triggers normalize contracts, record exact multi-field history, and suppress no-op writes", async () => {
     const plan = await post(fullKey, "/contact-properties", { key: "plan", type: "string" });
     const active = await post(fullKey, "/contact-properties", { key: "active", type: "boolean" });
@@ -905,6 +1084,9 @@ describe.skipIf(!live)("accept", () => {
           delivery_rate: 100, open_rate: 100, click_rate: 100, bounce_rate: 100,
         };
         const reports = async () => {
+          // Count committed history using the clock that timestamps those rows.
+          const end = (await db.query<{ end_date: Date }>("select clock_timestamp() as end_date")).rows[0]!.end_date;
+          metricsQuery.set("end_date", end.toISOString());
           for (const dimensions of ["", "email", "automation", "step"]) {
             metricsQuery.set("dimensions", dimensions);
             const metrics = await call(fullKey, "GET", `/emails/metrics?${metricsQuery}`);
@@ -1068,6 +1250,8 @@ describe.skipIf(!live)("accept", () => {
         const after = routing === "all" ? original
           : { sent: 2, delivered: 3, bounced: 2, bounced_transient: 2, opened: 4, unique_opened: 1, clicked: 4, unique_clicked: 1 };
         const reports = async (totals: typeof original) => {
+          const end = (await db.query<{ end_date: Date }>("select clock_timestamp() as end_date")).rows[0]!.end_date;
+          metricsQuery.set("end_date", end.toISOString());
           for (const dimensions of ["", "email", "automation", "step"]) {
             metricsQuery.set("dimensions", dimensions);
             const metrics = await call(fullKey, "GET", `/emails/metrics?${metricsQuery}`);

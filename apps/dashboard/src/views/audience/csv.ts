@@ -1,5 +1,5 @@
-// CSV helpers for the contact import and export. The import reads only the head of the file in the
-// browser, to list its columns; the API streams the whole file to storage and the worker parses it.
+// CSV helpers for the contact import and export. Preview and row counting use bounded chunks;
+// the API streams the whole file to storage and the worker parses it.
 import { csvCell } from "../../components/CsvExport";
 import type { PropertyType } from "../../types";
 export type { PropertyType } from "../../types";
@@ -59,6 +59,73 @@ function blobText(blob: Blob): Promise<string> {
     reader.onerror = () => reject(reader.error);
     reader.readAsText(blob);
   });
+}
+
+/** Counts CSV data records, skipping blank lines and the header, without keeping rows or fields. */
+export async function countRows(file: Blob, signal?: AbortSignal, chunkSize = 64 * 1024): Promise<number> {
+  const decoder = new TextDecoder();
+  let records = 0;
+  let quoted = false;
+  let afterQuote = false;
+  let fieldStart = true;
+  let nonempty = false;
+  let first = true;
+
+  function scan(text: string) {
+    for (const char of text) {
+      if (first) {
+        first = false;
+        if (char === "\uFEFF") continue;
+      }
+      if (quoted) {
+        if (char === '"') {
+          quoted = false;
+          afterQuote = true;
+        } else if (char.trim()) nonempty = true;
+      } else if (afterQuote && char === '"') {
+        // A doubled quote may straddle a chunk boundary.
+        quoted = true;
+        afterQuote = false;
+        nonempty = true;
+      } else {
+        afterQuote = false;
+        if (char === '"' && fieldStart) {
+          quoted = true;
+          fieldStart = false;
+          nonempty = true;
+        } else if (char === ",") {
+          fieldStart = true;
+          nonempty = true;
+        } else if (char === "\n" || char === "\r") {
+          if (nonempty) records++;
+          nonempty = false;
+          fieldStart = true;
+        } else {
+          // The worker trims unquoted fields, including whitespace before an opening quote.
+          if (char.trim()) {
+            fieldStart = false;
+            nonempty = true;
+          }
+        }
+      }
+    }
+  }
+
+  for (let offset = 0; offset < file.size; offset += chunkSize) {
+    signal?.throwIfAborted();
+    const part = file.slice(offset, offset + chunkSize);
+    const bytes = typeof part.arrayBuffer === "function" ? await part.arrayBuffer() : await new Promise<ArrayBuffer>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as ArrayBuffer);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsArrayBuffer(part);
+    });
+    signal?.throwIfAborted();
+    scan(decoder.decode(bytes, { stream: true }));
+  }
+  scan(decoder.decode());
+  if (nonempty) records++;
+  return Math.max(0, records - 1);
 }
 
 export type FieldName = "email" | "first_name" | "last_name" | "unsubscribed";

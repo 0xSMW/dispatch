@@ -7,6 +7,8 @@ import unittest
 import urllib.request
 import urllib.response
 from email.message import Message
+from email.parser import BytesParser
+from email.policy import default
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
 
@@ -293,6 +295,51 @@ class TestDispatch(unittest.TestCase):
         self.assertIn(b'name="on_conflict"\r\n\r\nskip', sent["body"])
         self.assertIn(b'filename="contacts.csv"', sent["body"])
         self.assertIn(b"email\nada@x.com\n", sent["body"])
+
+    def test_import_trigger_automations(self):
+        for flag in (None, False, True):
+            with self.subTest(trigger_automations=flag):
+                Recorder.calls = []
+                imported = {"object": "contact_import", "id": "imp_1", "trigger_automations": True if flag is None else flag}
+                Recorder.responses = {
+                    ("POST", "/contacts/imports"): (202, imported),
+                    ("GET", "/contacts/imports/imp_1"): (200, imported),
+                    ("GET", "/contacts/imports"): (200, {"object": "list", "has_more": False, "data": [imported]}),
+                }
+                # Existing positional arguments remain in place; omission leaves the tenant default to the API.
+                options = {} if flag is None else {"trigger_automations": flag}
+                created = self.client.import_contacts("email\nada@x.com\n", None, None, None, None, "old.csv", **options)
+                sent = Recorder.calls[0]
+                self.assertEqual(sent["method"], "POST")
+                self.assertEqual(sent["path"], "/contacts/imports")
+                content_type = sent["headers"]["content-type"]
+                self.assertTrue(content_type.startswith("multipart/form-data; boundary="))
+                form = BytesParser(policy=default).parsebytes(
+                    f"Content-Type: {content_type}\r\n\r\n".encode() + sent["body"]
+                )
+                fields = {part.get_param("name", header="content-disposition"): part for part in form.iter_parts()}
+                if flag is None:
+                    self.assertNotIn("trigger_automations", fields)
+                else:
+                    self.assertEqual(fields["trigger_automations"].get_content(), "true" if flag else "false")
+                self.assertEqual(fields["file"].get_filename(), "old.csv")
+                self.assertEqual(fields["file"].get_content(), "email\nada@x.com\n")
+                self.assertEqual(created, imported)
+                self.assertEqual(self.client.contact_import("imp_1"), imported)
+                self.assertEqual(self.client.contact_imports()["data"], [imported])
+
+    def test_stop_automation_reset_reentry(self):
+        for flag in (None, False, True):
+            with self.subTest(reset_reentry=flag):
+                Recorder.calls = []
+                result = {"object": "automation", "id": "a1", "stopped": 2}
+                Recorder.responses = {("POST", "/automations/a%2F1/stop"): (200, result)}
+                stopped = self.client.stop_automation("a/1") if flag is None else self.client.stop_automation("a/1", reset_reentry=flag)
+                sent = Recorder.calls[0]
+                self.assertEqual(sent["method"], "POST")
+                self.assertEqual(sent["path"], "/automations/a%2F1/stop")
+                self.assertEqual(sent["body"], {} if flag is None else {"reset_reentry": flag})
+                self.assertEqual(stopped, result)
 
     def test_forward_received_email(self):
         Recorder.responses[("GET", "/emails/receiving/r1?html_format=cid")] = (200, {"id": "r1", "subject": "Invoice", "html": "<p>Due</p>"})

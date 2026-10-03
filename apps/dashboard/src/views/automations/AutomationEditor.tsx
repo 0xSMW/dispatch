@@ -48,16 +48,16 @@ import { LeaveGuard } from "../templates/editor";
 import { RunMetrics } from "./RunMetrics";
 import { Runs } from "./Runs";
 import { StepList, type StepActions, type StepOptions } from "./Steps";
-import { TriggerForm, triggerLoading, triggerSources } from "./Trigger";
+import { ReentryContext, TriggerForm, triggerLoading, triggerSources, type Reentry } from "./Trigger";
 import { Canvas, ViewSwitch } from "./Canvas";
 import { StopAutomation, isEnabled } from "./Stop";
 import { countsByStep, useEmailMetrics } from "./EmailMetrics";
 
-type Draft = { name: string; tree: Tree };
+type Draft = { name: string; tree: Tree; reentry: Reentry };
 
 /** What the API would store, to tell saved from unsaved. */
 function snapshot(draft: Draft) {
-  return JSON.stringify({ name: draft.name.trim(), ...toGraph(draft.tree) });
+  return JSON.stringify({ name: draft.name.trim(), reentry: draft.reentry, ...toGraph(draft.tree) });
 }
 
 /** Explains a failed save. A 409 `conflict` means the automation is enabled. */
@@ -112,7 +112,7 @@ export function AutomationEditor() {
     // it: that replaced whatever was typed while the request was in flight.
     if (loaded.current === row.id) return;
     loaded.current = row.id;
-    const next = { name: row.name, tree: stored.tree };
+    const next: Draft = { name: row.name, tree: stored.tree, reentry: row.reentry ?? "every_time" };
     setDraft(next);
     setSaved(snapshot(next));
   }, [row, stored]);
@@ -209,7 +209,7 @@ export function AutomationEditor() {
     const graph = toGraph(draft.tree);
     sent.current = graph.steps;
     sentDraft.current = draft;
-    void save.mutate({ name: draft.name.trim(), ...graph, ...(start ? { status: "enabled" } : {}) });
+    void save.mutate({ name: draft.name.trim(), reentry: draft.reentry, ...graph, ...(start ? { status: "enabled" } : {}) });
   }
 
   useHotkey(shortcuts.save.combo, () => submit(false), { enabled: tab === "builder" && !locked && dirty });
@@ -249,7 +249,7 @@ export function AutomationEditor() {
               ) : null}
               {!can ? null : enabled ? (
                 <button type="button" className="secondary" onClick={() => setStopping(true)}>
-                  Stop
+                  Stop and cancel runs
                 </button>
               ) : (
                 <button type="button" disabled={save.isLoading || !draft || triggerPending || Boolean(resourceWarning)} aria-busy={save.isLoading} onClick={() => submit(true)}>
@@ -287,6 +287,11 @@ export function AutomationEditor() {
       ) : !draft || !row ? (
         <Skeleton lines={6} />
       ) : (
+        <ReentryContext.Provider value={{ value: draft.reentry, onChange: (reentry) => {
+          if (locked) return;
+          setApiError(null);
+          setDraft((current) => current ? { ...current, reentry } : current);
+        } }}>
         <div className={view === "canvas" && !problem ? "builder wide" : "builder"}>
           {enabled && can ? (
             <div className="notice" role="status">
@@ -371,6 +376,7 @@ export function AutomationEditor() {
             />
           )}
         </div>
+        </ReentryContext.Provider>
       )}
 
       <LeaveGuard when={dirty && !locked} />

@@ -3,6 +3,7 @@ import {
   automationGraphSchema,
   automationIssues,
   automationSchema,
+  automationStopSchema,
   automationUpdateSchema,
   evaluate,
   eventSchema,
@@ -77,6 +78,33 @@ describe("normalizeAutomation", () => {
 });
 
 describe("automation schema", () => {
+  it("defaults stop to preserving enrollment history and accepts only explicit booleans", () => {
+    expect(automationStopSchema.parse({})).toEqual({ reset_reentry: false });
+    expect(automationStopSchema.parse({ reset_reentry: undefined })).toEqual({ reset_reentry: false });
+    expect(automationStopSchema.parse({ reset_reentry: false })).toEqual({ reset_reentry: false });
+    expect(automationStopSchema.parse({ reset_reentry: true })).toEqual({ reset_reentry: true });
+  });
+
+  it.each(["true", "false", 1, 0, null, [], {}])("rejects the nonboolean reentry reset %j", (reset_reentry) => {
+    expect(automationStopSchema.safeParse({ reset_reentry }).success).toBe(false);
+  });
+
+  it("refuses unknown stop fields instead of silently accepting a misspelled reset", () => {
+    expect(automationStopSchema.safeParse({ reset_reentry: true, reset: true }).success).toBe(false);
+    expect(automationStopSchema.safeParse({ reset: true }).success).toBe(false);
+  });
+
+  it.each([
+    { type: "contact_created" },
+    { type: "contact_updated", field: "active", from: false, to: true },
+    { type: "topic_subscribed", topic_id: "topic_1" },
+    { type: "segment_added", segment_id: "segment_1" },
+  ])("defaults typed trigger %j to once while respecting explicit every_time", (config) => {
+    const input = { name: "Entry", steps: [{ key: "start", type: "trigger", config }] };
+    expect(automationSchema.parse(input).reentry).toBe("once");
+    expect(automationSchema.parse({ ...input, reentry: "every_time" }).reentry).toBe("every_time");
+  });
+
   it("reads status, defaults to disabled, and takes the trigger from the trigger step", () => {
     const parsed = automationSchema.parse(graph);
     expect(parsed.enabled).toBe(true);

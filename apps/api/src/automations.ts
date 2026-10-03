@@ -1,4 +1,4 @@
-import { ApiError, automationGraphSchema, automationSchema, automationUpdateSchema, id, type TriggerConfig } from "@dispatchmail/core";
+import { ApiError, automationGraphSchema, automationSchema, automationStopSchema, automationUpdateSchema, id, type TriggerConfig } from "@dispatchmail/core";
 import {
   activeStates,
   automationColumns,
@@ -323,6 +323,7 @@ export function registerAutomations(
   });
 
   app.post("/automations/:id/stop", async (request) => {
+    const input = automationStopSchema.parse(request.body ?? {});
     const tenantId = request.auth!.tenant_id;
     const automation = await findAutomation(db, tenantId, (request.params as { id: string }).id);
     const row = await tx(db, async (client) => {
@@ -331,7 +332,7 @@ export function registerAutomations(
          returning ${automationColumns}`,
         [tenantId, automation.id],
       );
-      await stopRuns(client, tenantId, automation.id);
+      await stopRuns(client, tenantId, automation.id, input.reset_reentry);
       return updated.rows[0]!;
     });
     return presentAutomation(row);
@@ -398,7 +399,7 @@ export function registerAutomations(
   });
 }
 
-async function stopRuns(client: { query: Db["query"] }, tenantId: string, automationId: string) {
+async function stopRuns(client: { query: Db["query"] }, tenantId: string, automationId: string, resetReentry = false) {
   await client.query(
     `update automation_runs
      set state = 'stopped', resume_at = null, wait_event = null, updated_at = now()
@@ -408,6 +409,16 @@ async function stopRuns(client: { query: Db["query"] }, tenantId: string, automa
   ).then(async (stopped) => {
     const runIds = stopped.rows.map((row) => (row as { id: string }).id);
     if (runIds.length === 0) return;
+    if (resetReentry) {
+      await client.query(
+        `delete from automation_enrollments n using automation_runs r
+         join custom_events e on e.tenant_id = r.tenant_id and e.id = r.event_id
+         left join contacts c on c.tenant_id = r.tenant_id and lower(c.email) = lower(e.email)
+         where n.tenant_id = $1 and n.automation_id = $2 and r.tenant_id = $1
+           and r.id = any($3::text[]) and n.contact_id = coalesce(r.contact_id, c.id)`,
+        [tenantId, automationId, runIds],
+      );
+    }
     // The step a stopped run was waiting on is closed too, or the run view shows it in progress forever.
     await client.query(
       `update automation_steps set state = 'failed', error = 'cancelled', completed_at = now()

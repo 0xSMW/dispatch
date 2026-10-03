@@ -340,4 +340,77 @@ describe("automation routes", () => {
     const deleted = await app.inject({ method: "DELETE", url: "/automations/automation_1" });
     expect(deleted.json()).toEqual({ object: "automation", id: "automation_1", deleted: true });
   });
+
+  it.each([undefined, {}, { reset_reentry: false }, { reset_reentry: true }])(
+    "cancels only active runs and resets only their enrollment references for stop body %j",
+    async (payload) => {
+      const runs = [
+        { id: "run_ready", state: "ready", automation_id: legacy.id, tenant_id: "tenant_1" },
+        { id: "run_running", state: "running", automation_id: legacy.id, tenant_id: "tenant_1" },
+        { id: "run_waiting", state: "waiting", automation_id: legacy.id, tenant_id: "tenant_1" },
+        { id: "run_done", state: "done", automation_id: legacy.id, tenant_id: "tenant_1" },
+        { id: "run_failed", state: "failed", automation_id: legacy.id, tenant_id: "tenant_1" },
+        { id: "run_stopped", state: "stopped", automation_id: legacy.id, tenant_id: "tenant_1" },
+        { id: "run_other_tenant", state: "ready", automation_id: legacy.id, tenant_id: "tenant_other" },
+        { id: "run_other_automation", state: "ready", automation_id: "automation_other", tenant_id: "tenant_1" },
+      ];
+      const { app, query } = harness((sql, params) => {
+        if (sql.includes("from automations")) return { rows: [stored({ reentry: "once" })] };
+        if (sql.startsWith("update automations")) return { rows: [stored({ enabled: false, reentry: "once" })] };
+        if (sql.startsWith("update automation_runs")) {
+          const cancelled = runs.filter((row) => row.tenant_id === params[0] && row.automation_id === params[1] && (params[2] as string[]).includes(row.state));
+          for (const row of cancelled) row.state = "stopped";
+          return { rows: cancelled.map((row) => ({ id: row.id })) };
+        }
+        return { rows: [] };
+      });
+      const response = await app.inject({ method: "POST", url: "/automations/automation_1/stop", ...(payload === undefined ? {} : { payload }) });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ status: "disabled", reentry: "once" });
+      const cancelled = ["run_ready", "run_running", "run_waiting"];
+      const update = query.mock.calls.find(([sql]) => sql.startsWith("update automation_runs"))!;
+      expect(update[0].replace(/\s+/g, " ")).toContain("where tenant_id = $1 and automation_id = $2 and state = any($3) returning id");
+      expect(update[1]).toEqual(["tenant_1", legacy.id, ["ready", "running", "waiting"]]);
+      expect(runs.slice(3).map((row) => row.state)).toEqual(["done", "failed", "stopped", "ready", "ready"]);
+      const reset = query.mock.calls.filter(([sql]) => sql.startsWith("delete from automation_enrollments"));
+      expect(reset).toHaveLength(payload?.reset_reentry ? 1 : 0);
+      if (reset.length) {
+        expect(reset[0]![1]).toEqual(["tenant_1", legacy.id, cancelled]);
+        const sql = reset[0]![0];
+        expect(sql).toContain("n.tenant_id = $1 and n.automation_id = $2 and r.tenant_id = $1");
+        expect(sql).toContain("r.id = any($3::text[]) and n.contact_id = coalesce(r.contact_id, c.id)");
+        expect(sql).toContain("e.tenant_id = r.tenant_id and e.id = r.event_id");
+        expect(sql).toContain("c.tenant_id = r.tenant_id and lower(c.email) = lower(e.email)");
+        expect(query.mock.calls.indexOf(update)).toBeLessThan(query.mock.calls.indexOf(reset[0]!));
+      }
+      const steps = query.mock.calls.find(([sql]) => sql.startsWith("update automation_steps"))!;
+      expect(steps[1]).toEqual(["tenant_1", cancelled]);
+      expect(steps[0]).toContain("state = 'waiting'");
+      expect(query.mock.calls.at(-1)![0]).toBe("commit");
+    },
+  );
+
+  it("does not reset completed enrollments when there are no active runs to cancel", async () => {
+    const { app, query } = harness((sql) => {
+      if (sql.includes("from automations")) return { rows: [stored({ reentry: "once" })] };
+      if (sql.startsWith("update automations")) return { rows: [stored({ enabled: false, reentry: "once" })] };
+      return { rows: [] };
+    });
+    const response = await app.inject({ method: "POST", url: "/automations/automation_1/stop", payload: { reset_reentry: true } });
+    expect(response.statusCode).toBe(200);
+    expect(query.mock.calls.some(([sql]) => sql.includes("delete from automation_enrollments"))).toBe(false);
+    expect(query.mock.calls.some(([sql]) => sql.startsWith("update automation_steps"))).toBe(false);
+    expect(query.mock.calls.at(-1)![0]).toBe("commit");
+  });
+
+  it.each([
+    { reset_reentry: "true" }, { reset_reentry: "false" }, { reset_reentry: 1 }, { reset_reentry: 0 },
+    { reset_reentry: null }, { reset_reentry: [] }, { unknown: true },
+    { reset_reentry: true, unknown: true },
+  ])("rejects invalid stop input %j before querying or changing anything", async (payload) => {
+    const { app, query } = harness(() => ({ rows: [] }));
+    const response = await app.inject({ method: "POST", url: "/automations/automation_1/stop", payload });
+    expect(response.statusCode).toBe(400);
+    expect(query).not.toHaveBeenCalled();
+  });
 });

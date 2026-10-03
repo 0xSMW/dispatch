@@ -210,6 +210,23 @@ describe("docs/api/openapi.json", () => {
     }
   });
 
+  it("documents resolved import opt-ins and the optional cancelled-contact reset", () => {
+    const schemas = spec.components.schemas as unknown as Record<string, { properties: Record<string, unknown> }>;
+    expect(schemas.ContactImportInput.properties.trigger_automations).toMatchObject({ enum: ["true", "false"] });
+    expect(schemas.ContactImport.properties.trigger_automations).toMatchObject({ type: "boolean" });
+    expect(spec.paths["/contacts/imports"].post).toMatchObject({
+      responses: { "200": { content: { "application/json": { schema: {
+        required: expect.arrayContaining(["trigger_automations"]),
+        properties: { trigger_automations: { type: "boolean" } }
+      } } } } }
+    });
+    expect(spec.paths["/automations/{id}/stop"].post).toMatchObject({
+      requestBody: { required: false, content: { "application/json": { schema: {
+        additionalProperties: false, properties: { reset_reentry: { type: "boolean", default: false } }
+      } } } }
+    });
+  });
+
   it("documents sandbox flags on send, batch, split, email and recipient responses", () => {
     const operation = spec.paths["/emails"].post as {
       responses: { "200": { content: { "application/json": { schema: { properties: Record<string, unknown> } } } } };

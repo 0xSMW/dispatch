@@ -890,4 +890,12 @@ create table if not exists contact_changes (
 );
 create index if not exists contact_changes_tenant_contact_created_idx
   on contact_changes (tenant_id, contact_id, created_at);
+
+-- Imports persist their resolved opt-in, and their runs are marked for bulk claiming.
+alter table contact_imports add column if not exists trigger_automations boolean not null default false;
+alter table automation_runs add column if not exists priority text not null default 'normal';
+alter table automation_runs drop constraint if exists automation_runs_priority_check;
+alter table automation_runs add constraint automation_runs_priority_check check (priority in ('normal', 'bulk'));
+-- Keep enrollment identity stable if a contact changes its email before cancellation.
+alter table automation_runs add column if not exists contact_id text;
 `;

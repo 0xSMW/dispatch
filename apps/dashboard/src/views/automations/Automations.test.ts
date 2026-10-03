@@ -65,6 +65,7 @@ describe("Automations", () => {
     expect(String(post[0])).toBe("http://localhost:3100/automations");
     expect(JSON.parse(String(post[1]!.body))).toEqual({
       name: "Onboarding",
+      reentry: "every_time",
       steps: [{ key: "trigger", type: "trigger", config: { type: "event", event_name: "user.created" } }],
       connections: [],
     });
@@ -101,7 +102,7 @@ describe("Automations", () => {
     await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/automations/automation_3/editor"));
     const post = fetch.mock.calls.find(([, init]) => init?.method === "POST")!;
     expect(JSON.parse(String(post[1]!.body))).toEqual({
-      name: "Lifecycle", steps: [{ key: "trigger", type: "trigger", config }], connections: [],
+      name: "Lifecycle", reentry: "once", steps: [{ key: "trigger", type: "trigger", config }], connections: [],
     });
   });
 
@@ -122,6 +123,25 @@ describe("Automations", () => {
     expect(start).toHaveProperty("disabled", true);
     fireEvent.click(start);
     expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
+  });
+
+  it("keeps an explicit creation re-entry choice when the trigger changes", async () => {
+    const fetch = mockFetch((_raw, init) => init.method === "POST" ? { body: { id: "automation_3" } } : { body: { object: "list", has_more: false, data: [] } });
+    open();
+    fireEvent.click(await screen.findByRole("button", { name: "Create automation" }));
+    const dialog = within(screen.getByRole("dialog"));
+    fireEvent.change(dialog.getByLabelText("Name"), { target: { value: "Lifecycle" } });
+    expect(dialog.getByLabelText("Run for each contact")).toHaveProperty("value", "every_time");
+    fireEvent.change(dialog.getByLabelText("Trigger"), { target: { value: "contact_created" } });
+    expect(dialog.getByLabelText("Run for each contact")).toHaveProperty("value", "once");
+    fireEvent.change(dialog.getByLabelText("Run for each contact"), { target: { value: "every_time" } });
+    fireEvent.change(dialog.getByLabelText("Trigger"), { target: { value: "contact_updated" } });
+    expect(dialog.getByLabelText("Run for each contact")).toHaveProperty("value", "every_time");
+    fireEvent.click(dialog.getByRole("button", { name: /^Create/ }));
+    await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "POST")).toBe(true));
+    expect(JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "POST")![1]!.body))).toMatchObject({
+      reentry: "every_time", steps: [{ config: { type: "contact_updated" } }],
+    });
   });
 
   it("hides writes from viewers while still showing contact triggers", async () => {
@@ -158,11 +178,12 @@ describe("Automations", () => {
     open();
     const row = (await screen.findByText("Welcome")).closest("tr")!;
     fireEvent.click(within(row).getByRole("button", { name: "Actions" }));
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Stop" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Stop and cancel runs" }));
     expect(await screen.findByText("3 runs in progress will be cancelled.")).toBeTruthy();
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /Stop/ }));
     await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "POST")).toBe(true));
     expect(String(fetch.mock.calls.find(([, init]) => init?.method === "POST")![0])).toBe("http://localhost:3100/automations/automation_1/stop");
+    expect(JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "POST")![1]!.body))).toEqual({ reset_reentry: false });
   });
 
   it("selects every row with Cmd+A and opens delete with Backspace", async () => {

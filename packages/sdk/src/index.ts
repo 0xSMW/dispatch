@@ -205,6 +205,13 @@ export type ContactImport = {
   onConflict?: "upsert" | "skip";
   segments?: Array<{ id: string }>;
   topics?: Array<{ id: string; subscription?: "opt_in" | "opt_out" }>;
+  /** Omit to use the tenant default, resolved and stored when the import is created. */
+  triggerAutomations?: boolean;
+};
+
+export type ContactImportResult = Row & {
+  object: "contact_import";
+  trigger_automations: boolean;
 };
 
 export type TopicCreate = {
@@ -850,17 +857,18 @@ class ContactImports extends Resource {
     if (input.onConflict) form.append("on_conflict", input.onConflict);
     if (input.segments) form.append("segments", JSON.stringify(input.segments));
     if (input.topics) form.append("topics", JSON.stringify(input.topics));
+    if (input.triggerAutomations !== undefined) form.append("trigger_automations", String(input.triggerAutomations));
     const file = typeof input.file === "string" ? new Blob([input.file], { type: "text/csv" }) : input.file;
     form.append("file", file, input.filename ?? "contacts.csv");
-    return this.client.call<{ object: "contact_import"; id: string }>("POST", "/contacts/imports", form);
+    return this.client.call<ContactImportResult>("POST", "/contacts/imports", form);
   }
 
   list(page: Page & { status?: string } = {}) {
-    return this.client.call<List>("GET", `/contacts/imports${query(page)}`);
+    return this.client.call<List<ContactImportResult>>("GET", `/contacts/imports${query(page)}`);
   }
 
   get(id: string) {
-    return this.client.call<Row>("GET", `/contacts/imports/${seg(id)}`);
+    return this.client.call<ContactImportResult>("GET", `/contacts/imports/${seg(id)}`);
   }
 }
 
@@ -1095,8 +1103,9 @@ class Automations extends Resource {
     return this.client.call<Automation>("POST", `/automations/${seg(id)}/duplicate`, wire(options));
   }
 
-  stop(id: string) {
-    return this.client.call<Row>("POST", `/automations/${seg(id)}/stop`, {});
+  /** Reset only once enrollments for contacts whose active runs this stop actually cancels. */
+  stop(id: string, options: { resetReentry?: boolean } = {}) {
+    return this.client.call<Row>("POST", `/automations/${seg(id)}/stop`, wire(options));
   }
 }
 

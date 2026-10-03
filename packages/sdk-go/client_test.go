@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -447,6 +448,99 @@ func TestImportContactsUploadsMultipart(t *testing.T) {
 	content, _ := io.ReadAll(file)
 	if string(content) != "email\nada@x.com\n" || form.File["file"][0].Filename != "contacts.csv" {
 		t.Fatalf("file: %q", content)
+	}
+}
+
+func TestImportTriggerAutomations(t *testing.T) {
+	off, on := false, true
+	for _, tc := range []struct {
+		name   string
+		flag   *bool
+		stored bool
+		value  string
+	}{
+		{"omitted", nil, true, ""},
+		{"false", &off, false, "false"},
+		{"true", &on, true, "true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			imported := Map{"object": "contact_import", "id": "imp_1", "trigger_automations": tc.stored}
+			client, calls := recorder(t, map[string]canned{
+				"POST /contacts/imports":      {202, imported},
+				"GET /contacts/imports/imp_1": {200, imported},
+				"GET /contacts/imports":       {200, Map{"object": "list", "has_more": false, "data": []Map{imported}}},
+			})
+			created, err := client.ImportContacts(ContactImportInput{
+				File: []byte("email\nada@x.com\n"), TriggerAutomations: tc.flag,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sent := (*calls)[0]
+			mediaType, params, err := mime.ParseMediaType(sent.Headers.Get("Content-Type"))
+			if err != nil || sent.Method != "POST" || sent.Path != "/contacts/imports" || mediaType != "multipart/form-data" {
+				t.Fatalf("request: %+v, media type: %s, error: %v", sent, mediaType, err)
+			}
+			form, err := multipart.NewReader(bytes.NewReader(sent.Raw), params["boundary"]).ReadForm(1 << 20)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer form.RemoveAll()
+			values, exists := form.Value["trigger_automations"]
+			if tc.flag == nil {
+				if exists {
+					t.Fatalf("omitted flag was sent: %v", values)
+				}
+			} else if !reflect.DeepEqual(values, []string{tc.value}) {
+				t.Fatalf("flag = %v, want %q", values, tc.value)
+			}
+			if !reflect.DeepEqual(created, imported) {
+				t.Fatalf("create = %v, want %v", created, imported)
+			}
+			detail, err := client.ContactImport("imp_1")
+			if err != nil || !reflect.DeepEqual(detail, imported) {
+				t.Fatalf("detail = %v, error = %v", detail, err)
+			}
+			list, err := client.ContactImports()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(list.Data) != 1 || !reflect.DeepEqual(list.Data[0], imported) {
+				t.Fatalf("list = %+v", list)
+			}
+		})
+	}
+}
+
+func TestStopAutomationResetReentry(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []bool
+		body any
+	}{
+		{"omitted", nil, map[string]any{}},
+		{"false", []bool{false}, map[string]any{"reset_reentry": false}},
+		{"true", []bool{true}, map[string]any{"reset_reentry": true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, calls := recorder(t, map[string]canned{
+				"POST /automations/a1/stop": {200, Map{"object": "automation", "id": "a1", "stopped": 2}},
+			})
+			result, err := client.StopAutomation("a1", tc.args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sent := (*calls)[0]
+			if sent.Method != "POST" || sent.Path != "/automations/a1/stop" || !reflect.DeepEqual(sent.Body, tc.body) {
+				t.Fatalf("request = %+v, want body %v", sent, tc.body)
+			}
+			if tc.args == nil && string(sent.Raw) != "{}" {
+				t.Fatalf("omitted options changed the legacy empty JSON body: %s", sent.Raw)
+			}
+			if result["stopped"] != float64(2) {
+				t.Fatalf("result = %v", result)
+			}
+		})
 	}
 }
 

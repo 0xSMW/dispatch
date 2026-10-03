@@ -8,7 +8,7 @@ Contacts are identified by email, matched case-insensitively. Create them throug
 
 Enabled automations can start when a contact is added, changes, subscribes to a topic, or joins a static segment. Explicitly creating a previously deleted contact revives it and fires Contact added. Events never revive deleted contacts.
 
-Contact API writes, topic subscriptions, segment additions, event-created contacts and filled names, automation contact steps, and preference-page changes dispatch their actual changes. A contact created solely to record an unsubscribe does not fire Contact added. CSV imports do not start contact-triggered automations in this release; import opt-in and enrollment jobs are not shipped yet.
+Contact API writes, topic subscriptions, segment additions, event-created contacts and filled names, automation contact steps, and preference-page changes dispatch their actual changes. A contact created solely to record an unsubscribe does not fire Contact added. CSV imports can start matching automations when their stored `trigger_automations` flag is on; see [CSV imports](#csv-imports).
 
 Identical writes do not fire Contact changes. Re-adding a segment member is a no-op. Topic triggers use the effective preference, with the topic's default applied, and fire only when it moves from not receiving to receiving. An explicit opt-in that merely repeats an Opt in default is not a new subscription transition.
 
@@ -66,6 +66,49 @@ Deleting a property definition leaves values already stored on contacts. Treat d
 ```
 
 A declared property's type takes precedence over the map's type. Undeclared properties can use any of the four types. Boolean property cells accept `true`/`false`, `yes`/`no`, or `1`/`0`, case-insensitively. Date cells accept the same ISO strings as the contact API. Surrounding whitespace is trimmed; empty property cells are omitted. An invalid nonempty boolean or date cell fails that row, increments `counts.failed`, and does not stop valid rows from importing. The existing `unsubscribed` column remains a separate consent flag.
+
+### Start automations during an import
+
+Imports default to not starting automations. The tenant setting [`import_trigger_automations`](settings.md) supplies the default. The dashboard's "Start automations for these contacts" switch overrides it for that import.
+
+The multipart API accepts an optional `trigger_automations` field containing exactly `true` or `false`. These encode a boolean, not `1`, `0`, or a truthy string. Explicit `false` overrides a tenant default of `true`. Omission resolves the tenant default when the import is created and stores that value; changing the setting later does not change queued imports.
+
+Creation returns:
+
+```json
+{ "object": "contact_import", "id": "import_...", "trigger_automations": true }
+```
+
+The API also includes `request_id`. `GET /contacts/imports` entries and `GET /contacts/imports/{id}` include the same stored boolean.
+
+With the flag on, an import can start enabled automations for:
+
+- Contact added when a row inserts or revives a deleted contact.
+- Subscribed to topic only when effective receipt moves from off to on, with the topic's default applied.
+- Added to segment only when a membership is actually inserted.
+
+Imports do not fire Contact changes, even when they update an existing contact's fields. Skipped, invalid, and unchanged rows do not create these transitions. Worker retries of the same import do not repeat triggers for changes already applied. A separate upload creates a new import.
+
+Runs started by imports have bulk priority. Enabling this flag does not create or enable automations, clear opt-outs, or grant permission to send Marketing email. Matching flows may send immediately or after their configured waits; Marketing steps still honor global unsubscribes, topic preferences, and suppressions. [Re-entry rules](automations.md#re-entry) still apply.
+
+SDK inputs are optional and preserve omission:
+
+```ts
+await dispatch.contacts.imports.create({ file: csv, triggerAutomations: false });
+```
+
+```python
+dispatch.import_contacts(csv, trigger_automations=False)
+```
+
+```go
+off := false
+client.ImportContacts(dispatch.ContactImportInput{
+    File: csv, TriggerAutomations: &off,
+})
+```
+
+Omit the TypeScript/Python option, or leave the Go pointer nil, to use the tenant default.
 
 ## Segments
 
