@@ -775,7 +775,12 @@ export const contactImportSchema = z.object({
 });
 export type ContactImportInput = z.input<typeof contactImportSchema>;
 
-export const importStatuses = ["queued", "in_progress", "completed", "failed"] as const;
+export const importStatuses = ["queued", "in_progress", "completed", "failed", "cancelled"] as const;
+
+export const automationEnrollSchema = z.union([
+  z.object({ segment_id: z.string().min(1) }).strict(),
+  z.object({ all: z.literal(true) }).strict(),
+]);
 
 export const linkCheckSchema = z.object({
   urls: z.array(z.string().min(1).max(2048)).min(1).max(50)

@@ -2,7 +2,7 @@ export type Query = Record<string, string | number | boolean | null | undefined>
 
 export type Client = {
   get<T = unknown>(path: string, query?: Query): Promise<T>;
-  post<T = unknown>(path: string, body?: unknown): Promise<T>;
+  post<T = unknown>(path: string, body?: unknown, options?: { idempotencyKey?: string }): Promise<T>;
   patch<T = unknown>(path: string, body?: unknown): Promise<T>;
   delete<T = unknown>(path: string): Promise<T>;
   upload<T = unknown>(path: string, form: FormData | Record<string, string | Blob>): Promise<T>;
@@ -114,7 +114,8 @@ export function makeClient({ apiUrl, token, onUnauthorized }: ClientOptions): Cl
 
   return {
     get: (path, query) => request(withQuery(path, query)),
-    post: (path, body = {}) => request(path, { method: "POST", body: json(body) }),
+    post: (path, body = {}, options = {}) => request(path, { method: "POST", body: json(body),
+      headers: options.idempotencyKey ? { "idempotency-key": options.idempotencyKey } : undefined }),
     patch: (path, body = {}) => request(path, { method: "PATCH", body: json(body) }),
     delete: (path) => request(path, { method: "DELETE" }),
     upload: (path, form) => {

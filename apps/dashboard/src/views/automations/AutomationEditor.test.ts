@@ -78,6 +78,33 @@ describe("AutomationEditor", () => {
     vi.unstubAllGlobals();
   });
 
+  it.each(["", "?view=canvas"])("offers enrollment for an enabled native flow in the %s builder", async (query) => {
+    const config = { type: "contact_created" };
+    api((url) => url.pathname === "/automations/automation_1" ? { body: {
+      ...automation, status: "enabled", trigger_config: config,
+      steps: [{ key: "trigger", type: "trigger", config }], connections: [],
+    } } : undefined);
+    open(`/automations/automation_1/editor${query}`);
+    fireEvent.click(await screen.findByRole("button", { name: "Enroll contacts" }));
+    const dialog = screen.getByRole("dialog");
+    expect(within(dialog).getByLabelText("Audience")).toBeTruthy();
+    expect(within(dialog).getByText("This can send emails immediately.")).toBeTruthy();
+  });
+
+  it("opens an existing enrollment job from the URL for viewers without write controls", async () => {
+    signIn("sess_viewer", ["read"]);
+    api((url) => url.pathname.endsWith("/enroll-jobs/job_1") ? { body: {
+      object: "automation_enrollment_job", id: "job_1", automation_id: "automation_1", segment_id: null,
+      status: "in_progress", counts: { total: 10, processed: 3, enrolled: 2, skipped: 1, failed: 0 }, error: null,
+      created_at: "", completed_at: null,
+    } } : undefined);
+    open("/automations/automation_1/editor?view=canvas&enroll_job=job_1");
+    await screen.findByText("in progress");
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Enroll contacts|Cancel enrollment/ })).toBeNull();
+    expect(screen.queryByLabelText("Audience")).toBeNull();
+  });
+
   it("renders the graph as cards, with the condition's branches nested", async () => {
     api();
     open();

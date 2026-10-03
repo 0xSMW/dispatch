@@ -23,6 +23,8 @@ import {
 import {
   connect,
   executeAutomationRun,
+  claimAutomationRuns,
+  processEnrollmentJobs,
   tx,
   type Queryable,
 } from "@dispatchmail/db";
@@ -35,7 +37,7 @@ import { verifyDueDomains } from "./domains.js";
 import { applySesEvent, consumeOnce, type SesEvent } from "./events.js";
 import { applyInbound, type SesReceipt } from "./inbound.js";
 import { startImports } from "./imports.js";
-import { pruneLogs, pruneLogsIfDue } from "./logs.js";
+import { pruneLogs, pruneLogsIfDue, pruneContactChanges, pruneContactChangesIfDue } from "./logs.js";
 
 const db = connect();
 const concurrency = Number(process.env.WORKER_CONCURRENCY ?? 5);
@@ -50,17 +52,13 @@ assertRealProvider();
 const provider = (process.env.SES_PROVIDER || "fake") === "ses" ? createSesProvider() : fakeProvider();
 const pollState = { last: 0 };
 const logPrune = { last: 0 };
-
-type AutomationRunRef = {
-  id: string;
-  tenant_id: string;
-  wait_event: string | null;
-};
+const changesPrune = { last: 0 };
+const claimCursor = { normal: "", bulk: "" };
 
 export async function tick(options: { durable?: boolean } = {}) {
   const jobs = await claimJobs();
   await Promise.all(jobs.map((job) => processJob(job, options.durable)));
-  const runs = await claimAutomationRuns();
+  const runs = await claimAutomationRuns(db, concurrency, claimCursor);
   await Promise.all(
     runs.map((run) => executeAutomationRun(db, run.tenant_id, run.id, { publicUrl, appUrl, secret: appSecret })),
   );
@@ -76,8 +74,10 @@ export async function tick(options: { durable?: boolean } = {}) {
     }),
   );
   const imports = await alone("imports", () => startImports(db, storage, undefined, undefined, { bounded: options.durable }));
+  const enrollments = await alone("enrollments", () => processEnrollmentJobs(db));
   await alone("log pruning", () => options.durable ? pruneLogs(db, undefined, undefined, 1) : pruneLogsIfDue(db, logPrune));
-  return { jobs: jobs.length, runs: runs.length, attempts, broadcasts: broadcasts ?? 0, imports: imports ?? 0 };
+  await alone("contact change pruning", () => options.durable ? pruneContactChanges(db, undefined, undefined, 1) : pruneContactChangesIfDue(db, changesPrune));
+  return { jobs: jobs.length, runs: runs.length, attempts, broadcasts: broadcasts ?? 0, imports: imports ?? 0, enrollments: enrollments ?? 0 };
 }
 
 async function alone<T>(name: string, run: () => Promise<T>) {
@@ -405,34 +405,6 @@ async function failAttempt(
   });
 }
 
-async function claimAutomationRuns() {
-  return tx(db, async (client) => {
-    const rows = await client.query<AutomationRunRef>(
-      // Three kinds of work: a run an event just started or woke (ready), a run whose delay or
-      // wait has run out (waiting), and a run a stopped worker left behind (running, with no
-      // step committed for five minutes). Every step refreshes updated_at.
-      `select id, tenant_id, wait_event
-       from automation_runs
-       where state = 'ready'
-          or (state = 'waiting' and resume_at is not null and resume_at <= now())
-          or (state = 'running' and updated_at < now() - interval '5 minutes')
-       order by coalesce(resume_at, created_at), id
-       limit $1
-       for update skip locked`,
-      [concurrency],
-    );
-    if (rows.rowCount === 0) return [];
-    // A wait that ran out is marked as timed out, so the run takes the timeout branch.
-    await client.query(
-      `update automation_runs
-       set resume_data = case when state = 'waiting' then jsonb_build_object('timed_out', wait_event is not null) else resume_data end,
-         state = 'running', resume_at = null, wait_event = null, updated_at = now()
-       where id = any($1)`,
-      [rows.rows.map((row) => row.id)],
-    );
-    return rows.rows;
-  });
-}
 
 async function markWebhook(
   client: Queryable,

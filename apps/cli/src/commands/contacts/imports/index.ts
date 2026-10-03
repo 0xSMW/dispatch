@@ -1,6 +1,7 @@
 import { Command } from "@commander-js/extra-typings";
 import { helpText } from "../../../lib/help.js";
 import { create } from "./create.js";
+import { cancel } from "./cancel.js";
 import { get } from "./get.js";
 import { list } from "./list.js";
 
@@ -9,4 +10,5 @@ export const imports = new Command("imports")
   .addHelpText("after", helpText({ examples: ["dispatch contacts imports", "dispatch contacts imports create --file contacts.csv"] }))
   .addCommand(list, { isDefault: true })
   .addCommand(create)
+  .addCommand(cancel)
   .addCommand(get);

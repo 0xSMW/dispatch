@@ -47,7 +47,7 @@ export type Api = {
     activity: Call;
     segments: { list: Call; add: Call; remove: Call };
     topics: { list: Call; update: Call };
-    imports: { create: Call; list: Call; get: Call };
+    imports: { create: Call; list: Call; get: Call; cancel: Call };
   };
   contactProperties: Crud;
   segments: Crud & { contacts: Call };
@@ -62,7 +62,14 @@ export type Api = {
     pause: Call;
     resume: Call;
   };
-  automations: Crud & { duplicate: Call; stop: Call; runs: { list: Call; get: Call } };
+  automations: Crud & {
+    duplicate: Call;
+    stop: Call;
+    enroll: Call;
+    getEnrollmentJob: Call;
+    cancelEnrollmentJob: Call;
+    runs: { list: Call; get: Call };
+  };
   events: Crud & { send: Call; fired: { list: Call; get: Call } };
   logs: { list: Call; get: Call; export: Call };
   usage: { get: Call };

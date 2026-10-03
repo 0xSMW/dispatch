@@ -332,6 +332,32 @@ type AutomationTriggerConfig struct {
 
 type AutomationReentry string
 
+// AutomationEnrollment selects exactly one segment or all live contacts.
+type AutomationEnrollment struct {
+	SegmentID string `json:"segment_id,omitempty"`
+	All       bool   `json:"all,omitempty"`
+}
+
+type AutomationEnrollmentCounts struct {
+	Total     int `json:"total"`
+	Processed int `json:"processed"`
+	Enrolled  int `json:"enrolled"`
+	Skipped   int `json:"skipped"`
+	Failed    int `json:"failed"`
+}
+
+type AutomationEnrollmentJob struct {
+	Object       string                     `json:"object"`
+	ID           string                     `json:"id"`
+	AutomationID string                     `json:"automation_id"`
+	SegmentID    *string                    `json:"segment_id"`
+	Status       string                     `json:"status"`
+	Counts       AutomationEnrollmentCounts `json:"counts"`
+	Error        *string                    `json:"error"`
+	CreatedAt    string                     `json:"created_at"`
+	CompletedAt  *string                    `json:"completed_at"`
+}
+
 const (
 	ReentryOnce      AutomationReentry = "once"
 	ReentryEveryTime AutomationReentry = "every_time"
@@ -1160,6 +1186,10 @@ func (c *Client) ContactImport(id string) (Map, error) {
 	return object(get[Map](c, at("contacts", "imports", id)))
 }
 
+func (c *Client) CancelContactImport(id string) (Map, error) {
+	return object(call[Map](c, http.MethodDelete, at("contacts", "imports", id), nil, "", true))
+}
+
 // Contact properties
 func (c *Client) ContactProperties(query ...url.Values) (*ListResponse[ContactProperty], error) {
 	return get[ListResponse[ContactProperty]](c, with("/contact-properties", query))
@@ -1342,6 +1372,24 @@ func (c *Client) BroadcastAudience(id string) (Map, error) {
 }
 
 // Automations
+// Enroll accepts an enabled, unpaused contact flow and returns its asynchronous job.
+func (c *Client) Enroll(id string, input AutomationEnrollment, idempotencyKey ...string) (*AutomationEnrollmentJob, error) {
+	key := ""
+	if len(idempotencyKey) > 0 {
+		key = idempotencyKey[0]
+	}
+	return call[AutomationEnrollmentJob](c, http.MethodPost, at("automations", id, "enroll"), input, key, true)
+}
+
+func (c *Client) GetEnrollmentJob(id, jobID string) (*AutomationEnrollmentJob, error) {
+	return get[AutomationEnrollmentJob](c, at("automations", id, "enroll-jobs", jobID))
+}
+
+// CancelEnrollmentJob stops between batches without cancelling already-created runs.
+func (c *Client) CancelEnrollmentJob(id, jobID string) (*AutomationEnrollmentJob, error) {
+	return call[AutomationEnrollmentJob](c, http.MethodDelete, at("automations", id, "enroll-jobs", jobID), nil, "", true)
+}
+
 func (c *Client) Automations(query ...url.Values) (*ListResponse[Automation], error) {
 	return get[ListResponse[Automation]](c, with("/automations", query))
 }

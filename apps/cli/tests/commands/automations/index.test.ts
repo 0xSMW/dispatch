@@ -212,4 +212,44 @@ describe("automations", () => {
     expect(await run(automations, ["stop", "auto_1", "--yes"])).toBe(0);
     expect(method("automations.stop")).toHaveBeenLastCalledWith("auto_1");
   });
+
+  it("enrolls exactly one segment or all contacts after confirmation", async () => {
+    spies();
+    expect(await run(automations, ["enroll", "auto_1", "--all"])).toBe(1);
+    expect(method("automations.enroll")).not.toHaveBeenCalled();
+    expect(await run(automations, ["enroll", "auto_1", "--all", "--yes"])).toBe(0);
+    expect(method("automations.enroll")).toHaveBeenLastCalledWith("auto_1", { all: true });
+    expect(await run(automations, ["enroll", "auto_1", "--segment-id", "seg_1", "--yes"])).toBe(0);
+    expect(method("automations.enroll")).toHaveBeenLastCalledWith("auto_1", { segmentId: "seg_1" });
+  });
+
+  it.each([
+    [[], "missing_flags"],
+    [["--all", "--segment-id", "seg_1"], "validation_error"],
+  ])("rejects invalid enrollment scope %j", async (flags, code) => {
+    const { stderr } = spies();
+    expect(await run(automations, ["enroll", "auto_1", ...flags, "--yes"])).toBe(1);
+    expect(errorJson(stderr()).error.code).toBe(code);
+    expect(method("automations.enroll")).not.toHaveBeenCalled();
+  });
+
+  it("gets and cancels enrollment jobs using positionals or flags", async () => {
+    spies();
+    expect(await run(automations, ["enroll-jobs", "get", "auto_1", "job_1"])).toBe(0);
+    expect(method("automations.getEnrollmentJob")).toHaveBeenLastCalledWith("auto_1", "job_1");
+    expect(await run(automations, ["enroll-jobs", "get", "--automation-id", "auto_2", "--job-id", "job_2"])).toBe(0);
+    expect(method("automations.getEnrollmentJob")).toHaveBeenLastCalledWith("auto_2", "job_2");
+    expect(await run(automations, ["enroll-jobs", "cancel", "auto_1", "job_1"])).toBe(1);
+    expect(method("automations.cancelEnrollmentJob")).not.toHaveBeenCalled();
+    expect(await run(automations, ["enroll-jobs", "cancel", "--automation-id", "auto_1", "--job-id", "job_1", "--yes"])).toBe(0);
+    expect(method("automations.cancelEnrollmentJob")).toHaveBeenLastCalledWith("auto_1", "job_1");
+    expect(method("automations.stop")).not.toHaveBeenCalled();
+  });
+
+  it("requires an enrollment job ID without inventing a list endpoint", async () => {
+    const { stderr } = spies();
+    expect(await run(automations, ["enroll-jobs", "get", "auto_1"])).toBe(1);
+    expect(errorJson(stderr()).error.code).toBe("missing_id");
+    expect(method("automations.getEnrollmentJob")).not.toHaveBeenCalled();
+  });
 });

@@ -12,7 +12,7 @@ export type ImportCounts = {
   failed: number;
 };
 
-export type ImportStatus = "queued" | "in_progress" | "completed" | "failed";
+export type ImportStatus = "queued" | "in_progress" | "completed" | "failed" | "cancelled";
 
 export type ImportRow = {
   id: string;
@@ -27,6 +27,8 @@ export type ImportRow = {
   counts: ImportCounts;
   // Data rows already committed. Above zero only when an earlier worker stopped part way.
   row_offset?: number;
+  locked_at?: string | Date | null;
+  claim_version?: number;
   error: string | null;
   created_at: string | Date;
   completed_at: string | Date | null;
@@ -43,7 +45,7 @@ export type ImportContact = {
 export const importColumns = "id, status, trigger_automations, counts, error, created_at, completed_at";
 
 const workColumns =
-  "id, tenant_id, status, storage_key, column_map, on_conflict, segments, topics, trigger_automations, counts, row_offset, error, created_at, completed_at";
+  "id, tenant_id, status, storage_key, column_map, on_conflict, segments, topics, trigger_automations, counts, row_offset, locked_at, claim_version, error, created_at, completed_at";
 
 export function emptyCounts(): ImportCounts {
   return { total: 0, created: 0, updated: 0, skipped: 0, failed: 0 };
@@ -107,6 +109,14 @@ export async function findImport(db: Queryable, tenantId: string, importId: stri
   return row.rows[0];
 }
 
+export async function cancelImport(db: Queryable, tenantId: string, importId: string) {
+  await db.query(
+    `update contact_imports set status = 'cancelled', locked_at = null, completed_at = now()
+     where tenant_id = $1 and id = $2 and status in ('queued', 'in_progress')`,
+    [tenantId, importId],
+  );
+  return findImport(db, tenantId, importId);
+}
 export async function assertImportRefs(
   db: Queryable,
   tenantId: string,
@@ -143,11 +153,12 @@ export async function claimImports(db: Db, limit: number) {
       [limit],
     );
     if (!rows.rows.length) return [];
-    await client.query(
-      "update contact_imports set status = 'in_progress', locked_at = now() where id = any($1::text[])",
+    const claimed = await client.query<ImportRow>(
+      `update contact_imports set status = 'in_progress', locked_at = clock_timestamp(), claim_version = claim_version + 1 where id = any($1::text[])
+       returning ${workColumns}`,
       [rows.rows.map((row) => row.id)],
     );
-    return rows.rows.map((row) => ({ ...row, status: "in_progress" as const }));
+    return claimed.rows;
   });
 }
 
@@ -175,7 +186,7 @@ export async function importBatch(
      from unnest($1::text[], $3::text[], $4::text[], $5::text[], $6::jsonb[], $7::boolean[])
        as t(id, email, first_name, last_name, properties, unsubscribed)
      order by t.email
-     on conflict (tenant_id, email) do nothing
+     on conflict do nothing
      returning ${contactColumns}`,
     [
       contacts.map(() => id("contact")),
@@ -311,7 +322,7 @@ export async function finishImport(
   await db.query(
     `update contact_imports
      set status = $2, counts = $3, error = $4, completed_at = now(), locked_at = null
-     where id = $1`,
+     where id = $1 and status = 'in_progress'`,
     [importId, status, JSON.stringify(counts), error],
   );
 }

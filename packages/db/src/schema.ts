@@ -898,4 +898,34 @@ alter table automation_runs drop constraint if exists automation_runs_priority_c
 alter table automation_runs add constraint automation_runs_priority_check check (priority in ('normal', 'bulk'));
 -- Keep enrollment identity stable if a contact changes its email before cancellation.
 alter table automation_runs add column if not exists contact_id text;
+-- Explicit enrollment pages commit their receipts, cursor, progress and runs together.
+create table if not exists automation_enrollment_jobs (
+  id text primary key,
+  tenant_id text not null references tenants(id) on delete cascade,
+  automation_id text not null references automations(id) on delete cascade,
+  segment_id text,
+  status text not null default 'queued' check (status in ('queued', 'in_progress', 'completed', 'failed', 'cancelled')),
+  counts jsonb not null default '{"total":0,"processed":0,"enrolled":0,"skipped":0,"failed":0}',
+  cursor text,
+  idempotency_key text,
+  input_hash text not null,
+  error text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  completed_at timestamptz,
+  unique (tenant_id, automation_id, idempotency_key)
+);
+create table if not exists automation_enrollment_job_contacts (
+  job_id text not null references automation_enrollment_jobs(id) on delete cascade,
+  contact_id text not null,
+  primary key (job_id, contact_id)
+);
+create index if not exists automation_enrollment_jobs_ready_idx on automation_enrollment_jobs (updated_at, id)
+  where status in ('queued', 'in_progress');
+create index if not exists contacts_enrollment_idx on contacts (tenant_id, id) where deleted_at is null;
+create index if not exists contact_changes_created_idx on contact_changes (created_at, id);
+alter table contact_imports drop constraint if exists contact_imports_status_check;
+alter table contact_imports add constraint contact_imports_status_check
+  check (status in ('queued', 'in_progress', 'completed', 'failed', 'cancelled'));
+alter table contact_imports add column if not exists claim_version integer not null default 0;
 `;

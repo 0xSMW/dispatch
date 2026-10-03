@@ -125,6 +125,15 @@ describe("contacts", () => {
     expect(method("contacts.imports.get")).toHaveBeenCalledWith("imp_1");
   });
 
+  it("cancels an import only after confirmation", async () => {
+    const { stderr } = spies();
+    expect(await run(contacts, ["imports", "cancel", "imp_1"])).toBe(1);
+    expect(errorJson(stderr()).error.code).toBe("confirmation_required");
+    expect(method("contacts.imports.cancel")).not.toHaveBeenCalled();
+    expect(await run(contacts, ["imports", "cancel", "imp_1", "--yes"])).toBe(0);
+    expect(method("contacts.imports.cancel")).toHaveBeenCalledWith("imp_1");
+  });
+
   it.each([
     [[], undefined],
     [["--no-trigger-automations"], false],

@@ -7544,7 +7544,8 @@
                 "queued",
                 "in_progress",
                 "completed",
-                "failed"
+                "failed",
+                "cancelled"
               ]
             }
           },
@@ -7691,6 +7692,77 @@
             "$ref": "#/components/responses/ServerError"
           }
         }
+      },
+      "delete": {
+        "operationId": "cancelContactImport",
+        "summary": "Cancel future contact import batches",
+        "tags": [
+          "Imports"
+        ],
+        "x-scope": "full",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Import ID.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/RequestIdHeader"
+          }
+        ],
+        "responses": {
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "200": {
+            "description": "Success.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "ratelimit-limit": {
+                "$ref": "#/components/headers/RateLimitLimit"
+              },
+              "ratelimit-remaining": {
+                "$ref": "#/components/headers/RateLimitRemaining"
+              },
+              "ratelimit-reset": {
+                "$ref": "#/components/headers/RateLimitReset"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ContactImport"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RequestId"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "description": "Preserves previously committed contacts, triggers and counts. Cancellation takes effect between batches."
       }
     },
     "/contact-properties": {
@@ -14546,6 +14618,266 @@
           }
         }
       }
+    },
+    "/automations/{id}/enroll": {
+      "post": {
+        "operationId": "enrollAutomation",
+        "summary": "Enroll contacts in an enabled contact-triggered automation",
+        "tags": [
+          "Automations"
+        ],
+        "x-scope": "full",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Automation ID.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/RequestIdHeader"
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "description": "Retry the same audience once, scoped to tenant and automation."
+          }
+        ],
+        "responses": {
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "202": {
+            "description": "Success.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "ratelimit-limit": {
+                "$ref": "#/components/headers/RateLimitLimit"
+              },
+              "ratelimit-remaining": {
+                "$ref": "#/components/headers/RateLimitRemaining"
+              },
+              "ratelimit-reset": {
+                "$ref": "#/components/headers/RateLimitReset"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/AutomationEnrollmentJob"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RequestId"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/UnprocessableEntity"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutomationEnrollInput"
+              }
+            }
+          }
+        },
+        "description": "Requires enabled, unpaused, non-event automation and a live static segment or all contacts. Worker pages 500 live contacts at a time, excludes contacts created after the job, uses bulk priority, and ignores contact_updated from/to. Lifetime once re-entry remains respected; every job admits each contact at most once. total is the initial audience count; deleted contacts or changed segment membership may reduce final processed count."
+      }
+    },
+    "/automations/{id}/enroll-jobs/{job_id}": {
+      "get": {
+        "operationId": "getAutomationEnrollmentJob",
+        "summary": "Retrieve enrollment progress",
+        "tags": [
+          "Automations"
+        ],
+        "x-scope": "full",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Automation ID.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/RequestIdHeader"
+          },
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Enrollment job ID."
+          }
+        ],
+        "responses": {
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "200": {
+            "description": "Success.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "ratelimit-limit": {
+                "$ref": "#/components/headers/RateLimitLimit"
+              },
+              "ratelimit-remaining": {
+                "$ref": "#/components/headers/RateLimitRemaining"
+              },
+              "ratelimit-reset": {
+                "$ref": "#/components/headers/RateLimitReset"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/AutomationEnrollmentJob"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RequestId"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "cancelAutomationEnrollmentJob",
+        "summary": "Cancel future enrollment batches",
+        "tags": [
+          "Automations"
+        ],
+        "x-scope": "full",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Automation ID.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/RequestIdHeader"
+          },
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Enrollment job ID."
+          }
+        ],
+        "responses": {
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "200": {
+            "description": "Success.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "ratelimit-limit": {
+                "$ref": "#/components/headers/RateLimitLimit"
+              },
+              "ratelimit-remaining": {
+                "$ref": "#/components/headers/RateLimitRemaining"
+              },
+              "ratelimit-reset": {
+                "$ref": "#/components/headers/RateLimitReset"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/AutomationEnrollmentJob"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RequestId"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "description": "Cancellation happens between pages. Runs already started remain queued or active."
+      }
     }
   },
   "components": {
@@ -19074,7 +19406,8 @@
               "queued",
               "in_progress",
               "completed",
-              "failed"
+              "failed",
+              "cancelled"
             ]
           },
           "counts": {
@@ -21782,6 +22115,127 @@
           "provider": {
             "type": "string",
             "description": "`fake` or `ses`."
+          }
+        }
+      },
+      "AutomationEnrollInput": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "all"
+            ],
+            "properties": {
+              "all": {
+                "type": "boolean",
+                "const": true
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "segment_id"
+            ],
+            "properties": {
+              "segment_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        ]
+      },
+      "AutomationEnrollmentJob": {
+        "type": "object",
+        "required": [
+          "object",
+          "id",
+          "automation_id",
+          "segment_id",
+          "status",
+          "counts",
+          "error",
+          "created_at",
+          "completed_at"
+        ],
+        "properties": {
+          "object": {
+            "type": "string",
+            "const": "automation_enrollment_job"
+          },
+          "id": {
+            "type": "string"
+          },
+          "automation_id": {
+            "type": "string"
+          },
+          "segment_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "in_progress",
+              "completed",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "counts": {
+            "type": "object",
+            "required": [
+              "total",
+              "processed",
+              "enrolled",
+              "skipped",
+              "failed"
+            ],
+            "properties": {
+              "total": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "processed": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "enrolled": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "skipped": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "failed": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "completed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
           }
         }
       }

@@ -58,6 +58,39 @@ describe("constructor", () => {
 });
 
 describe("transport", () => {
+  it("creates, retrieves, and cancels typed enrollment jobs without altering their counts", async () => {
+    const job = {
+      object: "automation_enrollment_job", id: "j/1", automation_id: "a/1", segment_id: null,
+      status: "queued", counts: { total: 501, processed: 0, enrolled: 0, skipped: 0, failed: 0 },
+      error: null, created_at: "2026-10-03T00:00:00Z", completed_at: null,
+    };
+    const fetch = vi.fn(async () => reply(job, { status: 202 }));
+    globalThis.fetch = fetch as never;
+    const client = new Dispatch({ apiKey: "sk_test" });
+    const created = await client.automations.enroll("a/1", { all: true }, { idempotencyKey: "enroll-retry" });
+    expect(created.data).toEqual(job);
+    expectTypeOf(created.data!.counts.enrolled).toEqualTypeOf<number>();
+    expectTypeOf(created.data!.segment_id).toEqualTypeOf<string | null>();
+    expect(request(fetch as never).body).toEqual({ all: true });
+    expect(request(fetch as never).url).toBe(`${base}/automations/a%2F1/enroll`);
+    expect(request(fetch as never).headers.get("idempotency-key")).toBe("enroll-retry");
+    await client.automations.enroll("a/1", { segmentId: "s/1" });
+    expect(request(fetch as never, 1).body).toEqual({ segment_id: "s/1" });
+    expect((await client.automations.getEnrollmentJob("a/1", "j/1")).data).toEqual(job);
+    expect(request(fetch as never, 2)).toMatchObject({
+      method: "GET", url: `${base}/automations/a%2F1/enroll-jobs/j%2F1`, body: undefined,
+    });
+    stub({ ...job, status: "cancelled" });
+    expect((await client.automations.cancelEnrollmentJob("a/1", "j/1")).data?.status).toBe("cancelled");
+  });
+
+  it("cancels a contact import using DELETE and returns its state", async () => {
+    const imported = { object: "contact_import", id: "i/1", status: "cancelled", trigger_automations: true };
+    const fetch = stub(imported);
+    const result = await new Dispatch({ apiKey: "sk_test" }).contacts.imports.cancel("i/1");
+    expect(result.data).toEqual(imported);
+    expect(request(fetch)).toMatchObject({ method: "DELETE", url: `${base}/contacts/imports/i%2F1`, body: undefined });
+  });
   it.each([undefined, false, true])("preserves the optional stop reset flag: %s", async (resetReentry) => {
     const fetch = stub({ object: "automation", id: "a1", stopped: 2 });
     const client = new Dispatch({ apiKey: "sk_test" });
@@ -436,6 +469,7 @@ const cases: Case[] = [
   ["automations.remove", (c) => c.automations.remove("a1"), "DELETE", "/automations/a1"],
   ["automations.duplicate", (c) => c.automations.duplicate("a1"), "POST", "/automations/a1/duplicate"],
   ["automations.stop", (c) => c.automations.stop("a1"), "POST", "/automations/a1/stop"],
+  ["automations.cancelEnrollmentJob", (c) => c.automations.cancelEnrollmentJob("a/1", "j/1"), "DELETE", "/automations/a%2F1/enroll-jobs/j%2F1"],
   ["automations.runs.list", (c) => c.automations.runs.list("a1", { status: "running,failed" }), "GET", "/automations/a1/runs?status=running%2Cfailed"],
   ["automations.runs.get", (c) => c.automations.runs.get("a1", "run_1"), "GET", "/automations/a1/runs/run_1"],
   ["events.send", (c) => c.events.send({ event: "user.created", contactId: "c1", payload: { planTier: "pro" } }), "POST", "/events/send", { event: "user.created", contact_id: "c1", payload: { planTier: "pro" } }],

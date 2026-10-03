@@ -35,7 +35,9 @@ describe("version-aware public documentation", () => {
     for (const heading of ["Triggers", "Conditions", "Steps", "Re-entry", "Pause"]) expect(guide).toContain(`## ${heading}\n`);
     expect(guide).toContain("not a pause that preserves runs");
     expect(guide).toContain("New contact triggers default to `once`");
-    expect(guide).toContain("Explicit enrollment jobs are not shipped yet");
+    expect(guide).toContain("## Enroll existing contacts\n");
+    expect(guide).toContain("POST /automations/{id}/enroll");
+    expect(guide).toContain("not runs already created or emails already queued");
     expect(guide).toContain("CSV imports with `trigger_automations: true`");
   });
 

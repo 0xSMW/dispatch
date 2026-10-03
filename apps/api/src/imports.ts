@@ -3,6 +3,7 @@ import { ApiError, contactImportSchema, id, importStatuses } from "@dispatchmail
 import {
   assertImportRefs,
   createImport,
+  cancelImport,
   findImport,
   importColumns,
   importKey,
@@ -98,6 +99,10 @@ export function registerImports(
   app.get("/contacts/imports/:id", async (request) => {
     const row = await findImport(db, request.auth!.tenant_id, (request.params as { id: string }).id);
     return presentImport(row);
+  });
+
+  app.delete("/contacts/imports/:id", async (request) => {
+    return presentImport(await cancelImport(db, request.auth!.tenant_id, (request.params as { id: string }).id));
   });
 }
 

@@ -227,6 +227,24 @@ describe("docs/api/openapi.json", () => {
     });
   });
 
+  it("documents exact enrollment audiences, asynchronous progress and both cancellation responses", () => {
+    const schemas = spec.components.schemas as unknown as Record<string, { properties: Record<string, unknown> }>;
+    expect(schemas.AutomationEnrollInput).toMatchObject({ oneOf: [
+      { additionalProperties: false, required: ["all"], properties: { all: { const: true } } },
+      { additionalProperties: false, required: ["segment_id"] },
+    ] });
+    expect(schemas.AutomationEnrollmentJob.properties.status).toMatchObject({ enum: ["queued", "in_progress", "completed", "failed", "cancelled"] });
+    expect(schemas.AutomationEnrollmentJob.properties.counts).toMatchObject({ required: ["total", "processed", "enrolled", "skipped", "failed"] });
+    expect(spec.paths["/automations/{id}/enroll"].post).toMatchObject({
+      responses: { "202": { content: { "application/json": { schema: { allOf: [
+        { $ref: "#/components/schemas/AutomationEnrollmentJob" }, { $ref: "#/components/schemas/RequestId" },
+      ] } } } } },
+    });
+    expect(spec.paths["/automations/{id}/enroll-jobs/{job_id}"].delete).toBeDefined();
+    expect(spec.paths["/contacts/imports/{id}"].delete).toBeDefined();
+    expect(schemas.ContactImport.properties.status).toMatchObject({ enum: expect.arrayContaining(["cancelled"]) });
+  });
+
   it("documents sandbox flags on send, batch, split, email and recipient responses", () => {
     const operation = spec.paths["/emails"].post as {
       responses: { "200": { content: { "application/json": { schema: { properties: Record<string, unknown> } } } } };

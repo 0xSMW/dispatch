@@ -65,6 +65,57 @@ func TestNewClient(t *testing.T) {
 	}
 }
 
+func TestEnrollmentContracts(t *testing.T) {
+	job := Map{
+		"object": "automation_enrollment_job", "id": "j/1", "automation_id": "a/1",
+		"segment_id": nil, "status": "queued", "error": nil,
+		"created_at": "2026-10-03T00:00:00Z", "completed_at": nil,
+		"counts": Map{"total": 501, "processed": 0, "enrolled": 0, "skipped": 0, "failed": 0},
+	}
+	cancelled := Map{"object": "automation_enrollment_job", "id": "j/1", "status": "cancelled", "counts": job["counts"]}
+	client, calls := recorder(t, map[string]canned{
+		"POST /automations/a%2F1/enroll":              {202, job},
+		"GET /automations/a%2F1/enroll-jobs/j%2F1":    {200, job},
+		"DELETE /automations/a%2F1/enroll-jobs/j%2F1": {200, cancelled},
+		"DELETE /contacts/imports/i%2F1":              {200, Map{"object": "contact_import", "id": "i/1", "status": "cancelled"}},
+	})
+	created, err := client.Enroll("a/1", AutomationEnrollment{All: true}, "enroll-retry")
+	if err != nil || created.Status != "queued" || created.Counts.Total != 501 || created.SegmentID != nil || created.CompletedAt != nil || created.Error != nil {
+		t.Fatalf("create: %+v, %v", created, err)
+	}
+	if (*calls)[0].Headers.Get("Idempotency-Key") != "enroll-retry" {
+		t.Fatal("missing enrollment idempotency key")
+	}
+	if _, err := client.Enroll("a/1", AutomationEnrollment{SegmentID: "s/1"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := client.GetEnrollmentJob("a/1", "j/1")
+	if err != nil || !reflect.DeepEqual(got, created) {
+		t.Fatalf("get: %+v, %v", got, err)
+	}
+	stopped, err := client.CancelEnrollmentJob("a/1", "j/1")
+	if err != nil || stopped.Status != "cancelled" || stopped.Counts.Total != 501 {
+		t.Fatalf("cancel: %+v, %v", stopped, err)
+	}
+	imported, err := client.CancelContactImport("i/1")
+	if err != nil || imported["status"] != "cancelled" {
+		t.Fatalf("import: %v, %v", imported, err)
+	}
+	for index, want := range []Map{{"all": true}, {"segment_id": "s/1"}} {
+		if !reflect.DeepEqual((*calls)[index].Body, map[string]any(want)) {
+			t.Fatalf("body: %v", (*calls)[index].Body)
+		}
+	}
+	for _, index := range []int{2, 3, 4} {
+		if len((*calls)[index].Raw) != 0 {
+			t.Fatalf("unexpected body: %s", (*calls)[index].Raw)
+		}
+	}
+	if len(*calls) != 5 {
+		t.Fatalf("unexpected extra requests: %v", *calls)
+	}
+}
+
 func TestTypedPropertyAndMappingContracts(t *testing.T) {
 	client, calls := recorder(t, nil)
 	if _, err := client.CreateContactProperty(ContactPropertyInput{Key: "activated", Type: "boolean", FallbackValue: false}); err != nil {

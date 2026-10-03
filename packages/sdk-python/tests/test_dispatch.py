@@ -341,6 +341,33 @@ class TestDispatch(unittest.TestCase):
                 self.assertEqual(sent["body"], {} if flag is None else {"reset_reentry": flag})
                 self.assertEqual(stopped, result)
 
+    def test_enrollment_contracts(self):
+        job = {
+            "object": "automation_enrollment_job", "id": "j/1", "automation_id": "a/1",
+            "segment_id": None, "status": "queued", "error": None,
+            "created_at": "2026-10-03T00:00:00Z", "completed_at": None,
+            "counts": {"total": 501, "processed": 0, "enrolled": 0, "skipped": 0, "failed": 0},
+        }
+        cancelled = {**job, "status": "cancelled"}
+        imported = {"object": "contact_import", "id": "i/1", "status": "cancelled"}
+        Recorder.responses = {
+            ("POST", "/automations/a%2F1/enroll"): (202, job),
+            ("GET", "/automations/a%2F1/enroll-jobs/j%2F1"): (200, job),
+            ("DELETE", "/automations/a%2F1/enroll-jobs/j%2F1"): (200, cancelled),
+            ("DELETE", "/contacts/imports/i%2F1"): (200, imported),
+        }
+        self.assertEqual(self.client.enroll("a/1", {"all": True}, idempotency_key="enroll-retry"), job)
+        self.assertEqual(Recorder.calls[-1]["body"], {"all": True})
+        self.assertEqual(Recorder.calls[-1]["headers"]["idempotency-key"], "enroll-retry")
+        self.assertEqual(self.client.enroll("a/1", {"segment_id": "s/1"}), job)
+        self.assertEqual(Recorder.calls[-1]["body"], {"segment_id": "s/1"})
+        self.assertEqual(self.client.get_enrollment_job("a/1", "j/1"), job)
+        self.assertEqual(self.client.cancel_enrollment_job("a/1", "j/1"), cancelled)
+        self.assertEqual(self.client.cancel_contact_import("i/1"), imported)
+        self.assertEqual([call["method"] for call in Recorder.calls], ["POST", "POST", "GET", "DELETE", "DELETE"])
+        self.assertTrue(all(call["body"] == b"" for call in Recorder.calls[2:]))
+        self.assertEqual(len(Recorder.calls), 5)
+
     def test_forward_received_email(self):
         Recorder.responses[("GET", "/emails/receiving/r1?html_format=cid")] = (200, {"id": "r1", "subject": "Invoice", "html": "<p>Due</p>"})
         self.client.forward_received_email("r1", "ops@x.com", "bot@x.com")

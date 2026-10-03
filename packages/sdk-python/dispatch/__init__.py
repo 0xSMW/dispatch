@@ -287,6 +287,36 @@ AutomationTriggerConfig = (
 )
 AutomationReentry = Literal["once", "every_time"]
 
+class SegmentEnrollment(TypedDict):
+    segment_id: str
+
+
+class AllEnrollment(TypedDict):
+    all: Literal[True]
+
+
+AutomationEnrollment = SegmentEnrollment | AllEnrollment
+
+
+class AutomationEnrollmentCounts(TypedDict):
+    total: int
+    processed: int
+    enrolled: int
+    skipped: int
+    failed: int
+
+
+class AutomationEnrollmentJob(TypedDict):
+    object: Literal["automation_enrollment_job"]
+    id: str
+    automation_id: str
+    segment_id: str | None
+    status: Literal["queued", "in_progress", "completed", "failed", "cancelled"]
+    counts: AutomationEnrollmentCounts
+    error: str | None
+    created_at: str
+    completed_at: str | None
+
 
 class Automation(TypedDict):
     id: str
@@ -771,6 +801,9 @@ class Dispatch:
     def contact_import(self, import_id: str) -> Json:
         return self._request("GET", _path("contacts", "imports", import_id))
 
+    def cancel_contact_import(self, import_id: str) -> Json:
+        return self._request("DELETE", _path("contacts", "imports", import_id))
+
     # Contact properties
     def contact_properties(self, **query: Any) -> Json:
         return self._request("GET", _query("/contact-properties", query))
@@ -909,6 +942,17 @@ class Dispatch:
         return self._request("GET", _path("broadcasts", broadcast_id, "audience"))
 
     # Automations
+    def enroll(self, automation_id: str, enrollment: AutomationEnrollment, idempotency_key: str | None = None) -> AutomationEnrollmentJob:
+        """Enroll current live contacts into an enabled, unpaused contact flow."""
+        return self._request("POST", _path("automations", automation_id, "enroll"), enrollment, idempotency_key=idempotency_key)
+
+    def get_enrollment_job(self, automation_id: str, job_id: str) -> AutomationEnrollmentJob:
+        return self._request("GET", _path("automations", automation_id, "enroll-jobs", job_id))
+
+    def cancel_enrollment_job(self, automation_id: str, job_id: str) -> AutomationEnrollmentJob:
+        """Cancel between batches, without cancelling already-created runs."""
+        return self._request("DELETE", _path("automations", automation_id, "enroll-jobs", job_id))
+
     def automations(self, **query: Any) -> Json:
         return self._request("GET", _query("/automations", query))
 
@@ -1140,6 +1184,11 @@ __all__ = [
     "Automation",
     "AutomationTriggerConfig",
     "AutomationReentry",
+    "AutomationEnrollment",
+    "SegmentEnrollment",
+    "AllEnrollment",
+    "AutomationEnrollmentCounts",
+    "AutomationEnrollmentJob",
     "EventTriggerConfig",
     "ContactCreatedTriggerConfig",
     "ContactUpdatedTriggerConfig",

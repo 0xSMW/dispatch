@@ -52,6 +52,7 @@ import { ReentryContext, TriggerForm, triggerLoading, triggerSources, type Reent
 import { Canvas, ViewSwitch } from "./Canvas";
 import { StopAutomation, isEnabled } from "./Stop";
 import { countsByStep, useEmailMetrics } from "./EmailMetrics";
+import { Enroll, canEnroll } from "./Enroll";
 
 type Draft = { name: string; tree: Tree; reentry: Reentry };
 
@@ -100,6 +101,8 @@ export function AutomationEditor() {
   const [checked, setChecked] = useState(false);
   const [removing, setRemoving] = useState<{ path: ListPath; index: number; node: Node } | null>(null);
   const [stopping, setStopping] = useState(false);
+  const [enrolling, setEnrolling] = useState(false);
+  const enrollmentJob = params.get("enroll_job");
   const [deleting, setDeleting] = useState(false);
 
   // What the API has stored, for the run drawer. The draft may hold unsaved edits.
@@ -241,6 +244,7 @@ export function AutomationEditor() {
           row ? (
             <>
               <Badge value={enabled ? "enabled" : "disabled"} />
+              {can && canEnroll(row) ? <button type="button" className="secondary" onClick={() => setEnrolling(true)}>Enroll contacts</button> : null}
               {!locked && draft ? <span className="dim saveState">{dirty ? "Unsaved changes" : "Saved"}</span> : null}
               {!locked ? (
                 <button type="button" className="secondary" disabled={!dirty || save.isLoading} onClick={() => submit(false)}>
@@ -380,6 +384,9 @@ export function AutomationEditor() {
       )}
 
       <LeaveGuard when={dirty && !locked} />
+      {(enrolling || enrollmentJob) && row ? <Enroll key={row.id} automation={row} jobId={enrollmentJob}
+        onJob={(jobId) => setParams((previous) => { const next = new URLSearchParams(previous); next.set("enroll_job", jobId); return next; })}
+        onClose={() => { setEnrolling(false); setParams((previous) => { const next = new URLSearchParams(previous); next.delete("enroll_job"); return next; }); }} /> : null}
 
       {removing ? (
         <Modal

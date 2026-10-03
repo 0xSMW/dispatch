@@ -11,7 +11,7 @@ import { useList } from "../../hooks/useList";
 import { useMutation } from "../../hooks/useMutation";
 import { useAll, useResource } from "../../hooks/useResource";
 import { errorMessage } from "../../lib/client";
-import { useClient } from "../../shell/session";
+import { useCan, useClient } from "../../shell/session";
 import type { Automation, ContactImport, ContactProperty, List, Segment, Settings, Topic } from "../../types";
 import { automationTrigger } from "../automations/graph";
 import { isEnabled } from "../automations/Stop";
@@ -457,12 +457,15 @@ function MapColumns({
   );
 }
 
-const finished = (status: ContactImport["status"]) => status === "completed" || status === "failed";
+const finished = (status: ContactImport["status"]) => status === "completed" || status === "failed" || status === "cancelled";
 const importTone = (status: ContactImport["status"]) => (status === "in_progress" ? ("info" as const) : undefined);
 
 /** Polls `GET /contacts/imports/:id` until the import finishes, then calls `onFinish` once. */
 export function ImportProgress({ id, onFinish }: { id: string; onFinish?: () => void }) {
+  const client = useClient();
+  const can = useCan();
   const run = useResource<ContactImport>(`/contacts/imports/${id}`);
+  const cancel = useMutation(() => client.delete<ContactImport>(`/contacts/imports/${id}`), { onSuccess: run.setData });
   const status = run.data?.status;
 
   const done = status ? finished(status) : false;
@@ -474,17 +477,17 @@ export function ImportProgress({ id, onFinish }: { id: string; onFinish?: () => 
   // One failed poll is not the end of the import. The last counts stay on screen and polling
   // goes on, more slowly while the API cannot be reached.
   useEffect(() => {
-    if (!status || done || run.loading) return;
+    if (!status || done || run.loading || cancel.isLoading) return;
     const timer = setTimeout(() => void run.reload(), run.error ? 5000 : 1500);
     return () => clearTimeout(timer);
     // `run.reload` changes only with the id.
-  }, [status, done, run.loading, run.error, run.data]);
+  }, [status, done, run.loading, run.error, run.data, cancel.isLoading]);
 
   if (run.error && !run.data) return <Failed message={run.error} onRetry={run.reload} />;
   if (!run.data) return <Skeleton lines={3} />;
   const { counts } = run.data;
   const handled = counts.created + counts.updated + counts.skipped + counts.failed;
-  const share = finished(run.data.status) ? 100 : counts.total ? Math.min(100, Math.round((handled / counts.total) * 100)) : 0;
+  const share = done && status !== "cancelled" ? 100 : counts.total ? Math.min(100, Math.round((handled / counts.total) * 100)) : 0;
 
   return (
     <div className="stack">
@@ -513,6 +516,12 @@ export function ImportProgress({ id, onFinish }: { id: string; onFinish?: () => 
         ))}
       </dl>
       {run.data.error ? <p className="fieldError">{run.data.error}</p> : null}
+      {cancel.error ? <p className="fieldError" role="alert">{cancel.error.message}</p> : null}
+      {status === "cancelled" ? <p className="fieldHint">Future batches were cancelled. Contacts already created or updated are not reverted.</p> : null}
+      {can && (status === "queued" || status === "in_progress") ? <>
+        <p className="fieldHint">Cancellation stops future batches. Contacts already created or updated are not reverted.</p>
+        <button type="button" className="secondary" disabled={run.loading || cancel.isLoading} onClick={() => { if (can && !run.loading && !cancel.isLoading) void cancel.mutate(); }}>Cancel import</button>
+      </> : null}
       {run.error && !done ? <p className="fieldHint">Could not refresh the progress. The import is still running. Trying again.</p> : null}
     </div>
   );

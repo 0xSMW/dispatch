@@ -30,6 +30,8 @@ export async function nextWorkAt(db: Queryable): Promise<string | null> {
        select case when status = 'queued' then now() else locked_at + interval '10 minutes' end
        from contact_imports where status in ('queued', 'in_progress')
        union all
+       select now() from automation_enrollment_jobs where status in ('queued', 'in_progress')
+       union all
        select case when b.status = 'scheduled' then b.scheduled_at else now() end
        from broadcasts b where b.deleted_at is null and b.status in ('scheduled', 'sending')
          and (select count(*) from (

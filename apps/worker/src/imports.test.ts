@@ -63,6 +63,12 @@ function fakeDb(existing: Array<string | (ContactRow & { deleted_at?: string | n
     if (sql.includes("from contact_imports") && sql.includes("skip locked")) {
       return { rows: [job()], rowCount: 1 };
     }
+    if (sql.startsWith("select status, row_offset, claim_version from contact_imports")) {
+      return { rows: [{ status: "in_progress", row_offset: 0, claim_version: 0 }], rowCount: 1 };
+    }
+    if (sql.includes("update contact_imports set status = 'in_progress'")) {
+      return { rows: [job()], rowCount: 1 };
+    }
     return { rows: [], rowCount: 0 };
   });
   const client = { query, release: vi.fn() };
@@ -129,7 +135,7 @@ describe("contact import", () => {
     expect(counts).toEqual({ total: 5, created: 3, updated: 1, skipped: 0, failed: 1 });
     const inserts = queries.filter((query) => query.sql.includes("insert into contacts"));
     expect(inserts.map((query) => query.params[2])).toEqual([["a@example.com", "b@example.com"], ["c@example.com", "d@example.com"]]);
-    expect(inserts[0].sql).toContain("on conflict (tenant_id, email) do nothing");
+    expect(inserts[0].sql).toContain("on conflict do nothing");
     expect(queries.find((query) => query.sql.includes("deleted_at from contacts"))?.params).toEqual(["tenant_1", ["b@example.com"]]);
     expect(inserts[0].params[5]).toEqual([JSON.stringify({ seats: 3 }), JSON.stringify({})]);
     expect(savedCounts(queries)).toEqual([

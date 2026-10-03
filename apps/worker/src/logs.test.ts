@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { pruneLogs, pruneLogsIfDue, retentionDays } from "./logs.js";
+import { pruneLogs, pruneLogsIfDue, retentionDays, contactChangesRetentionDays, pruneContactChanges, pruneContactChangesIfDue } from "./logs.js";
 
 describe("log retention", () => {
   it("deletes log rows older than the retention window", async () => {
@@ -33,5 +33,22 @@ describe("log retention", () => {
     const endless = { query: vi.fn(async () => ({ rowCount: 3, rows: [] })) };
     expect(await pruneLogs(endless, 30, 3, 4)).toBe(12);
     expect(endless.query).toHaveBeenCalledTimes(4);
+  });
+});
+
+describe("contact change retention", () => {
+  it("defaults to 400 and rejects invalid windows", () => {
+    for (const value of [0, -1, NaN, Infinity, 0.5]) expect(contactChangesRetentionDays(value)).toBe(400);
+    expect(contactChangesRetentionDays(450.8)).toBe(450);
+  });
+
+  it("bounds passes and waits one minute between cleanup loops", async () => {
+    const db = { query: vi.fn(async () => ({ rowCount: 2, rows: [] })) };
+    expect(await pruneContactChanges(db, 400, 2, 3)).toBe(6);
+    expect(db.query).toHaveBeenCalledTimes(3);
+    expect(db.query).toHaveBeenCalledWith(expect.stringContaining("delete from contact_changes"), [400, 2]);
+    const state = { last: 0 };
+    expect(await pruneContactChangesIfDue(db, state, 60_000)).toBe(2);
+    expect(await pruneContactChangesIfDue(db, state, 90_000)).toBe(0);
   });
 });

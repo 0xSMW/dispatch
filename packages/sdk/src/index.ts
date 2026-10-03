@@ -268,6 +268,20 @@ export type AutomationTriggerConfig =
 
 export type AutomationReentry = "once" | "every_time";
 
+export type AutomationEnrollment = { segmentId: string; all?: never } | { all: true; segmentId?: never };
+
+export type AutomationEnrollmentJob = {
+  object: "automation_enrollment_job";
+  id: string;
+  automation_id: string;
+  segment_id: string | null;
+  status: "queued" | "in_progress" | "completed" | "failed" | "cancelled";
+  counts: { total: number; processed: number; enrolled: number; skipped: number; failed: number };
+  error: string | null;
+  created_at: string;
+  completed_at: string | null;
+};
+
 export type Automation = Row & {
   trigger: string | null;
   trigger_config: AutomationTriggerConfig;
@@ -870,6 +884,9 @@ class ContactImports extends Resource {
   get(id: string) {
     return this.client.call<ContactImportResult>("GET", `/contacts/imports/${seg(id)}`);
   }
+  cancel(id: string) {
+    return this.client.call<ContactImportResult>("DELETE", `/contacts/imports/${seg(id)}`);
+  }
 }
 
 class Contacts extends Resource {
@@ -1078,6 +1095,17 @@ class AutomationRuns extends Resource {
 
 class Automations extends Resource {
   readonly runs = new AutomationRuns(this.client);
+  /** Explicitly enroll current live contacts into an enabled, unpaused contact flow. */
+  enroll(id: string, input: AutomationEnrollment, options: { idempotencyKey?: string } = {}) {
+    return this.client.call<AutomationEnrollmentJob>("POST", `/automations/${seg(id)}/enroll`, wire(input), options);
+  }
+  getEnrollmentJob(id: string, jobId: string) {
+    return this.client.call<AutomationEnrollmentJob>("GET", `/automations/${seg(id)}/enroll-jobs/${seg(jobId)}`);
+  }
+  /** Cancel between batches; runs already created are not cancelled. */
+  cancelEnrollmentJob(id: string, jobId: string) {
+    return this.client.call<AutomationEnrollmentJob>("DELETE", `/automations/${seg(id)}/enroll-jobs/${seg(jobId)}`);
+  }
 
   create(payload: AutomationCreate) {
     return this.client.call<Automation>("POST", "/automations", wire(payload));

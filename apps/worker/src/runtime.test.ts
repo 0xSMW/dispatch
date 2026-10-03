@@ -66,6 +66,9 @@ describe("durable worker boundaries", () => {
     const calls: Array<{ sql: string; args: unknown[] }> = [];
     const query = vi.fn(async (sql: string, args: unknown[] = []) => {
       calls.push({ sql, args });
+      if (sql.startsWith("select status, row_offset, claim_version from contact_imports")) {
+        return { rows: [{ status: "in_progress", row_offset: 0, claim_version: 0 }], rowCount: 1 };
+      }
       if (sql.includes("insert into contacts")) return { rows: (args[0] as string[]).map((id) => ({ id, created: true })) };
       return { rows: [], rowCount: 1 };
     });

@@ -123,6 +123,494 @@ afterAll(async () => {
 });
 
 describe.skipIf(!live)("accept", () => {
+  describe("bulk enrollment", () => {
+    // These modules are loaded only inside live tests, so the acceptance fixtures can land
+    // independently of the worker implementation.
+    async function enrollmentProcessor() {
+      const module = "../../../packages/db/src/enrollment-jobs.js";
+      return (await import(module)).processEnrollmentBatch as (
+        db: Db, tenantId: string, automationId: string, jobId: string,
+      ) => Promise<any>;
+    }
+
+    async function runClaimer() {
+      const module = "../../../packages/db/src/claims.js";
+      return (await import(module)).claimAutomationRuns as (
+        db: Db, limit: number, state?: { normal: string; bulk: string },
+      ) => Promise<Array<{ id: string; tenant_id: string; automation_id: string; priority: string; wait_event: string | null }>>;
+    }
+
+    async function tenantFor(automationId: string) {
+      return (await db.query<{ tenant_id: string }>(
+        "select tenant_id from automations where id=$1", [automationId],
+      )).rows[0]!.tenant_id;
+    }
+
+    async function contactsFor(tenantId: string, count: number) {
+      const prefix = id("contact");
+      return (await db.query<{ id: string; email: string }>(
+        `insert into contacts (id,tenant_id,email,first_name,properties,created_at)
+         select $1 || lpad(n::text,6,'0'),$2,$1 || n || '@example.com','Unchanged',
+                '{"plan":"free"}'::jsonb,now()-interval '1 day'
+         from generate_series(1,$3::int) n returning id,email`, [prefix, tenantId, count],
+      )).rows;
+    }
+
+    async function queueEnrollment(automationId: string, body: unknown = { all: true }) {
+      const response = await post(fullKey, `/automations/${automationId}/enroll`, body);
+      expect(response.status, JSON.stringify(response.json)).toBe(202);
+      expect(response.json).toMatchObject({
+        status: "queued", counts: { processed: 0, enrolled: 0, skipped: 0, failed: 0 },
+      });
+      return response.json;
+    }
+
+    async function enrollmentJob(automationId: string, jobId: string) {
+      const response = await call(fullKey, "GET", `/automations/${automationId}/enroll-jobs/${jobId}`);
+      expect(response.status).toBe(200);
+      return response.json;
+    }
+
+    async function backlog(automationId: string, count: number, priority: "normal" | "bulk" = "bulk") {
+      const tenant = await tenantFor(automationId);
+      const event = id("event");
+      await db.query(
+        "insert into custom_events (id,tenant_id,request_id,name) values ($1,$2,$3,'fixture.backlog')",
+        [event, tenant, id("request")],
+      );
+      const prefix = id("run");
+      return (await db.query<{ id: string }>(
+        `insert into automation_runs (id,tenant_id,automation_id,event_id,priority,created_at)
+         select $1 || lpad(n::text,6,'0'),$2,$3,$4,$5,now()-interval '1 day'
+         from generate_series(1,$6::int) n returning id`,
+        [prefix, tenant, automationId, event, priority, count],
+      )).rows;
+    }
+
+    it("enrollment pages a current tenant snapshot in batches of 500 without changing contacts or applying from and to", async () => {
+      await post(fullKey, "/contact-properties", { key: "plan", type: "string" });
+      const flow = await contactFlow({ type: "contact_updated", field: "plan", from: "paid", to: "cancelled" });
+      const tenant = await tenantFor(flow);
+      const contacts = await contactsFor(tenant, 1002);
+      await call(fullKey, "DELETE", `/contacts/${contacts[0]!.id}`);
+      const otherKey = await seedTenant();
+      const foreign = await post(otherKey, "/contacts", { email: "foreign-enrollment@example.com" });
+      const before = (await db.query(
+        "select id,email,first_name,last_name,properties,unsubscribed_at,updated_at,deleted_at from contacts where tenant_id=$1 order by id", [tenant],
+      )).rows;
+      const job = await queueEnrollment(flow);
+      // Even an ID beyond the page cursor must not admit a contact created after the job.
+      const future = await post(fullKey, "/contacts", { email: "future-enrollment@example.com" });
+      await db.query("update contacts set created_at=now()+interval '1 day' where id=$1", [future.json.id]);
+      const history = (await db.query("select count(*)::int as count from contact_changes")).rows[0].count;
+      const process = await enrollmentProcessor();
+      await process(db, tenant, flow, job.id);
+      expect(await enrollmentJob(flow, job.id)).toMatchObject({
+        status: "in_progress", counts: { total: 1001, processed: 500, enrolled: 500, skipped: 0, failed: 0 },
+      });
+      // Competing retries serialize on the job; neither can replay its preceding page.
+      await Promise.all([process(db, tenant, flow, job.id), process(db, tenant, flow, job.id)]);
+      await process(db, tenant, flow, job.id);
+      const finished = await enrollmentJob(flow, job.id);
+      expect(finished).toMatchObject({
+        status: "completed", counts: { total: 1001, processed: 1001, enrolled: 1001, skipped: 0, failed: 0 },
+      });
+      await process(db, tenant, flow, job.id);
+      const repeated = await enrollmentJob(flow, job.id);
+      delete repeated.request_id;
+      delete finished.request_id;
+      expect(repeated).toEqual(finished);
+      expect((await db.query(
+        `select count(*)::int as runs,count(distinct contact_id)::int as contacts,
+                bool_and(priority='bulk') as bulk from automation_runs where automation_id=$1`, [flow],
+      )).rows[0]).toEqual({ runs: 1001, contacts: 1001, bulk: true });
+      expect((await db.query(
+        "select id from automation_runs where contact_id=any($1::text[])",
+        [[contacts[0]!.id, foreign.json.id, future.json.id]],
+      )).rows).toHaveLength(0);
+      expect((await db.query(
+        "select id,email,first_name,last_name,properties,unsubscribed_at,updated_at,deleted_at from contacts where tenant_id=$1 and id<>$2 order by id",
+        [tenant, future.json.id],
+      )).rows).toEqual(before);
+      expect((await db.query("select count(*)::int as count from contact_changes")).rows[0].count).toBe(history);
+    }, 30_000);
+
+    it("enrollment rolls back a failed page atomically and retries without duplicate events runs or counts", async () => {
+      const flow = await contactFlow({ type: "contact_updated", field: "first_name" });
+      expect((await call(fullKey, "PATCH", `/automations/${flow}`, { reentry: "once" })).status).toBe(200);
+      const tenant = await tenantFor(flow);
+      await contactsFor(tenant, 501);
+      const job = await queueEnrollment(flow);
+      const process = await enrollmentProcessor();
+      const events = (await db.query("select count(*)::int as count from custom_events")).rows[0].count;
+      // Fail midway through a real SQL page, not before any work has been attempted.
+      await db.query(`create or replace function reject_enrollment_run() returns trigger language plpgsql as $$
+        begin
+          if (select count(*) from automation_runs where automation_id=new.automation_id) >= 10
+          then raise exception 'synthetic enrollment failure'; end if;
+          return new;
+        end $$;
+        create trigger reject_enrollment_run before insert on automation_runs
+        for each row execute function reject_enrollment_run()`);
+      try {
+        let failure: unknown;
+        try { await process(db, tenant, flow, job.id); } catch (error) { failure = error; }
+        const failed = await enrollmentJob(flow, job.id);
+        expect(Boolean(failure) || failed.status === "failed").toBe(true);
+        expect(failed.counts).toMatchObject({ processed: 0, enrolled: 0, skipped: 0 });
+        expect(await flowRuns(flow)).toHaveLength(0);
+        expect((await db.query("select count(*)::int as count from custom_events")).rows[0].count).toBe(events);
+        expect((await db.query("select contact_id from automation_enrollments where automation_id=$1", [flow])).rows).toHaveLength(0);
+      } finally {
+        await db.query("drop trigger reject_enrollment_run on automation_runs; drop function reject_enrollment_run()");
+      }
+      // Model a worker retry after the fault is repaired, retaining the original job identity.
+      await db.query("update automation_enrollment_jobs set status='queued' where id=$1", [job.id]);
+      await process(db, tenant, flow, job.id);
+      await process(db, tenant, flow, job.id);
+      await process(db, tenant, flow, job.id);
+      expect(await enrollmentJob(flow, job.id)).toMatchObject({
+        status: "completed", counts: { total: 501, processed: 501, enrolled: 501, skipped: 0, failed: 0 },
+      });
+      expect((await db.query(
+        "select count(*)::int as runs,count(distinct contact_id)::int as contacts from automation_runs where automation_id=$1", [flow],
+      )).rows[0]).toEqual({ runs: 501, contacts: 501 });
+    }, 30_000);
+
+    it("enrollment cancellation stops future pages and preserves already queued runs", async () => {
+      const flow = await contactFlow({ type: "contact_updated", field: "first_name" });
+      const tenant = await tenantFor(flow);
+      await contactsFor(tenant, 501);
+      const process = await enrollmentProcessor();
+      const job = await queueEnrollment(flow);
+      await process(db, tenant, flow, job.id);
+      const before = (await db.query(
+        "select id,state,updated_at from automation_runs where automation_id=$1 order by id", [flow],
+      )).rows;
+      expect(before).toHaveLength(500);
+      const viewer = await teammate("Viewer");
+      const session = await signInAs(viewer.email, viewer.password);
+      expect((await call(session.token, "DELETE", `/automations/${flow}/enroll-jobs/${job.id}`)).status).toBe(403);
+      expect((await call(session.token, "GET", `/automations/${flow}/enroll-jobs/${job.id}`)).status).toBe(200);
+      expect((await call(fullKey, "DELETE", `/automations/${flow}/enroll-jobs/${job.id}`)).status).toBe(200);
+      await Promise.all([process(db, tenant, flow, job.id), process(db, tenant, flow, job.id)]);
+      expect(await enrollmentJob(flow, job.id)).toMatchObject({
+        status: "cancelled", counts: { total: 501, processed: 500, enrolled: 500, skipped: 0, failed: 0 },
+      });
+      expect((await db.query(
+        "select id,state,updated_at from automation_runs where automation_id=$1 order by id", [flow],
+      )).rows).toEqual(before);
+      const untouched = await queueEnrollment(flow);
+      await call(fullKey, "DELETE", `/automations/${flow}/enroll-jobs/${untouched.id}`);
+      await process(db, tenant, flow, untouched.id);
+      expect((await enrollmentJob(flow, untouched.id)).counts.processed).toBe(0);
+      expect(await flowRuns(flow)).toHaveLength(500);
+      await db.query(schema);
+      await db.query(schema);
+      expect((await enrollmentJob(flow, job.id)).status).toBe("cancelled");
+    }, 30_000);
+
+    it("enrollment worker retries transient transaction failures and exposes permanent failures without partial work", async () => {
+      const flow = await contactFlow({ type: "contact_updated", field: "first_name" });
+      const tenant = await tenantFor(flow);
+      await contactsFor(tenant, 11);
+      const job = await queueEnrollment(flow);
+      const { processEnrollmentJobs } = await import("../../../packages/db/src/enrollment-jobs.js");
+      const { nextWorkAt } = await import("../../worker/src/runtime.js");
+      expect(await nextWorkAt(db)).not.toBeNull();
+      await db.query(`create or replace function transient_enrollment_failure() returns trigger language plpgsql as $$
+        begin raise exception 'retry page' using errcode='40001'; end $$;
+        create trigger transient_enrollment_failure before insert on automation_runs
+        for each row execute function transient_enrollment_failure()`);
+      try {
+        await processEnrollmentJobs(db);
+        expect((await enrollmentJob(flow, job.id)).status).toBe("queued");
+        expect(await flowRuns(flow)).toHaveLength(0);
+        await db.query(`create or replace function transient_enrollment_failure() returns trigger language plpgsql as $$
+          begin raise exception 'permanent page failure'; end $$`);
+        await processEnrollmentJobs(db);
+        expect(await enrollmentJob(flow, job.id)).toMatchObject({
+          status: "failed", error: "permanent page failure", counts: { processed: 0, enrolled: 0 },
+        });
+        expect(await flowRuns(flow)).toHaveLength(0);
+      } finally {
+        await db.query("drop trigger transient_enrollment_failure on automation_runs; drop function transient_enrollment_failure()");
+      }
+    });
+
+    it("enrollment respects static segments global once and once per job for every-time flows", async () => {
+      const once = await post(fullKey, "/automations", { name: "Once enrollment", enabled: true, reentry: "once", steps: [
+        { key: "start", type: "trigger", config: { type: "contact_updated", field: "first_name" } },
+      ] });
+      expect(once.status).toBe(200);
+      const tenant = await tenantFor(once.json.id);
+      const contacts = await contactsFor(tenant, 4);
+      const segment = await post(fullKey, "/segments", { name: "Enrollment subset" });
+      for (const contact of contacts.slice(0, 3)) {
+        expect((await post(fullKey, `/contacts/${contact.id}/segments/${segment.json.id}`, {})).status).toBe(200);
+      }
+      await call(fullKey, "PATCH", `/contacts/${contacts[0]!.id}`, { first_name: "Already entered" });
+      const every = await contactFlow({ type: "contact_updated", field: "first_name" });
+      const process = await enrollmentProcessor();
+      const onceJob = await queueEnrollment(once.json.id, { segment_id: segment.json.id });
+      await Promise.all([process(db, tenant, once.json.id, onceJob.id), process(db, tenant, once.json.id, onceJob.id)]);
+      expect(await enrollmentJob(once.json.id, onceJob.id)).toMatchObject({
+        status: "completed", counts: { total: 3, processed: 3, enrolled: 2, skipped: 1, failed: 0 },
+      });
+      const again = await queueEnrollment(once.json.id, { segment_id: segment.json.id });
+      await process(db, tenant, once.json.id, again.id);
+      expect((await enrollmentJob(once.json.id, again.id)).counts).toMatchObject({ enrolled: 0, skipped: 3 });
+      expect(await flowRuns(once.json.id)).toHaveLength(3);
+      for (let pass = 0; pass < 2; pass++) {
+        const job = await queueEnrollment(every, { segment_id: segment.json.id });
+        await Promise.all([process(db, tenant, every, job.id), process(db, tenant, every, job.id)]);
+        expect((await enrollmentJob(every, job.id)).counts).toMatchObject({ total: 3, processed: 3, enrolled: 3, skipped: 0 });
+        expect(await flowRuns(every)).toHaveLength((pass + 1) * 3);
+      }
+      expect((await db.query("select id from automation_runs where contact_id=$1", [contacts[3]!.id])).rows).toHaveLength(0);
+    });
+
+    it("enrollment validates bodies permissions tenant ownership and scoped idempotency keys", async () => {
+      const flow = await contactFlow({ type: "contact_updated", field: "first_name" });
+      const second = await contactFlow({ type: "contact_updated", field: "last_name" });
+      const segment = await post(fullKey, "/segments", { name: "Idempotent enrollment" });
+      const body = { all: true };
+      const headers = { "idempotency-key": id("request") };
+      const first = await post(fullKey, `/automations/${flow}/enroll`, body, headers);
+      expect(first.status).toBe(202);
+      const retry = await post(fullKey, `/automations/${flow}/enroll`, body, headers);
+      expect(retry.status).toBe(202);
+      expect(retry.json.id).toBe(first.json.id);
+      expect((await post(fullKey, `/automations/${flow}/enroll`, { segment_id: segment.json.id }, headers)).status).toBe(409);
+      const next = await post(fullKey, `/automations/${second}/enroll`, body, headers);
+      expect(next.status).toBe(202);
+      expect(next.json.id).not.toBe(first.json.id);
+      const concurrentHeaders = { "idempotency-key": id("request") };
+      const races = await Promise.all([1, 2].map(() => post(fullKey, `/automations/${flow}/enroll`, body, concurrentHeaders)));
+      expect(races.map((row) => row.status)).toEqual([202, 202]);
+      expect(races[0]!.json.id).toBe(races[1]!.json.id);
+      for (const invalid of [{}, { all: false }, { all: "true" }, { segment_id: "" }, { all: true, segment_id: segment.json.id }, { all: true, unknown: true }]) {
+        expect((await post(fullKey, `/automations/${flow}/enroll`, invalid)).status).toBe(400);
+      }
+      const viewer = await teammate("Viewer");
+      const session = await signInAs(viewer.email, viewer.password);
+      expect((await post(session.token, `/automations/${flow}/enroll`, body)).status).toBe(403);
+      const otherKey = await seedTenant();
+      expect((await post(otherKey, `/automations/${flow}/enroll`, body, headers)).status).toBe(404);
+      expect((await call(otherKey, "GET", `/automations/${flow}/enroll-jobs/${first.json.id}`)).status).toBe(404);
+      expect((await call(otherKey, "DELETE", `/automations/${flow}/enroll-jobs/${first.json.id}`)).status).toBe(404);
+      expect((await call(fullKey, "GET", `/automations/${second}/enroll-jobs/${first.json.id}`)).status).toBe(404);
+      expect((await call(fullKey, "DELETE", `/automations/${second}/enroll-jobs/${first.json.id}`)).status).toBe(404);
+      const foreignSegment = await post(otherKey, "/segments", { name: "Foreign enrollment" });
+      expect((await post(fullKey, `/automations/${flow}/enroll`, { segment_id: foreignSegment.json.id })).status).toBe(404);
+      await call(fullKey, "DELETE", `/segments/${segment.json.id}`);
+      expect((await post(fullKey, `/automations/${flow}/enroll`, { segment_id: segment.json.id })).status).toBe(404);
+      const event = await post(fullKey, "/automations", { name: "Event enrollment refused", enabled: true, trigger: "enrollment.event", steps: [{ type: "delay", seconds: 1 }] });
+      expect((await post(fullKey, `/automations/${event.json.id}/enroll`, body)).status).toBe(409);
+      await call(fullKey, "PATCH", `/automations/${second}`, { enabled: false });
+      expect((await post(fullKey, `/automations/${second}/enroll`, body)).status).toBe(409);
+      // Temporary disposable-database columns exercise forward-compatible guards before L3/L6.
+      const pause = (await db.query("select to_jsonb(a) ? 'paused_at' as supported from automations a where id=$1", [flow])).rows[0].supported;
+      if (!pause) await db.query("alter table automations add column paused_at timestamptz");
+      try {
+        await db.query("update automations set paused_at=now() where id=$1", [flow]);
+        expect((await post(fullKey, `/automations/${flow}/enroll`, body)).status).toBe(409);
+      } finally {
+        await db.query("update automations set paused_at=null where id=$1", [flow]);
+        if (!pause) await db.query("alter table automations drop column paused_at");
+      }
+      const staticSegment = await post(fullKey, "/segments", { name: "Static only" });
+      const dynamic = (await db.query("select to_jsonb(s) ? 'rule' as supported from segments s where id=$1", [staticSegment.json.id])).rows[0].supported;
+      if (!dynamic) await db.query("alter table segments add column rule jsonb");
+      try {
+        await db.query("update segments set rule=$2::jsonb where id=$1", [staticSegment.json.id, JSON.stringify({ field: "contact.first_name", operator: "eq", value: "Ada" })]);
+        expect((await post(fullKey, `/automations/${flow}/enroll`, { segment_id: staticSegment.json.id })).status).toBe(404);
+      } finally {
+        await db.query("update segments set rule=null where id=$1", [staticSegment.json.id]);
+        if (!dynamic) await db.query("alter table segments drop column rule");
+      }
+      // The same key in another tenant creates that tenant's own job.
+      const foreignFlow = await post(otherKey, "/automations", { name: "Foreign flow", enabled: true, steps: [
+        { key: "start", type: "trigger", config: { type: "contact_updated", field: "first_name" } },
+      ] });
+      const foreignJob = await post(otherKey, `/automations/${foreignFlow.json.id}/enroll`, body, headers);
+      expect(foreignJob.status).toBe(202);
+      expect(foreignJob.json.id).not.toBe(first.json.id);
+    });
+
+    it("fair claiming executes an ordinary event within one tick behind ten thousand older bulk runs", async () => {
+      const bulk = await contactFlow({ type: "contact_updated", field: "first_name" });
+      await backlog(bulk, 10_000);
+      const normal = await post(fullKey, "/automations", { name: "Priority event", enabled: true, trigger: "priority.event", steps: [{ type: "delay", seconds: 3600 }] });
+      expect(normal.status).toBe(200);
+      expect((await post(fullKey, "/events/send", { event: "priority.event" })).status).toBe(202);
+      const run = (await flowRuns(normal.json.id))[0]!;
+      expect((await db.query("select priority,state from automation_runs where id=$1", [run.id])).rows[0]).toEqual({ priority: "normal", state: "ready" });
+      await tick();
+      expect((await db.query("select state from automation_runs where id=$1", [run.id])).rows[0].state).toBe("waiting");
+      expect((await db.query(
+        "select count(*)::int as processed from automation_runs where automation_id=$1 and state<>'ready'", [bulk],
+      )).rows[0].processed).toBe(2);
+    });
+
+    it("fair claiming rotates automations across ticks and caps each automation at two runs", async () => {
+      const claim = await runClaimer();
+      const flows = [];
+      for (let index = 0; index < 5; index++) {
+        const flow = await contactFlow({ type: "contact_updated", field: "first_name" });
+        flows.push(flow);
+        await backlog(flow, 30, "normal");
+        await backlog(flow, 30, "bulk");
+      }
+      const state = { normal: "", bulk: "" };
+      for (const priority of ["normal", "bulk"]) {
+        if (priority === "bulk") await db.query("update automation_runs set state='done' where priority='normal'");
+        const seen = new Set<string>();
+        for (let pass = 0; pass < 5; pass++) {
+          const rows = await claim(db, 3, state);
+          expect(rows).toHaveLength(3);
+          expect(rows.every((row) => row.priority === priority)).toBe(true);
+          for (const flow of flows) expect(rows.filter((row) => row.automation_id === flow).length).toBeLessThanOrEqual(2);
+          rows.forEach((row) => seen.add(row.automation_id));
+          expect((await db.query("select distinct state from automation_runs where id=any($1::text[])", [rows.map((row) => row.id)])).rows).toEqual([{ state: "running" }]);
+        }
+        expect([...seen].sort()).toEqual([...flows].sort());
+      }
+    });
+
+    it("fair claiming skips held run rows stays unique concurrently and does not lock automations", async () => {
+      const claim = await runClaimer();
+      const flow = await contactFlow({ type: "contact_updated", field: "first_name" });
+      const runs = await backlog(flow, 12, "normal");
+      let release = () => {};
+      let locked = () => {};
+      const held = new Promise<void>((resolve) => { locked = resolve; });
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const holder = tx(db, async (client) => {
+        await client.query("select id from automation_runs where id=$1 for update", [runs[0]!.id]);
+        await client.query("select id from automations where id=$1 for update", [flow]);
+        locked();
+        await gate;
+      });
+      await held;
+      const pending = Promise.all([claim(db, 2), claim(db, 2)]);
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const results = await Promise.race([
+          pending,
+          new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error("Claims blocked on held automation")), 2000); }),
+        ]);
+        expect(results.map((rows) => rows.length)).toEqual([2, 2]);
+        const ids = results.flat().map((row) => row.id);
+        expect(new Set(ids).size).toBe(4);
+        expect(ids).not.toContain(runs[0]!.id);
+        expect((await db.query("select state from automation_runs where id=$1", [runs[0]!.id])).rows[0].state).toBe("ready");
+      } finally {
+        if (timeout) clearTimeout(timeout);
+        release();
+        await holder;
+        await pending;
+      }
+    });
+
+    it("contact history keeps 400 days and prunes only bounded batches from real rows", async () => {
+      const module = "../../worker/src/logs.js";
+      const { pruneContactChanges, contactChangesRetentionDays } = await import(module);
+      const saved = process.env.CONTACT_CHANGES_RETENTION_DAYS;
+      try {
+        delete process.env.CONTACT_CHANGES_RETENTION_DAYS;
+        expect(contactChangesRetentionDays()).toBe(400);
+        for (const invalid of [0, -1, NaN, Infinity]) expect(contactChangesRetentionDays(invalid)).toBe(400);
+        process.env.CONTACT_CHANGES_RETENTION_DAYS = "450";
+        expect(contactChangesRetentionDays()).toBe(450);
+        const contact = await post(fullKey, "/contacts", { email: "retained-history@example.com", first_name: "Before" });
+        await call(fullKey, "PATCH", `/contacts/${contact.json.id}`, { first_name: "After" });
+        const currentHistory = (await db.query("select count(*)::int as count from contact_changes where contact_id=$1", [contact.json.id])).rows[0].count;
+        const tenant = (await db.query("select tenant_id from contacts where id=$1", [contact.json.id])).rows[0].tenant_id;
+        const prefix = id("change");
+        await db.query(
+          `insert into contact_changes (id,tenant_id,contact_id,field,from_value,to_value,request_id,created_at)
+           select $1 || n,$2,$3,'first_name','"Before"'::jsonb,'"After"'::jsonb,$1,
+                  now()-(case when n<=5 then 401 else 399 end)*interval '1 day'
+           from generate_series(1,6) n`, [prefix, tenant, contact.json.id],
+        );
+        expect(await pruneContactChanges(db, 400, 2, 2)).toBe(4);
+        expect((await db.query("select count(*)::int as count from contact_changes where created_at<now()-interval '400 days'")).rows[0].count).toBe(1);
+        expect(await pruneContactChanges(db, 400, 2, 2)).toBe(1);
+        expect(await pruneContactChanges(db, 400, 2, 2)).toBe(0);
+        expect((await db.query("select id from contact_changes where id=$1", [`${prefix}6`])).rows).toHaveLength(1);
+        expect((await db.query("select id from contact_changes where contact_id=$1", [contact.json.id])).rows).toHaveLength(currentHistory + 1);
+      } finally {
+        if (saved === undefined) delete process.env.CONTACT_CHANGES_RETENTION_DAYS;
+        else process.env.CONTACT_CHANGES_RETENTION_DAYS = saved;
+      }
+    });
+
+    it("fair claiming finds unlocked normal work beyond a hundred contended automations before bulk", async () => {
+      const claim = await runClaimer();
+      const flow = await contactFlow({ type: "contact_updated", field: "first_name" });
+      const tenant = await tenantFor(flow);
+      const prefix = id("automation");
+      const autos = (await db.query<{ id: string }>(
+        `insert into automations (id,tenant_id,name,trigger,trigger_type,reentry,steps,connections,enabled)
+         select $1||lpad(n::text,3,'0'),$2,$1||n,'@contact.updated','contact_updated','every_time',$3::jsonb,'[]',true
+         from generate_series(1,101) n returning id`,
+        [prefix, tenant, JSON.stringify([{ key: "start", type: "trigger", config: { type: "contact_updated", field: "first_name" } }])],
+      )).rows;
+      for (const auto of autos) await backlog(auto.id, 1, "normal");
+      await backlog(flow, 2, "bulk");
+      const holder = await db.connect();
+      await holder.query("begin");
+      try {
+        await holder.query("select id from automation_runs where automation_id=any($1::text[]) for update", [autos.slice(0, 100).map((auto) => auto.id)]);
+        const claimed = await claim(db, 3);
+        expect(claimed.map((row) => row.priority)).toEqual(["normal", "bulk", "bulk"]);
+        expect(claimed[0]!.automation_id).toBe(autos[100]!.id);
+      } finally {
+        await holder.query("rollback");
+        holder.release();
+      }
+    });
+
+    it("import retries keep bulk runs unique and cancellation prevents future CSV batches", async () => {
+      const flow = await contactFlow({ type: "contact_created" });
+      const tenant = await tenantFor(flow);
+      const importId = id("import");
+      await createImport(db, { id: importId, tenantId: tenant, storageKey: id("file"), columnMap: {}, onConflict: "upsert", segments: [], topics: [], triggerAutomations: true });
+      const csv = `email\n${Array.from({ length: 1001 }, (_, index) => `cancel-import-${index}@example.com`).join("\n")}\n`;
+      const storage = { stream: async () => Readable.from([csv]) };
+      const first = (await claimImports(db, 1))[0]!;
+      await runImport(db, storage, first, { batchSize: 500, maxRows: 500 });
+      expect(await flowRuns(flow)).toHaveLength(500);
+      const retry = (await claimImports(db, 1))[0]!;
+      expect(retry.row_offset).toBe(500);
+      await runImport(db, storage, retry, { batchSize: 500, maxRows: 500 });
+      expect(await flowRuns(flow)).toHaveLength(1000);
+      await runImport(db, storage, first, { batchSize: 500, maxRows: 500 });
+      expect(await flowRuns(flow)).toHaveLength(1000);
+      const pending = (await claimImports(db, 1))[0]!;
+      expect(pending.row_offset).toBe(1000);
+      const viewer = await teammate("Viewer");
+      const session = await signInAs(viewer.email, viewer.password);
+      expect((await call(session.token, "DELETE", `/contacts/imports/${importId}`)).status).toBe(403);
+      const otherKey = await seedTenant();
+      expect((await call(otherKey, "DELETE", `/contacts/imports/${importId}`)).status).toBe(404);
+      const before = (await call(fullKey, "GET", `/contacts/imports/${importId}`)).json;
+      expect((await call(fullKey, "DELETE", `/contacts/imports/${importId}`)).status).toBe(200);
+      // A worker can still hold the row it claimed before the cancellation request.
+      await runImport(db, storage, pending, { batchSize: 500 });
+      await runImport(db, storage, pending, { batchSize: 500 });
+      const cancelled = (await call(fullKey, "GET", `/contacts/imports/${importId}`)).json;
+      expect(cancelled.status).toBe("cancelled");
+      expect(cancelled.counts).toEqual(before.counts);
+      expect((await db.query("select id from contacts where email='cancel-import-1000@example.com'")).rows).toHaveLength(0);
+      expect((await db.query(
+        "select count(*)::int as runs,count(distinct contact_id)::int as contacts,bool_and(priority='bulk') as bulk from automation_runs where automation_id=$1", [flow],
+      )).rows[0]).toEqual({ runs: 1000, contacts: 1000, bulk: true });
+      expect(await claimImports(db, 1)).toHaveLength(0);
+    }, 30_000);
+  });
+
   it("reentry serializes once and every-time entries, retains defaults across trigger edits, and allows contactless events", async () => {
     await post(fullKey, "/contact-properties", { key: "plan", type: "string" });
     const contact = await post(fullKey, "/contacts", { email: "entry@example.com", properties: { plan: "free" } });

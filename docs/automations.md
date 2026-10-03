@@ -66,8 +66,6 @@ These sources dispatch contact triggers:
 
 A contact created only to record an unsubscribe does not fire Contact added. [Import triggers](audience.md#start-automations-during-an-import) default off and honor each import's stored flag. Creating or enabling an automation does not enroll existing contacts or replay earlier changes.
 
-Explicit enrollment jobs are not shipped yet.
-
 A step cannot trigger its own automation. Cross-automation trigger chains stop at depth five. If the trigger's topic or segment is deleted, it stops matching and enabling the automation is refused until you change its trigger.
 
 ### CLI definitions
@@ -103,6 +101,86 @@ For exact From and To filters, use a graph definition in `--file`:
 `--trigger` names an event and cannot be combined with a contact trigger type. `--topic` requires `topic_subscribed`; `--segment` requires `segment_added`. For keyed graph steps, flags replace the existing trigger step's config while preserving keys and connections. Update a disabled automation's contact trigger through `automations update --steps` and `--connections`; `--trigger` changes an event trigger name. Human-readable automation lists show contact triggers in words, not internal keys.
 
 See [Audience history](audience.md#change-history) and [the API guide](api/README.md#broadcasts-and-automations).
+
+## Enroll existing contacts
+
+Starting an automation still does not enroll existing contacts or replay history. To explicitly start runs for existing contacts, use `POST /automations/{id}/enroll`. The automation must be enabled, unpaused, and use a contact trigger, not an application event trigger.
+
+Choose exactly one request body:
+
+```json
+{ "segment_id": "seg_123" }
+```
+
+```json
+{ "all": true }
+```
+
+The API returns `202` with an `automation_enrollment_job`. Inspect it with `GET /automations/{id}/enroll-jobs/{job_id}`:
+
+```json
+{
+  "object": "automation_enrollment_job",
+  "id": "job_123",
+  "automation_id": "auto_123",
+  "segment_id": null,
+  "status": "queued",
+  "counts": { "total": 1000, "processed": 0, "enrolled": 0, "skipped": 0, "failed": 0 },
+  "error": null,
+  "created_at": "2026-10-03T00:00:00Z",
+  "completed_at": null
+}
+```
+
+`segment_id` is null for all-contact jobs. Status is `queued`, `in_progress`, `completed`, `failed`, or `cancelled`. Counts report total, processed, enrolled, skipped, and failed contacts; `error` and `completed_at` are nullable.
+
+Only live static segments are accepted. `total` is the audience count at creation. Contacts created later are excluded; deleted contacts and later membership changes can make the final processed count differ from that total.
+
+Use an `idempotency-key` header to retry job creation without creating another job. Keys are scoped to the tenant and automation; using the same key with a different audience returns 409. The SDKs accept an optional key, as TypeScript's third argument `{ idempotencyKey }`, Python's `idempotency_key` argument, or Go's optional third string argument.
+
+The worker pages through live contacts in batches of 500, using each contact's current snapshot rather than replaying historical transitions. A Contact changes trigger's `from` and `to` filters are ignored for explicit enrollment. Each job processes each contact at most once, even with `every_time`; lifetime `once` enrollments remain respected. Enrollment itself does not update contacts, topic preferences, segment membership, or contact-change history. The resulting automation steps can still change contacts or send email normally.
+
+Cancel with `DELETE /automations/{id}/enroll-jobs/{job_id}`. It returns the job and stops further enrollment between batches, not runs already created or emails already queued. Use Stop separately if you want to stop active automation runs.
+
+```sh
+dispatch automations enroll auto_123 --segment-id seg_123 --yes
+dispatch automations enroll auto_123 --all --yes
+dispatch automations enroll-jobs get auto_123 job_123
+dispatch automations enroll-jobs cancel auto_123 job_123 --yes
+```
+
+SDKs use the same job contract:
+
+```ts
+const { data: job } = await dispatch.automations.enroll(id, { segmentId: "seg_123" });
+// Or: dispatch.automations.enroll(id, { all: true })
+await dispatch.automations.getEnrollmentJob(id, job!.id);
+await dispatch.automations.cancelEnrollmentJob(id, job!.id);
+```
+
+```python
+job = dispatch.enroll(id, {"segment_id": "seg_123"})
+# Or: dispatch.enroll(id, {"all": True})
+dispatch.get_enrollment_job(id, job["id"])
+dispatch.cancel_enrollment_job(id, job["id"])
+```
+
+```go
+job, err := client.Enroll(id, dispatch.AutomationEnrollment{SegmentID: "seg_123"})
+// Or: client.Enroll(id, dispatch.AutomationEnrollment{All: true})
+if err != nil { return err }
+_, err = client.GetEnrollmentJob(id, job.ID)
+if err != nil { return err }
+_, err = client.CancelEnrollmentJob(id, job.ID)
+```
+
+Contact imports also support cancellation: `DELETE /contacts/imports/{id}` returns a `contact_import` with status `cancelled`. It stops between batches without undoing applied contact changes or cancelling runs already created. Use `dispatch contacts imports cancel imp_123 --yes`, `dispatch.contacts.imports.cancel(id)` in TypeScript, `dispatch.cancel_contact_import(id)` in Python, or `client.CancelContactImport(id)` in Go.
+
+### Worker fairness and history retention
+
+Normal-priority runs are claimed before bulk runs from imports and enrollment jobs. Each automation can claim at most two runs per worker tick, keeping a large flow from monopolizing execution.
+
+For self-hosted deployments, `CONTACT_CHANGES_RETENTION_DAYS` defaults to 400 days. Contact-change history older than the retention window is pruned in bounded batches; retention does not replay triggers or reset lifetime once enrollments.
 
 ## Conditions
 

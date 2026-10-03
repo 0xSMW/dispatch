@@ -88,12 +88,14 @@ export async function runImport(
     counts.skipped = job.counts?.skipped ?? 0;
   }
   let seen = 0;
+  let source: Awaited<ReturnType<Storage["stream"]>> | undefined;
+  let parser: ReturnType<typeof parse> | undefined;
   try {
     const definitions = await propertyDefinitions(db, job.tenant_id);
-    const source = await storage.stream(job.storage_key);
+    source = await storage.stream(job.storage_key);
     const header: { columns?: Columns } = {};
     const broken: { message?: string } = {};
-    const parser = parse({
+    parser = parse({
       bom: true,
       trim: true,
       skip_empty_lines: true,
@@ -115,7 +117,7 @@ export async function runImport(
         return undefined;
       },
     });
-    source.on("error", (error) => parser.destroy(error));
+    source.on("error", (error) => parser?.destroy(error));
     source.pipe(parser);
 
     let batch: ImportContact[] = [];
@@ -134,8 +136,11 @@ export async function runImport(
       }
       if (options.maxRows && seen - done >= options.maxRows) {
         if (batch.length > 0) await flush(db, job, batch, counts, seen);
-        else await saveImportCounts(db, job.id, counts, seen);
-        await db.query("update contact_imports set status = 'queued', locked_at = null where id = $1", [job.id]);
+        await tx(db, async (client) => {
+          await ownImport(client, job);
+          if (batch.length === 0) await saveImportCounts(client, job.id, counts, seen);
+          await client.query("update contact_imports set status = 'queued', locked_at = null where tenant_id = $1 and id = $2", [job.tenant_id, job.id]);
+        });
         source.pause();
         if ("destroy" in source && typeof source.destroy === "function") source.destroy();
         parser.destroy();
@@ -144,9 +149,20 @@ export async function runImport(
     }
     if (batch.length > 0) await flush(db, job, batch, counts, seen);
     if (broken.message) throw new Error(broken.message);
-    await finishImport(db, job.id, "completed", counts);
+    await tx(db, async (client) => {
+      await ownImport(client, job);
+      await finishImport(client, job.id, "completed", counts);
+    });
   } catch (error) {
-    await finishImport(db, job.id, "failed", counts, error instanceof Error ? error.message : String(error));
+    if (error instanceof ImportInterrupted) return counts;
+    await tx(db, async (client) => {
+      try { await ownImport(client, job); }
+      catch (ownership) { if (ownership instanceof ImportInterrupted) return; throw ownership; }
+      await finishImport(client, job.id, "failed", counts, error instanceof Error ? error.message : String(error));
+    });
+  } finally {
+    parser?.destroy();
+    if (source && "destroy" in source && typeof source.destroy === "function") source.destroy();
   }
   return counts;
 }
@@ -155,6 +171,8 @@ export async function runImport(
 export async function flush(db: Db, job: ImportRow, batch: ImportContact[], counts: ImportCounts, offset = 0) {
   const { rows, dropped } = dedupeByEmail(batch);
   const result = await tx(db, async (client) => {
+    const current = await ownImport(client, job);
+    if (offset > 0 && (current.row_offset ?? 0) >= offset) throw new ImportInterrupted();
     const done = await importBatch(client, job, rows);
     await saveImportCounts(
       client,
@@ -173,6 +191,20 @@ export async function flush(db: Db, job: ImportRow, batch: ImportContact[], coun
   counts.updated += result.updated;
   counts.skipped += result.skipped + dropped;
   return counts;
+}
+
+class ImportInterrupted extends Error {}
+
+async function ownImport(client: { query: Db["query"] }, job: ImportRow) {
+  const found = await client.query<ImportRow>(
+    "select status, row_offset, claim_version from contact_imports where tenant_id = $1 and id = $2 for update",
+    [job.tenant_id, job.id],
+  );
+  const current = found.rows[0];
+  if (!current || current.status !== "in_progress" || (current.claim_version ?? 0) !== (job.claim_version ?? 0)) {
+    throw new ImportInterrupted();
+  }
+  return current;
 }
 
 export function resolveColumns(header: string[], map: ImportColumnMap, definitions: PropertyDefinition[]): Columns {

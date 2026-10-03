@@ -88,7 +88,7 @@ describe("contact import queries", () => {
         { id: after.id, contact: after, created: false, segments_added: [], topics_subscribed: [] },
       ],
     });
-    expect(db.queries[0].sql).toContain("on conflict (tenant_id, email) do nothing");
+    expect(db.queries[0].sql).toContain("on conflict do nothing");
     expect(db.queries[1].sql).toContain("order by email for update");
     expect(db.queries[1].params).toEqual(["tenant_1", ["b@x.com"]]);
     expect(db.queries[2].params).toEqual(["tenant_1", ["b@x.com"], ["Bo"], [null], ['{"plan":"pro"}'], [false], true]);

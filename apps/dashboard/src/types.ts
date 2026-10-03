@@ -427,7 +427,7 @@ export type Automation = {
   trigger?: string | null;
   trigger_config?: import("./views/automations/graph").TriggerConfig;
   reentry?: "once" | "every_time";
-  status?: "enabled" | "disabled";
+  status?: "enabled" | "disabled" | "paused";
   enabled?: boolean;
   steps: AutomationStep[];
   connections?: Array<{ from: string; to: string; type?: string }>;
@@ -450,6 +450,18 @@ export type AutomationRun = {
   created_at: string;
   updated_at?: string;
   event?: { id: string; name: string; email: string | null; payload?: Record<string, unknown> };
+};
+
+export type EnrollmentJob = {
+  object: "automation_enrollment_job";
+  id: string;
+  automation_id: string;
+  segment_id: string | null;
+  status: "queued" | "in_progress" | "completed" | "failed" | "cancelled";
+  counts: { total: number; processed: number; enrolled: number; skipped: number; failed: number };
+  error: string | null;
+  created_at: string;
+  completed_at: string | null;
 };
 
 export type AutomationRunDetail = AutomationRun & {
@@ -630,7 +642,7 @@ export type ContactImport = {
   object: "contact_import";
   id: string;
   trigger_automations: boolean;
-  status: "queued" | "in_progress" | "completed" | "failed";
+  status: "queued" | "in_progress" | "completed" | "failed" | "cancelled";
   counts: ImportCounts;
   error: string | null;
   created_at: string;

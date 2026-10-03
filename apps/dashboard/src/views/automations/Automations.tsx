@@ -26,6 +26,7 @@ import { automationTabs } from "../tabs";
 import { automationTrigger, triggerIssues, triggerLabels, triggerSummary, triggerWarning, type TriggerConfig } from "./graph";
 import { ReentryContext, TriggerForm, triggerLoading, triggerSources, type Reentry } from "./Trigger";
 import { StopAutomation, isEnabled } from "./Stop";
+import { Enroll, canEnroll } from "./Enroll";
 
 export const automationCsv: Array<CsvColumn<Automation>> = [
   { header: "id", value: (row) => row.id },
@@ -61,6 +62,7 @@ export function Automations() {
   const selection = useSelection(list.rows.map((row) => row.id));
   const [creating, setCreating] = useState(false);
   const [stopping, setStopping] = useState<Automation | null>(null);
+  const [enrolling, setEnrolling] = useState<Automation | null>(null);
   const [deleting, setDeleting] = useState<Automation[] | null>(null);
   const deleteSelected = () => setDeleting(list.rows.filter((row) => selection.has(row.id)));
   useBulkKeys(selection, list.rows.length, deleteSelected);
@@ -127,6 +129,7 @@ export function Automations() {
             { label: "Open builder", read: true, onSelect: () => navigate(`/automations/${row.id}/editor`) },
             { label: "View runs", read: true, onSelect: () => navigate(`/automations/${row.id}/editor?tab=runs`) },
             { label: "Duplicate", onSelect: () => void duplicate.mutate(row) },
+            ...(can && canEnroll(row) ? [{ label: "Enroll contacts", onSelect: () => setEnrolling(row) }] : []),
             isEnabled(row)
               ? { label: "Stop and cancel runs", onSelect: () => setStopping(row) }
               : { label: "Start", disabled: cannotStart(row), onSelect: () => void start.mutate(row) },
@@ -137,6 +140,7 @@ export function Automations() {
       )}
     >
       {creating && can ? <CreateAutomation onClose={() => setCreating(false)} /> : null}
+      {enrolling ? <Enroll automation={enrolling} onClose={() => setEnrolling(null)} /> : null}
       {stopping ? <StopAutomation automation={stopping} onClose={() => setStopping(null)} onDone={() => void list.reload()} /> : null}
       {deleting ? (
         <ConfirmPhrase

@@ -1,9 +1,13 @@
-import { ApiError, automationGraphSchema, automationSchema, automationStopSchema, automationUpdateSchema, id, type TriggerConfig } from "@dispatchmail/core";
+import { ApiError, automationEnrollSchema, automationGraphSchema, automationSchema, automationStopSchema, automationUpdateSchema, id, type TriggerConfig } from "@dispatchmail/core";
 import {
   activeStates,
   automationColumns,
   automationGraph,
   assertTriggerConfig,
+  createEnrollmentJob,
+  findEnrollmentJob,
+  cancelEnrollmentJob,
+  presentEnrollmentJob,
   findAutomation,
   emitRunEvent,
   paginate,
@@ -192,6 +196,26 @@ export function registerAutomations(
   deps: { db: Db; paging: (request: FastifyRequest) => PagingParams },
 ) {
   const { db, paging } = deps;
+
+  app.post("/automations/:id/enroll", async (request, reply) => {
+    const input = automationEnrollSchema.parse(request.body);
+    const key = request.headers["idempotency-key"]?.toString();
+    if (key !== undefined && (key.length < 1 || key.length > 256)) {
+      throw new ApiError("invalid_idempotency_key", 400, "Idempotency key must be 1-256 characters");
+    }
+    const job = await createEnrollmentJob(db, request.auth!.tenant_id, (request.params as { id: string }).id, input, key);
+    return reply.code(202).send(presentEnrollmentJob(job));
+  });
+
+  app.get("/automations/:id/enroll-jobs/:job_id", async (request) => {
+    const params = request.params as { id: string; job_id: string };
+    return presentEnrollmentJob(await findEnrollmentJob(db, request.auth!.tenant_id, params.id, params.job_id));
+  });
+
+  app.delete("/automations/:id/enroll-jobs/:job_id", async (request) => {
+    const params = request.params as { id: string; job_id: string };
+    return presentEnrollmentJob(await cancelEnrollmentJob(db, request.auth!.tenant_id, params.id, params.job_id));
+  });
 
   async function insert(
     tenantId: string,
