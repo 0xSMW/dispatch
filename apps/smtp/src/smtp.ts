@@ -128,6 +128,20 @@ export async function handleMessage(
   const key = deliveryKey(email, envelope);
   const ids: string[] = [];
   for (const [index, input] of inputs.entries()) {
+    // AUTH can outlive a key's authority. Check each acceptance, including later
+    // messages on the same connection, and use the current domain restriction.
+    const current = await deps.db.query<Auth & { domain_id: string | null }>(
+      `select k.id as api_key_id, k.tenant_id, k.scope, k.domain_id, d.name as domain_name
+       from api_keys k
+       left join domains d on d.id = k.domain_id and d.tenant_id = k.tenant_id
+       where k.id = $1 and k.tenant_id = $2 and k.revoked_at is null`,
+      [auth.api_key_id, auth.tenant_id],
+    );
+    const authority = current.rows[0];
+    if (!authority) throw new ApiError("invalid_api_key", 403, "Invalid API key");
+    if (!["full", "send"].includes(authority.scope) || (authority.domain_id && !authority.domain_name)) {
+      throw new ApiError("restricted_api_key", 403, "API key cannot send email");
+    }
     const result = await accept(
       deps.db,
       input,
@@ -137,7 +151,7 @@ export async function handleMessage(
         request_id: requestId(),
         // One key per email this message becomes.
         idempotency_key: key && inputs.length > 1 ? `${key}:${index}` : key,
-        domain_name: auth.domain_name,
+        domain_name: authority.domain_name,
       },
       {
         publicUrl: deps.publicUrl,

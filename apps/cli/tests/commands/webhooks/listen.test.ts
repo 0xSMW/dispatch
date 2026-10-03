@@ -2,9 +2,9 @@ import { Readable } from "node:stream";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createHmac } from "node:crypto";
-import { forward, listener, maxBody, passthrough, signed as isSigned, unregister } from "../../../src/commands/webhooks/listen.js";
+import { forward, listener, maxBody, passthrough, signed as isSigned, startListener, unregister } from "../../../src/commands/webhooks/listen.js";
 import type { Api } from "../../../src/lib/client.js";
-import { setNonInteractive, spies } from "../../helpers.js";
+import { captureExit, ok, setNonInteractive, spies } from "../../helpers.js";
 
 vi.mock("@dispatchmail/sdk", async () => ({
   ...(await import("../../helpers.js")).sdk,
@@ -172,5 +172,140 @@ describe("listener", () => {
     const { res, out } = response();
     await listener({ forwardTo: "http://localhost:3000/hooks", globals: {} })(request("POST", event, signed), res);
     expect(out.status).toBe(502);
+  });
+});
+
+describe("registration", () => {
+  beforeEach(() => setNonInteractive());
+
+  it("returns 503 during registration without printing or forwarding", async () => {
+    const { stdout } = spies();
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    let finish!: (value: ReturnType<typeof ok>) => void;
+    let endpoint!: string;
+    let registered!: () => void;
+    const registering = new Promise<void>((resolve) => {
+      registered = resolve;
+    });
+    const api = {
+      webhooks: {
+        create: vi.fn((input: { endpoint: string }) => {
+          endpoint = input.endpoint;
+          registered();
+          return new Promise<ReturnType<typeof ok>>((resolve) => {
+            finish = resolve;
+          });
+        }),
+        remove: vi.fn(async () => ok({})),
+      },
+    };
+    const starting = startListener(api as unknown as Api, {
+      port: 0,
+      events: ["all"],
+      globals: {},
+      forwardTo: "http://localhost:3000/hooks",
+    });
+    await registering;
+    try {
+      const result = await fetch(endpoint, { method: "POST", body: event });
+      expect(result.status).toBe(503);
+      expect(stdout()).toBe("");
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      finish(ok({ id: "wh_1", signing_secret: "secret" }));
+      const started = await starting;
+      await started?.cleanup();
+    }
+    expect(api.webhooks.remove).toHaveBeenCalledWith("wh_1");
+  });
+
+  it.each(["SIGINT", "SIGTERM", "SIGHUP"] as const)(
+    "cleans up when %s arrives during registration",
+    async (signal) => {
+      captureExit();
+      let finish!: (value: ReturnType<typeof ok>) => void;
+      let registered!: () => void;
+      const registering = new Promise<void>((resolve) => {
+        registered = resolve;
+      });
+      const api = {
+        webhooks: {
+          create: vi.fn(() => {
+            registered();
+            return new Promise<ReturnType<typeof ok>>((resolve) => {
+              finish = resolve;
+            });
+          }),
+          remove: vi.fn(async () => ok({})),
+        },
+      };
+      const before = process.listenerCount(signal);
+      const starting = startListener(api as unknown as Api, {
+        port: 0,
+        events: ["all"],
+        globals: {},
+      });
+      await registering;
+      process.emit(signal);
+      finish(ok({ id: "wh_stopped", signing_secret: "secret" }));
+      await expect(starting).rejects.toMatchObject({ code: 130 });
+      expect(api.webhooks.remove).toHaveBeenCalledOnce();
+      expect(api.webhooks.remove).toHaveBeenCalledWith("wh_stopped");
+      expect(process.listenerCount(signal)).toBe(before);
+    },
+  );
+
+  it("closes the listener and deletes a webhook returned without a signing secret", async () => {
+    const { stdout } = spies();
+    let endpoint!: string;
+    const before = process.listenerCount("SIGINT");
+    const api = {
+      webhooks: {
+        create: vi.fn(async (input: { endpoint: string }) => {
+          endpoint = input.endpoint;
+          return ok({ id: "wh_secretless" });
+        }),
+        remove: vi.fn(async () => ok({})),
+      },
+    };
+    await expect(
+      startListener(api as unknown as Api, {
+        port: 0,
+        events: ["all"],
+        globals: {},
+      }),
+    ).rejects.toThrow("did not return a signing secret");
+    expect(api.webhooks.remove).toHaveBeenCalledWith("wh_secretless");
+    expect(process.listenerCount("SIGINT")).toBe(before);
+    expect(stdout()).toBe("");
+    await expect(
+      fetch(endpoint, { method: "POST", body: event }),
+    ).rejects.toThrow();
+  });
+
+  it("closes the listener and removes signal handlers when registration fails", async () => {
+    const before = process.listenerCount("SIGINT");
+    let endpoint!: string;
+    const api = {
+      webhooks: {
+        create: vi.fn(async (input: { endpoint: string }) => {
+          endpoint = input.endpoint;
+          throw new Error("registration failed");
+        }),
+        remove: vi.fn(async () => ok({})),
+      },
+    };
+    await expect(
+      startListener(api as unknown as Api, {
+        port: 0,
+        events: ["all"],
+        globals: {},
+      }),
+    ).rejects.toThrow("registration failed");
+    expect(api.webhooks.remove).not.toHaveBeenCalled();
+    expect(process.listenerCount("SIGINT")).toBe(before);
+    await expect(
+      fetch(endpoint, { method: "POST", body: event }),
+    ).rejects.toThrow();
   });
 });

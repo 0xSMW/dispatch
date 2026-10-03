@@ -1435,7 +1435,34 @@ func (c *Client) send(method, path string, reader io.Reader, contentType, idempo
 		req.Header.Set(key, value)
 	}
 
-	res, err := c.HTTPClient.Do(req)
+	httpClient := c.HTTPClient
+	if auth {
+		// Copy the client so shared caller settings are never mutated. Go's default
+		// redirect policy forwards Authorization to subdomains and across ports.
+		next := *httpClient
+		checkRedirect := next.CheckRedirect
+		origin := *req.URL
+		next.CheckRedirect = func(redirect *http.Request, via []*http.Request) error {
+			if !sameOrigin(&origin, redirect.URL) {
+				return fmt.Errorf("dispatch: redirect outside API origin is not allowed")
+			}
+			if len(via) >= 10 {
+				return fmt.Errorf("stopped after 10 redirects")
+			}
+			if checkRedirect != nil {
+				if err := checkRedirect(redirect, via); err != nil {
+					return err
+				}
+			}
+			// A caller callback can change the destination before returning.
+			if !sameOrigin(&origin, redirect.URL) {
+				return fmt.Errorf("dispatch: redirect outside API origin is not allowed")
+			}
+			return nil
+		}
+		httpClient = &next
+	}
+	res, err := httpClient.Do(req)
 	if err != nil {
 		return nil, &Error{
 			Name:    "application_error",
@@ -1475,6 +1502,25 @@ func (c *Client) send(method, path string, reader io.Reader, contentType, idempo
 		failure.RequestID = res.Header.Get("X-Request-Id")
 	}
 	return nil, failure
+}
+
+func sameOrigin(a, b *url.URL) bool {
+	return b != nil && strings.EqualFold(a.Scheme, b.Scheme) &&
+		strings.EqualFold(a.Hostname(), b.Hostname()) && effectivePort(a) == effectivePort(b)
+}
+
+func effectivePort(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return "443"
+	case "http":
+		return "80"
+	default:
+		return ""
+	}
 }
 
 func object(m *Map, err error) (Map, error) {

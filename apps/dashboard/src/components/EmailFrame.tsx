@@ -14,22 +14,12 @@ const policy = {
   allow: "default-src 'none'; img-src data: cid: http: https:; style-src 'unsafe-inline'; font-src data:",
 };
 
-/**
- * Adds tags to the document's head. They go after an existing <head>, <html>, or doctype, since a
- * tag placed before the doctype would switch the preview to quirks mode.
- */
-export function withHead(html: string, tags: string): string {
-  for (const pattern of [/<head[^>]*>/i, /<html[^>]*>/i, /<!doctype[^>]*>/i]) {
-    const match = pattern.exec(html);
-    if (match) return `${html.slice(0, match.index + match[0].length)}${tags}${html.slice(match.index + match[0].length)}`;
-  }
-  return `${tags}${html}`;
-}
-
 /** The framed document: never sends the dashboard's address as Referer, and applies `remote`. */
 export function framed(html: string, remote?: "block" | "allow"): string {
   const csp = remote ? `<meta http-equiv="Content-Security-Policy" content="${policy[remote]}">` : "";
-  return withHead(html, `<meta name="referrer" content="no-referrer">${csp}`);
+  // Parse the trusted head before any email content. Searching the email for a head tag could
+  // match a comment or malformed markup, leaving the policy inactive or after a tracking pixel.
+  return `<!doctype html><html><head><meta name="referrer" content="no-referrer">${csp}</head><body>${html}</body></html>`;
 }
 
 /**

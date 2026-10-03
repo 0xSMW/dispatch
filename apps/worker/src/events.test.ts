@@ -1,6 +1,6 @@
 import { DeleteMessageCommand, ReceiveMessageCommand } from "@aws-sdk/client-sqs";
 import { describe, expect, it, vi } from "vitest";
-import { applySesEvent, consumeOnce, mapSesEvent, type SesEvent } from "./events.js";
+import { applySesEvent, consumeOnce, mapSesEvent, PermanentMessageError, type SesEvent } from "./events.js";
 
 const bounce: SesEvent = {
   eventType: "Bounce",
@@ -107,6 +107,40 @@ describe("event ownership", () => {
 });
 
 describe("consumeOnce", () => {
+  it("deletes malformed JSON and permanent failures while preserving transient records", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const client = { send: vi.fn(async (command: unknown) => command instanceof ReceiveMessageCommand ? {
+      Messages: [
+        { Body: "{", ReceiptHandle: "json" }, { Body: "1", ReceiptHandle: "permanent" },
+        { Body: "2", ReceiptHandle: "retry" }, { Body: "3", ReceiptHandle: "valid" }
+      ]
+    } : {}) };
+    const seen: unknown[] = [];
+    await expect(consumeOnce(client, "queue", async (body) => {
+      seen.push(body);
+      if (body === 1) throw new PermanentMessageError("invalid envelope");
+      if (body === 2) throw new Error("storage unavailable");
+    })).rejects.toThrow("storage unavailable");
+    expect(seen).toEqual([1, 2, 3]);
+    expect(client.send.mock.calls.filter(([command]) => command instanceof DeleteMessageCommand)
+      .map(([command]) => (command as DeleteMessageCommand).input.ReceiptHandle)).toEqual(["json", "permanent", "valid"]);
+    log.mockRestore();
+  });
+
+  it("continues after a deletion failure and reports it for retry", async () => {
+    const client = { send: vi.fn(async (command: unknown) => {
+      if (command instanceof ReceiveMessageCommand) return {
+        Messages: [{ Body: "1", ReceiptHandle: "first" }, { Body: "2", ReceiptHandle: "second" }]
+      };
+      if ((command as DeleteMessageCommand).input.ReceiptHandle === "first") throw new Error("SQS unavailable");
+      return {};
+    }) };
+    const seen: unknown[] = [];
+    await expect(consumeOnce(client, "queue", async (body) => { seen.push(body); })).rejects.toThrow("SQS unavailable");
+    expect(seen).toEqual([1, 2]);
+    expect(client.send.mock.calls.filter(([command]) => command instanceof DeleteMessageCommand)).toHaveLength(2);
+  });
+
   it("deletes a message only after the handler finishes", async () => {
     const sent: unknown[] = [];
     const client = {

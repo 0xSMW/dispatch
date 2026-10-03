@@ -27,7 +27,8 @@ async function editHtml(value: string) {
 }
 
 function preview() {
-  return (document.querySelector("iframe")?.getAttribute("srcdoc") ?? "").replace('<meta name="referrer" content="no-referrer">', "");
+  const source = document.querySelector("iframe")?.getAttribute("srcdoc") ?? "";
+  return new DOMParser().parseFromString(source, "text/html").body.innerHTML;
 }
 
 describe("TemplateEditor", () => {

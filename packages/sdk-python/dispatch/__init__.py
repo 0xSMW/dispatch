@@ -309,6 +309,29 @@ def _query(path: str, params: dict[str, Any]) -> str:
     return f"{path}?{text}" if text else path
 
 
+def _origin(url: str) -> tuple[str, str | None, int | None]:
+    parsed = urllib.parse.urlsplit(url)
+    port = parsed.port
+    if port is None:
+        port = {"http": 80, "https": 443}.get(parsed.scheme)
+    return parsed.scheme, parsed.hostname, port
+
+
+class _SameOriginRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def __init__(self, base_url: str) -> None:
+        self.origin = _origin(base_url)
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        try:
+            same_origin = _origin(newurl) == self.origin
+        except ValueError:
+            same_origin = False
+        if not same_origin:
+            fp.close()
+            raise urllib.error.URLError("Redirect to a different API origin is not allowed")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 class Dispatch:
     def __init__(
         self,
@@ -936,7 +959,8 @@ class Dispatch:
 
         request = urllib.request.Request(f"{self.base_url}{path}", data=data, headers=sent, method=method)
         try:
-            with urllib.request.urlopen(request, timeout=30) as response:
+            opener = urllib.request.build_opener(_SameOriginRedirectHandler(self.base_url))
+            with opener.open(request, timeout=30) as response:
                 text = response.read().decode("utf-8", errors="replace")
                 status = response.status
                 request_id = response.headers.get("x-request-id")

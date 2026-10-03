@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { framed } from "../../components/EmailFrame";
 import { h } from "../../testing";
 import { bodyOf, calls, list, show, stubApi } from "../audience/stub";
 import { Brand, brandErrors, brandPatch } from "./Brand";
@@ -37,7 +38,7 @@ describe("Brand", () => {
     expect((screen.getByLabelText("Brand color") as HTMLInputElement).value).toBe("#1f7a4d");
     await waitFor(() => expect(calls(fetch)).toContain("GET /template-library/welcome"));
     const frame = await screen.findByTitle("Email preview");
-    expect(frame.getAttribute("srcdoc")).toBe('<meta name="referrer" content="no-referrer"><p>Welcome to Acme</p>');
+    expect(frame.getAttribute("srcdoc")).toBe(framed("<p>Welcome to Acme</p>"));
     expect(screen.getByText(/Text on this color is white/)).toBeTruthy();
   });
 

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { framed } from "../../components/EmailFrame";
 import { h, signIn } from "../../testing";
 import type { LibraryTemplate } from "../../types";
 import { api, calls, list, renderAt } from "./harness";
@@ -52,7 +53,7 @@ describe("Library", () => {
     expect(within(auth).getByRole("article", { name: "Password reset" })).toBeTruthy();
     const billing = screen.getByRole("region", { name: "Billing" });
     const card = within(billing).getByRole("article", { name: "Receipt" });
-    await waitFor(() => expect(card.querySelector("iframe")?.getAttribute("srcdoc")).toBe('<meta name="referrer" content="no-referrer"><p>Receipt body</p>'));
+    await waitFor(() => expect(card.querySelector("iframe")?.getAttribute("srcdoc")).toBe(framed("<p>Receipt body</p>")));
   });
 
   it("previews a template with its variables and installs it", async () => {
@@ -60,7 +61,7 @@ describe("Library", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Password reset" }));
     const drawer = await screen.findByRole("dialog");
     expect(await within(drawer).findByText("Reset your Acme password")).toBeTruthy();
-    expect(drawer.querySelector("iframe")?.getAttribute("srcdoc")).toBe('<meta name="referrer" content="no-referrer"><p>Reset it here</p>');
+    expect(drawer.querySelector("iframe")?.getAttribute("srcdoc")).toBe(framed("<p>Reset it here</p>"));
     expect(within(drawer).getByText("ACTION_URL")).toBeTruthy();
     expect(within(drawer).getByText(/Required/)).toBeTruthy();
     expect(within(drawer).getByText("1 hour")).toBeTruthy();

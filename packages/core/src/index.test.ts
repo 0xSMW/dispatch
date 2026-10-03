@@ -12,6 +12,7 @@ import {
   blockedWebhookHost,
   devApiKey,
   publicFetch,
+  requireUrl,
   seedKey,
   publicLookup,
   blockProblem,
@@ -20,6 +21,7 @@ import {
   domainSchema,
   formatAddress,
   emailBodySchema,
+  emailUpdateSchema,
   formatWebhookPayload,
   inboundSchema,
   keyHash,
@@ -407,6 +409,17 @@ describe("webhook hosts", () => {
 });
 
 describe("production guards", () => {
+  it("requires public and app URLs to use HTTPS without credentials in production", () => {
+    for (const name of ["PUBLIC_URL", "APP_URL"] as const) {
+      for (const value of [undefined, "", "not a URL", "http://example.com", "file:///tmp/app", "https://", "https://user@example.com", "https://user:password@example.com"]) {
+        expect(() => requireUrl(name, "http://localhost:3000", { NODE_ENV: "production", [name]: value })).toThrow(name);
+      }
+      const value = "https://example.com/app";
+      expect(requireUrl(name, "http://localhost:3000", { NODE_ENV: "production", [name]: value })).toBe(value);
+      expect(requireUrl(name, "http://localhost:3000", {})).toBe("http://localhost:3000");
+      expect(requireUrl(name, "http://localhost:3000", { NODE_ENV: "development", [name]: "http://localhost:4000" })).toBe("http://localhost:4000");
+    }
+  });
   it("refuses the fake provider in production unless it is allowed on purpose", () => {
     expect(() => assertRealProvider({ NODE_ENV: "production" })).toThrow(/SES_PROVIDER/);
     expect(() => assertRealProvider({ NODE_ENV: "production", SES_PROVIDER: "" })).toThrow(/SES_PROVIDER/);
@@ -423,6 +436,28 @@ describe("production guards", () => {
     expect(() => seedKey({ NODE_ENV: "production", DISPATCH_API_KEY: "short" })).toThrow(/32/);
     const key = `sk_${"a".repeat(40)}`;
     expect(seedKey({ NODE_ENV: "production", DISPATCH_API_KEY: key })).toBe(key);
+  });
+});
+
+describe("custom headers", () => {
+  it("rejects case-insensitive routing headers including a crafted Sender", () => {
+    for (const name of ["From", "sEnDeR", "To", "Cc", "Bcc", "Reply-To", "Resent-From", "Resent-Sender", "Resent-To", "Resent-Cc", "Resent-Bcc", "Resent-Reply-To", "X-SES-CONFIGURATION-SET"]) {
+      expect(sendSchema.safeParse({ ...letter, headers: { [name]: "attacker@example.com" } }).success).toBe(false);
+      expect(emailUpdateSchema.safeParse({ headers: { [name]: "attacker@example.com" } }).success).toBe(false);
+    }
+  });
+
+  it("preserves safe headers and enforces name, value, count, and aggregate limits", () => {
+    const accepts = (headers: Record<string, string>) => sendSchema.safeParse({ ...letter, headers }).success;
+    expect(accepts({ "X-Request-ID": "request-123", "List-Unsubscribe": "<https://example.com/unsubscribe>" })).toBe(true);
+    expect(accepts({ ["X".repeat(78)]: "a".repeat(998) })).toBe(true);
+    for (const name of ["", "X Invalid", "X:Invalid", "X\nInvalid", "X".repeat(79)]) expect(accepts({ [name]: "safe" })).toBe(false);
+    expect(accepts({ "X-Test": "a".repeat(999) })).toBe(false);
+    expect(accepts({ "X-Test": "é".repeat(500) })).toBe(false);
+    expect(accepts({ "X-Test": "safe\r\nSender: attacker@example.com" })).toBe(false);
+    expect(accepts(Object.fromEntries(Array.from({ length: 100 }, (_, i) => [`X-${i}`, "safe"])))).toBe(true);
+    expect(accepts(Object.fromEntries(Array.from({ length: 101 }, (_, i) => [`X-${i}`, "safe"])))).toBe(false);
+    expect(accepts(Object.fromEntries(Array.from({ length: 17 }, (_, i) => [`X-${i}`, "a".repeat(998)])))).toBe(false);
   });
 });
 
@@ -893,4 +928,3 @@ describe("composed email schemas", () => {
 function addresses(count: number, prefix = "user") {
   return Array.from({ length: count }, (_, index) => `${prefix}-${index}@example.com`);
 }
-

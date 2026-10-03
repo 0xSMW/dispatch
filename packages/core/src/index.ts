@@ -183,14 +183,16 @@ const attachmentSchema = z
   });
 
 // SES reads X-SES-* headers on a raw message as instructions: which configuration set to use,
-// which tags to put on its events. A sender must not be able to set those.
+// which tags to put on its events. Routing headers must also come from structured fields.
 export function reservedHeader(name: string) {
-  return /^x-ses-/i.test(name.trim());
+  return /^(?:x-ses-|resent-)|^(?:from|sender|to|cc|bcc|reply-to)$/i.test(name.trim());
 }
 
 const customHeaders = z
-  .record(z.string(), z.string())
-  .refine((headers) => !Object.keys(headers).some(reservedHeader), "headers cannot start with X-SES-")
+  .record(z.string().min(1).max(78).regex(/^[!-9;-~]+$/, "header names must contain printable ASCII without spaces or colons"), z.string().refine((value) => Buffer.byteLength(value, "utf8") <= 998, "header values cannot exceed 998 bytes"))
+  .refine((headers) => !Object.keys(headers).some(reservedHeader), "headers cannot contain routing headers or start with X-SES-")
+  .refine((headers) => Object.keys(headers).length <= 100, "headers cannot contain more than 100 entries")
+  .refine((headers) => Object.entries(headers).reduce((total, [name, value]) => total + Buffer.byteLength(name) + Buffer.byteLength(value) + 4, 0) <= 16_384, "headers cannot exceed 16384 bytes in total")
   .refine((headers) => !Object.entries(headers).some(([name, value]) => /[\r\n]/.test(name) || /[\r\n]/.test(value)), "headers cannot contain line breaks");
 
 // One bucket per tenant per second, summed over every key and route, as Resend does. The API
@@ -1967,9 +1969,18 @@ export function seedPassword(env: Record<string, string | undefined> = process.e
 
 export function requireUrl(name: "PUBLIC_URL" | "APP_URL", fallback: string, env: Record<string, string | undefined> = process.env) {
   const value = env[name];
-  if (value) return value;
-  if (env.NODE_ENV === "production") throw new Error(`${name} must be set in production`);
-  return fallback;
+  if (env.NODE_ENV !== "production") return value || fallback;
+  if (!value) throw new Error(`${name} must be set in production`);
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`${name} must be a valid HTTPS URL in production`);
+  }
+  if (url.protocol !== "https:" || !url.hostname || url.username || url.password) {
+    throw new Error(`${name} must be an HTTPS URL with a hostname and no credentials in production`);
+  }
+  return value;
 }
 
 export function seal(payload: Record<string, unknown>, secret: string) {
@@ -2010,4 +2021,3 @@ export function formatWebhookPayload(event: {
     created_at: event.created_at ?? new Date().toISOString()
   };
 }
-

@@ -194,7 +194,6 @@ const appSecret = requireSecret("APP_SECRET");
 const publicUrl = requireUrl("PUBLIC_URL", "http://localhost:3100");
 const appUrl = requireUrl("APP_URL", "http://localhost:5173");
 const bodyLimit = Number(process.env.MAX_BODY_BYTES ?? 50 * 1024 * 1024);
-const authCacheTtlMs = Number(process.env.AUTH_CACHE_TTL_MS ?? 5_000);
 const domainCacheTtlMs = Number(process.env.DOMAIN_CACHE_TTL_MS ?? 5_000);
 // Sealed tokens in paths (/unsubscribe/:token, /shared/:token) run past Fastify's default 100 characters.
 const app = Fastify({
@@ -207,14 +206,13 @@ const app = Fastify({
     },
   },
   bodyLimit,
-  maxParamLength: 1024,
+  routerOptions: { maxParamLength: 1024 },
   // Behind a load balancer the client address is in X-Forwarded-For. TRUST_PROXY says how far
   // to trust it: a hop count ("1"), or a list of proxy addresses or ranges. Unset, the socket
   // address is used, which behind a proxy is the proxy itself and puts every caller of the
   // public routes into one rate-limit bucket.
   trustProxy: trustProxy(),
 });
-const apiKeyCache = new Map<string, { row: ApiKeyRow; expires_at: number }>();
 const domainCache = new Map<string, number>();
 const logQueue: LogRecord[] = [];
 const auditQueue: AuditRecord[] = [];
@@ -473,7 +471,6 @@ app.post("/api-keys", async (request) => {
       request.auth!.user_id ?? null,
     ],
   );
-  apiKeyCache.clear();
   return { id: row.rows[0].id, object: "api_key", token: secret };
 });
 
@@ -525,7 +522,6 @@ app.patch("/api-keys/:id", async (request) => {
     [request.auth!.tenant_id, keyId, input.name],
   );
   if (!row.rows[0]) throw new ApiError("not_found", 404, "API key not found");
-  apiKeyCache.clear();
   return { object: "api_key", id: keyId };
 });
 
@@ -536,7 +532,6 @@ app.delete("/api-keys/:id", async (request) => {
     [request.auth!.tenant_id, keyId],
   );
   if (!row.rows[0]) throw new ApiError("not_found", 404, "API key not found");
-  apiKeyCache.clear();
   return { object: "api_key", id: keyId, deleted: true };
 });
 
@@ -1088,7 +1083,7 @@ app.get("/emails/:id/events", async (request) => {
   await findBy(db, "emails", request.auth!.tenant_id, emailId, {
     errorMessage: "Email not found",
   });
-  return paginate(
+  const page = await paginate(
     db,
     "email_events",
     request.auth!.tenant_id,
@@ -1100,6 +1095,7 @@ app.get("/emails/:id/events", async (request) => {
       select: "id, request_id, type, data, created_at",
     },
   );
+  return presentEvent(page, readOnly(request.auth));
 });
 
 app.patch("/emails/:id", { config: { scope: "send" } }, async (request) => {
@@ -1452,7 +1448,7 @@ app.get("/webhooks/:id/events/:event_id", async (request) => {
   await findBy(db, "webhooks", request.auth!.tenant_id, params.id, {
     errorMessage: "Webhook not found",
   });
-  return webhookEventDetail(db, request.auth!.tenant_id, params.id, params.event_id);
+  return presentEvent(await webhookEventDetail(db, request.auth!.tenant_id, params.id, params.event_id), readOnly(request.auth));
 });
 
 app.get("/webhooks/:id/events/:event_id/attempts", async (request) => {
@@ -1460,7 +1456,7 @@ app.get("/webhooks/:id/events/:event_id/attempts", async (request) => {
   await findBy(db, "webhooks", request.auth!.tenant_id, params.id, {
     errorMessage: "Webhook not found",
   });
-  return webhookEventAttempts(db, request.auth!.tenant_id, params.id, params.event_id);
+  return presentEvent(await webhookEventAttempts(db, request.auth!.tenant_id, params.id, params.event_id), readOnly(request.auth));
 });
 
 app.post("/webhooks/:id/events/:event_id/replay", async (request) => {
@@ -1856,13 +1852,10 @@ async function authenticate(request: FastifyRequest) {
   }
 }
 
-async function validKey(secret: string) {
+export async function validKey(secret: string) {
   const prefix = secret.slice(0, 12);
   const expected = keyHash(secret, pepper);
-  const cached = apiKeyCache.get(prefix);
-  if (cached && cached.expires_at > Date.now()) {
-    return safeEqualHex(cached.row.hash, expected) ? cached.row : null;
-  }
+  // Persisted revocation must take effect across API instances on the next authentication.
   const row = await db.query<ApiKeyRow>(
     `select k.id, k.tenant_id, k.hash, k.scope, k.last_used_at, k.domain_id, d.name as domain_name
      from api_keys k
@@ -1873,11 +1866,23 @@ async function validKey(secret: string) {
   );
   const apiKey = row.rows[0];
   if (!apiKey || !safeEqualHex(apiKey.hash, expected)) return null;
-  apiKeyCache.set(prefix, {
-    row: apiKey,
-    expires_at: Date.now() + authCacheTtlMs,
-  });
   return apiKey;
+}
+
+// Event payloads can contain bearer tracking credentials and credential-bearing URLs.
+export function presentEvent(value: unknown, viewer: boolean): unknown {
+  if (!viewer) return value;
+  if (Array.isArray(value)) return value.map((child) => presentEvent(child, true));
+  if (value instanceof Date) return value;
+  if (typeof value === "string") {
+    return hideLinks(value).replace(/https?:\/\/[^\s"'<>()]+/gi, (url) => hostOnly(url));
+  }
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => [
+    key,
+    key === "response" || key === "response_body" || /pass|secret|token|api_?key|authorization/i.test(key)
+      ? "[redacted]" : presentEvent(child, true),
+  ]));
 }
 
 // Counts a request and sets the key's expiry in one round trip, so a process that stops between
@@ -1892,7 +1897,10 @@ async function countHit(key: string) {
 
 function trustProxy(value = process.env.TRUST_PROXY) {
   if (!value) return false;
-  if (/^\d+$/.test(value)) return Number(value);
+  if (/^\d+$/.test(value)) {
+    const hops = Number(value);
+    return (_address: string, hop: number) => hop < hops;
+  }
   return value.split(",").map((part) => part.trim()).filter(Boolean);
 }
 

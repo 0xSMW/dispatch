@@ -74,7 +74,7 @@ export function Shared() {
         ]}
       />
       {email.html ? (
-        <EmailFrame html={email.html} />
+        <EmailFrame html={email.html} remote="block" />
       ) : email.text ? (
         <pre className="sharedText">{email.text}</pre>
       ) : (

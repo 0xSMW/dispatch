@@ -6,6 +6,9 @@ export type SqsClient = {
   send(command: unknown): Promise<{ Messages?: Array<{ Body?: string; ReceiptHandle?: string }> }>;
 };
 
+// Only deterministic payload failures are discarded; unexpected failures remain retryable.
+export class PermanentMessageError extends Error {}
+
 type SesRecipient = { emailAddress?: string; diagnosticCode?: string };
 
 export type SesEvent = {
@@ -141,9 +144,30 @@ export async function consumeOnce(client: SqsClient, queueUrl: string, handle: (
     MaxNumberOfMessages: 10,
     WaitTimeSeconds: 20
   }));
+  const failures: unknown[] = [];
   for (const message of batch.Messages ?? []) {
-    await handle(JSON.parse(message.Body ?? "{}"));
-    await client.send(new DeleteMessageCommand({ QueueUrl: queueUrl, ReceiptHandle: message.ReceiptHandle }));
+    try {
+      let body: unknown;
+      try {
+        body = JSON.parse(message.Body ?? "");
+      } catch {
+        throw new PermanentMessageError("Queue notification contains invalid JSON");
+      }
+      await handle(body);
+    } catch (error) {
+      if (!(error instanceof PermanentMessageError)) {
+        failures.push(error);
+        continue;
+      }
+      console.error("Discarding permanently invalid queue notification", error);
+    }
+    try {
+      await client.send(new DeleteMessageCommand({ QueueUrl: queueUrl, ReceiptHandle: message.ReceiptHandle }));
+    } catch (error) {
+      failures.push(error);
+    }
   }
+  // Finish siblings before reporting errors; failed records remain on SQS for retry/redrive.
+  if (failures.length) throw failures[0];
   return batch.Messages?.length ?? 0;
 }

@@ -50,6 +50,8 @@ type ListenerOptions = {
   forwardTo?: string;
   timeout?: number;
   globals: Flags;
+  // Registration must complete before any event can be accepted.
+  ready?: () => boolean;
   // False when the request does not carry a valid signature for the temporary webhook.
   verify?: (payload: string, headers: IncomingHttpHeaders) => boolean;
 };
@@ -73,6 +75,10 @@ export function listener(options: ListenerOptions): RequestListener {
 
 async function receive(request: Parameters<RequestListener>[0], response: Parameters<RequestListener>[1], options: ListenerOptions) {
   {
+    if (options.ready && !options.ready()) {
+      reply(response, 503, "Listener registration is not ready");
+      return;
+    }
     if (request.method !== "POST") {
       response.writeHead(405, { allow: "POST" }).end();
       return;
@@ -159,6 +165,47 @@ export async function register(api: Api, endpoint: string, events: string[]) {
   return unwrap<{ id: string; signing_secret?: string }>(api.webhooks.create({ endpoint, events }));
 }
 
+export async function startListener(api: Api, options: ListenerOptions & { port: number; url?: string; events: string[] }) {
+  let hook: { id: string; signing_secret?: string } | undefined;
+  let requested = false;
+  let closing = false;
+  const server = createServer(listener({
+    ...options,
+    ready: () => Boolean(hook?.signing_secret),
+    verify: (payload, headers) => Boolean(hook?.signing_secret && signed(hook.signing_secret, payload, headers)),
+  }));
+  const signals = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+  const cleanup = async () => {
+    if (closing) return;
+    closing = true;
+    for (const signal of signals) process.off(signal, onSignal);
+    server.close();
+    if (hook) await unregister(api, hook.id);
+  };
+  const stop = async () => {
+    requested = true;
+    // Wait for creation to return so any temporary webhook can be deleted.
+    if (!hook || closing) return;
+    await cleanup();
+    process.exit(130);
+  };
+  const onSignal = () => void stop();
+  try {
+    const port = await listen(server, options.port);
+    for (const signal of signals) process.on(signal, onSignal);
+    hook = await register(api, options.url ?? `http://127.0.0.1:${port}`, options.events);
+    if (!hook.signing_secret) throw new CliError("listen_error", "Webhook registration did not return a signing secret");
+    if (requested) {
+      await stop();
+      return;
+    }
+    return { server, hook, port, cleanup };
+  } catch (error) {
+    await cleanup();
+    throw error;
+  }
+}
+
 export const listenCommand = new Command("listen")
   .description("Receive webhook events locally, and optionally forward them to your app")
   .option("--port <port>", "Local port", "4318")
@@ -187,31 +234,15 @@ export const listenCommand = new Command("listen")
         );
       }
       const api = requireClient(globals);
-      let hook: { id: string; signing_secret?: string } | undefined;
-      const server = createServer(
-        listener({
-          forwardTo: options.forwardTo,
-          globals,
-          verify: (payload, headers) => !hook?.signing_secret || signed(hook.signing_secret, payload, headers),
-        }),
-      );
-      const port = await listen(server, Number(options.port));
-      const endpoint = options.url ?? `http://127.0.0.1:${port}`;
-      // The handlers go in before the webhook exists. A stop that arrives while it is being
-      // created is honored as soon as its ID is known. A closed terminal sends SIGHUP.
-      let closing = false;
-      let requested = false;
-      const stop = async () => {
-        requested = true;
-        if (closing || !hook) return;
-        closing = true;
-        server.close();
-        await unregister(api, hook.id);
-        process.exit(130);
-      };
-      for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"] as const) process.on(signal, () => void stop());
-      hook = await register(api, endpoint, csv(options.events) ?? ["all"]);
-      if (requested) return void (await stop());
+      const started = await startListener(api, {
+        forwardTo: options.forwardTo,
+        globals,
+        port: Number(options.port),
+        url: options.url,
+        events: csv(options.events) ?? ["all"],
+      });
+      if (!started) return;
+      const { port, hook } = started;
       status(`${pc.green("✓")} Listening on http://127.0.0.1:${port} as webhook ${hook.id}`, globals);
       if (hook.signing_secret) status(`Signing secret: ${hook.signing_secret}`, globals);
       if (options.forwardTo) status(`Forwarding to ${options.forwardTo}`, globals);

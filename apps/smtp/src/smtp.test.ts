@@ -53,6 +53,9 @@ function fakeDb(rows = [key(fullSecret, "full"), key(sendSecret, "send"), key(re
     query: vi.fn(async (sql: string, params: unknown[] = []) => {
       queries.push(sql);
       if (sql.includes("from api_keys k")) {
+        if (sql.includes("where k.id = $1")) {
+          return { rows: rows.filter((row) => row.id === params[0] && row.tenant_id === params[1] && !row.revoked_at) };
+        }
         return { rows: rows.filter((row) => row.prefix === params[0] && !row.revoked_at) };
       }
       return { rows: [], rowCount: 1 };
@@ -351,6 +354,38 @@ describe("idempotencyKey", () => {
 });
 
 describe("handleMessage", () => {
+  it("rejects DATA after the authenticated key is revoked, including repeated attempts", async () => {
+    const row = key(sendSecret, "send");
+    const { db } = fakeDb([row]);
+    const { deps: value, accept } = deps({ db });
+    const session = await authenticate(value, "dispatch", sendSecret);
+    await handleMessage(value, session, related, envelope("ada@example.com"));
+    await handleMessage(value, session, related, envelope("bob@example.com"));
+    expect(accept).toHaveBeenCalledTimes(2);
+    row.revoked_at = new Date().toISOString();
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const error = await handleMessage(value, session, related, envelope("ada@example.com")).catch((error) => error);
+      expect(smtpReply(error).code).toBe(535);
+    }
+    expect(accept).toHaveBeenCalledTimes(2);
+  });
+
+  it("refreshes domain restrictions and requires the authenticated tenant", async () => {
+    const row = key(sendSecret, "send");
+    const { db } = fakeDb([row]);
+    const { deps: value, accept } = deps({ db });
+    const session = await authenticate(value, "dispatch", sendSecret);
+    row.domain_id = "domain_1";
+    row.domain_name = "acme.com";
+    await handleMessage(value, session, related, envelope("ada@example.com"));
+    expect(accept).toHaveBeenLastCalledWith(db, expect.anything(), expect.objectContaining({ domain_name: "acme.com" }), expect.anything());
+    row.domain_name = null;
+    await expect(handleMessage(value, session, related, envelope("ada@example.com"))).rejects.toMatchObject({ name: "restricted_api_key" });
+    row.tenant_id = "tenant_2";
+    await expect(handleMessage(value, session, related, envelope("ada@example.com"))).rejects.toMatchObject({ name: "invalid_api_key" });
+    expect(accept).toHaveBeenCalledTimes(1);
+  });
+
   it("accepts with a plain context and stores attachments through storage", async () => {
     const { deps: value, accept, put } = deps();
     const id = await handleMessage(value, auth, related, envelope("ada@example.com"));

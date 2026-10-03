@@ -34,6 +34,7 @@ describe("Shared", () => {
     expect(screen.getByText("ada@example.com, bob@example.com")).toBeTruthy();
     const frame = screen.getByTitle("Email preview");
     expect(frame.getAttribute("sandbox")).toBe("");
+    expect(frame.getAttribute("srcdoc")).toContain("default-src 'none'");
     expect(frame.getAttribute("srcdoc")).toContain("<p>Thanks</p>");
     expect(document.querySelector("script")).toBeNull();
   });

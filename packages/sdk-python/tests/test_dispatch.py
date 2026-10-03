@@ -1,9 +1,14 @@
 import base64
 import json
+import io
 import socket
 import threading
 import unittest
+import urllib.request
+import urllib.response
+from email.message import Message
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from unittest.mock import patch
 
 from dispatch import Dispatch, DispatchError
 
@@ -262,6 +267,61 @@ class TestDispatch(unittest.TestCase):
             client.emails()
         self.assertIsNone(raised.exception.status)
         self.assertEqual(raised.exception.name, "application_error")
+
+
+class TestRedirects(unittest.TestCase):
+    def request_with_redirect(self, base_url, target):
+        calls = []
+
+        def respond(handler, request):
+            calls.append(request)
+            headers = Message()
+            if len(calls) == 1:
+                headers["Location"] = target
+                status, body = 302, b""
+            else:
+                status, body = 200, b'{"id":"redirected"}'
+            response = urllib.response.addinfourl(io.BytesIO(body), headers, request.full_url, status)
+            response.msg = "Found" if status == 302 else "OK"
+            return response
+
+        client = Dispatch(api_key="sk_test", base_url=base_url)
+        # Run urllib's real redirect machinery with both transports replaced: no DNS or sockets.
+        with patch.object(urllib.request.HTTPHandler, "http_open", respond), patch.object(
+            urllib.request.HTTPSHandler, "https_open", respond
+        ):
+            try:
+                result = client.emails()
+            except DispatchError as error:
+                return calls, error
+        return calls, result
+
+    def test_same_origin_redirects_preserve_authorization(self):
+        for base_url, target in [
+            ("https://api.example.com", "/redirected"),
+            ("https://api.example.com", "https://api.example.com:443/redirected"),
+            ("http://api.example.com:80", "http://api.example.com/redirected"),
+            ("https://api.example.com:8443", "https://api.example.com:8443/redirected"),
+        ]:
+            with self.subTest(base_url=base_url, target=target):
+                calls, result = self.request_with_redirect(base_url, target)
+                self.assertEqual(result, {"id": "redirected"})
+                self.assertEqual(len(calls), 2)
+                self.assertEqual(calls[1].get_header("Authorization"), "Bearer sk_test")
+
+    def test_cross_origin_redirects_stop_before_followup_request(self):
+        for target in [
+            "https://sub.api.example.com/emails",
+            "https://api.example.com:8443/emails",
+            "http://api.example.com/emails",
+            "https://other.example.com/emails",
+        ]:
+            with self.subTest(target=target):
+                calls, error = self.request_with_redirect("https://api.example.com", target)
+                self.assertIsInstance(error, DispatchError)
+                self.assertIsNone(error.status)
+                self.assertIn("different API origin", str(error))
+                self.assertEqual(len(calls), 1)
 
 
 if __name__ == "__main__":
