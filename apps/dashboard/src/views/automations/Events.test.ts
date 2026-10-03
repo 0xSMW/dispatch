@@ -35,6 +35,7 @@ describe("Events", () => {
     const fetch = api();
     render(h(Events), { wrapper });
     expect(await screen.findByText("ada@example.com")).toBeTruthy();
+    expect(screen.getByText(/with a new email address creates a contact/)).toBeTruthy();
     expect(screen.getAllByText("user.upgraded").length).toBe(2);
     expect(screen.getByText(": number")).toBeTruthy();
     const paths = fetch.mock.calls.map(([url]) => String(url));

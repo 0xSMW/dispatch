@@ -9,7 +9,7 @@ import type { RunStep } from "./Steps";
 export const nodeWidth = 248;
 export const nodeHeight = 100;
 export const endWidth = 132;
-export const endHeight = 32;
+export const endHeight = 54;
 /** Vertical space between a step and the next one in its list. */
 export const rowGap = 56;
 /** Vertical space under a branching step, where the edges turn and carry their labels. */

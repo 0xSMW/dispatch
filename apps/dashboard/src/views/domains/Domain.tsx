@@ -3,6 +3,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import { Globe2 } from "lucide-react";
 import { Badge, statusToVariant, type BadgeVariant } from "../../components/Badge";
 import { ConfirmPhrase } from "../../components/ConfirmPhrase";
+import { saveFile } from "../../components/CsvExport";
 import { Failed } from "../../components/Empty";
 import { EventTimeline, type TimelineEvent } from "../../components/EventTimeline";
 import { Facts } from "../../components/Facts";
@@ -21,6 +22,7 @@ import type { Domain as DomainRow, DomainDoctor } from "../../types";
 import { Region } from "./Domains";
 import { Publish } from "./Publish";
 import { Records } from "./Records";
+import { toZone } from "./zone";
 import "../../styles/operations.css";
 
 type Tab = "records" | "configuration";
@@ -87,6 +89,9 @@ export function Domain() {
         actions={
           row ? (
             <>
+              <button type="button" className="secondary" onClick={() => saveFile(`${row.name}.zone`, toZone(row), "text/plain;charset=utf-8")}>
+                Download zone file
+              </button>
               {can && row.status !== "verified" ? (
                 <button type="button" className="secondary" disabled={verify.isLoading} onClick={() => void verify.mutate()}>
                   {restart ? "Restart" : "Verify DNS"}

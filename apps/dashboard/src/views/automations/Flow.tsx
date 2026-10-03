@@ -54,7 +54,7 @@ function tintOf(status: string | null) {
 function StepBox({ data }: NodeProps<StepNode>) {
   const { selected, onSelect, emailCounts } = useContext(FlowActions);
   const { node, issues, status, error } = data;
-  const classes = ["canvasNode", tintOf(status), issues ? "invalid" : "", selected === node.key ? "selected" : ""];
+  const classes = ["canvasNode", "nodrag", "nopan", tintOf(status), issues ? "invalid" : "", selected === node.key ? "selected" : ""];
   return (
     <>
       <Handles />
@@ -87,7 +87,7 @@ function StepBox({ data }: NodeProps<StepNode>) {
 
 function TriggerBox({ data }: NodeProps<TriggerNode>) {
   const { selected, onSelect } = useContext(FlowActions);
-  const classes = ["canvasNode", tintOf(data.status), data.issues ? "invalid" : "", selected === data.key ? "selected" : ""];
+  const classes = ["canvasNode", "nodrag", "nopan", tintOf(data.status), data.issues ? "invalid" : "", selected === data.key ? "selected" : ""];
   return (
     <>
       <Handle type="source" position={Position.Bottom} isConnectable={false} className="canvasHandle" />
@@ -122,19 +122,22 @@ function EndBox({ data }: NodeProps<EndNode>) {
   return (
     <>
       <Handle type="target" position={Position.Top} isConnectable={false} className="canvasHandle" />
-      {slot ? (
-        <button
-          type="button"
-          className={adding === slotId(slot) ? "canvasEnd active" : "canvasEnd"}
-          aria-label={data.label}
-          onClick={() => onAdd(slot)}
-        >
-          <Plus size={14} aria-hidden />
-          Add step
-        </button>
-      ) : (
-        <span className="canvasEnd done">End</span>
-      )}
+      <div className="canvasEnding">
+        {slot ? (
+          <button
+            type="button"
+            className={adding === slotId(slot) ? "canvasEnd nodrag nopan active" : "canvasEnd nodrag nopan"}
+            aria-label={data.label}
+            onClick={() => onAdd(slot)}
+          >
+            <Plus size={14} aria-hidden />
+            Add step
+          </button>
+        ) : (
+          <span className="canvasEnd done">End</span>
+        )}
+        <span className="dim">The run ends here.</span>
+      </div>
     </>
   );
 }

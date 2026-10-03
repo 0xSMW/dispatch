@@ -46,6 +46,7 @@ describe("Contacts", () => {
     const fetch = api();
     show(h(Contacts), "/audience");
     await screen.findByText("ada@example.com");
+    expect(screen.getByRole("link", { name: "Suppressions" }).getAttribute("href")).toBe("/emails/suppressions");
     expect(calls(fetch)).toEqual(
       expect.arrayContaining(["GET /contacts?limit=40", "GET /contacts/stats", "GET /segments?limit=100"]),
     );

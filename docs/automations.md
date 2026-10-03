@@ -92,6 +92,8 @@ Starting an automation does not replay events fired while it was disabled.
 
 Automations currently have Start and Stop, not a pause that preserves runs. Stop, `POST /automations/{id}/stop`, and changing an enabled automation to `enabled: false` disable new triggers and stop runs in progress, including runs waiting on a delay or event.
 
+The Stop dialog loads the current count of every run in progress before confirmation. The count can change before you stop; Stop cancels all runs still in progress, not just that displayed count.
+
 Starting again accepts future events; it does not resume stopped runs or replay missed triggers. Already queued emails are separate resources and are not cancelled by stopping the automation. Cancel eligible queued or scheduled emails through the [email API](api/README.md#sending).
 
 For run notifications, see [webhooks](webhooks.md).

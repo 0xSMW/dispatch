@@ -85,13 +85,15 @@ describe("Automations", () => {
   });
 
   it("stops an enabled automation after confirming", async () => {
-    const fetch = mockFetch((_url, init) =>
-      init.method === "POST" ? { body: { ...rows[0], status: "disabled" } } : { body: { object: "list", has_more: false, data: rows } },
-    );
+    const fetch = mockFetch((url, init) => {
+      if (new URL(url).pathname.endsWith("/runs/metrics")) return { body: { totals: { running: 3 } } };
+      return init.method === "POST" ? { body: { ...rows[0], status: "disabled" } } : { body: { object: "list", has_more: false, data: rows } };
+    });
     open();
     const row = (await screen.findByText("Welcome")).closest("tr")!;
     fireEvent.click(within(row).getByRole("button", { name: "Actions" }));
     fireEvent.click(await screen.findByRole("menuitem", { name: "Stop" }));
+    expect(await screen.findByText("3 runs in progress will be cancelled.")).toBeTruthy();
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /Stop/ }));
     await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "POST")).toBe(true));
     expect(String(fetch.mock.calls.find(([, init]) => init?.method === "POST")![0])).toBe("http://localhost:3100/automations/automation_1/stop");

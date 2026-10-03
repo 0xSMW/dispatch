@@ -38,6 +38,8 @@ describe("Segments", () => {
     const fetch = api();
     show(h(Segments), "/audience/segments");
     await screen.findByText("VIP");
+    expect(screen.getByText("Static lists")).toBeTruthy();
+    expect(screen.queryByRole("columnheader", { name: "Type" })).toBeNull();
     expect(calls(fetch)).toContain("GET /segments?limit=40");
     expect(screen.getByText("1,200")).toBeTruthy();
   });

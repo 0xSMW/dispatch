@@ -191,6 +191,8 @@ button.pickerItem:hover:not(:disabled) {
 /* Nodes */
 
 button.canvasNode {
+  /* React Flow's non-selectable wrappers ignore pointer events; the inner controls still work. */
+  pointer-events: all;
   display: grid;
   align-content: center;
   justify-content: stretch;
@@ -300,6 +302,15 @@ button.canvasNode.tint.selected {
 
 /* The end of a list, and the "+" on edges */
 
+.canvasEnding {
+  display: grid;
+  gap: 4px;
+  width: 132px;
+  height: 54px;
+  text-align: center;
+  font-size: 11px;
+}
+
 .canvasEnd {
   display: inline-flex;
   align-items: center;
@@ -312,6 +323,7 @@ button.canvasNode.tint.selected {
 }
 
 button.canvasEnd {
+  pointer-events: all;
   padding: 0 10px;
   border: 1px dashed var(--border-input);
   background: var(--surface);

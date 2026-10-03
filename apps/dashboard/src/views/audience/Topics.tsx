@@ -46,6 +46,7 @@ export function Topics() {
     <div className="page">
       <PageHeader
         title="Audience"
+        description="Mailing lists your contacts can subscribe to and leave from the preference page."
         actions={
           can ? (
             <button type="button" onClick={() => setCreating(true)}>

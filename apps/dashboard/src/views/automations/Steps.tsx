@@ -401,7 +401,7 @@ export function StepForm({ node, path, index, actions, disabled, errors, options
             value={text("duration")}
             onChange={(value) => set("duration", value)}
             placeholder="1 hour"
-            hint="Up to 30 days, such as 30 minutes, 2 hours, or 3 days."
+            hint='Examples: "2 days", "1 hour". Up to 30 days.'
             error={errors.duration}
             disabled={disabled}
             required

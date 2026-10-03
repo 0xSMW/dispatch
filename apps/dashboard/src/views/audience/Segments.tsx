@@ -41,6 +41,7 @@ export function Segments() {
   return (
     <ListPage
       title="Audience"
+      description="Static lists"
       tabs={audienceTabs}
       actions={
         <button type="button" onClick={() => setCreating(true)}>

@@ -153,6 +153,7 @@ describe("AutomationEditor", () => {
     fireEvent.click(within(branch).getByRole("button", { name: "Add step" }));
     fireEvent.click(await screen.findByRole("menuitem", { name: "Time delay" }));
     expect(await screen.findByRole("article", { name: "Step delay_1" })).toBeTruthy();
+    expect(screen.getByText('Examples: "2 days", "1 hour". Up to 30 days.')).toBeTruthy();
     expect(screen.getByText("Unsaved changes")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Save" }));

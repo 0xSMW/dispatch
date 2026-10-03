@@ -14,6 +14,7 @@ export const audienceTabs: Tab[] = [
   { id: "properties", label: "Properties", to: "/audience/properties" },
   { id: "segments", label: "Segments", to: "/audience/segments" },
   { id: "topics", label: "Topics", to: "/audience/topics" },
+  { id: "suppressions", label: "Suppressions", to: "/emails/suppressions" },
 ];
 
 export const automationTabs: Tab[] = [

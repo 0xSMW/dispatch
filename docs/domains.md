@@ -18,6 +18,10 @@ Add a domain under Domains, choose its SES region, and open Records. Copy the ex
 
 At DNS hosts that append the zone name automatically, enter the relative name rather than repeating the domain. Keep DKIM and tracking CNAMEs unproxied so DNS exposes the target.
 
+For hosts other than Route 53, select **Download zone file** on the domain page to save `<domain>.zone` for BIND-compatible import. Viewers can download it too; downloading does not publish or change DNS. The file includes all records currently returned for the domain, including optional tracking or receiving records when present. It preserves explicit TTLs and uses 300 seconds for Auto or missing TTLs, with absolute owner and CNAME/MX target names, MX priorities, and quoted TXT values. Long TXT values are split into character strings of at most 255 bytes within the same record.
+
+This is an import fragment, not a complete authoritative zone: it adds no SOA or nameserver records. Review the file and your DNS host's import behavior before publishing; it does not apply the Route 53 publisher's skip safeguards described below.
+
 Do not replace an existing DMARC policy or mailbox MX records without reviewing the consequences. Receiving at a domain can redirect mail away from your existing mailbox provider; use a dedicated subdomain if appropriate. Publishing its MX is not the whole receiving setup: the deployment also needs SES receipt rules, storage, and an inbound queue.
 
 After publishing records:

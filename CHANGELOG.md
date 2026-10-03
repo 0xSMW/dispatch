@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Clarify topic subscriptions, static segments, event-created contacts, delay examples and canvas endings. Link Suppressions from Audience as well as Emails. Stop confirmation shows the current count and warns that every run in progress is cancelled, not paused.
+- Download a domain's actual DNS records as a BIND zone file for import into DNS hosts other than Route 53, including from a viewer session.
+- Keep canvas step and ending buttons clickable inside React Flow's non-selectable wrappers.
+
 - Show Required/Optional template variable controls with saved fallbacks, keep lists fixed Required, and add a visual placeholder panel for names, requirements, fallbacks, and list-item scope. The stored variable model and rendering rules are unchanged.
 
 - Add public automation, template, audience, and domain guides, with Learn chips pinned to the dashboard version or a configured docs directory. Unavailable guides and anchors stay hidden.

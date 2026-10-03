@@ -73,11 +73,14 @@ describe("Canvas", () => {
   it("draws the trigger, each step, branch labels, and an end marker per open list", async () => {
     show({ actions: spies() });
     expect(await screen.findByRole("button", { name: "Trigger" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Trigger" }).className).toContain("nopan");
     for (const key of ["welcome", "pause", "pro", "upsell"]) expect(screen.getByRole("button", { name: `Step ${key}` })).toBeTruthy();
     expect(screen.getByText("True")).toBeTruthy();
     expect(screen.getByText("False")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Add step to False branch of pro" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add step to False branch of pro" }).className).toContain("nopan");
     expect(screen.getByRole("button", { name: "Add step at the end of True branch of pro" })).toBeTruthy();
+    expect(screen.getAllByText("The run ends here.")).toHaveLength(2);
     // The main list ends in a branch, so it has no end marker, as in the list.
     expect(screen.queryByRole("button", { name: "Add step at the end" })).toBeNull();
     expect(document.querySelectorAll(".react-flow__edge")).toHaveLength(6);
@@ -106,6 +109,7 @@ describe("Canvas", () => {
     // The parent applies the insert; the panel opens on the new step.
     view.rerender(h(Canvas, { tree: insertStep(tree, [], 1, "delay", "delay_1"), actions }));
     const panel = await screen.findByRole("region", { name: "Step delay_1 settings" });
+    expect(within(panel).getByText('Examples: "2 days", "1 hour". Up to 30 days.')).toBeTruthy();
     expect(within(panel).getByLabelText(/Duration/)).toHaveProperty("value", "1 hour");
   });
 
@@ -120,7 +124,9 @@ describe("Canvas", () => {
   it("opens a step's form in the side panel and edits, moves, and removes it through StepActions", async () => {
     const actions = spies();
     show({ actions, options: { templates: [{ value: "tpl_1", label: "Welcome" }], segments: [], events: [] } });
-    fireEvent.click(await screen.findByRole("button", { name: "Step pause" }));
+    const delay = await screen.findByRole("button", { name: "Step pause" });
+    expect(delay.className).toContain("nopan");
+    fireEvent.click(delay);
     const panel = screen.getByRole("region", { name: "Step pause settings" });
     fireEvent.change(within(panel).getByLabelText(/Duration/), { target: { value: "2 hours" } });
     expect(actions.change).toHaveBeenCalledWith("pause", expect.any(Function));
@@ -199,6 +205,7 @@ describe("Canvas", () => {
       await screen.findByRole("button", { name: "Step welcome" });
       expect(screen.queryAllByRole("button", { name: /^Add step/ })).toHaveLength(0);
       expect(screen.getAllByText("End").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("The run ends here.").length).toBeGreaterThan(0);
       fireEvent.click(screen.getByRole("button", { name: "Step welcome" }));
       const panel = screen.getByRole("region", { name: "Step welcome settings" });
       expect(within(panel).queryByRole("button", { name: "Remove step" })).toBeNull();

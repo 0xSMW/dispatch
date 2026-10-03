@@ -75,6 +75,6 @@ Give an ordinary send a `topic_id`, or choose a Topic on an automation send step
 
 Without a topic, an ordinary or automation send is Transactional and does not use marketing subscription checks. Use that for requested receipts or password resets, not to bypass a person's marketing preference.
 
-Suppressions are separate from subscriptions: manual suppressions, permanent bounces, and complaints can block delivery regardless of topic preference. Inspect them on the Suppressions page or through the API.
+Suppressions are separate from subscriptions: manual suppressions, permanent bounces, and complaints can block delivery regardless of topic preference. Open Suppressions from either Audience or Emails, or inspect them through the API.
 
 See [Marketing sending behavior](api/README.md#sending), [templates](templates.md#variables), and [unsubscribe webhooks](webhooks.md).
