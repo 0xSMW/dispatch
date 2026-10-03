@@ -88,11 +88,106 @@
       "description": "Setup, users, roles, sessions, audit logs, system status, and usage."
     },
     {
+      "name": "Internal",
+      "description": "Deployment callbacks, not tenant API or SDK operations. Each route uses its own deployment credential or signed notification."
+    },
+    {
       "name": "Public",
       "description": "Routes that need no API key. Links Dispatch puts in emails and dashboard pages land here."
     }
   ],
   "paths": {
+    "/internal/reconcile": {
+      "get": {
+        "operationId": "reconcileWorker",
+        "summary": "Wake the deployment worker",
+        "description": "Deployment cron callback. Requires the configured CRON_SECRET as a bearer credential, not an API key or dashboard session. Also prunes counters when COUNTER_BACKEND is postgres.",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "cronAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Worker wake accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalAcknowledgement"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/internal/events": {
+      "post": {
+        "operationId": "receiveSesNotification",
+        "summary": "Receive a signed SNS notification for SES",
+        "description": "Deployment callback. Does not use tenant bearer authentication. The configured SNS_TOPIC_ARN must match TopicArn and the SNS notification signature must verify. Accepts SubscriptionConfirmation and Notification envelopes; Message contains the SES event JSON. Unmatched or malformed events are refused. Processing failures return 503 so SNS can retry.",
+        "tags": [
+          "Internal"
+        ],
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SnsNotification"
+              }
+            },
+            "text/plain": {
+              "schema": {
+                "type": "string",
+                "description": "The same signed SNS envelope encoded as JSON text."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Subscription confirmed or event applied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalAcknowledgement"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "503": {
+            "description": "Event processing unavailable. Retry the notification.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health": {
       "get": {
         "operationId": "getHealth",
@@ -14427,6 +14522,11 @@
   },
   "components": {
     "securitySchemes": {
+      "cronAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Deployment CRON_SECRET, not a tenant API key or session token."
+      },
       "bearerAuth": {
         "type": "http",
         "scheme": "bearer",
@@ -14676,6 +14776,70 @@
       }
     },
     "schemas": {
+      "InternalAcknowledgement": {
+        "type": "object",
+        "required": [
+          "ok",
+          "request_id"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "request_id": {
+            "type": "string"
+          }
+        }
+      },
+      "SnsNotification": {
+        "type": "object",
+        "description": "An AWS SNS signed message envelope. SNS signature verification also validates the envelope's signing fields.",
+        "properties": {
+          "Type": {
+            "type": "string",
+            "enum": [
+              "SubscriptionConfirmation",
+              "Notification"
+            ]
+          },
+          "TopicArn": {
+            "type": "string"
+          },
+          "Message": {
+            "type": "string"
+          },
+          "Token": {
+            "type": "string",
+            "description": "Required for SubscriptionConfirmation."
+          },
+          "MessageId": {
+            "type": "string"
+          },
+          "Timestamp": {
+            "type": "string"
+          },
+          "Signature": {
+            "type": "string"
+          },
+          "SignatureVersion": {
+            "type": "string"
+          },
+          "SigningCertURL": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "Type",
+          "TopicArn",
+          "Message",
+          "MessageId",
+          "Timestamp",
+          "Signature",
+          "SignatureVersion",
+          "SigningCertURL"
+        ]
+      },
       "Error": {
         "type": "object",
         "required": [

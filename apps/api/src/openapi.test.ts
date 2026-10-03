@@ -92,6 +92,18 @@ describe("docs/api/openapi.json", () => {
     expect(Object.keys(spec.paths).filter((path) => path.startsWith("/v1"))).toEqual([]);
   });
 
+  it("keeps deployment callbacks separate from tenant bearer authentication", () => {
+    expect(spec.paths["/internal/reconcile"].get).toMatchObject({
+      tags: ["Internal"],
+      security: [{ cronAuth: [] }],
+    });
+    expect(spec.paths["/internal/events"].post).toMatchObject({
+      tags: ["Internal"],
+      security: [],
+      responses: { "503": { description: expect.stringContaining("Retry") } },
+    });
+  });
+
   it("resolves every $ref", () => {
     expect(refs(spec).filter((pointer) => !resolves(pointer))).toEqual([]);
   });

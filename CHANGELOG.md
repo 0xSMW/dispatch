@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Require Node 24 LTS and pnpm 10.28.0 for development and builds.
+- Fix portable AWS credential-provider declarations for frozen-lockfile builds and document the existing deployment callbacks in OpenAPI.
 - Add tenant settings to the API, SDKs, and dashboard, with import automation defaults off and configurable additional sandbox domains.
 - Add signed, recipient-specific unsubscribe links and protected one-click headers to Marketing sends. Multi-recipient requests with `topic_id` now produce separate To-only emails, with an optional `emails` response array. Batch items follow the same rule. Transactional sends are unchanged.
 - Recheck Marketing opt-outs before delivery, including scheduled sends and deleted contacts. Automation templates now receive the recipient's contact fields.
