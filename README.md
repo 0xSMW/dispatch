@@ -91,7 +91,8 @@ The [self-hosting guide](docs/self-hosting/README.md) walks through each step, a
 
 - [API reference](docs/api/README.md) and the [OpenAPI document](docs/api/openapi.json)
 - [Webhooks](docs/webhooks.md)
-- [Templates](docs/templates) and [React Email](docs/react-email.md)
+- [Automations](docs/automations.md), [Audience](docs/audience.md), and [Domains](docs/domains.md)
+- [Templates](docs/templates.md), [integration examples](docs/templates/README.md), and [React Email](docs/react-email.md)
 - [SMTP relay](docs/smtp.md)
 - [Deliverability](docs/deliverability/README.md)
 - [Local development](docs/local.md)

@@ -42,6 +42,10 @@ describe("Automations", () => {
     expect(screen.getByText("1,204")).toBeTruthy();
     expect(screen.getByText("user.idle")).toBeTruthy();
     expect(screen.getAllByText("enabled").length).toBeGreaterThan(0);
+    const learn = within(screen.getByRole("navigation", { name: "Learn more" }));
+    expect(learn.getByRole("link", { name: "Triggers" }).getAttribute("href")).toContain("automations.md#triggers");
+    expect(learn.getByRole("link", { name: "Conditions" }).getAttribute("href")).toContain("automations.md#conditions");
+    expect(learn.queryByRole("link", { name: "Lifecycle recipes" })).toBeNull();
   });
 
   it("creates a disabled automation with only its trigger, then opens the builder", async () => {

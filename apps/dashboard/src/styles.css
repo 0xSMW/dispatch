@@ -658,6 +658,30 @@ button.switch.on {
   gap: 10px;
   margin-bottom: 8px;
 }
+.learnLinks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+.learnLinks > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-right: 2px;
+}
+.learnChip {
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  text-decoration: none;
+}
+.learnChip:hover {
+  background: var(--surface-raised);
+  color: var(--text);
+}
 
 .backLink {
   display: inline-flex;

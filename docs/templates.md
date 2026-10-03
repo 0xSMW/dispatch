@@ -1,0 +1,97 @@
+# Templates
+
+Store reusable HTML and plain text with a subject, sender, and variables. Send by template ID or alias. Saving changes creates or updates a draft; sends use the published version until you publish again.
+
+Use the dashboard to edit and preview, or write components locally with [React Email](react-email.md). Authentication and billing integration examples are in [the template guides](templates/README.md).
+
+## Variables
+
+Placeholders work in the subject, HTML, and plain text:
+
+```html
+<p>Hello {{{NAME|there}}},</p>
+<p>Your {{{PLAN}}} account is ready.</p>
+```
+
+Pass values in the send's template reference:
+
+```json
+{
+  "from": "Acme <hello@acme.com>",
+  "to": "alex@example.com",
+  "template": {
+    "id": "welcome",
+    "variables": { "NAME": "Alex", "PLAN": "starter" }
+  }
+}
+```
+
+`welcome` must be a published alias and the sender domain must be verified. This recipient is a [sandbox address](api/README.md#sandbox-recipients).
+
+Declare custom variables as `string`, `number`, or `list`. Keys are case-sensitive, 1–50 letters, digits, or underscores; built-in names are reserved. A supplied number must be a JSON number, not a numeric string.
+
+For a printed placeholder, Dispatch uses the supplied or context value, then an inline fallback such as `{{{NAME|there}}}`, then the variable's saved `fallback_value`. Missing, null, and empty-string values use fallbacks. Without a value or fallback, rendering fails with `422` and names the missing variable. A placeholder inside an omitted conditional block does not need a value.
+
+The editor detects custom placeholders and lets you configure their type, fallback, and sample. Samples are for preview and test sends; they are not saved defaults for production sends. There is no separate required/optional switch: use a fallback or a conditional block to handle missing data.
+
+Replacement values are HTML-escaped in HTML, even with triple braces; they cannot inject raw HTML. Subject and plain-text replacements are not HTML-escaped.
+
+### Conditional content and lists
+
+```html
+{{{#if contact.first_name}}}
+<p>Hello {{{contact.first_name}}}.</p>
+{{{/if}}}
+{{{#unless contact.first_name}}}
+<p>Hello there.</p>
+{{{/unless}}}
+
+{{{#each ITEMS}}}
+<p>{{{name}}}: {{{price}}}</p>
+{{{/each}}}
+```
+
+`if` includes content for a present value; `unless` includes it otherwise. Missing, null, empty string, `false`, and an empty array count as absent; `0` counts as present. Blocks may nest and must close correctly before publication.
+
+A declared list accepts an array of objects whose field values are strings or numbers, for example `"ITEMS": [{"name": "Widget", "price": 12}]`. Within `each`, use the item's field name directly. Rendering repeats at most 200 items.
+
+### Contact and event values
+
+Broadcasts and automation sends supply recipient values under `contact.*`, including custom properties, plus `FIRST_NAME`, `LAST_NAME`, and `EMAIL`. Automation sends also supply the triggering payload as top-level variables and under `event.*`; explicit step variables override payload values.
+
+Ordinary `POST /emails` calls do not automatically look up a contact. Pass the values your template needs. Broadcasts render missing contact fields as blanks; ordinary sends and automation sends fail on an unresolved printed field. Use an inline fallback or `if` for names that may be missing.
+
+Marketing sends supply `UNSUBSCRIBE_URL`, `RESEND_UNSUBSCRIBE_URL`, and `DISPATCH_UNSUBSCRIBE_URL`. Put one in your footer, for example `<a href="{{{UNSUBSCRIBE_URL}}}">Manage preferences</a>`. These are signed per-recipient links, not caller-provided values. A template printing one needs `topic_id` for an ordinary or automation send. See [topics](audience.md#topics) and [sending](api/README.md#sending).
+
+## Visual editor
+
+The HTML tab has Code and Visual modes sharing the same saved HTML. Plain text is edited separately.
+
+Visual mode opens an empty template or HTML it previously produced and can reproduce unchanged. Hand-written or React Email HTML may need a confirmed conversion. Conversion rebuilds the layout on your first edit and can lose formatting such as colors, widths, and backgrounds.
+
+If opening the content would lose placeholders, links, images, or unsupported content, Visual mode refuses it. Keep that template in Code mode instead. Switching modes is not permission to silently rewrite your source.
+
+Image-file uploads, pastes, and drops are not supported. Add an image URL in Code mode. Preview with real sample values and send a test before publishing.
+
+## Brand
+
+Brand settings are shared across the tenant and filled when a template is rendered or sent. Updating Brand affects future renders without republishing templates; it does not rewrite already queued email content.
+
+| Placeholder | Value |
+|:---|:---|
+| `PRODUCT_NAME` | Product name, falling back to the tenant name. |
+| `PRODUCT_URL` | Product URL, falling back to `https://` plus the tenant's stored domain, or blank. |
+| `LOGO_URL` | Logo URL, or blank. |
+| `BRAND_COLOR` | Six-digit hex color, default `#18181b`. |
+| `BRAND_TEXT_COLOR` | Black or white, whichever has better contrast against Brand color. |
+| `SUPPORT_EMAIL` | Support email, falling back to the sender address, or blank. |
+| `SUPPORT_URL`, `PRIVACY_URL` | Configured URLs, or blank. |
+| `COMPANY_NAME` | Company name, falling back to Product name. |
+| `COMPANY_ADDRESS` | Company address, or blank. |
+| `CURRENT_YEAR` | Current year. |
+
+Reference them with placeholders such as `{{{PRODUCT_NAME}}}` and `{{{BRAND_COLOR}}}`; do not declare them as custom variables. Brand URL settings require HTTPS. Optional blank values used as printed placeholders need a fallback or conditional block, for example `{{{#if LOGO_URL}}}<img src="{{{LOGO_URL}}}" alt="Logo">{{{/if}}}`.
+
+Brand also sets the heading and description on the public unsubscribe page. It does not set a static unsubscribe URL: Marketing links are generated for each recipient.
+
+Brand is available through `GET /brand` and `PATCH /brand`. See [the API reference](api/README.md#routes) and [React Email's brand prop](react-email.md#brand-values).

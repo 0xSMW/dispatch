@@ -24,6 +24,7 @@ import { useAll, useResource } from "../../hooks/useResource";
 import { useSelection } from "../../hooks/useSelection";
 import { each } from "../../lib/bulk";
 import { errorMessage } from "../../lib/client";
+import { learnLinks } from "../../lib/docs";
 import { fullName } from "../../lib/utils";
 import { useCan, useClient } from "../../shell/session";
 import type { Contact, ContactProperty, ContactStats, List, Segment, Topic } from "../../types";
@@ -118,6 +119,7 @@ export function Contacts() {
     <div className="page">
       <PageHeader
         title="Audience"
+        learn={learnLinks("audience")}
         actions={
           <>
             <button type="button" className="secondary" onClick={() => setDialog("imports")}>

@@ -54,6 +54,10 @@ describe("Contacts", () => {
     expect(screen.getByText("Ada Lovelace")).toBeTruthy();
     expect(screen.getByText("unsubscribed")).toBeTruthy();
     expect(screen.getByRole("option", { name: "VIP" })).toBeTruthy();
+    const learn = within(screen.getByRole("navigation", { name: "Learn more" }));
+    expect(learn.getByRole("link", { name: "Properties" }).getAttribute("href")).toContain("audience.md#properties");
+    expect(learn.getByRole("link", { name: "Segments" }).getAttribute("href")).toContain("audience.md#segments");
+    expect(learn.getByRole("link", { name: "Topics" }).getAttribute("href")).toContain("audience.md#topics");
   });
 
   it("shows each contact's segments, three at most, with a count for the rest", async () => {

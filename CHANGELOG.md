@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add public automation, template, audience, and domain guides, with Learn chips pinned to the dashboard version or a configured docs directory. Unavailable guides and anchors stay hidden.
+
 - Require Node 24 LTS and pnpm 10.28.0 for development and builds.
 - Fix portable AWS credential-provider declarations for frozen-lockfile builds and document the existing deployment callbacks in OpenAPI.
 - Add tenant settings to the API, SDKs, and dashboard, with import automation defaults off and configurable additional sandbox domains.

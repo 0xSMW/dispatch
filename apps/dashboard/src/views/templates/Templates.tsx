@@ -15,6 +15,7 @@ import { toast } from "../../components/Toast";
 import { useFilters } from "../../hooks/useFilters";
 import { useList } from "../../hooks/useList";
 import { useMutation } from "../../hooks/useMutation";
+import { learnLinks } from "../../lib/docs";
 import { useCan, useClient } from "../../shell/session";
 import type { Template } from "../../types";
 import { templateTabs } from "../tabs";
@@ -45,6 +46,7 @@ export function Templates() {
     <div className="page">
       <PageHeader
         title="Templates"
+        learn={learnLinks("templates")}
         actions={
           <>
             <Link className="button secondary" to="/templates/library">

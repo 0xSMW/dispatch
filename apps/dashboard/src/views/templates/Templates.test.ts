@@ -39,6 +39,10 @@ describe("Templates", () => {
     expect(card.querySelector("iframe")?.getAttribute("srcdoc")).toContain("your plan is Free");
     expect(screen.getByRole("article", { name: "Reset password" })).toBeTruthy();
     expect(calls(fetch, "GET /templates")[0]!.url.searchParams.get("limit")).toBe("100");
+    const learn = within(screen.getByRole("navigation", { name: "Learn more" }));
+    expect(learn.getByRole("link", { name: "Variables" }).getAttribute("href")).toContain("templates.md#variables");
+    expect(learn.getByRole("link", { name: "Visual editor" }).getAttribute("href")).toContain("templates.md#visual-editor");
+    expect(learn.getByRole("link", { name: "Brand" }).getAttribute("href")).toContain("templates.md#brand");
   });
 
   it("sends search and status from the URL to the server", async () => {
