@@ -785,6 +785,8 @@ export async function clickedLinks(db: Queryable, tenantId: string, broadcastId:
      join emails e on e.tenant_id = ev.tenant_id and e.id = ev.email_id
      cross join lateral (select coalesce(ev.data->'click'->>'link', ev.data->>'url') as url) link
      where ev.tenant_id = $1 and e.broadcast_id = $2 and ev.type = 'email.clicked' and link.url is not null
+       and not e.sandbox and coalesce(ev.data->>'sandbox', 'false') <> 'true'
+       and not exists (select 1 from email_recipients r where r.tenant_id = ev.tenant_id and r.id = ev.recipient_id and r.sandbox)
      group by link.url
      order by clicks desc, link.url`,
     [tenantId, broadcastId],

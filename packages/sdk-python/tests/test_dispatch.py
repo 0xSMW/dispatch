@@ -176,6 +176,25 @@ class TestDispatch(unittest.TestCase):
         self.assertEqual(self.client.send(email)["emails"], result["emails"])
         self.assertEqual(self.client.batch([email])["data"][0]["emails"], result["emails"])
 
+    def test_sandbox_response_contract(self):
+        sandbox = {"id": "email_1", "sandbox": True, "last_event": "delivered"}
+        recipients = [
+            {"id": "rcpt_1", "email": "test@example.com", "kind": "cc", "sandbox": True, "status": "delivered"},
+            {"id": "rcpt_2", "email": "ada@acme.com", "kind": "to", "sandbox": False, "status": "delivered"},
+        ]
+        mixed = {"id": "email_2", "sandbox": False, "last_event": "delivered", "recipients": recipients}
+        Recorder.responses.update({
+            ("POST", "/emails"): (200, sandbox),
+            ("POST", "/emails/batch"): (200, {"data": [sandbox]}),
+            ("GET", "/emails"): (200, {"object": "list", "has_more": False, "data": [sandbox]}),
+            ("GET", "/emails/email_2"): (200, mixed),
+        })
+        email = {"from": "a@acme.com", "to": "test@example.com", "subject": "Test", "text": "Hi"}
+        self.assertIs(self.client.send(email)["sandbox"], True)
+        self.assertIs(self.client.batch([email])["data"][0]["sandbox"], True)
+        self.assertEqual(self.client.emails()["data"][0], sandbox)
+        self.assertEqual(self.client.email("email_2"), mixed)
+
     def test_batch_sends_a_bare_array(self):
         emails = [{"from": "a@x.com", "to": "b@x.com", "subject": "Hi", "text": "Yo"}]
         self.client.batch(emails, idempotency_key="idem-2", batch_validation="permissive")

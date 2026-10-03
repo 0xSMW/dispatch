@@ -34,7 +34,12 @@ describe("presentEmail", () => {
       last_event: "canceled",
       tags: [{ name: "category", value: "welcome" }],
     });
-    expect(email).not.toHaveProperty("recipients");
+    expect(email.sandbox).toBe(false);
+    expect(email.recipients).toEqual([
+      { email: "you@example.net", kind: "to", sandbox: false },
+      { email: "cc@example.net", kind: "cc", sandbox: false },
+      { email: "bcc@example.net", kind: "bcc", sandbox: false },
+    ]);
   });
 });
 

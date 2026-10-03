@@ -26,6 +26,7 @@ import { cancelable, retryable } from "./Emails";
 import { Preview } from "./Preview";
 import { problemOf, ProblemBanner } from "./Problem";
 import { Share } from "./Share";
+import { Sandbox, sandboxHint } from "./Sandbox";
 import "../../styles/operations.css";
 
 type Body = "preview" | "text" | "html" | "attachments" | "insights";
@@ -34,6 +35,7 @@ type Body = "preview" | "text" | "html" | "attachments" | "insights";
 export function timeline(events: EmailEvent[]): TimelineEvent[] {
   return events.map((event) => {
     const data = event.data ?? {};
+    const simulated = data.sandbox === true;
     const bounce = data.bounce as { type?: string; subType?: string; message?: string } | undefined;
     const failed = data.failed as { reason?: string } | undefined;
     const suppressed = data.suppressed as { message?: string } | undefined;
@@ -43,10 +45,10 @@ export function timeline(events: EmailEvent[]): TimelineEvent[] {
       : (failed?.reason ?? suppressed?.message ?? click?.link ?? (Array.isArray(data.recipients) ? `To ${(data.recipients as string[]).join(", ")}` : undefined));
     return {
       id: event.id,
-      label: event.type.replace(/^email\./, "").replaceAll("_", " "),
+      label: event.type.replace(/^email\./, "").replaceAll("_", " ") + (simulated ? " (simulated)" : ""),
       status: event.type,
       time: event.created_at,
-      detail: detail || undefined,
+      detail: simulated ? [sandboxHint, detail].filter(Boolean).join(" ") : detail || undefined,
     };
   });
 }
@@ -94,6 +96,7 @@ export function Email() {
           row ? (
             <>
               <Badge value={row.last_event} />
+              {row.sandbox ? <Sandbox /> : null}
               <Menu
                 label="Email actions"
                 items={[
@@ -110,6 +113,10 @@ export function Email() {
       />
 
       {problem ? <ProblemBanner problem={problem} /> : null}
+
+      {row?.sandbox ? <p className="muted">{sandboxHint}</p> : row?.recipients?.some((recipient) => recipient.sandbox) ? (
+        <p className="muted">Sandbox recipients are simulated and are never sent externally. Other recipients follow normal delivery.</p>
+      ) : null}
 
       {row ? (
         <Facts
@@ -149,6 +156,20 @@ export function Email() {
       ) : (
         <Skeleton lines={3} />
       )}
+
+      {row?.recipients?.length ? (
+        <Panel title="Recipients">
+          <Table
+            compact
+            rows={row.recipients}
+            columns={[
+              { header: "Email", cell: (recipient) => recipient.email },
+              { header: "Kind", cell: (recipient) => recipient.kind.toUpperCase() },
+              { header: "Status", cell: (recipient) => <span className="inline"><Badge value={recipient.status} />{recipient.sandbox ? <Sandbox /> : null}</span> },
+            ]}
+          />
+        </Panel>
+      ) : null}
 
       <Panel title="Events">
         {events.error ? (

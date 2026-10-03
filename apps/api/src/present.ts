@@ -1,6 +1,6 @@
 import { webhookDeliveryStatus } from "@dispatchmail/core";
 
-export type EmailRecipient = { email: string; kind: string };
+export type EmailRecipient = { email: string; kind: string; status?: string; sandbox?: boolean };
 
 export type EmailRow = {
   id: string;
@@ -13,6 +13,7 @@ export type EmailRow = {
   text?: string | null;
   reply_to?: string[] | null;
   status: string;
+  sandbox?: boolean;
   scheduled_at?: string | Date | null;
   tags?: Record<string, string> | null;
   recipients?: EmailRecipient[];
@@ -24,6 +25,13 @@ export function presentEmail(row: EmailRow) {
   return {
     object: "email" as const,
     id: row.id,
+    sandbox: row.sandbox === true,
+    recipients: (row.recipients ?? []).map((recipient) => ({
+      email: recipient.email,
+      kind: recipient.kind,
+      sandbox: recipient.sandbox === true,
+      ...(recipient.status ? { status: recipient.status } : {}),
+    })),
     message_id: row.message_id ?? null,
     to: ofKind("to"),
     from: row.from_name ? `${row.from_name} <${row.from_email}>` : row.from_email,
@@ -37,6 +45,20 @@ export function presentEmail(row: EmailRow) {
     last_event: lastEvent(row.status),
     scheduled_at: row.scheduled_at ?? null,
     tags: Object.entries(row.tags ?? {}).map(([name, value]) => ({ name, value })),
+  };
+}
+
+export function presentSend(row: {
+  id: string;
+  sandbox?: boolean;
+  emails?: Array<{ id: string; to: string; sandbox?: boolean }>;
+}) {
+  return {
+    id: row.id,
+    sandbox: row.sandbox === true,
+    ...(row.emails ? {
+      emails: row.emails.map((email) => ({ id: email.id, to: email.to, sandbox: email.sandbox === true })),
+    } : {}),
   };
 }
 

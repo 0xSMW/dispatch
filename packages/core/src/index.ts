@@ -1,3 +1,4 @@
+export { sandboxAddress } from "./sandbox.js";
 export { awsCredentials } from "./aws.js";
 import { createCipheriv, createDecipheriv, createHash, createHmac, hkdfSync, randomBytes, randomUUID, scrypt, timingSafeEqual } from "node:crypto";
 import { lookup as lookupCallback, type LookupAddress } from "node:dns";

@@ -95,6 +95,16 @@ function ingest() {
 }
 
 describe("sendBroadcasts", () => {
+  it("keeps simulated emails inspectable without counting them as real sends", async () => {
+    const { db, broadcast, recipients } = fakeDb(2);
+    const send = vi.fn(async (_client: unknown, input: { to: string }) => ({
+      email: { id: `email_${input.to}`, status: "queued", sandbox: input.to === "user0@example.net" },
+    }));
+    await sendBroadcasts(db, { ...options, ingest: send as never });
+    expect(recipients.every((row) => row.email_id)).toBe(true);
+    expect(broadcast.status).toBe("sent");
+    expect(broadcast.sent_count).toBe(1);
+  });
   it("sends one chunk of 200 per tick and stops between chunks while paused", async () => {
     const { db, broadcast, recipients } = fakeDb(450);
     const send = ingest();

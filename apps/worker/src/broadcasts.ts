@@ -96,6 +96,7 @@ async function sendClaimed(client: Queryable, broadcast: DueBroadcast, options: 
   const brandVars = brandContext(brand.brand, { tenantName: brand.name, domain: brand.domain, from: broadcast.from_email });
   const ingest = options.ingest ?? ingestEmail;
   const results: RecipientResult[] = [];
+  let realSent = 0;
 
   for (const recipient of recipients) {
     if (recipient.skip) {
@@ -130,6 +131,7 @@ async function sendClaimed(client: Queryable, broadcast: DueBroadcast, options: 
       // An address suppressed, or opted out of the topic, since the snapshot gets no email. It
       // is recorded as skipped, not counted as sent.
       const queued = sent.email.status === "queued" || sent.email.status === "scheduled";
+      if (queued && !sent.email.sandbox) realSent += 1;
       results.push(
         queued
           ? { id: recipient.id, status: "sent", email_id: sent.email.id }
@@ -142,7 +144,7 @@ async function sendClaimed(client: Queryable, broadcast: DueBroadcast, options: 
   }
 
   await markRecipients(client, tenantId, results);
-  await finishChunk(client, tenantId, broadcast.id, results.filter((row) => row.status === "sent").length);
+  await finishChunk(client, tenantId, broadcast.id, realSent);
   return broadcast.id;
 }
 

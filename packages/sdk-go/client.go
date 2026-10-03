@@ -105,27 +105,40 @@ type Tag struct {
 }
 
 type Email struct {
-	Object      string       `json:"object,omitempty"`
-	ID          string       `json:"id"`
-	Emails      []SplitEmail `json:"emails,omitempty"`
-	MessageID   *string      `json:"message_id,omitempty"`
-	From        string       `json:"from,omitempty"`
-	To          []string     `json:"to,omitempty"`
-	Cc          []string     `json:"cc,omitempty"`
-	Bcc         []string     `json:"bcc,omitempty"`
-	ReplyTo     []string     `json:"reply_to,omitempty"`
-	Subject     string       `json:"subject,omitempty"`
-	HTML        *string      `json:"html,omitempty"`
-	Text        *string      `json:"text,omitempty"`
-	LastEvent   string       `json:"last_event,omitempty"`
-	ScheduledAt *string      `json:"scheduled_at,omitempty"`
-	Tags        []Tag        `json:"tags,omitempty"`
-	CreatedAt   string       `json:"created_at,omitempty"`
+	Object string `json:"object,omitempty"`
+	ID     string `json:"id"`
+	// Sandbox is true only when every original recipient is simulated, with no external delivery.
+	Sandbox     bool             `json:"sandbox"`
+	Recipients  []EmailRecipient `json:"recipients,omitempty"`
+	Emails      []SplitEmail     `json:"emails,omitempty"`
+	MessageID   *string          `json:"message_id,omitempty"`
+	From        string           `json:"from,omitempty"`
+	To          []string         `json:"to,omitempty"`
+	Cc          []string         `json:"cc,omitempty"`
+	Bcc         []string         `json:"bcc,omitempty"`
+	ReplyTo     []string         `json:"reply_to,omitempty"`
+	Subject     string           `json:"subject,omitempty"`
+	HTML        *string          `json:"html,omitempty"`
+	Text        *string          `json:"text,omitempty"`
+	LastEvent   string           `json:"last_event,omitempty"`
+	ScheduledAt *string          `json:"scheduled_at,omitempty"`
+	Tags        []Tag            `json:"tags,omitempty"`
+	CreatedAt   string           `json:"created_at,omitempty"`
+}
+
+type EmailRecipient struct {
+	ID        string `json:"id"`
+	Email     string `json:"email"`
+	Kind      string `json:"kind"`
+	Status    string `json:"status"`
+	Sandbox   bool   `json:"sandbox"`
+	CreatedAt string `json:"created_at"`
 }
 
 type SplitEmail struct {
-	ID string `json:"id"`
-	To string `json:"to"`
+	ID      string `json:"id"`
+	To      string `json:"to"`
+	Sandbox bool   `json:"sandbox"`
 }
 
 type ContactActivity struct {
@@ -156,8 +169,9 @@ type AutomationRunEvent struct {
 
 type BatchResponse struct {
 	Data []struct {
-		ID     string       `json:"id"`
-		Emails []SplitEmail `json:"emails,omitempty"`
+		ID      string       `json:"id"`
+		Sandbox bool         `json:"sandbox"`
+		Emails  []SplitEmail `json:"emails,omitempty"`
 	} `json:"data"`
 	Errors []struct {
 		Index   int    `json:"index"`

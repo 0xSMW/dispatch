@@ -1,7 +1,8 @@
 import { convert } from "html-to-text";
 import type { Queryable } from "./index.js";
 import { findBy, publishedTemplate } from "./index.js";
-import { ApiError, brandContext, id, parseAddress, prepareTracking, renderTemplate, reservedVariables, toArray, type BrandRecord } from "@dispatchmail/core";
+import { ApiError, brandContext, id, parseAddress, prepareTracking, renderTemplate, reservedVariables, sandboxAddress, toArray, type BrandRecord } from "@dispatchmail/core";
+import { settings } from "./settings.js";
 import { appendEvent, fanoutEvent } from "./events.js";
 import { replaceUnsubscribe } from "./unsubscribe.js";
 
@@ -52,6 +53,7 @@ export type IngestEmailResult = {
   status: string;
   scheduled_at: string | null;
   created_at: string;
+  sandbox: boolean;
 };
 
 export type TrackingResult = {
@@ -64,8 +66,8 @@ export async function emailDetail(db: Queryable, tenantId: string, emailId: stri
     deletedCol: null,
     errorMessage: "Email not found",
   });
-  const recipients = await db.query<{ id: string; email: string; kind: "to" | "cc" | "bcc"; status: string }>(
-    "select id, email, kind, status, created_at from email_recipients where tenant_id = $1 and email_id = $2 order by created_at, id",
+  const recipients = await db.query<{ id: string; email: string; kind: "to" | "cc" | "bcc"; status: string; sandbox: boolean; created_at: string }>(
+    "select id, email, kind, status, sandbox, created_at from email_recipients where tenant_id = $1 and email_id = $2 order by created_at, id",
     [tenantId, emailId],
   );
   return { ...email, recipients: recipients.rows };
@@ -185,11 +187,13 @@ export async function ingestEmail(
     for (const row of opted.rows) optedOut.add(row.email.toLowerCase());
   }
 
+  const tenantSettings = await settings(client, input.tenantId);
   const prepared = recipients.map((recipient) => {
     const email = recipient.email.toLowerCase();
     const status = suppressedEmails.has(email) ? "suppressed" : optedOut.has(email) ? "failed" : "queued";
-    return { ...recipient, status };
+    return { ...recipient, status, sandbox: sandboxAddress(recipient.email, tenantSettings.sandbox_domains) };
   });
+  const sandbox = prepared.length > 0 && prepared.every((recipient) => recipient.sandbox);
   const sendable = prepared.filter((recipient) => recipient.status === "queued");
 
   const emailId = input.emailId ?? id("email");
@@ -211,10 +215,10 @@ export async function ingestEmail(
   const email = await client.query<IngestEmailResult>(
     `insert into emails (
       id, tenant_id, request_id, idempotency_key, from_email, from_name, reply_to, subject, html, html_tracked, text,
-      template_id, template_version_id, headers, tags, topic_id, broadcast_id, status, scheduled_at, api_key_id, contact_id, automation_id, automation_step
+      template_id, template_version_id, headers, tags, topic_id, broadcast_id, status, scheduled_at, api_key_id, contact_id, automation_id, automation_step, sandbox
     )
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
-     returning id, request_id, from_email as from, subject, status, scheduled_at, created_at`,
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+     returning id, request_id, from_email as from, subject, status, scheduled_at, created_at, sandbox`,
     [
       emailId,
       input.tenantId,
@@ -239,12 +243,13 @@ export async function ingestEmail(
       input.contactId ?? null,
       input.automationId ?? null,
       input.automationStep ?? null,
+      sandbox,
     ],
   );
 
   const inserted = await client.query<{ id: string; email: string; status: string }>(
-    `insert into email_recipients (id, tenant_id, email_id, email, kind, status)
-     select * from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[])
+    `insert into email_recipients (id, tenant_id, email_id, email, kind, status, sandbox)
+     select * from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::boolean[])
      returning id, email, status`,
     [
       prepared.map(() => id("rcpt")),
@@ -253,6 +258,7 @@ export async function ingestEmail(
       prepared.map((recipient) => recipient.email),
       prepared.map((recipient) => recipient.kind),
       prepared.map((recipient) => recipient.status),
+      prepared.map((recipient) => recipient.sandbox),
     ],
   );
 
@@ -298,7 +304,7 @@ export async function ingestEmail(
   }
 
   const toList = prepared.filter((recipient) => recipient.kind === "to").map((recipient) => recipient.email);
-  return { email: { ...email.rows[0], to: toList }, tracking };
+  return { email: { ...email.rows[0], sandbox, to: toList }, tracking };
 }
 
 type TrackingDomain = {

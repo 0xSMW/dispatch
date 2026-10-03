@@ -65,19 +65,49 @@ func TestNewClient(t *testing.T) {
 }
 
 func TestMarketingSplitResponse(t *testing.T) {
-	split := []SplitEmail{{ID: "email_1", To: "ada@example.com"}, {ID: "email_2", To: "bob@example.com"}}
+	split := []SplitEmail{{ID: "email_1", To: "ada@example.com", Sandbox: true}, {ID: "email_2", To: "bob@dispatch-fixture.net", Sandbox: false}}
 	result := Map{"id": "email_1", "emails": split}
 	client, _ := recorder(t, map[string]canned{
 		"POST /emails":       {200, result},
 		"POST /emails/batch": {200, Map{"data": []any{result}}},
 	})
-	email, err := client.Send(Map{"from": "a@example.com", "to": []string{"ada@example.com", "bob@example.com"}, "topic_id": "topic_1", "text": "Hi"}, "")
+	email, err := client.Send(Map{"from": "a@example.com", "to": []string{"ada@example.com", "bob@dispatch-fixture.net"}, "topic_id": "topic_1", "text": "Hi"}, "")
 	if err != nil || !reflect.DeepEqual(email.Emails, split) {
 		t.Fatalf("split send: %+v, %v", email, err)
 	}
-	batch, err := client.Batch([]Map{{"to": []string{"ada@example.com", "bob@example.com"}}}, "", "strict")
+	batch, err := client.Batch([]Map{{"to": []string{"ada@example.com", "bob@dispatch-fixture.net"}}}, "", "strict")
 	if err != nil || len(batch.Data) != 1 || !reflect.DeepEqual(batch.Data[0].Emails, split) {
 		t.Fatalf("split batch: %+v, %v", batch, err)
+	}
+}
+
+func TestSandboxResponses(t *testing.T) {
+	recipients := []EmailRecipient{
+		{ID: "rcpt_1", Email: "test@example.com", Kind: "cc", Status: "delivered", Sandbox: true, CreatedAt: "2026-10-03T10:00:00Z"},
+		{ID: "rcpt_2", Email: "ada@acme.com", Kind: "to", Status: "delivered", Sandbox: false, CreatedAt: "2026-10-03T10:00:00Z"},
+	}
+	sandbox := Map{"id": "email_1", "sandbox": true, "last_event": "delivered"}
+	client, _ := recorder(t, map[string]canned{
+		"POST /emails":        {200, sandbox},
+		"POST /emails/batch":  {200, Map{"data": []any{sandbox}}},
+		"GET /emails":         {200, Map{"object": "list", "has_more": false, "data": []any{sandbox}}},
+		"GET /emails/email_2": {200, Map{"id": "email_2", "sandbox": false, "last_event": "delivered", "recipients": recipients}},
+	})
+	sent, err := client.Send(Map{"from": "a@acme.com", "to": "test@example.com", "subject": "Test", "text": "Hi"}, "")
+	if err != nil || !sent.Sandbox {
+		t.Fatalf("sandbox send: %+v, %v", sent, err)
+	}
+	batch, err := client.Batch([]Map{{"to": "test@example.com"}}, "", "strict")
+	if err != nil || len(batch.Data) != 1 || !batch.Data[0].Sandbox {
+		t.Fatalf("sandbox batch: %+v, %v", batch, err)
+	}
+	page, err := client.Emails(nil)
+	if err != nil || len(page.Data) != 1 || !page.Data[0].Sandbox || page.Data[0].LastEvent != "delivered" {
+		t.Fatalf("sandbox list: %+v, %v", page, err)
+	}
+	detail, err := client.Email("email_2")
+	if err != nil || detail.Sandbox || detail.LastEvent != "delivered" || !reflect.DeepEqual(detail.Recipients, recipients) {
+		t.Fatalf("mixed detail: %+v, %v", detail, err)
 	}
 }
 

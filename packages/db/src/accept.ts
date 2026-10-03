@@ -36,11 +36,12 @@ export type AcceptEmailOptions = {
 
 export type SendResult = {
   id: string;
-  emails?: Array<{ id: string; to: string }>;
+  sandbox: boolean;
+  emails?: Array<{ id: string; to: string; sandbox: boolean }>;
 };
 export type AcceptedEmail = {
   email: IngestEmailResult;
-  emails?: Array<{ id: string; to: string }>;
+  emails?: Array<{ id: string; to: string; sandbox: boolean }>;
 };
 
 export type BatchResult = {
@@ -290,6 +291,7 @@ export async function acceptEmail(
             emails: accepted.map((email, index) => ({
               id: email.id,
               to: unique[index]!.email,
+              sandbox: email.sandbox,
             })),
           }
         : {}),
@@ -349,6 +351,7 @@ export async function acceptBatch(
         const result = await acceptOne();
         data.push({
           id: result.email.id,
+          sandbox: result.email.sandbox,
           ...(result.emails ? { emails: result.emails } : {}),
         });
         continue;
@@ -358,6 +361,7 @@ export async function acceptBatch(
         const result = await acceptOne();
         data.push({
           id: result.email.id,
+          sandbox: result.email.sandbox,
           ...(result.emails ? { emails: result.emails } : {}),
         });
         await client.query("release savepoint batch_item");

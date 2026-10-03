@@ -10,6 +10,7 @@ import { api, list, requests, visit } from "./visit";
 const row = (patch: Partial<EmailRow> = {}): EmailRow => ({
   object: "email",
   id: "email_1",
+  sandbox: false,
   message_id: "<abc@ses>",
   from: "Acme <hello@acme.test>",
   to: ["ada@example.com"],
@@ -105,6 +106,49 @@ describe("Email", () => {
     expect(screen.getByText("Needs attention")).toBeTruthy();
     expect(screen.getByText("A plain text version is included")).toBeTruthy();
     expect(requests(fetch, "GET", "/emails/email_1/insights")).toHaveLength(1);
+  });
+
+  it.each(["full", "read"])("distinguishes simulated delivery for %s users without changing status", async (permission) => {
+    signIn("sess_test", [permission]);
+    stack(row({ sandbox: true, message_id: null }), [event("email.delivered", { sandbox: true })]);
+    visit(h(Email), "/emails/email_1", "/emails/:id");
+
+    expect(await screen.findByText("Sandbox")).toBeTruthy();
+    expect(screen.getByText("Sandbox delivery is simulated. No email is sent externally.")).toBeTruthy();
+    expect(screen.getByText("delivered", { selector: ".pageHeader .badge" })).toBeTruthy();
+    expect(await screen.findByText("delivered (simulated)")).toBeTruthy();
+    expect(screen.queryByText("Message ID")).toBeNull();
+  });
+
+  it("marks sandbox recipients separately in a mixed send, including CC and BCC", async () => {
+    const recipients = [
+      { id: "rcpt_1", email: "ada@acme.com", kind: "to" as const, status: "delivered", sandbox: false, created_at: row().created_at },
+      { id: "rcpt_2", email: "cc@example.com", kind: "cc" as const, status: "delivered", sandbox: true, created_at: row().created_at },
+      { id: "rcpt_3", email: "bcc@example.com", kind: "bcc" as const, status: "queued", sandbox: true, created_at: row().created_at },
+    ];
+    stack(row({ to: ["ada@acme.com"], cc: ["cc@example.com"], bcc: ["bcc@example.com"], recipients }), [event("email.delivered")]);
+    visit(h(Email), "/emails/email_1", "/emails/:id");
+
+    const table = await screen.findByRole("table");
+    const rows = within(table).getAllByRole("row");
+    expect(within(rows[1]).queryByText("Sandbox")).toBeNull();
+    expect(within(rows[1]).getByText("delivered")).toBeTruthy();
+    expect(within(rows[2]).getByText("Sandbox")).toBeTruthy();
+    expect(within(rows[2]).getByText("CC")).toBeTruthy();
+    expect(within(rows[3]).getByText("Sandbox")).toBeTruthy();
+    expect(within(rows[3]).getByText("queued")).toBeTruthy();
+    expect(within(rows[3]).getByText("BCC")).toBeTruthy();
+    expect(screen.getByText(/Sandbox recipients are simulated and are never sent externally/)).toBeTruthy();
+    expect(screen.queryByText("delivered (simulated)")).toBeNull();
+    expect(document.querySelector(".pageHeader")?.textContent).not.toContain("Sandbox");
+  });
+
+  it("identifies sandbox timeline events without changing their event status", () => {
+    const simulated = timeline([event("email.delivered", { sandbox: true })])[0];
+    expect(simulated.label).toBe("delivered (simulated)");
+    expect(simulated.status).toBe("email.delivered");
+    expect(simulated.detail).toContain("No email is sent externally.");
+    expect(timeline([event("email.delivered", { sandbox: false })])[0].label).toBe("delivered");
   });
 
   it("explains a bounce in a drawer and removes the address from the suppression list", async () => {

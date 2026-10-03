@@ -136,6 +136,9 @@ export async function emailMetrics(db: Queryable, tenantId: string, input: Metri
     "ev.tenant_id = $1",
     `ev.created_at >= ${start}`,
     `ev.created_at < ${end}`,
+    "coalesce(e.sandbox, false) = false",
+    "coalesce(ev.data->>'sandbox', 'false') <> 'true'",
+    "not exists (select 1 from email_recipients r where r.tenant_id = ev.tenant_id and r.id = ev.recipient_id and r.sandbox)",
   ];
   if (input.domainIds.length > 0) where.push(`d.id = any(${bind(input.domainIds)}::text[])`);
   if (input.emailIds.length > 0) where.push(`ev.email_id = any(${bind(input.emailIds)}::text[])`);

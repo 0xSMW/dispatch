@@ -2510,7 +2510,7 @@
                   "properties": {
                     "object": {"type": "string", "enum": ["settings"]},
                     "import_trigger_automations": {"type": "boolean", "default": false},
-                    "sandbox_domains": {"type": "array", "maxItems": 50, "items": {"type": "string"}}
+                    "sandbox_domains": {"type": "array", "maxItems": 50, "items": {"type": "string"}, "description": "Additional recipient domains and their subdomains that bypass the provider, even in production. Reserved test domains always bypass it. Separate from the SES account sandbox."}
                   }
                 }
               }
@@ -2534,7 +2534,7 @@
                 "additionalProperties": false,
                 "properties": {
                   "import_trigger_automations": {"type": "boolean"},
-                  "sandbox_domains": {"type": "array", "maxItems": 50, "items": {"type": "string", "format": "hostname"}}
+                  "sandbox_domains": {"type": "array", "maxItems": 50, "items": {"type": "string", "format": "hostname"}, "description": "Replace the tenant's additional sandbox recipient domains, including their subdomains. An empty array removes additions, not reserved test domains. Matching is case-insensitive and respects hostname boundaries."}
                 }
               }
             }
@@ -2689,7 +2689,7 @@
         "tags": [
           "Emails"
         ],
-        "description": "The email is stored before the response. With topic_id, Marketing sends carry protected unsubscribe headers and recipient-specific links. Multiple To, Cc, and Bcc recipients are deduplicated case-insensitively, first role wins, and split into separate To-only emails. The response retains the first id and adds emails: [{id, to}]. Opted-out recipients fail independently. Idempotency covers the whole request. Transactional sends without topic_id are unchanged. A sending-access key restricted to a domain can only send from that domain (`validation_error`, 403). An unverified sender domain fails with `validation_error` and status 403.",
+        "description": "The email is stored before the response. With topic_id, Marketing sends carry protected unsubscribe headers and recipient-specific links. Multiple To, Cc, and Bcc recipients are deduplicated case-insensitively, first role wins, and split into separate To-only emails. The response retains the first id and adds emails: [{id, to, sandbox}]. Opted-out recipients fail independently. Idempotency covers the whole request. Transactional sends without topic_id keep their multi-recipient shape. Recipients at example.com, example.net, example.org and their subdomains, under .test, .example or .invalid, or at tenant sandbox_domains and their subdomains never reach the provider, even in production. Only real recipients in mixed emails are sent. sandbox describes the email identified by id; it is true only when all its original recipients are sandbox recipients. A sending-access key restricted to a domain can only send from that domain (`validation_error`, 403). An unverified sender domain fails with `validation_error` and status 403.",
         "x-scope": "send",
         "parameters": [
           {
@@ -2732,12 +2732,17 @@
                   "type": "object",
                   "required": [
                     "id",
+                    "sandbox",
                     "request_id"
                   ],
                   "properties": {
                     "id": {
                       "type": "string",
                       "description": "The email ID."
+                    },
+                    "sandbox": {
+                      "type": "boolean",
+                      "description": "True when all original recipients of the email identified by id are sandbox recipients. Delivery is simulated without calling the provider."
                     },
                     "emails": {
                       "$ref": "#/components/schemas/SplitEmails"
@@ -2921,7 +2926,7 @@
         "tags": [
           "Emails"
         ],
-        "description": "The body is an array of emails or `{ emails: [...] }`. Attachments are not allowed. In strict mode one invalid email rejects the batch.",
+        "description": "The body is an array of emails or `{ emails: [...] }`. Attachments are not allowed. In strict mode one invalid email rejects the batch. Each accepted result includes sandbox; split Marketing items also expose sandbox on each email. Sandbox recipients follow the same reserved-domain and tenant sandbox_domains rules as POST /emails, including in production. Only real recipients in mixed emails reach the provider.",
         "x-scope": "send",
         "parameters": [
           {
@@ -3035,7 +3040,7 @@
         "tags": [
           "Metrics"
         ],
-        "description": "Counts `email_events` for the tenant. Without dates it covers the 7 days before now. `end_date` is exclusive. Rates are percentages rounded to two decimals, and 0 when the denominator is 0. `unsubscribed` counts `email.unsubscribed` events from Marketing and broadcast links. Automation attribution is worker-owned; legacy messages can have a null step key.",
+        "description": "Counts real `email_events` for the tenant. Sandbox emails and simulated sandbox-recipient events are excluded from totals and rates, including automation and step breakdowns. Without dates it covers the 7 days before now. `end_date` is exclusive. Rates are percentages rounded to two decimals, and 0 when the denominator is 0. `unsubscribed` counts `email.unsubscribed` events from Marketing and broadcast links. Automation attribution is worker-owned; legacy messages can have a null step key.",
         "x-scope": "full",
         "parameters": [
           {
@@ -16583,10 +16588,11 @@
         "description": "Present on multi-recipient Marketing sends, in first-seen recipient order. Each email has one To recipient and its own unsubscribe link.",
         "items": {
           "type": "object",
-          "required": ["id", "to"],
+          "required": ["id", "to", "sandbox"],
           "properties": {
             "id": { "type": "string" },
-            "to": { "type": "string", "format": "email" }
+            "to": { "type": "string", "format": "email" },
+            "sandbox": { "type": "boolean", "description": "True when this split email's recipient is a sandbox recipient." }
           }
         }
       },
@@ -16601,11 +16607,16 @@
             "items": {
               "type": "object",
               "required": [
-                "id"
+                "id",
+                "sandbox"
               ],
               "properties": {
                 "id": {
                   "type": "string"
+                },
+                "sandbox": {
+                  "type": "boolean",
+                  "description": "True when all original recipients of the email identified by id are sandbox recipients."
                 },
                 "emails": {
                   "$ref": "#/components/schemas/SplitEmails"
@@ -16645,7 +16656,9 @@
           "from",
           "created_at",
           "subject",
-          "last_event"
+          "last_event",
+          "sandbox",
+          "recipients"
         ],
         "properties": {
           "object": {
@@ -16660,6 +16673,17 @@
               "string",
               "null"
             ]
+          },
+          "sandbox": {
+            "type": "boolean",
+            "description": "True only when all original recipients are sandbox recipients. Mixed emails are false. Sandbox emails keep normal queued, scheduled and delivered statuses; delivered is a simulation, not provider confirmation, and has no real provider message ID."
+          },
+          "recipients": {
+            "type": "array",
+            "description": "Original recipients with per-recipient sandbox flags, including mixed emails. The to, cc and bcc address arrays retain their existing string types.",
+            "items": {
+              "$ref": "#/components/schemas/EmailRecipient"
+            }
           },
           "to": {
             "type": "array",
@@ -16737,6 +16761,19 @@
                 }
               }
             }
+          }
+        }
+      },
+      "EmailRecipient": {
+        "type": "object",
+        "required": ["email", "kind", "sandbox"],
+        "properties": {
+          "email": { "type": "string", "format": "email" },
+          "kind": { "type": "string", "enum": ["to", "cc", "bcc"] },
+          "status": { "type": "string", "description": "Stored recipient delivery status. For sandbox recipients, delivery is simulated." },
+          "sandbox": {
+            "type": "boolean",
+            "description": "True when the original recipient is at a reserved test domain or a tenant sandbox domain. The recipient never reaches the provider."
           }
         }
       },
@@ -16925,6 +16962,12 @@
           },
           "data": {
             "type": "object",
+            "properties": {
+              "sandbox": {
+                "type": "boolean",
+                "description": "True for simulated sandbox delivery, not real provider delivery. Mixed-email simulations are recipient-scoped."
+              }
+            },
             "additionalProperties": true
           },
           "created_at": {
@@ -17830,6 +17873,12 @@
           },
           "data": {
             "type": "object",
+            "properties": {
+              "sandbox": {
+                "type": "boolean",
+                "description": "True on simulated sandbox email.delivered events, not provider-confirmed delivery. All-sandbox emails bypass the provider and have no real provider message ID. For mixed emails, only sandbox recipients appear in the simulated event; real recipients still receive provider delivery events."
+              }
+            },
             "additionalProperties": true,
             "description": "Email events include `email_id`, `created_at`, `from`, `to`, `subject`, `message_id`, and `tags`, plus fields for the event type."
           },

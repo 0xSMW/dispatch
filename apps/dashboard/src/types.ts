@@ -17,9 +17,20 @@ export type Deleted = {
 
 export type Tag = { name: string; value: string };
 
+export type EmailRecipient = {
+  id?: string;
+  email: string;
+  kind: "to" | "cc" | "bcc";
+  status: string;
+  sandbox: boolean;
+  created_at?: string;
+};
+
 export type Email = {
   object: "email";
   id: string;
+  sandbox: boolean;
+  recipients?: EmailRecipient[];
   message_id: string | null;
   from: string;
   to: string[];

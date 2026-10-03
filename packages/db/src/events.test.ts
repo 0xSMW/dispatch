@@ -28,6 +28,28 @@ function client() {
 }
 
 describe("appendEvent", () => {
+  it("reconciles sandbox statuses on deduplication without repeating usage or provider records", async () => {
+    const db = client();
+    const query = db.query.getMockImplementation()!;
+    db.query.mockImplementation(async (sql, params = []) => {
+      if (sql.includes("insert into email_events")) {
+        db.queries.push({ sql, params });
+        return { rows: [], rowCount: 0 };
+      }
+      return query(sql, params);
+    });
+    expect(await appendEvent(db, {
+      tenantId: "tenant_1", requestId: "req_1", emailId: "email_1",
+      type: "email.delivered", providerEventId: "email_1:sandbox:delivered",
+      data: { sandbox: true }, mode: "delivery", recipients: ["preview@example.com"],
+      provider: "sandbox",
+    })).toBeNull();
+    expect(db.queries.some(({ sql }) => sql.includes("update email_recipients"))).toBe(true);
+    expect(db.queries.some(({ sql }) => sql.includes("update emails set status"))).toBe(true);
+    expect(db.queries.some(({ sql }) => sql.includes("provider_events_raw"))).toBe(false);
+    expect(db.queries.some(({ sql }) => sql.includes("usage_counters"))).toBe(false);
+  });
+
   it("updates and suppresses only the bounced recipient when the bounce is permanent", async () => {
     const db = client();
     await appendEvent(db, {

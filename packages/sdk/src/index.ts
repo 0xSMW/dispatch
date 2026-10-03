@@ -30,6 +30,22 @@ export type ContactActivity = Row & {
 };
 export type Deleted = { object: string; id: string; deleted: true };
 
+export type EmailRecipient = {
+  id?: string;
+  email: string;
+  kind: "to" | "cc" | "bcc";
+  status: string;
+  sandbox: boolean;
+  created_at?: string;
+};
+export type Email = Row & {
+  /** True only when every original recipient is sandbox; no email is sent externally. */
+  sandbox: boolean;
+  last_event: string;
+  recipients: EmailRecipient[];
+};
+export type EmailDetail = Email;
+
 type Body = Record<string, unknown>;
 type CallOptions = { idempotencyKey?: string; headers?: Record<string, string>; auth?: boolean };
 type Ref = { id?: string; contactId?: string; email?: string };
@@ -474,7 +490,7 @@ class EmailJobs extends Resource {
   }
 }
 
-export type SendResult = { id: string; emails?: Array<{ id: string; to: string }> };
+export type SendResult = { id: string; sandbox: boolean; emails?: Array<{ id: string; to: string; sandbox: boolean }> };
 
 class Emails extends Resource {
   readonly attachments = new EmailAttachments(this.client);
@@ -490,11 +506,11 @@ class Emails extends Resource {
   }
 
   get(id: string) {
-    return this.client.call<Row>("GET", `/emails/${seg(id)}`);
+    return this.client.call<EmailDetail>("GET", `/emails/${seg(id)}`);
   }
 
   list(page: Page & { status?: string; from?: string; to?: string; q?: string; api_key_id?: string } = {}) {
-    return this.client.call<List>("GET", `/emails${query(page)}`);
+    return this.client.call<List<Email>>("GET", `/emails${query(page)}`);
   }
 
   update({ id, ...payload }: EmailUpdate) {

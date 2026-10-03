@@ -114,7 +114,7 @@ import {
   previewLibrary,
 } from "./library.js";
 import { hideLinks, hostOnly, jsonbParams, logBodies, logWhere, presentLog, responseText, type LogQuery, type StoredLog } from "./logs.js";
-import { presentDomain, presentEmail, presentWebhook, type DomainRow, type EmailRow, type WebhookRecord } from "./present.js";
+import { presentDomain, presentEmail, presentSend, presentWebhook, type DomainRow, type EmailRow, type WebhookRecord } from "./present.js";
 import {
   listWebhookEvents,
   presentStoredWebhook,
@@ -956,7 +956,7 @@ app.post(
       storeAttachment: writeBlob,
     });
     reply.status(200);
-    return { id: response.email.id, ...(response.emails ? { emails: response.emails } : {}) };
+    return presentSend({ ...response.email, ...(response.emails ? { emails: response.emails } : {}) });
   },
 );
 
@@ -979,13 +979,13 @@ app.post(
       storeAttachment: writeBlob,
     });
     reply.status(200);
-    return response;
+    return { ...response, data: response.data.map(presentSend) };
   },
 );
 
 app.get("/emails", async (request) => {
   const filters = emailWhere(request.query as EmailQuery);
-  const page = await paginate<EmailRow & { to: string[]; cc: string[]; bcc: string[] }>(
+  const page = await paginate<EmailRow>(
     db,
     "emails e left join email_recipients r on r.email_id = e.id",
     request.auth!.tenant_id,
@@ -997,24 +997,14 @@ app.get("/emails", async (request) => {
       where: filters.where,
       params: filters.params,
       groupBy: "e.id",
-      select: `e.id, e.message_id, e.from_email, e.from_name, e.subject, e.reply_to, e.status, e.scheduled_at, e.tags, e.created_at,
-        coalesce(json_agg(r.email order by r.created_at) filter (where r.kind = 'to'), '[]') as to,
-        coalesce(json_agg(r.email order by r.created_at) filter (where r.kind = 'cc'), '[]') as cc,
-        coalesce(json_agg(r.email order by r.created_at) filter (where r.kind = 'bcc'), '[]') as bcc`,
+      select: `e.id, e.message_id, e.from_email, e.from_name, e.subject, e.reply_to, e.status, e.sandbox, e.scheduled_at, e.tags, e.created_at,
+        coalesce(json_agg(json_build_object('email', r.email, 'kind', r.kind, 'status', r.status, 'sandbox', r.sandbox)
+          order by r.created_at) filter (where r.id is not null), '[]') as recipients`,
     },
   );
   return {
     ...page,
-    data: page.data.map((row) =>
-      presentEmail({
-        ...row,
-        recipients: [
-          ...(row.to ?? []).map((email) => ({ email, kind: "to" })),
-          ...(row.cc ?? []).map((email) => ({ email, kind: "cc" })),
-          ...(row.bcc ?? []).map((email) => ({ email, kind: "bcc" })),
-        ],
-      }),
-    ),
+    data: page.data.map(presentEmail),
   };
 });
 

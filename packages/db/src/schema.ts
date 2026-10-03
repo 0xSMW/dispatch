@@ -851,4 +851,8 @@ create table if not exists send_slots (
   region text primary key,
   available_at timestamptz not null
 );
+
+-- Sandbox attribution is stored separately from delivery status, including mixed recipients.
+alter table emails add column if not exists sandbox boolean not null default false;
+alter table email_recipients add column if not exists sandbox boolean not null default false;
 `;

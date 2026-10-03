@@ -45,7 +45,7 @@ describe("loadProviderEmail", () => {
         if (sql.includes("from emails")) {
           return { rows: [{ id: "email_1", tenant_id: "tenant_1", from_email: "ada@example.com", from_name: "Ada", reply_to: ["reply@example.com"], subject: "Hello", html: "<p>Hi</p>", text: "Hi", headers: { "X-Test": "1" }, status: "queued", region: "eu-west-1", tls: "enforced" }] };
         }
-        if (sql.includes("from email_recipients")) return { rows: [{ email: "one@example.com", kind: "to" }] };
+        if (sql.includes("from email_recipients")) return { rows: [{ email: "one@dispatch-fixture.net", kind: "to" }] };
         if (sql.includes("from email_attachments")) {
           return { rows: [{ filename: "note.txt", content_type: "text/plain", content_id: null, disposition: "attachment", storage_key: "attachments/tenant_1/email_1/att_1" }] };
         }
@@ -58,7 +58,7 @@ describe("loadProviderEmail", () => {
       from: "Ada <ada@example.com>",
       region: "eu-west-1",
       tls: "enforced",
-      recipients: [{ email: "one@example.com", kind: "to" }],
+      recipients: [{ email: "one@dispatch-fixture.net", kind: "to" }],
       attachments: [{ filename: "note.txt", bytes: Buffer.from("file-bytes") }]
     });
     expect(db.query.mock.calls[1][0]).toContain("status not in");
@@ -90,6 +90,67 @@ describe("late opt-outs", () => {
 });
 
 describe("deliverJob", () => {
+  function sandboxFixture(recipients: Array<{ email: string; kind: string; sandbox?: boolean }>, domains: string[] = []) {
+    const query = vi.fn(async (sql: string, params: unknown[] = []) => {
+      if (sql.includes("from emails")) return { rows: [{
+        id: job.email_id, tenant_id: job.tenant_id, from_email: "sender@dispatch-fixture.net",
+        subject: "Preview", text: "Rendered preview", status: "queued",
+        sandbox: false, settings: { sandbox_domains: domains },
+      }] };
+      if (sql.includes("from email_recipients")) return { rows: recipients };
+      if (sql.includes("insert into email_events")) return { rows: [{
+        id: "event_1", tenant_id: job.tenant_id, request_id: job.request_id,
+        email_id: job.email_id, type: params[5], data: JSON.parse(String(params[7])),
+      }] };
+      return { rows: [], rowCount: 1 };
+    });
+    const db = { query, connect: async () => ({ query, release() {} }) } as unknown as Db;
+    const provider: Provider = {
+      name: "ses",
+      quota: vi.fn(async () => ({ max_24_hour: 200, max_per_second: 100, sent_24_hour: 0, sandbox: false })),
+      send: vi.fn(async (email) => ({
+        provider_message_id: "real-provider-id",
+        events: [{ type: "email.sent", provider_event_id: "real-provider-id:sent", delay_ms: 0,
+          recipients: email.recipients.map((r) => r.email), data: {} }],
+      })),
+    };
+    return { db, query, provider };
+  }
+
+  it.each(["preview@example.com", "preview@sub.example.net", "preview@demo.invalid", "preview@qa.dispatch-fixture.net"])("bypasses SES quota and send for %s", async (address) => {
+    const { db, query, provider } = sandboxFixture([{ email: address, kind: "to" }], ["qa.dispatch-fixture.net"]);
+    await deliverJob(db, storage(), provider, job, { durable: true });
+    expect(provider.send).not.toHaveBeenCalled();
+    expect(provider.quota).not.toHaveBeenCalled();
+    const event = query.mock.calls.find(([sql]) => sql.includes("insert into email_events"));
+    expect(event?.[1]?.[5]).toBe("email.delivered");
+    expect(JSON.parse(String(event?.[1]?.[7]))).toEqual({ sandbox: true, recipients: [address] });
+    expect(query.mock.calls.some(([sql]) => sql.includes("set provider_message_id"))).toBe(false);
+    expect(query.mock.calls.some(([sql]) => sql.includes("provider_events_raw"))).toBe(false);
+    expect(query.mock.calls.some(([sql]) => sql.includes("insert into usage_counters"))).toBe(false);
+  });
+
+  it("honors stored sandbox attribution after the custom setting is removed", async () => {
+    const { db, provider } = sandboxFixture([{ email: "preview@qa.dispatch-fixture.net", kind: "to", sandbox: true }]);
+    await deliverJob(db, storage(), provider, job);
+    expect(provider.send).not.toHaveBeenCalled();
+  });
+
+  it("hands only real To/Cc/Bcc recipients to SES for mixed mail", async () => {
+    const { db, query, provider } = sandboxFixture([
+      { email: "preview@example.org", kind: "to" },
+      { email: "real@dispatch-fixture.net", kind: "cc" },
+      { email: "hidden@dispatch-fixture.net", kind: "bcc" },
+      { email: "hidden@demo.test", kind: "bcc" },
+    ]);
+    await deliverJob(db, storage(), provider, job, { sleep: async () => {} });
+    expect(provider.send).toHaveBeenCalledWith(expect.objectContaining({
+      recipients: [{ email: "real@dispatch-fixture.net", kind: "cc" }, { email: "hidden@dispatch-fixture.net", kind: "bcc" }],
+    }));
+    const sandboxStatus = query.mock.calls.find(([sql]) => sql.includes("update emails set status"));
+    expect(sandboxStatus?.[0]).toContain("and sandbox");
+  });
+
   it("stores the SES message id and the provider event", async () => {
     const queries: string[] = [];
     const query = vi.fn(async (sql: string) => {
@@ -97,7 +158,7 @@ describe("deliverJob", () => {
       if (sql.includes("from emails")) {
         return { rows: [{ id: "email_1", tenant_id: "tenant_1", from_email: "ada@example.com", from_name: null, reply_to: [], subject: "Hello", html: null, text: "Hi", headers: {}, status: "queued", region: "us-east-1", tls: "opportunistic" }] };
       }
-      if (sql.includes("from email_recipients")) return { rows: [{ email: "one@example.com", kind: "to" }] };
+      if (sql.includes("from email_recipients")) return { rows: [{ email: "one@dispatch-fixture.net", kind: "to" }] };
       if (sql.includes("from email_attachments")) return { rows: [] };
       if (sql.includes("insert into email_events")) {
         return { rows: [{ id: "event_1", tenant_id: "tenant_1", request_id: "req_1", email_id: "email_1", type: "email.sent", data: {} }] };
@@ -111,7 +172,7 @@ describe("deliverJob", () => {
       send: vi.fn(async () => ({
         provider_message_id: "sesmsg",
         message_id: "<sesmsg@us-east-1.amazonses.com>",
-        events: [{ type: "email.sent" as const, provider_event_id: "sesmsg:sent", delay_ms: 0, recipients: ["one@example.com"], data: { provider_message_id: "sesmsg" } }]
+        events: [{ type: "email.sent" as const, provider_event_id: "sesmsg:sent", delay_ms: 0, recipients: ["one@dispatch-fixture.net"], data: { provider_message_id: "sesmsg" } }]
       }))
     };
     await deliverJob(db, storage(), provider, job, { sleep: async () => {} });
@@ -136,9 +197,9 @@ describe("deliverJob", () => {
     const query = vi.fn(async (sql: string, params: unknown[] = []) => {
       queries.push({ sql, params });
       if (sql.includes("from emails")) {
-        return { rows: [{ id: "email_1", tenant_id: "tenant_1", from_email: "ada@example.com", from_name: null, reply_to: [], subject: "Hello", html: null, text: "Hi", headers: {}, status: "queued", provider_message_id: "sesmsg", region: "us-east-1", tls: "opportunistic" }] };
+        return { rows: [{ id: "email_1", tenant_id: "tenant_1", from_email: "ada@example.com", from_name: null, reply_to: [], subject: "Hello", html: null, text: "Hi", headers: {}, status: "queued", provider_message_id: "sesmsg", settings: { sandbox_domains: ["dispatch-fixture.net"] }, region: "us-east-1", tls: "opportunistic" }] };
       }
-      if (sql.includes("from email_recipients")) return { rows: [{ email: "one@example.com", kind: "to" }] };
+      if (sql.includes("from email_recipients")) return { rows: [{ email: "one@dispatch-fixture.net", kind: "to" }] };
       if (sql.includes("from email_attachments")) return { rows: [] };
       if (sql.includes("insert into email_events")) {
         return { rows: [{ id: "event_1", tenant_id: "tenant_1", request_id: "req_1", email_id: "email_1", type: "email.sent", data: {} }] };
@@ -155,6 +216,7 @@ describe("deliverJob", () => {
     expect(provider.send).not.toHaveBeenCalled();
     const event = queries.find((entry) => entry.sql.includes("insert into email_events"));
     expect(event?.params[6]).toBe("sesmsg:sent");
+    expect(queries.some((entry) => entry.sql.includes("set sandbox = true"))).toBe(false);
     expect(queries.some((entry) => entry.sql.includes("update send_jobs set state") && entry.params.includes("done"))).toBe(true);
   });
 });

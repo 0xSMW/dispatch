@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { signWebhook } from "@dispatchmail/core";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import { Dispatch, WebhookVerificationError, type Result } from "./index.js";
 
 const base = "http://localhost:3100";
@@ -58,6 +58,34 @@ describe("constructor", () => {
 });
 
 describe("transport", () => {
+  it("exposes typed sandbox flags on send, batch, list, and mixed detail responses", async () => {
+    const client = new Dispatch({ apiKey: "sk_test" });
+    const sent = { id: "email_1", sandbox: true };
+    stub(sent);
+    const send = await client.emails.send({ from: "a@acme.com", to: "test@example.com", text: "Hi", subject: "Test" });
+    expectTypeOf(send.data!.sandbox).toEqualTypeOf<boolean>();
+    expect(send.data).toEqual(sent);
+    stub({ data: [sent] });
+    expect((await client.batch.send([{ from: "a@acme.com", to: "test@example.com", text: "Hi", subject: "Test" }])).data?.data[0]?.sandbox).toBe(true);
+    const email = { object: "email", id: "email_1", sandbox: true, last_event: "delivered", recipients: [{ email: "test@example.com", kind: "to", status: "delivered", sandbox: true }] };
+    stub({ object: "list", has_more: false, data: [email] });
+    const page = await client.emails.list();
+    expectTypeOf(page.data!.data[0]!.sandbox).toEqualTypeOf<boolean>();
+    expectTypeOf(page.data!.data[0]!.recipients[0]!.sandbox).toEqualTypeOf<boolean>();
+    expect(page.data?.data[0]).toEqual(email);
+
+    const recipients = [
+      { id: "rcpt_1", email: "test@example.com", kind: "cc", sandbox: true, status: "delivered", created_at: "2026-10-03T10:00:00Z" },
+      { id: "rcpt_2", email: "ada@acme.com", kind: "to", sandbox: false, status: "delivered", created_at: "2026-10-03T10:00:00Z" },
+    ];
+    stub({ ...email, sandbox: false, recipients });
+    const detail = await client.emails.get("email_1");
+    expectTypeOf(detail.data!.recipients[0]!.sandbox).toEqualTypeOf<boolean>();
+    expect(detail.data?.sandbox).toBe(false);
+    expect(detail.data?.recipients).toEqual(recipients);
+    expect(detail.data?.last_event).toBe("delivered");
+  });
+
   it("forwards automation and step metric filters", async () => {
     const fetch = stub({ object: "metrics", data: [] });
     await new Dispatch({ apiKey: "sk_test" }).emails.metrics({ dimensions: ["step"], automationId: ["automation_1"] });
@@ -67,11 +95,13 @@ describe("transport", () => {
   });
 
   it("preserves recipient-specific marketing results on single and batch sends", async () => {
-    const result = { id: "email_1", emails: [{ id: "email_1", to: "ada@example.com" }, { id: "email_2", to: "bob@example.com" }] };
+    const result = { id: "email_1", sandbox: true, emails: [{ id: "email_1", to: "ada@example.com", sandbox: true }, { id: "email_2", to: "bob@dispatch-fixture.net", sandbox: false }] };
     stub(result);
     const client = new Dispatch({ apiKey: "sk_test" });
-    const body = { from: "a@example.com", to: ["ada@example.com", "bob@example.com"], subject: "News", text: "Hi", topicId: "topic_1" };
-    expect((await client.emails.send(body)).data?.emails).toEqual(result.emails);
+    const body = { from: "a@example.com", to: ["ada@example.com", "bob@dispatch-fixture.net"], subject: "News", text: "Hi", topicId: "topic_1" };
+    const sent = await client.emails.send(body);
+    expectTypeOf(sent.data!.emails![0]!.sandbox).toEqualTypeOf<boolean>();
+    expect(sent.data?.emails).toEqual(result.emails);
     stub({ data: [result] });
     expect((await client.batch.send([body])).data?.data[0]?.emails).toEqual(result.emails);
   });

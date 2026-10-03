@@ -17,12 +17,17 @@ import {
   id,
   keyHash,
   makeKey,
+  ProviderError,
   renderTemplate,
   sign,
   verify,
+  type Provider,
+  type ProviderEmail,
 } from "@dispatchmail/core";
-import { connect, executeAutomationRun, tx, unsubscribeToken, type Db } from "@dispatchmail/db";
+import { appendEvent, connect, executeAutomationRun, tx, unsubscribeToken, type Db } from "@dispatchmail/db";
+import type { Storage } from "@dispatchmail/storage";
 import { schema } from "../../../packages/db/src/schema.js";
+import { deliverJob, type Job } from "../../worker/src/deliver.js";
 import type { FastifyInstance } from "fastify";
 
 // Live tests against a real Postgres and Redis, named in the environment or the local .env:
@@ -113,6 +118,471 @@ afterAll(async () => {
 });
 
 describe.skipIf(!live)("accept", () => {
+  it("renders reserved and configured sandbox recipients and exposes their stored flags in detail and list responses", async () => {
+    expect((await call(fullKey, "PATCH", "/settings", {
+      sandbox_domains: ["qa.dispatch-fixture.net"],
+    })).status).toBe(200);
+    const template = await post(fullKey, "/templates", {
+      name: "Sandbox",
+      alias: "sandbox",
+      subject: "Hello {{name}}",
+      html: "<p>Hi {{name}}</p>",
+      text: "Hi {{name}}",
+      variables: ["name"],
+      publish: true,
+    });
+    expect(template.status).toBe(200);
+    const fixtures: Array<[string, boolean]> = [
+      ["ada@example.com", true],
+      ["ada@TEAM.EXAMPLE.COM", true],
+      ["ada@example.net", true],
+      ["ada@team.example.net", true],
+      ["ada@example.org", true],
+      ["ada@team.example.org", true],
+      ["ada@mailer.test", true],
+      ["ada@team.mailer.test", true],
+      ["ada@mailer.example", true],
+      ["ada@mailer.invalid", true],
+      ["ada@qa.dispatch-fixture.net", true],
+      ["ada@team.qa.dispatch-fixture.net", true],
+      ["ada@notqa.dispatch-fixture.net", false],
+      ["ada@dispatch-fixture.net", false],
+    ];
+    const accepted: Array<{ id: string; email: string; sandbox: boolean }> = [];
+    for (const [email, sandbox] of fixtures) {
+      const sent = await post(fullKey, "/emails", {
+        from: "hello@dispatch-fixture.net",
+        to: email,
+        template: "sandbox",
+        variables: { name: "Ada" },
+      });
+      expect(sent.status).toBe(200);
+      expect(sent.json).toMatchObject({ id: expect.any(String), sandbox });
+      const detail = await call(fullKey, "GET", `/emails/${sent.json.id}`);
+      expect(detail.status).toBe(200);
+      expect(detail.json).toMatchObject({
+        id: sent.json.id, sandbox, last_event: "queued",
+        subject: "Hello Ada", html: "<p>Hi Ada</p>", text: "Hi Ada",
+        to: [email], cc: [], bcc: [],
+        recipients: [{ email, kind: "to", sandbox }],
+      });
+      accepted.push({ id: sent.json.id, email, sandbox });
+    }
+    const list = await call(fullKey, "GET", "/emails?limit=100");
+    expect(list.status).toBe(200);
+    expect(list.json.data).toHaveLength(fixtures.length);
+    for (const email of accepted)
+      expect(list.json.data.find((row: { id: string }) => row.id === email.id)).toMatchObject({
+        id: email.id, sandbox: email.sandbox, to: [email.email],
+        recipients: [{ email: email.email, kind: "to", sandbox: email.sandbox }],
+      });
+    const flags = await db.query(
+      `select e.id, e.sandbox, r.email, r.sandbox as recipient_sandbox
+       from emails e join email_recipients r on r.email_id = e.id order by e.id`,
+    );
+    expect(flags.rows).toEqual(accepted.map((email) => ({
+      id: email.id, sandbox: email.sandbox, email: email.email,
+      recipient_sandbox: email.sandbox,
+    })).sort((a, b) => a.id.localeCompare(b.id)));
+  });
+
+  it("preserves sandbox attribution across repeated migrations and setting removal without sharing custom domains between tenants", async () => {
+    expect((await call(fullKey, "PATCH", "/settings", {
+      sandbox_domains: ["qa.dispatch-fixture.net"],
+    })).status).toBe(200);
+    const sandbox = await post(fullKey, "/emails", letter({
+      to: "ada@qa.dispatch-fixture.net",
+    }));
+    const mixed = await post(fullKey, "/emails", letter({
+      to: ["ada@team.qa.dispatch-fixture.net", "real@dispatch-fixture.net"],
+    }));
+    expect([sandbox.status, mixed.status]).toEqual([200, 200]);
+    expect([sandbox.json.sandbox, mixed.json.sandbox]).toEqual([true, false]);
+    const otherKey = await seedTenant();
+    expect((await call(otherKey, "GET", "/settings")).json.sandbox_domains).toEqual([]);
+    const other = await post(otherKey, "/emails", letter({ to: "ada@qa.dispatch-fixture.net" }));
+    expect(other.status).toBe(200);
+    expect(other.json.sandbox).toBe(false);
+    expect((await call(otherKey, "GET", `/emails/${sandbox.json.id}`)).status).toBe(404);
+    expect((await call(otherKey, "GET", "/emails")).json.data.map((row: { id: string }) => row.id)).toEqual([other.json.id]);
+    const snapshot = () => db.query(
+      `select e.id, e.sandbox, e.xmin::text as email_version, r.id as recipient_id,
+              r.sandbox as recipient_sandbox, r.xmin::text as recipient_version
+       from emails e join email_recipients r on r.email_id = e.id order by e.id, r.id`,
+    );
+    const before = (await snapshot()).rows;
+    await db.query(schema);
+    await db.query(schema);
+    expect((await snapshot()).rows).toEqual(before);
+    expect((await call(fullKey, "PATCH", "/settings", { sandbox_domains: [] })).status).toBe(200);
+    await db.query(schema);
+    await db.query(schema);
+    expect((await snapshot()).rows).toEqual(before);
+
+    const current = await post(fullKey, "/emails", letter({ to: "ada@qa.dispatch-fixture.net" }));
+    expect(current.status).toBe(200);
+    expect(current.json.sandbox).toBe(false);
+
+    const blocked = recordingSes({ refuse: true });
+    await productionDelivery(await sendJob(sandbox.json.id), blocked.provider);
+    expect(blocked.quotas).toEqual([]);
+    expect(blocked.sent).toEqual([]);
+    const ses = recordingSes();
+    await productionDelivery(await sendJob(mixed.json.id), ses.provider);
+    await productionDelivery(await sendJob(other.json.id), ses.provider);
+    await productionDelivery(await sendJob(current.json.id), ses.provider);
+    expect(ses.sent.map((email) => email.recipients)).toEqual([
+      [{ email: "real@dispatch-fixture.net", kind: "to" }],
+      [{ email: "ada@qa.dispatch-fixture.net", kind: "to" }],
+      [{ email: "ada@qa.dispatch-fixture.net", kind: "to" }],
+    ]);
+    expect((await call(fullKey, "GET", `/emails/${sandbox.json.id}`)).json).toMatchObject({
+      sandbox: true, last_event: "delivered",
+      recipients: [{ email: "ada@qa.dispatch-fixture.net", sandbox: true }],
+    });
+    expect((await call(fullKey, "GET", `/emails/${mixed.json.id}`)).json.recipients).toEqual(expect.arrayContaining([
+      expect.objectContaining({ email: "ada@team.qa.dispatch-fixture.net", sandbox: true }),
+      expect.objectContaining({ email: "real@dispatch-fixture.net", sandbox: false }),
+    ]));
+    expect((await db.query(
+      "select email, sandbox, status from email_recipients where email_id = $1 order by email",
+      [mixed.json.id],
+    )).rows).toEqual([
+      { email: "ada@team.qa.dispatch-fixture.net", sandbox: true, status: "delivered" },
+      { email: "real@dispatch-fixture.net", sandbox: false, status: "sent" },
+    ]);
+  });
+
+  it("bypasses SES in production and delivers one signed sandbox webhook without duplicate events or attempts on job retries", async () => {
+    const capture = await captureWebhook();
+    try {
+      const webhook = await post(fullKey, "/webhooks", {
+        url: `${capture.base}/ok`,
+        events: ["email.delivered"],
+      });
+      expect(webhook.status).toBe(200);
+      const sent = await post(fullKey, "/emails", letter({
+        to: "ada@example.com", cc: "grace@nested.example.org", bcc: "linus@mailer.invalid",
+      }));
+      expect(sent.status).toBe(200);
+      expect(sent.json.sandbox).toBe(true);
+      const job = await sendJob(sent.json.id);
+      const ses = recordingSes({ refuse: true });
+      await productionDelivery(job, ses.provider);
+      const events = await db.query(
+        "select id, type, data from email_events where email_id = $1 order by id",
+        [sent.json.id],
+      );
+      expect(events.rows).toEqual([{
+        id: expect.any(String), type: "email.delivered",
+        data: { sandbox: true, recipients: expect.arrayContaining(["ada@example.com", "grace@nested.example.org", "linus@mailer.invalid"]) },
+      }]);
+      expect(events.rows[0]!.data.recipients).toHaveLength(3);
+      expect(events.rows[0]!.data).not.toHaveProperty("provider_message_id");
+      const attempts = await db.query(
+        "select id, event_id, attempt, state from webhook_attempts where webhook_id = $1",
+        [webhook.json.id],
+      );
+      expect(attempts.rows).toEqual([{
+        id: expect.any(String), event_id: events.rows[0]!.id, attempt: 1, state: "queued",
+      }]);
+      await productionDelivery(job, ses.provider);
+      expect((await db.query("select id, type, data from email_events where email_id = $1 order by id", [sent.json.id])).rows).toEqual(events.rows);
+      expect((await db.query("select id, event_id, attempt, state from webhook_attempts where webhook_id = $1", [webhook.json.id])).rows).toEqual(attempts.rows);
+      expect((await db.query("select status, sandbox, provider_message_id, message_id from emails where id = $1", [sent.json.id])).rows).toEqual([{
+        status: "delivered", sandbox: true, provider_message_id: null, message_id: null,
+      }]);
+      expect((await db.query("select status, sandbox from email_recipients where email_id = $1", [sent.json.id])).rows).toEqual([
+        { status: "delivered", sandbox: true },
+        { status: "delivered", sandbox: true },
+        { status: "delivered", sandbox: true },
+      ]);
+      expect((await db.query("select state from send_jobs where id = $1", [job.id])).rows).toEqual([{ state: "done" }]);
+      expect((await db.query("select id from provider_events_raw where tenant_id = $1", [job.tenant_id])).rows).toEqual([]);
+      expect((await db.query("select value from usage_counters where tenant_id = $1 and name = 'emails.sent'", [job.tenant_id])).rows).toEqual([]);
+      await tick();
+      expect(capture.received).toHaveLength(1);
+      const delivered = capture.received[0]!;
+      expect(JSON.parse(delivered.body)).toMatchObject({
+        id: events.rows[0]!.id, type: "email.delivered",
+        data: events.rows[0]!.data,
+      });
+      expect(JSON.parse(delivered.body).data).not.toHaveProperty("provider_message_id");
+      expect(sign(delivered.body, webhook.json.signing_secret, delivered.id, Number(delivered.timestamp)).signature).toBe(delivered.signature);
+      expect(verify(delivered.body, webhook.json.signing_secret, delivered.id, delivered.timestamp, delivered.signature)).toBe(true);
+      await productionDelivery(job, ses.provider);
+      await tick();
+      expect(capture.received).toHaveLength(1);
+      expect((await db.query("select id, attempt, state from webhook_attempts where webhook_id = $1", [webhook.json.id])).rows).toEqual([{
+        id: attempts.rows[0]!.id, attempt: 1, state: "sent",
+      }]);
+      expect(ses.quotas).toEqual([]);
+      expect(ses.sent).toEqual([]);
+    } finally {
+      await capture.close();
+    }
+  });
+
+  it("hands only real to cc and bcc recipients to SES while sandbox delivery cannot promote a mixed email", async () => {
+    const sent = await post(fullKey, "/emails", letter({
+      to: ["real-to@dispatch-fixture.net", "sandbox-to@example.com"],
+      cc: ["real-cc@dispatch-fixture.net", "sandbox-cc@mailer.test"],
+      bcc: ["real-bcc@dispatch-fixture.net", "sandbox-bcc@example.net"],
+    }));
+    expect(sent.status).toBe(200);
+    expect(sent.json.sandbox).toBe(false);
+    const job = await sendJob(sent.json.id);
+    const real = [
+      { email: "real-to@dispatch-fixture.net", kind: "to" },
+      { email: "real-cc@dispatch-fixture.net", kind: "cc" },
+      { email: "real-bcc@dispatch-fixture.net", kind: "bcc" },
+    ];
+    const sandbox = ["sandbox-to@example.com", "sandbox-cc@mailer.test", "sandbox-bcc@example.net"];
+    const ses = recordingSes({
+      beforeSend: async () => {
+        expect((await db.query("select status, sandbox, provider_message_id from emails where id = $1", [sent.json.id])).rows).toEqual([{
+          status: "queued", sandbox: false, provider_message_id: null,
+        }]);
+        expect((await db.query("select type, data from email_events where email_id = $1", [sent.json.id])).rows).toEqual([{
+          type: "email.delivered", data: { sandbox: true, recipients: expect.arrayContaining(sandbox) },
+        }]);
+        const recipients = await db.query("select email, status, sandbox from email_recipients where email_id = $1", [sent.json.id]);
+        for (const row of recipients.rows)
+          expect(row).toMatchObject({
+            sandbox: sandbox.includes(row.email),
+            status: sandbox.includes(row.email) ? "delivered" : "queued",
+          });
+      },
+    });
+    await productionDelivery(job, ses.provider);
+    expect(ses.quotas).toEqual(["us-west-2"]);
+    expect(ses.sent).toHaveLength(1);
+    expect(ses.sent[0]!.recipients).toHaveLength(3);
+    expect(ses.sent[0]!.recipients).toEqual(expect.arrayContaining(real));
+    const detail = await call(fullKey, "GET", `/emails/${sent.json.id}`);
+    expect(detail.json).toMatchObject({
+      sandbox: false, last_event: "sent",
+      to: expect.arrayContaining(["real-to@dispatch-fixture.net", "sandbox-to@example.com"]),
+      cc: expect.arrayContaining(["real-cc@dispatch-fixture.net", "sandbox-cc@mailer.test"]),
+      bcc: expect.arrayContaining(["real-bcc@dispatch-fixture.net", "sandbox-bcc@example.net"]),
+    });
+    expect(detail.json.recipients).toHaveLength(6);
+    for (const row of detail.json.recipients)
+      expect(row.sandbox).toBe(sandbox.includes(row.email));
+    const afterSend = await db.query("select email, sandbox, status from email_recipients where email_id = $1", [sent.json.id]);
+    for (const row of afterSend.rows)
+      expect(row).toMatchObject({
+        sandbox: sandbox.includes(row.email),
+        status: sandbox.includes(row.email) ? "delivered" : "sent",
+      });
+    const list = await call(fullKey, "GET", "/emails");
+    expect(list.json.data[0]).toMatchObject({
+      id: sent.json.id, sandbox: false,
+      recipients: expect.arrayContaining([
+        ...real.map((recipient) => ({ ...recipient, status: "sent", sandbox: false })),
+        ...sandbox.map((email, index) => ({ email, kind: ["to", "cc", "bcc"][index], status: "delivered", sandbox: true })),
+      ]),
+    });
+    await appendEvent(db, {
+      tenantId: job.tenant_id, requestId: job.request_id, emailId: job.email_id,
+      type: "email.delivered", providerEventId: `${job.email_id}:ses:delivered`,
+      data: { provider_message_id: `ses_${job.email_id}` },
+      mode: "delivery", provider: "ses", recipients: real.map((recipient) => recipient.email),
+    });
+    expect((await stored(sent.json.id)).status).toBe("delivered");
+    expect((await db.query("select status, sandbox from email_recipients where email_id = $1 and sandbox", [sent.json.id])).rows).toEqual([
+      { status: "delivered", sandbox: true },
+      { status: "delivered", sandbox: true },
+      { status: "delivered", sandbox: true },
+    ]);
+    await productionDelivery(job, ses.provider);
+    expect(ses.sent).toHaveLength(1);
+    expect((await db.query("select id from email_events where email_id = $1", [sent.json.id])).rows).toHaveLength(3);
+  });
+
+  it("finishes mixed sandbox jobs without claiming real delivery when every real recipient is suppressed", async () => {
+    await post(fullKey, "/suppressions", { email: "suppressed@dispatch-fixture.net" });
+    const accepted = await post(fullKey, "/emails", letter({
+      to: ["preview@example.com", "suppressed@dispatch-fixture.net"],
+    }));
+    expect(accepted.status).toBe(200);
+    expect(accepted.json.sandbox).toBe(false);
+    const ses = recordingSes({ refuse: true });
+    const job = await sendJob(accepted.json.id);
+    await productionDelivery(job, ses.provider);
+    expect(ses.sent).toEqual([]);
+    expect(ses.quotas).toEqual([]);
+    expect((await db.query("select status, sandbox from emails where id = $1", [accepted.json.id])).rows).toEqual([{ status: "suppressed", sandbox: false }]);
+    expect((await db.query("select state from send_jobs where id = $1", [job.id])).rows).toEqual([{ state: "done" }]);
+    expect((await db.query("select email, sandbox, status from email_recipients where email_id = $1 order by email", [accepted.json.id])).rows).toEqual([
+      { email: "preview@example.com", sandbox: true, status: "delivered" },
+      { email: "suppressed@dispatch-fixture.net", sandbox: false, status: "suppressed" },
+    ]);
+  });
+
+  it("marks actual sandbox tracking requests as simulated and excludes their opens and clicks", async () => {
+    const accepted = await post(fullKey, "/emails", letter({
+      to: "preview@example.com", html: '<p><a href="https://dispatch-fixture.net/docs">Docs</a></p>',
+    }));
+    expect(accepted.status).toBe(200);
+    await productionDelivery(await sendJob(accepted.json.id), recordingSes({ refuse: true }).provider);
+    const tracked = (await db.query<{ html_tracked: string }>("select html_tracked from emails where id = $1", [accepted.json.id])).rows[0]!.html_tracked;
+    const open = new URL(tracked.match(/src="([^"]+\/open\/[^"]+)"/)![1]!);
+    const click = new URL(tracked.match(/href="([^"]+\/click\/[^"]+)"/)![1]!);
+    expect((await app.inject({ method: "GET", url: open.pathname })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: click.pathname })).statusCode).toBe(302);
+    const events = (await db.query<{ type: string; data: Record<string, unknown> }>("select type, data from email_events where email_id = $1", [accepted.json.id])).rows;
+    expect(events.map((event) => event.type).sort()).toEqual(["email.clicked", "email.delivered", "email.opened"]);
+    expect(events.every((event) => event.data.sandbox === true)).toBe(true);
+    const metrics = await call(fullKey, "GET", "/emails/metrics?metrics=sent,delivered,opened,clicked,open_rate,click_rate");
+    expect(metrics.status).toBe(200);
+    expect(metrics.json.totals).toEqual({ sent: 0, delivered: 0, opened: 0, clicked: 0, open_rate: 0, click_rate: 0 });
+  });
+
+  it("reconciles newly sandboxed recipients on a mixed retry without duplicating the delivery webhook", async () => {
+    const webhook = await post(fullKey, "/webhooks", { url: "http://127.0.0.1:9/sandbox-retry", events: ["email.delivered"] });
+    expect(webhook.status).toBe(200);
+    const accepted = await post(fullKey, "/emails", letter({
+      to: ["preview@example.com", "real@retry.dispatch-fixture.net"],
+    }));
+    const job = await sendJob(accepted.json.id);
+    const retry = recordingSes();
+    retry.provider.send = async () => { throw new ProviderError("Throttled", true, true); };
+    await expect(productionDelivery(job, retry.provider)).rejects.toThrow("Throttled");
+    expect((await stored(accepted.json.id)).status).toBe("queued");
+    const before = (await db.query("select id, data from email_events where email_id = $1", [accepted.json.id])).rows;
+    expect(before).toHaveLength(1);
+    expect((await call(fullKey, "PATCH", "/settings", { sandbox_domains: ["retry.dispatch-fixture.net"] })).status).toBe(200);
+    const ses = recordingSes({ refuse: true });
+    await productionDelivery(job, ses.provider);
+    expect(ses.quotas).toEqual([]);
+    expect(ses.sent).toEqual([]);
+    expect((await db.query("select sandbox, status from emails where id = $1", [accepted.json.id])).rows).toEqual([{ sandbox: true, status: "delivered" }]);
+    expect((await db.query("select sandbox, status from email_recipients where email_id = $1", [accepted.json.id])).rows).toEqual([
+      { sandbox: true, status: "delivered" }, { sandbox: true, status: "delivered" },
+    ]);
+    expect((await db.query("select id, data from email_events where email_id = $1", [accepted.json.id])).rows).toEqual(before);
+    expect((await db.query("select id from webhook_attempts where webhook_id = $1", [webhook.json.id])).rows).toHaveLength(1);
+    expect((await db.query("select state from send_jobs where id = $1", [job.id])).rows).toEqual([{ state: "done" }]);
+  });
+
+  it("returns each email's sandbox flag on split marketing and batch idempotency replays", async () => {
+    const topic = await post(fullKey, "/topics", { name: "Sandbox", default_subscription: "opt_in" });
+    expect(topic.status).toBe(200);
+    const body = letter({
+      to: ["ada@example.com", "real@dispatch-fixture.net"],
+      cc: "grace@mailer.test",
+      bcc: "real-bcc@dispatch-fixture.net",
+      topic_id: topic.json.id,
+    });
+    const first = await post(fullKey, "/emails", body, { "idempotency-key": "sandbox-split" });
+    expect(first.status).toBe(200);
+    expect(first.json.sandbox).toBe(true);
+    expect(first.json.emails.map((email: { to: string; sandbox: boolean }) => ({ to: email.to, sandbox: email.sandbox }))).toEqual([
+      { to: "ada@example.com", sandbox: true },
+      { to: "real@dispatch-fixture.net", sandbox: false },
+      { to: "grace@mailer.test", sandbox: true },
+      { to: "real-bcc@dispatch-fixture.net", sandbox: false },
+    ]);
+    expect((await post(fullKey, "/emails", body, { "idempotency-key": "sandbox-split" })).json).toEqual({ ...first.json, request_id: expect.any(String) });
+    const batchBody = { emails: [
+      letter({ to: "batch@example.org" }),
+      letter({ to: "batch@dispatch-fixture.net" }),
+      body,
+    ] };
+    const batch = await post(fullKey, "/emails/batch", batchBody, { "idempotency-key": "sandbox-batch" });
+    expect(batch.status).toBe(200);
+    expect(batch.json.data.map((email: { sandbox: boolean }) => email.sandbox)).toEqual([true, false, true]);
+    expect(batch.json.data[2].emails.map((email: { sandbox: boolean }) => email.sandbox)).toEqual([true, false, true, false]);
+    expect((await post(fullKey, "/emails/batch", batchBody, { "idempotency-key": "sandbox-batch" })).json).toEqual({ ...batch.json, request_id: expect.any(String) });
+    expect((await db.query("select id from emails")).rows).toHaveLength(10);
+  });
+
+  it("hand-counts only real sending and engagement metrics including mixed recipients and automation steps", async () => {
+    const flow = await post(fullKey, "/automations", {
+      name: "Sandbox metrics", enabled: false,
+      steps: [{ key: "start", type: "trigger", config: { event_name: "sandbox.metrics" } }],
+      connections: [],
+    });
+    expect(flow.status).toBe(200);
+    const allSandbox = await post(fullKey, "/emails", letter({ to: "only@example.com" }));
+    const mixed = await post(fullKey, "/emails", letter({
+      to: ["real@dispatch-fixture.net", "sandbox@example.net"],
+    }));
+    const real = await post(fullKey, "/emails", letter({ to: "other@dispatch-fixture.net" }));
+    expect([allSandbox.status, mixed.status, real.status]).toEqual([200, 200, 200]);
+    const job = await sendJob(mixed.json.id);
+    await db.query(
+      `update emails set automation_id = $1, automation_step = case id
+       when $2 then 'sandbox' when $3 then 'welcome' else 'followup' end,
+       created_at = '2026-10-01T12:00:00Z' where id = any($4::text[])`,
+      [flow.json.id, allSandbox.json.id, mixed.json.id, [allSandbox.json.id, mixed.json.id, real.json.id]],
+    );
+    const recipients = (await db.query<{ id: string; email_id: string; sandbox: boolean }>(
+      "select id, email_id, sandbox from email_recipients",
+    )).rows;
+    const types = ["email.sent", "email.delivered", "email.opened", "email.clicked", "email.unsubscribed"];
+    await tx(db, async (client) => {
+      const append = async (emailId: string, recipientId: string | null, type: string, key: string, sandbox = false) => {
+        const event = await appendEvent(client, {
+          tenantId: job.tenant_id, requestId: job.request_id, emailId, recipientId,
+          type, providerEventId: `metrics:${key}`, data: sandbox ? { sandbox: true } : {},
+        });
+        expect(event).not.toBeNull();
+        await client.query("update email_events set created_at = '2026-10-01T12:00:00Z' where id = $1", [event!.id]);
+        return event!;
+      };
+      for (const [index, type] of types.entries()) {
+        // Legacy events without the JSON marker must still be excluded by the email flag.
+        const emailEvent = await append(allSandbox.json.id, null, type, `all:${index}`);
+        expect(emailEvent.data.sandbox).toBe(true);
+        await client.query("update email_events set data = '{}' where id = $1", [emailEvent.id]);
+        // A simulation on a mixed email is excluded by its marker even without recipient_id.
+        await append(mixed.json.id, null, type, `marker:${index}`, true);
+        // Legacy recipient events must be excluded by the stored recipient flag alone.
+        const recipient = recipients.find((row) => row.email_id === mixed.json.id && row.sandbox)!;
+        const recipientEvent = await append(mixed.json.id, recipient.id, type, `recipient:${index}`);
+        expect(recipientEvent.data.sandbox).toBe(true);
+        await client.query("update email_events set data = '{}' where id = $1", [recipientEvent.id]);
+      }
+      const mixedRecipient = recipients.find((row) => row.email_id === mixed.json.id && !row.sandbox)!;
+      for (const [index, type] of [...types, "email.opened"].entries())
+        await append(mixed.json.id, mixedRecipient.id, type, `mixed-real:${index}`);
+      const realRecipient = recipients.find((row) => row.email_id === real.json.id)!;
+      for (const [index, type] of ["email.sent", "email.delivered", "email.opened", "email.clicked", "email.clicked"].entries())
+        await append(real.json.id, realRecipient.id, type, `real:${index}`);
+    });
+    const query = new URLSearchParams({
+      start_date: "2026-10-01T00:00:00Z", end_date: "2026-10-02T00:00:00Z",
+      metrics: "sent,delivered,opened,unique_opened,clicked,unique_clicked,unsubscribed,delivery_rate,open_rate,click_rate,unsubscribe_rate",
+    });
+    const totals = {
+      sent: 2, delivered: 2, opened: 3, unique_opened: 2, clicked: 3, unique_clicked: 2,
+      unsubscribed: 1, delivery_rate: 100, open_rate: 100, click_rate: 100, unsubscribe_rate: 50,
+    };
+    const metrics = await call(fullKey, "GET", `/emails/metrics?${query}`);
+    expect(metrics.status).toBe(200);
+    expect(metrics.json.totals).toEqual(totals);
+    query.set("dimensions", "step");
+    query.set("automation_id", flow.json.id);
+    const steps = await call(fullKey, "GET", `/emails/metrics?${query}`);
+    expect(steps.status).toBe(200);
+    expect(steps.json.totals).toEqual(totals);
+    expect(steps.json.data.sort((a: { automation_step: string }, b: { automation_step: string }) => a.automation_step.localeCompare(b.automation_step))).toEqual([
+      {
+        automation_id: flow.json.id, automation_step: "followup",
+        sent: 1, delivered: 1, opened: 1, unique_opened: 1, clicked: 2, unique_clicked: 1,
+        unsubscribed: 0, delivery_rate: 100, open_rate: 100, click_rate: 100, unsubscribe_rate: 0,
+      },
+      {
+        automation_id: flow.json.id, automation_step: "welcome",
+        sent: 1, delivered: 1, opened: 2, unique_opened: 1, clicked: 1, unique_clicked: 1,
+        unsubscribed: 1, delivery_rate: 100, open_rate: 100, click_rate: 100, unsubscribe_rate: 100,
+      },
+    ]);
+    expect((await db.query("select count(*)::int as count from email_events where created_at = '2026-10-01T12:00:00Z'")).rows).toEqual([{ count: 26 }]);
+  });
+
   it("merges concurrent settings patches atomically without changing another tenant", async () => {
     const otherKey = await seedTenant();
     const results = await Promise.all([
@@ -257,14 +727,14 @@ describe.skipIf(!live)("accept", () => {
       ["Ada", "Grace"].map((name) =>
         post(fullKey, "/events/send", {
           event: "user.created",
-          email: "new@example.com",
+          email: "new@dispatch-fixture.net",
           payload: { first_name: name },
         }),
       ),
     );
     expect(sends.map((send) => send.status)).toEqual([202, 202]);
     const contacts = await db.query<{ first_name: string }>(
-      "select first_name from contacts where lower(email) = 'new@example.com'",
+      "select first_name from contacts where lower(email) = 'new@dispatch-fixture.net'",
     );
     expect(contacts.rows).toHaveLength(1);
     expect(["Ada", "Grace"]).toContain(contacts.rows[0]!.first_name);
@@ -293,7 +763,7 @@ describe.skipIf(!live)("accept", () => {
     const again = await post(
       secret,
       "/emails",
-      letter({ to: "again@example.com" }),
+      letter({ to: "again@dispatch-fixture.net" }),
     );
     expect(again.status).toBe(403);
   });
@@ -354,8 +824,8 @@ describe.skipIf(!live)("accept", () => {
   it("replays a batch and rejects a batch that includes an attachment", async () => {
     const body = {
       emails: [
-        letter({ to: "one@example.com", subject: "One" }),
-        letter({ to: "two@example.com", subject: "Two" }),
+        letter({ to: "one@dispatch-fixture.net", subject: "One" }),
+        letter({ to: "two@dispatch-fixture.net", subject: "Two" }),
       ],
     };
     const headers = { "idempotency-key": "idem-batch-1" };
@@ -396,8 +866,8 @@ describe.skipIf(!live)("accept", () => {
       fullKey,
       "/emails",
       letter({
-        to: Array.from({ length: 50 }, (_, index) => `to-${index}@example.com`),
-        cc: "cc-0@example.com",
+        to: Array.from({ length: 50 }, (_, index) => `to-${index}@dispatch-fixture.net`),
+        cc: "cc-0@dispatch-fixture.net",
       }),
     );
     expect(response.status).toBe(422);
@@ -407,14 +877,14 @@ describe.skipIf(!live)("accept", () => {
 
   it("sends to an unsubscribed contact and accepts a suppressed address", async () => {
     const unsubscribed = await post(fullKey, "/contacts", {
-      email: "gone@example.com",
+      email: "gone@dispatch-fixture.net",
       unsubscribed: true,
     });
     expect(unsubscribed.status).toBe(200);
     const contactSend = await post(
       fullKey,
       "/emails",
-      letter({ to: "gone@example.com" }),
+      letter({ to: "gone@dispatch-fixture.net" }),
     );
     expect(contactSend.status).toBe(200);
     const contactRow = await db.query<{ status: string }>(
@@ -424,14 +894,14 @@ describe.skipIf(!live)("accept", () => {
     expect(contactRow.rows[0]?.status).toBe("queued");
 
     const suppression = await post(fullKey, "/suppressions", {
-      email: "manual@example.com",
+      email: "manual@dispatch-fixture.net",
       reason: "manual",
     });
     expect(suppression.status).toBe(200);
     const suppressedSend = await post(
       fullKey,
       "/emails",
-      letter({ to: "manual@example.com" }),
+      letter({ to: "manual@dispatch-fixture.net" }),
     );
     expect(suppressedSend.status).toBe(200);
     const suppressedRow = await db.query<{ status: string }>(
@@ -461,8 +931,8 @@ describe.skipIf(!live)("accept", () => {
     expect(created.status).toBe(200);
 
     const sent = await post(fullKey, "/emails", {
-      from: "hello@example.com",
-      to: "ada@example.com",
+      from: "hello@dispatch-fixture.net",
+      to: "ada@dispatch-fixture.net",
       template: "welcome",
       variables: { name: "Ada" },
     });
@@ -506,7 +976,7 @@ describe.skipIf(!live)("accept", () => {
 describe.skipIf(!live)("contact timeline", () => {
   it("pages thirty runs without skipped or repeated rows, including equal timestamps and case-insensitive email events", async () => {
     const contact = await post(fullKey, "/contacts", {
-      email: "ada@example.com",
+      email: "ada@dispatch-fixture.net",
     });
     const flow = await post(fullKey, "/automations", {
       name: "History",
@@ -527,7 +997,7 @@ describe.skipIf(!live)("contact timeline", () => {
       for (let i = 0; i < 30; i++) {
         const eventId = id("ce");
         await client.query(
-          "insert into custom_events (id, tenant_id, request_id, name, email, created_at) values ($1, $2, 'req_history', 'history', 'ADA@EXAMPLE.COM', '2026-10-01')",
+          "insert into custom_events (id, tenant_id, request_id, name, email, created_at) values ($1, $2, 'req_history', 'history', 'ADA@DISPATCH-FIXTURE.NET', '2026-10-01')",
           [eventId, tenant],
         );
         await client.query(
@@ -543,14 +1013,14 @@ describe.skipIf(!live)("contact timeline", () => {
         );
       }
       await client.query(
-        "insert into custom_events (id, tenant_id, request_id, name, email) values ($1, $2, 'req_internal', '@contact.updated', 'ada@example.com')",
+        "insert into custom_events (id, tenant_id, request_id, name, email) values ($1, $2, 'req_internal', '@contact.updated', 'ada@dispatch-fixture.net')",
         [id("ce"), tenant],
       );
     });
     const sent = await post(
       fullKey,
       "/emails",
-      letter({ to: ["ADA@example.com", "ada@example.com"] }),
+      letter({ to: ["ADA@dispatch-fixture.net", "ada@dispatch-fixture.net"] }),
     );
     expect(sent.status).toBe(200);
     await db.query(
@@ -612,11 +1082,11 @@ async function audience() {
     default_subscription: "opt_in",
   });
   const first = await post(fullKey, "/contacts", {
-    email: "ada@example.com",
+    email: "ada@dispatch-fixture.net",
     first_name: "Ada",
   });
   const second = await post(fullKey, "/contacts", {
-    email: "bob@example.com",
+    email: "bob@dispatch-fixture.net",
     first_name: "Bob",
   });
   expect([topic.status, first.status, second.status]).toEqual([
@@ -653,10 +1123,10 @@ describe.skipIf(!live)("marketing", () => {
     async (mode) => {
       const contacts = await audience();
       const body = letter({
-        to: ["ada@example.com", "bob@example.com"],
-        cc: ["ADA@example.com"],
+        to: ["ada@dispatch-fixture.net", "bob@dispatch-fixture.net"],
+        cc: ["ADA@dispatch-fixture.net"],
         topic_id: contacts.topic,
-        html: '<a href="{{UNSUBSCRIBE_URL}}">Leave</a><a href="https://example.net/read">Read</a><p>{{name}}</p>',
+        html: '<a href="{{UNSUBSCRIBE_URL}}">Leave</a><a href="https://dispatch-fixture.net/read">Read</a><p>{{name}}</p>',
         text: "{{{DISPATCH_UNSUBSCRIBE_URL}}}",
         headers: {
           "list-unsubscribe": "caller",
@@ -691,12 +1161,12 @@ describe.skipIf(!live)("marketing", () => {
       expect(recipients.rows).toEqual([
         {
           email_id: sent.json.emails[0].id,
-          email: "ada@example.com",
+          email: "ada@dispatch-fixture.net",
           kind: "to",
         },
         {
           email_id: sent.json.emails[1].id,
-          email: "bob@example.com",
+          email: "bob@dispatch-fixture.net",
           kind: "to",
         },
       ]);
@@ -734,13 +1204,13 @@ describe.skipIf(!live)("marketing", () => {
         [contacts.topic],
       );
       expect(states.rows[1]).toEqual({
-        email: "bob@example.com",
+        email: "bob@dispatch-fixture.net",
         unsubscribed_at: null,
         status: "subscribed",
       });
       if (mode === "topic")
         expect(states.rows[0]).toEqual({
-          email: "ada@example.com",
+          email: "ada@dispatch-fixture.net",
           unsubscribed_at: null,
           status: "unsubscribed",
         });
@@ -758,7 +1228,7 @@ describe.skipIf(!live)("marketing", () => {
       fullKey,
       "/emails",
       letter({
-        to: "ada@example.com",
+        to: "ada@dispatch-fixture.net",
         topic_id: contacts.topic,
         text: "{{UNSUBSCRIBE_URL}}",
         scheduled_at: new Date(Date.now() + 3600_000).toISOString(),
@@ -811,13 +1281,13 @@ describe.skipIf(!live)("marketing", () => {
     const sent = await post(
       fullKey,
       "/emails",
-      letter({ to: "new@example.com", topic_id: contacts.topic }),
+      letter({ to: "new@dispatch-fixture.net", topic_id: contacts.topic }),
     );
     expect(sent.status).toBe(200);
     expect(
       (
         await db.query(
-          "select id from contacts where email = 'new@example.com'",
+          "select id from contacts where email = 'new@dispatch-fixture.net'",
         )
       ).rows,
     ).toHaveLength(0);
@@ -825,16 +1295,16 @@ describe.skipIf(!live)("marketing", () => {
       "List-Unsubscribe": "One-Click",
     });
     const opted = await db.query(
-      "select c.deleted_at, s.status from contacts c join topic_subscriptions s on s.contact_id = c.id where c.email = 'new@example.com'",
+      "select c.deleted_at, s.status from contacts c join topic_subscriptions s on s.contact_id = c.id where c.email = 'new@dispatch-fixture.net'",
     );
     expect(opted.rows).toEqual([{ deleted_at: null, status: "unsubscribed" }]);
     const deleted = await post(
       fullKey,
       "/emails",
-      letter({ to: "gone@example.com", topic_id: contacts.topic }),
+      letter({ to: "gone@dispatch-fixture.net", topic_id: contacts.topic }),
     );
     const gone = await post(fullKey, "/contacts", {
-      email: "gone@example.com",
+      email: "gone@dispatch-fixture.net",
     });
     await call(fullKey, "DELETE", `/contacts/${gone.json.id}`);
     expect(
@@ -860,9 +1330,9 @@ describe.skipIf(!live)("marketing", () => {
       [
         letter({
           topic_id: contacts.topic,
-          to: ["ada@example.com", "bob@example.com"],
+          to: ["ada@dispatch-fixture.net", "bob@dispatch-fixture.net"],
         }),
-        letter({ to: ["one@example.com", "two@example.com"] }),
+        letter({ to: ["one@dispatch-fixture.net", "two@dispatch-fixture.net"] }),
       ],
       { "idempotency-key": "marketing-batch" },
     );
@@ -878,14 +1348,14 @@ describe.skipIf(!live)("marketing", () => {
     const sent = await post(
       fullKey,
       "/emails",
-      letter({ topic_id: topic.json.id, to: "unknown@example.com" }),
+      letter({ topic_id: topic.json.id, to: "unknown@dispatch-fixture.net" }),
     );
     expect(sent.status).toBe(200);
     expect((await stored(sent.json.id)).status).toBe("queued");
     expect(
       (
         await db.query(
-          "select id from contacts where email = 'unknown@example.com'",
+          "select id from contacts where email = 'unknown@dispatch-fixture.net'",
         )
       ).rows,
     ).toHaveLength(0);
@@ -908,12 +1378,12 @@ describe.skipIf(!live)("marketing", () => {
         {
           key: "one",
           type: "send_email",
-          config: { from: "hello@example.com", template: "metrics" },
+          config: { from: "hello@dispatch-fixture.net", template: "metrics" },
         },
         {
           key: "two",
           type: "send_email",
-          config: { from: "hello@example.com", template: "metrics" },
+          config: { from: "hello@dispatch-fixture.net", template: "metrics" },
         },
       ],
       connections: [
@@ -926,7 +1396,7 @@ describe.skipIf(!live)("marketing", () => {
       (
         await post(fullKey, "/events/send", {
           event: "measure",
-          email: "ada@example.com",
+          email: "ada@dispatch-fixture.net",
         })
       ).status,
     ).toBe(202);
@@ -1062,7 +1532,7 @@ describe.skipIf(!live)("marketing", () => {
           key: "first",
           type: "send_email",
           config: {
-            from: "hello@example.com",
+            from: "hello@dispatch-fixture.net",
             template: "lifecycle",
             topic_id: contacts.topic,
           },
@@ -1072,7 +1542,7 @@ describe.skipIf(!live)("marketing", () => {
           key: "second",
           type: "send_email",
           config: {
-            from: "hello@example.com",
+            from: "hello@dispatch-fixture.net",
             template: "lifecycle",
             topic_id: contacts.topic,
           },
@@ -1080,7 +1550,7 @@ describe.skipIf(!live)("marketing", () => {
         {
           key: "receipt",
           type: "send_email",
-          config: { from: "hello@example.com", template: "receipt" },
+          config: { from: "hello@dispatch-fixture.net", template: "receipt" },
         },
       ],
       connections: [
@@ -1095,7 +1565,7 @@ describe.skipIf(!live)("marketing", () => {
       (
         await post(fullKey, "/events/send", {
           event: "joined",
-          email: "ada@example.com",
+          email: "ada@dispatch-fixture.net",
           payload: {
             FIRST_NAME: "Mallory",
             UNSUBSCRIBE_URL: "https://evil.example",
@@ -1213,7 +1683,7 @@ describe.skipIf(!live)("delivery", () => {
           {
             key: "send",
             type: "send_email",
-            config: { from: "hello@example.com", template: "missing-template" },
+            config: { from: "hello@dispatch-fixture.net", template: "missing-template" },
           },
         ],
         connections: [{ from: "start", to: "send", type: "default" }],
@@ -1232,15 +1702,15 @@ describe.skipIf(!live)("delivery", () => {
       ]);
       await post(fullKey, "/events/send", {
         event: "complete",
-        email: "ada@example.com",
+        email: "ada@dispatch-fixture.net",
       });
       await post(fullKey, "/events/send", {
         event: "fail",
-        email: "ada@example.com",
+        email: "ada@dispatch-fixture.net",
       });
       await post(fullKey, "/events/send", {
         event: "cancel",
-        email: "ada@example.com",
+        email: "ada@dispatch-fixture.net",
       });
       await tick();
       expect(
@@ -1322,18 +1792,18 @@ describe.skipIf(!live)("delivery", () => {
           url: `http://127.0.0.1:${address.port}/other`, events: ["email.unsubscribed"],
         });
         expect([endpoint.status, unrelated.status, disabled.status, other.status]).toEqual([200, 200, 200, 200]);
-        const sent = await post(fullKey, "/emails", letter({ to: "ada@example.com", topic_id: contacts.topic }));
+        const sent = await post(fullKey, "/emails", letter({ to: "ada@dispatch-fixture.net", topic_id: contacts.topic }));
         expect(sent.status).toBe(200);
         let path = link((await stored(sent.json.id)).headers);
         const tenant = (await db.query<{ tenant_id: string }>("select tenant_id from contacts where id = $1", [contacts.first])).rows[0]!.tenant_id;
         if (mode.includes("broadcast")) {
           const broadcastId = id("broadcast");
           await db.query(
-            "insert into broadcasts (id, tenant_id, name, from_email, topic_id) values ($1, $2, 'History', 'hello@example.com', $3)",
+            "insert into broadcasts (id, tenant_id, name, from_email, topic_id) values ($1, $2, 'History', 'hello@dispatch-fixture.net', $3)",
             [broadcastId, tenant, contacts.topic],
           );
           await db.query(
-            "insert into broadcast_recipients (id, tenant_id, broadcast_id, contact_id, email_id, email) values ($1, $2, $3, $4, $5, 'ada@example.com')",
+            "insert into broadcast_recipients (id, tenant_id, broadcast_id, contact_id, email_id, email) values ($1, $2, $3, $4, $5, 'ada@dispatch-fixture.net')",
             [id("br"), tenant, broadcastId, contacts.first, sent.json.id],
           );
           const token = unsubscribeToken({
@@ -1399,7 +1869,7 @@ describe.skipIf(!live)("delivery", () => {
         connections: [{ from: "start", to: "wait", type: "default" }],
       });
       expect([endpoint.status, flow.status]).toEqual([200, 200]);
-      await post(fullKey, "/events/send", { event: "resume", email: "ada@example.com" });
+      await post(fullKey, "/events/send", { event: "resume", email: "ada@dispatch-fixture.net" });
       // Execute directly so webhook attempts stay queued, without network retries.
       const run = (await db.query<{ id: string; tenant_id: string }>("select id, tenant_id from automation_runs")).rows[0]!;
       await executeAutomationRun(db, run.tenant_id, run.id);
@@ -1407,7 +1877,7 @@ describe.skipIf(!live)("delivery", () => {
       expect((await db.query("select id from email_events where type = 'automation.run.started'")).rows).toHaveLength(1);
       expect((await db.query("select id from email_events where type = 'automation.run.completed'")).rows).toHaveLength(0);
       if (mode === "event") {
-        await post(fullKey, "/events/send", { event: "wake", email: "ADA@example.com" });
+        await post(fullKey, "/events/send", { event: "wake", email: "ADA@dispatch-fixture.net" });
       } else {
         await db.query(
           `update automation_runs set state = $2, resume_data = $3::jsonb, updated_at = now() - interval '6 minutes'
@@ -1448,13 +1918,13 @@ describe.skipIf(!live)("delivery", () => {
           begin if new.type = 'automation.run.started' then raise exception 'synthetic start failure'; end if; return new; end $$;
         create trigger lifecycle_reject_start before insert on email_events for each row execute function lifecycle_reject_start();
       `);
-      expect((await post(fullKey, "/events/send", { event: "atomic", email: "ada@example.com" })).status).toBe(500);
+      expect((await post(fullKey, "/events/send", { event: "atomic", email: "ada@dispatch-fixture.net" })).status).toBe(500);
       expect((await db.query("select id from contacts")).rows).toHaveLength(0);
       expect((await db.query("select id from custom_events")).rows).toHaveLength(0);
       expect((await db.query("select id from automation_runs")).rows).toHaveLength(0);
       expect((await db.query("select id from webhook_attempts")).rows).toHaveLength(0);
       await db.query("drop trigger lifecycle_reject_start on email_events; drop function lifecycle_reject_start()");
-      expect((await post(fullKey, "/events/send", { event: "atomic", email: "ada@example.com" })).status).toBe(202);
+      expect((await post(fullKey, "/events/send", { event: "atomic", email: "ada@dispatch-fixture.net" })).status).toBe(202);
       await db.query(`
         create function lifecycle_reject_terminal() returns trigger language plpgsql as $$
           begin if exists (select 1 from email_events where id = new.event_id and type = 'automation.run.completed')
@@ -1488,7 +1958,7 @@ describe.skipIf(!live)("delivery", () => {
       connections: [],
     });
     expect(flow.status).toBe(200);
-    await post(fullKey, "/events/send", { event: "race", email: "ada@example.com" });
+    await post(fullKey, "/events/send", { event: "race", email: "ada@dispatch-fixture.net" });
     const run = (await db.query<{ id: string; tenant_id: string }>("select id, tenant_id from automation_runs")).rows[0]!;
     const [, stop] = await Promise.all([
       executeAutomationRun(db, run.tenant_id, run.id),
@@ -1508,7 +1978,7 @@ describe.skipIf(!live)("delivery", () => {
     const sent = await post(
       fullKey,
       "/emails",
-      letter({ to: "bounce@example.com" }),
+      letter({ to: "bounce@dispatch-fixture.net" }),
     );
     expect(sent.status).toBe(200);
 
@@ -1523,7 +1993,7 @@ describe.skipIf(!live)("delivery", () => {
       "select email, reason from suppressions where removed_at is null",
     );
     expect(suppressed.rows).toEqual([
-      { email: "bounce@example.com", reason: "email.bounced" },
+      { email: "bounce@dispatch-fixture.net", reason: "email.bounced" },
     ]);
   });
 
@@ -1532,7 +2002,7 @@ describe.skipIf(!live)("delivery", () => {
       fullKey,
       "/emails",
       letter({
-        html: `<p><a href="https://example.com/docs">Docs</a></p>`,
+        html: `<p><a href="https://dispatch-fixture.net/docs">Docs</a></p>`,
         text: undefined,
       }),
     );
@@ -1605,7 +2075,7 @@ describe.skipIf(!live)("delivery", () => {
       const sent = await post(
         fullKey,
         "/emails",
-        letter({ to: "webhook@example.com" }),
+        letter({ to: "webhook@dispatch-fixture.net" }),
       );
       expect(sent.status).toBe(200);
       await tick();
@@ -1684,7 +2154,7 @@ async function teammate(
         permissions: [role === "Admin" ? "full" : "read"],
       })
     ).json;
-  const email = `${role.toLowerCase()}-${id("run").slice(4, 14)}@example.com`;
+  const email = `${role.toLowerCase()}-${id("run").slice(4, 14)}@dispatch-fixture.net`;
   const user = await call(fullKey, "POST", "/users", {
     email,
     name: role,
@@ -1766,7 +2236,7 @@ async function seedTenant() {
       "Test",
     ]);
     await client.query(
-      "insert into domains (id, tenant_id, name, region, status, open_tracking, click_tracking) values ($1, $2, 'example.com', 'us-west-2', 'verified', true, true)",
+      "insert into domains (id, tenant_id, name, region, status, open_tracking, click_tracking) values ($1, $2, 'dispatch-fixture.net', 'us-west-2', 'verified', true, true)",
       [id("domain"), tenantId],
     );
     await client.query(
@@ -1779,11 +2249,95 @@ async function seedTenant() {
 
 function letter(overrides: Record<string, unknown> = {}) {
   return {
-    from: "hello@example.com",
-    to: "you@example.com",
+    from: "hello@dispatch-fixture.net",
+    to: "you@dispatch-fixture.net",
     subject: "Hello",
     text: "Hi",
     ...overrides,
+  };
+}
+
+async function sendJob(emailId: string) {
+  const result = await db.query<Job>(
+    "select id, tenant_id, email_id, request_id from send_jobs where email_id = $1",
+    [emailId],
+  );
+  expect(result.rows).toHaveLength(1);
+  return result.rows[0]!;
+}
+
+// These fixtures have no attachments. Fail rather than accidentally touch local/S3 storage.
+const noStorage: Storage = {
+  async put() { throw new Error("unexpected attachment write"); },
+  async get() { throw new Error("unexpected attachment read"); },
+  async stream() { throw new Error("unexpected attachment stream"); },
+  async url() { throw new Error("unexpected attachment URL"); },
+  async delete() { throw new Error("unexpected attachment deletion"); },
+};
+
+async function productionDelivery(job: Job, provider: Provider) {
+  const previous = process.env.NODE_ENV;
+  process.env.NODE_ENV = "production";
+  try {
+    await deliverJob(db, noStorage, provider, job, { durable: true });
+  } finally {
+    if (previous === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previous;
+  }
+}
+
+function recordingSes(options: {
+  refuse?: boolean;
+  beforeSend?: (email: ProviderEmail) => Promise<void>;
+} = {}) {
+  const quotas: string[] = [];
+  const sent: ProviderEmail[] = [];
+  const provider: Provider = {
+    name: "ses",
+    async quota(region) {
+      quotas.push(region);
+      expect(process.env.NODE_ENV).toBe("production");
+      if (options.refuse) throw new Error("sandbox mail called the SES quota API");
+      return { max_24_hour: 100_000, max_per_second: 0, sent_24_hour: 0, sandbox: false };
+    },
+    async send(email) {
+      sent.push(email);
+      expect(process.env.NODE_ENV).toBe("production");
+      if (options.refuse) throw new Error("sandbox mail called the SES send API");
+      await options.beforeSend?.(email);
+      const messageId = `ses_${email.id}`;
+      // Like SES, accept the send but leave terminal delivery to a later provider callback.
+      return {
+        provider_message_id: messageId,
+        events: [{
+          type: "email.sent", provider_event_id: `${messageId}:sent`, delay_ms: 0,
+          recipients: email.recipients.map((recipient) => recipient.email),
+          data: { provider_message_id: messageId },
+        }],
+      };
+    },
+  };
+  return { provider, quotas, sent };
+}
+
+async function captureWebhook() {
+  const received: Parameters<typeof recordWebhook>[2] = [];
+  const server = createServer((request, response) =>
+    recordWebhook(request, response, received),
+  );
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string")
+    throw new Error("webhook server did not bind");
+  return {
+    received,
+    base: `http://127.0.0.1:${address.port}`,
+    close: () => new Promise<void>((resolve, reject) =>
+      server.close((error) => error ? reject(error) : resolve()),
+    ),
   };
 }
 
@@ -1802,7 +2356,7 @@ async function post(
       "user-agent": "dispatch-accept-test",
       ...headers,
     },
-    payload: body,
+    payload: JSON.stringify(body),
   });
   return { status: response.statusCode, json: response.json() };
 }

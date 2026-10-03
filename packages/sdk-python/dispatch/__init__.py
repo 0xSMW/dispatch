@@ -23,10 +23,12 @@ class AutomationRunEvent(TypedDict):
 class SplitEmail(TypedDict):
     id: str
     to: str
+    sandbox: bool
 
 
 class SendResult(TypedDict):
     id: str
+    sandbox: bool
     emails: NotRequired[list[SplitEmail]]
     request_id: NotRequired[str]
 
@@ -424,9 +426,11 @@ class Dispatch:
         return self._request("POST", "/emails/batch", emails, idempotency_key=idempotency_key, headers=headers)
 
     def emails(self, **query: Any) -> Json:
+        """Return email dictionaries with sandbox true only for entirely simulated sends."""
         return self._request("GET", _query("/emails", query))
 
     def email(self, email_id: str) -> Json:
+        """Return the email and recipients, each with a sandbox flag; sandbox never sends externally."""
         return self._request("GET", _path("emails", email_id))
 
     def update_email(self, email_id: str, email: EmailUpdateInput | Json) -> Json:

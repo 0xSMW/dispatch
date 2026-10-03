@@ -10,6 +10,14 @@ function dbReturning(rows: Array<Record<string, unknown>>) {
 }
 
 describe("email metrics", () => {
+  it("excludes stored email, recipient and event sandbox attribution while retaining mixed mail", async () => {
+    const db = dbReturning([{}]);
+    await emailMetrics(db, "tenant_1", parseMetricsQuery({}));
+    const sql = db.query.mock.calls[0]![0];
+    expect(sql).toContain("coalesce(e.sandbox, false) = false");
+    expect(sql).toContain("ev.data->>'sandbox'");
+    expect(sql).toContain("r.id = ev.recipient_id and r.sandbox");
+  });
   it("groups automation emails by step only with an automation filter", async () => {
     expect(() => parseMetricsQuery({ dimensions: "step" }, now)).toThrow("automation_id");
     const db = dbReturning([{ automation_id: "automation_1", automation_step: "welcome", sent: 2, delivered: 2, unique_opened: 1 }]);

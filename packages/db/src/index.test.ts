@@ -215,6 +215,7 @@ describe("paginate", () => {
 describe("acceptEmail", () => {
   function emailDb() {
     const query = vi.fn().mockImplementation((sql: string) => {
+      if (sql.includes("select settings from tenants")) return Promise.resolve({ rowCount: 1, rows: [{ settings: {} }] });
       if (sql.includes("from domains")) return Promise.resolve({ rowCount: 1, rows: [{ id: "dom_1" }] });
       if (sql.includes("from suppressions")) return Promise.resolve({ rowCount: 0, rows: [] });
       if (sql.includes("insert into emails")) {
@@ -361,6 +362,7 @@ describe("acceptEmail with a schedule phrase and a template sender", () => {
       calls.push({ sql, params });
       const custom = extra(sql, params);
       if (custom) return Promise.resolve(custom);
+      if (sql.includes("select settings from tenants")) return Promise.resolve({ rowCount: 1, rows: [{ settings: {} }] });
       if (sql.includes("from domains")) return Promise.resolve({ rowCount: 1, rows: [{ id: "dom_1", name: "example.com", sending: "enabled" }] });
       if (sql.includes("insert into emails")) {
         return Promise.resolve({
@@ -524,6 +526,7 @@ describe("acceptBatch", () => {
       if (["begin", "commit", "rollback", "savepoint batch_item", "release savepoint batch_item", "rollback to savepoint batch_item"].includes(sql)) {
         return { rows: [], rowCount: 0 };
       }
+      if (sql.includes("select settings from tenants")) return { rowCount: 1, rows: [{ settings: {} }] };
       if (sql.includes("from domains")) {
         const name = params?.[1];
         return name === "example.com"
@@ -543,21 +546,21 @@ describe("acceptBatch", () => {
     const result = await acceptBatch(
       db as never,
       [
-        { from: "hello@example.com", to: "ada@example.com", subject: "Hi", text: "Hello" },
-        { from: "hello@missing.test", to: "ada@example.com", subject: "Hi", text: "Hello" }
+        { from: "hello@example.com", to: "ada@dispatch-fixture.net", subject: "Hi", text: "Hello" },
+        { from: "hello@missing.test", to: "ada@dispatch-fixture.net", subject: "Hi", text: "Hello" }
       ],
       { tenant_id: "tenant_1", request_id: "req_1" },
       { validation: "permissive" }
     );
-    expect(result.data).toEqual([{ id: expect.any(String) }]);
+    expect(result.data).toEqual([{ id: expect.any(String), sandbox: false }]);
     expect(result.errors).toEqual([{ index: 1, message: "Sender domain is not verified" }]);
 
     const mixed = await acceptBatch(
       db as never,
       [
         { from: "hello@example.com", to: "not-an-email", subject: "Hi", text: "Hello" },
-        { from: "hello@example.com", to: "ada@example.com", subject: "Hi", text: "Hello", attachments: [] },
-        { from: "hello@example.com", to: "ada@example.com", subject: "Hi", text: "Hello" }
+        { from: "hello@example.com", to: "ada@dispatch-fixture.net", subject: "Hi", text: "Hello", attachments: [] },
+        { from: "hello@example.com", to: "ada@dispatch-fixture.net", subject: "Hi", text: "Hello" }
       ],
       { tenant_id: "tenant_1", request_id: "req_1" },
       { validation: "permissive" }
@@ -590,6 +593,7 @@ describe("ingestEmail", () => {
     const { ingestEmail } = await import("./emails.js");
     const mockClient = {
       query: vi.fn().mockImplementation((sql: string) => {
+        if (sql.includes("select settings from tenants")) return Promise.resolve({ rowCount: 1, rows: [{ settings: {} }] });
         if (sql.includes("from domains")) {
           return Promise.resolve({ rowCount: 1, rows: [{ id: "dom_1" }] });
         }
@@ -639,6 +643,7 @@ describe("ingestEmail", () => {
     const mockClient = {
       query: vi.fn().mockImplementation((sql: string, params: unknown[] = []) => {
         queries.push({ sql, params });
+        if (sql.includes("select settings from tenants")) return Promise.resolve({ rowCount: 1, rows: [{ settings: {} }] });
         if (sql.includes("from domains")) {
           return Promise.resolve({
             rowCount: 1,
@@ -703,6 +708,7 @@ describe("ingestEmail", () => {
     const mockClient = {
       query: vi.fn().mockImplementation((sql: string, params: unknown[] = []) => {
         queries.push({ sql, params });
+        if (sql.includes("select settings from tenants")) return Promise.resolve({ rowCount: 1, rows: [{ settings: {} }] });
         if (sql.includes("from templates")) {
           return Promise.resolve({
             rowCount: 1,

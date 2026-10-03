@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import { presentEmail, presentSend, type EmailRow } from "./present.js";
 
 // Keeps docs/api/openapi.json in step with the routes the API registers. Reads the route modules
 // as text, so it needs no database and never boots the server.
@@ -10,7 +11,17 @@ const spec = JSON.parse(readFileSync(new URL("../../../docs/api/openapi.json", i
   components: {
     schemas: {
       EventType: { enum: string[] };
-      EmailEvent: { properties: { type: { enum: string[]; description: string } } };
+      Email: { properties: Record<string, unknown> };
+      EmailRecipient: { properties: Record<string, unknown> };
+      SplitEmails: { items: { properties: Record<string, unknown> } };
+      BatchResult: { properties: { data: { items: { properties: Record<string, unknown> } } } };
+      EmailEvent: {
+        properties: {
+          type: { enum: string[]; description: string };
+          data: { properties: Record<string, unknown> };
+        };
+      };
+      WebhookPayload: { properties: { data: { properties: Record<string, unknown> } } };
     };
   };
 };
@@ -77,6 +88,79 @@ describe("route extraction", () => {
   });
 });
 
+describe("sandbox email responses", () => {
+  const email: EmailRow = {
+    id: "email_1",
+    from_email: "hello@acme.com",
+    created_at: "2026-10-03T09:00:00Z",
+    subject: "Test",
+    status: "queued",
+  };
+
+  it("preserves sandbox flags on send, batch item and split response shapes", () => {
+    expect(presentSend({ id: "email_1", sandbox: true })).toEqual({ id: "email_1", sandbox: true });
+    expect(presentSend({ id: "email_legacy" })).toEqual({ id: "email_legacy", sandbox: false });
+    expect(presentSend({
+      id: "email_1",
+      sandbox: true,
+      emails: [
+        { id: "email_1", to: "test@example.com", sandbox: true },
+        { id: "email_2", to: "person@acme.com", sandbox: false },
+      ],
+    })).toEqual({
+      id: "email_1",
+      sandbox: true,
+      emails: [
+        { id: "email_1", to: "test@example.com", sandbox: true },
+        { id: "email_2", to: "person@acme.com", sandbox: false },
+      ],
+    });
+  });
+
+  it("exposes mixed recipient flags without changing address arrays or status", () => {
+    const shown = presentEmail({
+      ...email,
+      sandbox: false,
+      recipients: [
+        { email: "test@example.com", kind: "to", sandbox: true },
+        { email: "person@acme.com", kind: "cc", sandbox: false },
+        { email: "test@qa.test", kind: "bcc", sandbox: true },
+      ],
+    });
+    expect(shown).toMatchObject({
+      sandbox: false,
+      to: ["test@example.com"],
+      cc: ["person@acme.com"],
+      bcc: ["test@qa.test"],
+      last_event: "queued",
+      recipients: [
+        { email: "test@example.com", kind: "to", sandbox: true },
+        { email: "person@acme.com", kind: "cc", sandbox: false },
+        { email: "test@qa.test", kind: "bcc", sandbox: true },
+      ],
+    });
+  });
+
+  it("exposes simulated delivery without inventing a provider ID or a new status", () => {
+    expect(presentEmail({
+      ...email,
+      status: "delivered",
+      sandbox: true,
+      recipients: [{ email: "test@example.com", kind: "to", sandbox: true }],
+    })).toMatchObject({ sandbox: true, message_id: null, last_event: "delivered" });
+  });
+
+  it("defaults legacy flags to false and exposes only public recipient fields", () => {
+    const shown = presentEmail({
+      ...email,
+      recipients: [{ email: "person@acme.com", kind: "to", token: "private" } as NonNullable<EmailRow["recipients"]>[number]],
+    });
+    expect(shown.sandbox).toBe(false);
+    expect(shown.recipients).toEqual([{ email: "person@acme.com", kind: "to", sandbox: false }]);
+    expect(presentEmail(email).recipients).toEqual([]);
+  });
+});
+
 describe("docs/api/openapi.json", () => {
   const code = codeRoutes();
   const documented = documentedRoutes();
@@ -112,6 +196,40 @@ describe("docs/api/openapi.json", () => {
 
   it("resolves every $ref", () => {
     expect(refs(spec).filter((pointer) => !resolves(pointer))).toEqual([]);
+  });
+
+  it("documents sandbox flags on send, batch, split, email and recipient responses", () => {
+    const operation = spec.paths["/emails"].post as {
+      responses: { "200": { content: { "application/json": { schema: { properties: Record<string, unknown> } } } } };
+    };
+    const schemas = spec.components.schemas;
+    for (const properties of [
+      operation.responses["200"].content["application/json"].schema.properties,
+      schemas.BatchResult.properties.data.items.properties,
+      schemas.SplitEmails.items.properties,
+      schemas.Email.properties,
+      schemas.EmailRecipient.properties,
+    ]) {
+      expect(properties.sandbox).toMatchObject({ type: "boolean" });
+    }
+    for (const kind of ["to", "cc", "bcc"]) {
+      expect(schemas.Email.properties[kind]).toEqual({ type: "array", items: { type: "string" } });
+    }
+    expect(schemas.Email.properties.recipients).toMatchObject({
+      items: { $ref: "#/components/schemas/EmailRecipient" },
+    });
+  });
+
+  it("distinguishes simulated delivery from real provider delivery in event schemas", () => {
+    for (const schema of [spec.components.schemas.EmailEvent, spec.components.schemas.WebhookPayload]) {
+      expect(schema.properties.data.properties.sandbox).toMatchObject({
+        type: "boolean",
+        description: expect.stringContaining("simulated"),
+      });
+    }
+    expect(spec.components.schemas.WebhookPayload.properties.data.properties.sandbox).toMatchObject({
+      description: expect.stringContaining("real recipients still receive provider delivery events"),
+    });
   });
 
   it("documents lifecycle event types and repeat-safe unsubscribe webhook fanout", () => {

@@ -124,9 +124,9 @@ Every response to an authenticated request carries `ratelimit-limit`, `ratelimit
 
 Set `topic_id` for Marketing email. Each recipient gets a signed preference link in `{{{UNSUBSCRIBE_URL}}}`, `{{{RESEND_UNSUBSCRIBE_URL}}}`, or `{{{DISPATCH_UNSUBSCRIBE_URL}}}`, and RFC 8058 one-click headers. Raw HTML and text also support `{{UNSUBSCRIBE_URL}}`. Only those placeholders are replaced in raw content. Caller unsubscribe variables and headers cannot replace the signed link; header names are matched case-insensitively. Scheduled content updates get the same protection. Opt-outs are checked again before delivery.
 
-A Marketing request with several recipients across `to`, `cc`, and `bcc` becomes separate emails. Addresses are deduplicated case-insensitively, in that order, with the first role kept as the `split_role` tag. Each email has one `to`, no `cc` or `bcc`, and its own link. The response is `{ "id": "first_email_id", "emails": [{ "id": "...", "to": "..." }] }`. A batch keeps one result per accepted item, with `emails` on each split item. Idempotency covers the whole request and returns the same IDs on retry. Invalid content rolls back every recipient in that item; an opted-out recipient fails independently without rejecting other recipients. Single-recipient responses remain `{ "id": "..." }`.
+A Marketing request with several recipients across `to`, `cc`, and `bcc` becomes separate emails. Addresses are deduplicated case-insensitively, in that order, with the first role kept as the `split_role` tag. Each email has one `to`, no `cc` or `bcc`, and its own link. The response is `{ "id": "first_email_id", "sandbox": false, "emails": [{ "id": "...", "to": "...", "sandbox": false }] }`. A batch keeps one result per accepted item, with `emails` on each split item. Idempotency covers the whole request and returns the same IDs on retry. Invalid content rolls back every recipient in that item; an opted-out recipient fails independently without rejecting other recipients. Single-recipient responses are `{ "id": "...", "sandbox": false }`, with `sandbox` set according to the recipient.
 
-Without `topic_id`, email is Transactional. Multi-recipient delivery, caller headers, raw content, and the response are unchanged. Neither path creates a contact just to send. Using an unsubscribe link for an unknown address may create an already opted-out contact; it never revives a deleted one. A link for a deleted topic opts that recipient out globally.
+Without `topic_id`, email is Transactional. Multi-recipient requests are not split, and caller headers and raw content are unchanged. Sandbox recipients are still simulated as described below. Neither path creates a contact just to send. Using an unsubscribe link for an unknown address may create an already opted-out contact; it never revives a deleted one. A link for a deleted topic opts that recipient out globally.
 
 `POST /emails/batch` takes up to 100 emails, as an array or as `{ "emails": [...] }`. Batch emails cannot have attachments. The `x-batch-validation` header picks the mode:
 
@@ -134,6 +134,24 @@ Without `topic_id`, email is Transactional. Multi-recipient delivery, caller hea
 - `permissive` accepts the valid emails. `data` lists only the accepted ones, and `errors` lists the others as `{ index, message }`, where `index` is the position in the request.
 
 `scheduled_at` takes ISO 8601 or a phrase such as `in 1 hour`, at most 30 days ahead. A time with no offset, such as `2026-10-03T09:00`, and a phrase such as `tomorrow at 9am` are read as UTC. Send an offset to mean another timezone. An email in `queued` or `scheduled` can be changed with `PATCH /emails/{id}` or cancelled with `POST /emails/{id}/cancel`.
+
+### Sandbox recipients
+
+Dispatch renders and stores emails to test addresses normally, but never sends those recipients to SES or another provider, even in production. This applies to Transactional and Marketing sends, batches, broadcasts, and automations.
+
+- `example.com`, `example.net`, `example.org`, and their subdomains.
+- Domains under `.test`, `.example`, or `.invalid`.
+- The tenant's [configured `sandbox_domains`](../settings.md), including their subdomains.
+
+Domain matching is case-insensitive and respects hostname boundaries. Adding `qa.acme.com` does not sandbox `notqa.acme.com`. Sender verification, API key restrictions, content validation, and Marketing opt-outs still apply.
+
+Send responses and accepted batch items include a boolean `sandbox`, as does every entry in a split Marketing response's `emails` array. Each flag describes the email identified by its adjacent `id`, not the whole split request. `GET /emails` and `GET /emails/{id}` include `sandbox` and a `recipients` array of `{ email, kind, sandbox }`. Existing `to`, `cc`, and `bcc` arrays remain strings.
+
+The email flag is true only when all original recipients are sandbox recipients. Mixed emails have `sandbox: false`; only the real recipients are sent, and each original recipient's flag remains available for inspection.
+
+Sandbox emails keep normal `queued`, `scheduled`, and `delivered` statuses. The worker records `email.delivered` with `data.sandbox: true` to identify simulated delivery. It does not call the provider or invent a provider message ID for an all-sandbox email. For mixed emails, the simulated delivery event names only sandbox recipients, while real recipients still get provider delivery events. Webhook payloads carry the same `data.sandbox` marker. Do not treat that marker as confirmation of real delivery.
+
+Sandbox activity is excluded from real sending, delivery, and engagement metrics, including automation step metrics. This is separate from the **SES account sandbox**, which restricts real delivery until AWS grants production access. Dispatch's sandbox recipients bypass the provider whether or not your SES account has production access.
 
 ## Broadcasts and automations
 
@@ -145,7 +163,7 @@ An event is often the first time Dispatch hears of a person, such as a signup. W
 
 ## Email metrics
 
-`GET /emails/metrics` counts `email_events` for the tenant. With no dates it covers the 7 days before now. `end_date` is exclusive. `opened` counts every open event, and `unique_opened` counts distinct emails, so the two differ once one email is opened twice.
+`GET /emails/metrics` counts real `email_events` for the tenant, excluding sandbox emails and simulated sandbox-recipient events from totals and rates. With no dates it covers the 7 days before now. `end_date` is exclusive. `opened` counts every open event, and `unique_opened` counts distinct emails, so the two differ once one email is opened twice.
 
 Rates are percentages rounded to two decimals. A zero denominator gives 0.
 

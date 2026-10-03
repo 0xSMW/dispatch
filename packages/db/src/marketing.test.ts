@@ -12,6 +12,7 @@ function fixture(opts: { optedOut?: string[]; template?: boolean } = {}) {
   const emails: unknown[][] = [];
   const recipients: unknown[][] = [];
   const query = vi.fn(async (sql: string, params: unknown[] = []) => {
+    if (sql.includes("select settings from tenants")) return { rows: [{ settings: {} }] };
     if (sql.includes("from domains")) return { rows: [{ id: "domain_1", name: "example.com", sending: "enabled" }] };
     if (sql.includes("from templates") && opts.template) return { rows: [{
       id: "version_1", template_id: "template_1", subject: "News", html: '<a href="{{{UNSUBSCRIBE_URL}}}">Leave</a>',

@@ -37,6 +37,18 @@ export async function appendEvent(
   data: Record<string, unknown>;
 } | null> {
   const mode = input.mode ?? "api";
+  // Tracking and unsubscribe paths inherit persisted attribution, including one recipient
+  // of a mixed email. Webhooks retain it even when tenant settings subsequently change.
+  if (input.emailId) {
+    const attribution = await client.query<{ sandbox: boolean }>(
+      `select (e.sandbox or coalesce(r.sandbox, false)) as sandbox from emails e
+       left join email_recipients r on r.tenant_id = e.tenant_id and r.email_id = e.id and r.id = $3
+       where e.tenant_id = $1 and e.id = $2`,
+      [input.tenantId, input.emailId, input.recipientId ?? null],
+    );
+    if (attribution.rows[0]?.sandbox) input = { ...input, data: { ...input.data, sandbox: true } };
+  }
+  const sandbox = input.data.sandbox === true;
   const row = await client.query<{
     id: string;
     tenant_id: string;
@@ -61,7 +73,9 @@ export async function appendEvent(
     ],
   );
   const event = row.rows[0];
-  if (!event) return null;
+  // Sandbox domains can grow while a mixed send retries. Reconcile newly simulated
+  // recipients even when the email's one simulation event was already recorded.
+  if (!event && (!sandbox || mode !== "delivery")) return null;
 
   if (mode === "delivery") {
     const status = statusFor(input.type as EventType);
@@ -69,28 +83,31 @@ export async function appendEvent(
       const rank = statusRank(status);
       await client.query(
         `update emails set status = $3, updated_at = now()
-         where tenant_id = $1 and id = $2 and (${currentRank}) <= $4`,
+         where tenant_id = $1 and id = $2 and (${currentRank}) <= $4${sandbox ? " and sandbox" : ""}`,
         [input.tenantId, input.emailId, status, rank],
       );
       if (input.recipients) {
         await client.query(
           `update email_recipients set status = $3, updated_at = now()
-           where tenant_id = $1 and email_id = $2 and lower(email) = any($5::text[]) and (${currentRank}) <= $4`,
+           where tenant_id = $1 and email_id = $2 and lower(email) = any($5::text[]) and (${currentRank}) <= $4
+             and sandbox = ${sandbox ? "true" : "false"}`,
           [input.tenantId, input.emailId, status, rank, input.recipients.map((email) => email.toLowerCase())],
         );
       } else {
         await client.query(
           `update email_recipients set status = $3, updated_at = now()
-           where tenant_id = $1 and email_id = $2 and (${currentRank}) <= $4`,
+           where tenant_id = $1 and email_id = $2 and (${currentRank}) <= $4
+             and sandbox = ${sandbox ? "true" : "false"}`,
           [input.tenantId, input.emailId, status, rank],
         );
       }
     }
 
+    if (!event) return null;
     const bounce = input.data.bounce as { type?: string } | undefined;
-    const suppress =
+    const suppress = !sandbox && (
       input.type === "email.complained" ||
-      (input.type === "email.bounced" && (bounce?.type ?? "Permanent") === "Permanent");
+      (input.type === "email.bounced" && (bounce?.type ?? "Permanent") === "Permanent"));
     if (suppress) {
       const origin = input.type === "email.complained" ? "complaint" : "bounce";
       // Removing a suppression keeps its row with removed_at set. A new bounce or complaint must
@@ -132,7 +149,7 @@ export async function appendEvent(
        on conflict (tenant_id, key) do nothing`,
       [id("dedupe"), input.tenantId, input.providerEventId, event.id],
     );
-    await client.query(
+    if (!sandbox) await client.query(
       `insert into provider_events_raw (id, tenant_id, provider, provider_event_id, event_id, payload)
        values ($1, $2, $6, $3, $4, $5)
        on conflict (tenant_id, provider, provider_event_id)
@@ -146,8 +163,8 @@ export async function appendEvent(
         input.provider ?? "fake",
       ],
     );
-    await incrementUsage(client, input.tenantId, `events.${input.type}`, 1);
-    if (input.type === "email.sent")
+    if (!sandbox) await incrementUsage(client, input.tenantId, `events.${input.type}`, 1);
+    if (!sandbox && input.type === "email.sent")
       await incrementUsage(client, input.tenantId, "emails.sent", 1);
   } else if (input.emailId) {
     const status =
@@ -158,7 +175,7 @@ export async function appendEvent(
       await client.query(
         `update emails set status = $3, updated_at = now()
          where tenant_id = $1 and id = $2
-           and status not in ('bounced', 'complained', 'failed', 'cancelled')`,
+           and status not in ('bounced', 'complained', 'failed', 'cancelled')${sandbox ? " and sandbox" : ""}`,
         [input.tenantId, input.emailId, status],
       );
     }
