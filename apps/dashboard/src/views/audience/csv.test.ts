@@ -24,6 +24,18 @@ describe("readHead", () => {
 });
 
 describe("guessMapping and columnMap", () => {
+  it("retains boolean/date declarations, including legacy reserved keys, and explicit type choices", () => {
+    const known = [{ key: "active", type: "boolean" as const }, { key: "renewed", type: "date" as const }, { key: "topics", type: "number" as const }];
+    const mapping = guessMapping(["Email", "Active", "Renewed", "Topics", "Score"], known);
+    expect(mapping.properties.map((property) => property.type)).toEqual(["boolean", "date", "number", "string"]);
+    mapping.properties[0]!.type = "string"; // A definition loaded later still wins at serialization.
+    mapping.properties[3] = { ...mapping.properties[3]!, type: "number", include: true };
+    expect(columnMap(mapping, known)).toMatchObject({ properties: {
+      active: { column: "Active", type: "boolean" }, renewed: { column: "Renewed", type: "date" },
+      topics: { column: "Topics", type: "number" }, score: { column: "Score", type: "number" },
+    } });
+  });
+
   it("maps standard columns by header name and offers the rest as properties", () => {
     const mapping = guessMapping(["E-mail Address", "First Name", "surname", "Opted Out", "Company", "Plan Tier"], [
       { key: "plan_tier", type: "number" },

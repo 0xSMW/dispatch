@@ -1,4 +1,4 @@
-import { ApiError, id } from "@dispatchmail/core";
+import { ApiError, id, isIsoDate, type PropertyType } from "@dispatchmail/core";
 import type { Queryable } from "./index.js";
 
 export type ContactRow = {
@@ -45,7 +45,7 @@ export function wrapProperties(properties: Record<string, unknown> | null | unde
   const wrapped: Record<string, { value: unknown; type: string }> = {};
   for (const [key, value] of Object.entries(properties ?? {})) {
     const declared = types.get(key);
-    const type = declared ?? (typeof value === "number" ? "number" : "string");
+    const type = declared ?? (typeof value === "number" ? "number" : typeof value === "boolean" ? "boolean" : "string");
     wrapped[key] = { value, type };
   }
   return wrapped;
@@ -58,11 +58,17 @@ export function assertPropertyValues(properties: Record<string, unknown> | undef
     if (value === null || value === undefined) continue;
     const type = types.get(key);
     if (!type) continue;
-    if (type === "number" && typeof value !== "number") {
+    if (type === "number" && (typeof value !== "number" || !Number.isFinite(value))) {
       throw new ApiError("validation_error", 400, `Property ${key} must be a number`);
     }
     if (type === "string" && typeof value !== "string") {
       throw new ApiError("validation_error", 400, `Property ${key} must be a string`);
+    }
+    if (type === "boolean" && typeof value !== "boolean") {
+      throw new ApiError("validation_error", 400, `Property ${key} must be a boolean`);
+    }
+    if (type === "date" && !isIsoDate(value)) {
+      throw new ApiError("validation_error", 400, `Property ${key} must be an ISO date`);
     }
   }
 }
@@ -234,14 +240,18 @@ export async function updateContact(
 export async function createProperty(
   db: Queryable,
   tenantId: string,
-  input: { key: string; type: "string" | "number"; fallback_value?: string | number | null },
+  input: { key: string; type: PropertyType; fallback_value?: string | number | boolean | null },
 ) {
   const existing = await db.query<{ id: string; type: string; deleted_at: string | null }>(
     "select id, type, deleted_at from contact_properties where tenant_id = $1 and key = $2",
     [tenantId, input.key],
   );
-  const fallback = JSON.stringify(input.fallback_value ?? null);
   const current = existing.rows[0];
+  if ((!current || current.deleted_at) && (input.key === "topics" || input.key === "segments")) {
+    throw new ApiError("validation_error", 400, `Property key ${input.key} is reserved`);
+  }
+  assertPropertyValues({ [input.key]: input.fallback_value }, [{ key: input.key, type: input.type }]);
+  const fallback = JSON.stringify(input.fallback_value ?? null);
   if (!current) {
     const inserted = await db.query(
       `insert into contact_properties (id, tenant_id, key, type, fallback_value)
@@ -274,6 +284,12 @@ export async function createProperty(
 }
 
 export async function updateProperty(db: Queryable, tenantId: string, propertyId: string, fallback: unknown) {
+  const existing = await db.query<PropertyDefinition>(
+    "select key, type from contact_properties where tenant_id = $1 and id = $2 and deleted_at is null",
+    [tenantId, propertyId],
+  );
+  if (!existing.rows[0]) throw new ApiError("not_found", 404, "Contact property not found");
+  assertPropertyValues({ [existing.rows[0].key]: fallback }, existing.rows);
   const row = await db.query(
     `update contact_properties set fallback_value = $3, updated_at = now()
      where tenant_id = $1 and id = $2 and deleted_at is null

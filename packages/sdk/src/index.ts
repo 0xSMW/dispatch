@@ -177,11 +177,31 @@ export type ContactUpdate = ({ id: string; email?: never } | { email: string; id
   unsubscribed?: boolean;
 };
 
+export type PropertyType = "string" | "number" | "boolean" | "date";
+/** Dates are ISO strings; null clears a fallback. */
+export type PropertyValue = string | number | boolean | null;
+export type ContactProperty = Row & {
+  object: "contact_property";
+  key: string;
+  type: PropertyType;
+  fallback_value: PropertyValue;
+};
+export type ContactPropertyCreate = { key: string; type?: PropertyType; fallbackValue?: PropertyValue };
+export type ImportColumn = { column: string; type?: PropertyType };
+/** Nested column-map keys use the API's snake_case names. */
+export type ImportColumnMap = {
+  email?: ImportColumn;
+  first_name?: ImportColumn | null;
+  last_name?: ImportColumn | null;
+  unsubscribed?: ImportColumn | null;
+  properties?: Record<string, ImportColumn>;
+};
+
 export type ContactImport = {
   file: Blob | string;
   filename?: string;
   // Sent as given. The API's keys are snake_case: { email: { column }, first_name: { column }, properties: { key: { column, type } } }.
-  columnMap?: Record<string, unknown>;
+  columnMap?: ImportColumnMap | Record<string, unknown>;
   onConflict?: "upsert" | "skip";
   segments?: Array<{ id: string }>;
   topics?: Array<{ id: string; subscription?: "opt_in" | "opt_out" }>;
@@ -214,6 +234,22 @@ export type BroadcastCreate = {
 };
 
 export type RecipientType = "sent" | "delivered" | "opened" | "clicked" | "bounced" | "complained" | "unsubscribed" | "suppressed";
+
+export type Operator = "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "contains" | "not_contains" | "starts_with" | "ends_with" | "within" | "not_within" | "exists" | "is_empty";
+export type Rule =
+  | { type: "rule"; field: string; operator: Operator; value?: unknown }
+  | { type: "and" | "or"; rules: Rule[] };
+/** Step config keys are sent as given, using snake_case. Variables stay literal. */
+export type SendEmailConfig = {
+  template: string | { id: string; variables?: Record<string, unknown> };
+  from?: string;
+  to?: string;
+  subject?: string;
+  reply_to?: string | string[];
+  topic_id?: string;
+  variables?: Record<string, unknown>;
+  variable_mapping?: Record<string, string>;
+};
 
 export type AutomationCreate = {
   name: string;
@@ -848,20 +884,20 @@ class Contacts extends Resource {
 }
 
 class ContactProperties extends Resource {
-  create(payload: { key: string; type?: "string" | "number"; fallbackValue?: string | number | null }) {
-    return this.client.call<Row>("POST", "/contact-properties", wire(payload));
+  create(payload: ContactPropertyCreate) {
+    return this.client.call<ContactProperty>("POST", "/contact-properties", wire(payload));
   }
 
   list(page: Page = {}) {
-    return this.client.call<List>("GET", `/contact-properties${query(page)}`);
+    return this.client.call<List<ContactProperty>>("GET", `/contact-properties${query(page)}`);
   }
 
   get(id: string) {
-    return this.client.call<Row>("GET", `/contact-properties/${seg(id)}`);
+    return this.client.call<ContactProperty>("GET", `/contact-properties/${seg(id)}`);
   }
 
-  update({ id, ...payload }: { id: string; fallbackValue?: string | number | null }) {
-    return this.client.call<Row>("PATCH", `/contact-properties/${seg(id)}`, wire(payload));
+  update({ id, ...payload }: { id: string; fallbackValue?: PropertyValue }) {
+    return this.client.call<ContactProperty>("PATCH", `/contact-properties/${seg(id)}`, wire(payload));
   }
 
   remove(id: string) {

@@ -284,12 +284,14 @@ export type Contact = {
   segments?: Array<{ id: string; name: string }>;
 };
 
+export type PropertyType = "string" | "number" | "boolean" | "date";
+
 export type ContactProperty = {
   object: "contact_property";
   id: string;
   key: string;
-  type: "string" | "number";
-  fallback_value: string | number | null;
+  type: PropertyType;
+  fallback_value: string | number | boolean | null;
   created_at: string;
   updated_at: string;
 };

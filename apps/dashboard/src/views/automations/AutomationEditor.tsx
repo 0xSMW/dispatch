@@ -20,7 +20,7 @@ import { useMutation } from "../../hooks/useMutation";
 import { useResource } from "../../hooks/useResource";
 import { ApiError } from "../../lib/client";
 import { useCan, useClient } from "../../shell/session";
-import type { Automation, EventDefinition, Segment, Template, Topic } from "../../types";
+import type { Automation, ContactProperty, EventDefinition, Segment, Template, Topic } from "../../types";
 import {
   descendants,
   insertStep,
@@ -70,7 +70,7 @@ export function AutomationEditor() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const tab = params.get("tab") === "runs" ? "runs" : params.get("tab") === "metrics" ? "metrics" : "builder";
-  // List stays the default: the canvas is checked in jsdom only, never in a real browser yet.
+  // List is the default; both views edit the same tree.
   const view = params.get("view") === "canvas" ? "canvas" : "list";
   const setView = (next: "list" | "canvas") =>
     setParams((previous) => {
@@ -116,18 +116,22 @@ export function AutomationEditor() {
   const segments = useList<Segment>("/segments", {}, { all: true });
   const events = useList<EventDefinition>("/events", {}, { all: true });
   const topics = useList<Topic>("/topics", {}, { all: true });
+  const properties = useList<ContactProperty>("/contact-properties", {}, { all: true });
   const options: StepOptions = useMemo(
     () => ({
       templates: templates.rows.map((item) => ({ value: item.id, label: item.alias ? `${item.name} (${item.alias})` : item.name })),
       segments: segments.rows.map((item) => ({ value: item.id, label: item.name })),
       events: events.rows.map((item) => item.name),
       topics: topics.rows.map((item) => ({ value: item.id, label: item.name })),
+      eventDefinitions: events.rows,
+      contactProperties: properties.rows,
+      eventName: draft?.tree.event ?? stored?.tree.event,
       templateNames: Object.fromEntries(templates.rows.flatMap((item) => [
         [item.id, item.name], ...(item.alias ? [[item.alias, item.name]] : []),
       ])),
       emailCounts: emailMetrics.data && !emailMetrics.error ? countsByStep(emailMetrics.data) : undefined,
     }),
-    [templates.rows, segments.rows, events.rows, topics.rows, emailMetrics.data, emailMetrics.error],
+    [templates.rows, segments.rows, events.rows, topics.rows, properties.rows, draft?.tree.event, stored?.tree.event, emailMetrics.data, emailMetrics.error],
   );
 
   const enabled = row ? isEnabled(row) : false;
@@ -135,7 +139,9 @@ export function AutomationEditor() {
   // A viewer sees the builder read-only, the same way as an enabled automation.
   const locked = !can || enabled || Boolean(problem);
   const dirty = Boolean(draft) && snapshot(draft!) !== saved;
-  const issues = useMemo(() => (draft ? treeIssues(draft.tree) : {}), [draft]);
+  const issues = useMemo(() => (draft ? treeIssues(draft.tree, {
+    events: events.rows, properties: properties.rows, topics: options.topics, segments: options.segments,
+  }) : {}), [draft, events.rows, properties.rows, options.topics, options.segments]);
   const nameIssue = draft && !draft.name.trim() ? "Enter a name." : null;
   const valid = !nameIssue && Object.keys(issues).length === 0;
 

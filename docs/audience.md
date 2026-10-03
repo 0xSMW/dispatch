@@ -6,11 +6,11 @@ Contacts are identified by email, matched case-insensitively. Create them throug
 
 ## Properties
 
-Properties store application-owned values such as `plan` or `project_count`.
+Properties store application-owned values such as `plan`, `project_count`, `activated`, or `last_active_at`.
 
 1. Add a property under Audience → Properties.
-2. Choose a key of 1–50 letters, digits, or underscores.
-3. Choose String or Number. The key and type cannot change after creation; the saved fallback can.
+2. Choose a key of 1 to 50 letters, digits, or underscores. New definitions cannot use `topics` or `segments`.
+3. Choose String, Number, Boolean, or Date. The key and type cannot change after creation; the saved fallback can.
 4. Write contact values through the API or an automation's Update contact step.
 
 For example, `PATCH /contacts/{id}` accepts:
@@ -19,16 +19,37 @@ For example, `PATCH /contacts/{id}` accepts:
 {
   "properties": {
     "plan": "starter",
-    "project_count": 3
+    "project_count": 3,
+    "activated": false,
+    "last_active_at": "2026-10-03T09:30:00Z"
   }
 }
 ```
 
-Send raw values when writing. Contact responses wrap each stored property as `{ "value": ..., "type": ... }`. Defined number properties require JSON numbers, and defined string properties require strings. A contact API patch merges properties; setting a property to null removes that stored key.
+Send raw values when writing. Contact responses wrap each stored property as `{ "value": ..., "type": ... }`. Defined number properties require finite JSON numbers, boolean properties require `true` or `false`, and string properties require strings. Date properties require ISO strings: `YYYY-MM-DD`, or a timestamp with seconds, optional fractional seconds, and `Z` or a numeric offset. Invalid calendar dates, unzoned timestamps, and other date formats are refused. Dates stay as supplied, without normalization; date-only values mean UTC midnight in rules.
+
+A contact API patch merges properties; setting a property to null removes that stored key. Undeclared keys remain allowed. Existing live property definitions named `topics` or `segments` keep their type and can still update their fallback. Their stored contact values take precedence over the membership fields in automation context.
+
+Creating or updating a property definition's `fallback_value` requires the same type as the definition, or null to clear it. For example, a Boolean fallback must be `false`, not `"false"`.
 
 Use `contact.plan` in [automation conditions](automations.md#conditions) and `{{{contact.plan}}}` in broadcast or automation templates. Conditions read stored values, not property definition fallbacks. The current send renderer does not automatically apply the fallback saved on a property definition either; use a [template inline fallback](templates.md#variables), such as `{{{contact.plan|starter}}}`, when needed.
 
 Deleting a property definition leaves values already stored on contacts. Treat definitions as types and metadata, not as a way to erase contact data.
+
+## CSV imports
+
+`POST /contacts/imports` accepts a multipart CSV file and a JSON `column_map` field. Map custom columns under `properties`:
+
+```json
+{
+  "properties": {
+    "activated": { "column": "Activated", "type": "boolean" },
+    "last_active_at": { "column": "Last active", "type": "date" }
+  }
+}
+```
+
+A declared property's type takes precedence over the map's type. Undeclared properties can use any of the four types. Boolean property cells accept `true`/`false`, `yes`/`no`, or `1`/`0`, case-insensitively. Date cells accept the same ISO strings as the contact API. Surrounding whitespace is trimmed; empty property cells are omitted. An invalid nonempty boolean or date cell fails that row, increments `counts.failed`, and does not stop valid rows from importing. The existing `unsubscribed` column remains a separate consent flag.
 
 ## Segments
 

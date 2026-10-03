@@ -1,5 +1,5 @@
 import { parse } from "csv-parse";
-import type { ImportColumnMap } from "@dispatchmail/core";
+import { isIsoDate, type ImportColumnMap, type PropertyType } from "@dispatchmail/core";
 import {
   claimImports,
   dedupeByEmail,
@@ -19,7 +19,7 @@ import type { Storage } from "@dispatchmail/storage";
 
 export const batchSize = 1_000;
 
-type ColumnType = "string" | "number" | "boolean";
+type ColumnType = PropertyType;
 
 export type Columns = {
   email: string;
@@ -31,6 +31,7 @@ export type Columns = {
 
 const emailPattern = /^[^\s@<>()",;]+@[^\s@<>()",;]+\.[^\s@<>()",;]+$/;
 const trueValues = new Set(["true", "yes", "y", "1", "unsubscribed"]);
+const propertyBooleans = new Map([["true", true], ["yes", true], ["1", true], ["false", false], ["no", false], ["0", false]]);
 const defaults = {
   email: ["email", "email_address", "e-mail", "email address"],
   first_name: ["first_name", "firstname", "first name"],
@@ -227,7 +228,12 @@ export function mapRecord(record: Record<string, string | undefined>, columns: C
       if (!Number.isFinite(value)) return null;
       properties[property.key] = value;
     } else if (property.type === "boolean") {
-      properties[property.key] = trueValues.has(raw.toLowerCase());
+      const value = propertyBooleans.get(raw.toLowerCase());
+      if (value === undefined) return null;
+      properties[property.key] = value;
+    } else if (property.type === "date") {
+      if (!isIsoDate(raw)) return null;
+      properties[property.key] = raw;
     } else {
       properties[property.key] = raw;
     }

@@ -243,6 +243,18 @@ button.addStepButton {
   align-items: end;
 }
 
+.contextField,
+.typedDate {
+  min-width: 0;
+}
+
+.variableMapping {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr) auto;
+  gap: 8px;
+  align-items: end;
+}
+
 /* Events tab */
 
 .schemaChips {
@@ -284,6 +296,7 @@ button.addStepButton {
 @media (max-width: 720px) {
   .branches,
   .ruleRow,
+  .variableMapping,
   .stepTimes {
     grid-template-columns: minmax(0, 1fr);
   }

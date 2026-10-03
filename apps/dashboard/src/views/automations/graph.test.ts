@@ -10,6 +10,7 @@ import {
   moveStep,
   placeIssues,
   removeStep,
+  ruleIssue,
   setWaitBranches,
   stepIssues,
   toGraph,
@@ -18,6 +19,7 @@ import {
   updateNode,
   type Graph,
 } from "./graph";
+import { contextFields } from "../../lib/rules";
 
 // New steps get a random key suffix. Tests count instead, so keys can be named.
 beforeEach(() => {
@@ -165,6 +167,35 @@ describe("editing", () => {
 });
 
 describe("validation", () => {
+  it("checks typed values and positive finite windows without the delay's 30-day cap", () => {
+    const fields = contextFields({ properties: [{ key: "renewed", type: "date" }, { key: "paid", type: "boolean" }, { key: "seats", type: "number" }] });
+    const rule = (field: string, operator: string, value?: unknown) => ({ type: "rule", field, operator, value });
+    expect(ruleIssue(rule("contact.renewed", "within", "60 days"), fields)).toBeNull();
+    expect(ruleIssue(rule("contact.renewed", "not_within", "0 days"), fields)).toMatch(/positive duration/);
+    expect(ruleIssue(rule("contact.renewed", "within", `${"9".repeat(310)} weeks`), fields)).toMatch(/positive duration/);
+    expect(ruleIssue(rule("contact.renewed", "gte", "2024-02-29"), fields)).toBeNull();
+    expect(ruleIssue(rule("contact.renewed", "gte", "2025-02-29"), fields)).toMatch(/ISO date/);
+    expect(ruleIssue(rule("contact.paid", "eq", "false"), fields)).toMatch(/true or false/);
+    expect(ruleIssue(rule("contact.paid", "eq", false), fields)).toBeNull();
+    expect(ruleIssue(rule("contact.seats", "eq", "2"), fields)).toMatch(/number/);
+    expect(ruleIssue(rule("contact.seats", "contains", 2), fields)).toMatch(/operator/);
+    expect(ruleIssue(rule("contact.topics", "contains", ""), fields)).toMatch(/topic or segment/);
+    expect(ruleIssue({ type: "and", rules: [rule("contact.renewed", "within", "tomorrow")] }, fields)).toMatch(/positive duration/);
+  });
+
+  it("validates wait filters with the waited event and mappings without touching literals", () => {
+    const literal = { plan: "event.plan", paid: false };
+    const tree = toTree([
+      { key: "trigger", type: "trigger", config: { event_name: "signup" } },
+      { key: "wait", type: "wait_for_event", config: { event_name: "purchase", filter_rule: { type: "rule", field: "event.total", operator: "gt", value: "2" } } },
+      { key: "send", type: "send_email", config: { template: { id: "tpl_1", variables: literal }, variable_mapping: { plan: "event.plan" } } },
+    ], [{ from: "trigger", to: "wait" }, { from: "wait", to: "send" }]).tree;
+    expect(treeIssues(tree, { events: [{ name: "signup", schema: { total: "string" } }, { name: "purchase", schema: { total: "number" } }] })).toEqual({ wait: { filter_rule: "Enter a number to compare with." } });
+    expect(toGraph(tree).steps[2]!.config).toEqual({ template: { id: "tpl_1", variables: literal }, variable_mapping: { plan: "event.plan" } });
+    expect(stepIssues({ key: "s", type: "send_email", config: { template: "tpl_1", variable_mapping: { "": "event." } } }).variable_mapping).toMatch(/variable name/);
+    expect(placeIssues(toGraph(tree).steps, [{ path: "steps.2.config.variable_mapping.plan", message: "Invalid path" }]).cards).toEqual({ send: { variable_mapping: "Invalid path" } });
+  });
+
   it("checks durations like core does", () => {
     expect(durationIssue("2 hours", true)).toBeNull();
     expect(durationIssue("30 days", true)).toBeNull();

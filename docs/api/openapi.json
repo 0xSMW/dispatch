@@ -18023,7 +18023,7 @@
           "properties": {
             "type": "object",
             "additionalProperties": true,
-            "description": "Values must match the type of a defined contact property."
+            "description": "Values must match the type of a defined contact property. Declared string, number, boolean, and date properties require matching JSON types; dates must be ISO strings. Undeclared keys remain allowed."
           },
           "unsubscribed": {
             "type": "boolean"
@@ -18089,7 +18089,7 @@
           "properties": {
             "type": "object",
             "additionalProperties": true,
-            "description": "Merged into the stored properties. A `null` value removes that key."
+            "description": "Merged into the stored properties. A `null` value removes that key. Declared string, number, boolean, and date properties require matching JSON types; dates must be ISO strings. Undeclared keys remain allowed."
           },
           "unsubscribed": {
             "type": "boolean"
@@ -18144,7 +18144,13 @@
               "properties": {
                 "value": {},
                 "type": {
-                  "type": "string"
+                  "type": "string",
+                  "enum": [
+                    "string",
+                    "number",
+                    "boolean",
+                    "date"
+                  ]
                 }
               }
             }
@@ -18369,14 +18375,17 @@
         "properties": {
           "key": {
             "type": "string",
-            "pattern": "^[A-Za-z0-9_]{1,50}$"
+            "pattern": "^[A-Za-z0-9_]{1,50}$",
+            "description": "New definitions cannot use topics or segments. Existing live legacy definitions with those keys can still update their fallback."
           },
           "type": {
             "type": "string",
             "description": "Defaults to `string`. Cannot change once set.",
             "enum": [
               "string",
-              "number"
+              "number",
+              "boolean",
+              "date"
             ]
           },
           "fallback_value": {
@@ -18389,9 +18398,13 @@
                 "type": "number"
               },
               {
+                "type": "boolean"
+              },
+              {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "Must match the property type, or be null. Date values are ISO strings: YYYY-MM-DD or a timestamp with seconds and Z or a numeric offset. Invalid calendar dates and unzoned timestamps are refused."
           }
         },
         "description": "Creating a key that already exists updates its fallback value."
@@ -18409,9 +18422,13 @@
                 "type": "number"
               },
               {
+                "type": "boolean"
+              },
+              {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "Must match the property type, or be null. Date values are ISO strings: YYYY-MM-DD or a timestamp with seconds and Z or a numeric offset. Invalid calendar dates and unzoned timestamps are refused."
           }
         }
       },
@@ -18439,7 +18456,9 @@
             "type": "string",
             "enum": [
               "string",
-              "number"
+              "number",
+              "boolean",
+              "date"
             ]
           },
           "fallback_value": {
@@ -18451,9 +18470,13 @@
                 "type": "number"
               },
               {
+                "type": "boolean"
+              },
+              {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "Must match the property type, or be null. Date values are ISO strings: YYYY-MM-DD or a timestamp with seconds and Z or a numeric offset. Invalid calendar dates and unzoned timestamps are refused."
           },
           "created_at": {
             "type": "string",
@@ -18972,7 +18995,11 @@
           },
           "column_map": {
             "type": "string",
-            "description": "JSON object mapping `email`, `first_name`, `last_name`, `unsubscribed`, and `properties.<key>` to `{ column, type }`. A field left out is found by its usual header name. Set `first_name`, `last_name`, or `unsubscribed` to `null` to leave that field out of the import even when the file has such a column."
+            "description": "JSON object mapping `email`, `first_name`, `last_name`, `unsubscribed`, and `properties.<key>` to `{ column, type }`. A field left out is found by its usual header name. Set `first_name`, `last_name`, or `unsubscribed` to `null` to leave that field out of the import even when the file has such a column. Property column types are string, number, boolean, and date; a declared property type wins. Boolean properties accept true/false, yes/no, or 1/0 case-insensitively. Dates accept ISO date-only values or zoned timestamps with seconds. Empty property cells are omitted; invalid nonempty boolean/date cells count as failed rows.",
+            "contentMediaType": "application/json",
+            "contentSchema": {
+              "$ref": "#/components/schemas/ImportColumnMap"
+            }
           },
           "on_conflict": {
             "type": "string",
@@ -19674,6 +19701,196 @@
           }
         }
       },
+      "ImportColumn": {
+        "type": "object",
+        "required": [
+          "column"
+        ],
+        "properties": {
+          "column": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "string",
+              "number",
+              "boolean",
+              "date"
+            ]
+          }
+        }
+      },
+      "ImportColumnMap": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "$ref": "#/components/schemas/ImportColumn"
+          },
+          "first_name": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImportColumn"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_name": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImportColumn"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "unsubscribed": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImportColumn"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "properties": {
+            "type": "object",
+            "propertyNames": {
+              "pattern": "^[A-Za-z0-9_]{1,50}$"
+            },
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ImportColumn"
+            }
+          }
+        }
+      },
+      "Rule": {
+        "description": "Dotted event.* and contact.* fields. contact.topics contains receiving topic IDs with defaults applied; contact.segments contains live static membership IDs. Live legacy properties with those names win. event.received_at is the immutable recorded event timestamp, not a payload value. within/not_within need a positive finite duration and test the inclusive interval [now-duration, now]. Missing or invalid dates return false for both; for valid dates not_within is the complement, including future values.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "field",
+              "operator"
+            ],
+            "properties": {
+              "type": {
+                "const": "rule"
+              },
+              "field": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operator": {
+                "type": "string",
+                "enum": [
+                  "eq",
+                  "neq",
+                  "gt",
+                  "gte",
+                  "lt",
+                  "lte",
+                  "contains",
+                  "not_contains",
+                  "starts_with",
+                  "ends_with",
+                  "within",
+                  "not_within",
+                  "exists",
+                  "is_empty"
+                ]
+              },
+              "value": {}
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "rules"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "and",
+                  "or"
+                ]
+              },
+              "rules": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 50,
+                "items": {
+                  "$ref": "#/components/schemas/Rule"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "SendEmailConfig": {
+        "type": "object",
+        "required": [
+          "template"
+        ],
+        "properties": {
+          "template": {
+            "$ref": "#/components/schemas/TemplateRef"
+          },
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string",
+            "format": "email"
+          },
+          "subject": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 998
+          },
+          "reply_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1,
+                "maxItems": 50
+              }
+            ]
+          },
+          "topic_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "variables": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "variable_mapping": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Maps template variable names to dotted event.* or contact.* fields. Mappings override literal variables, read own properties only, and omit missing values. Fresh recipient and unsubscribe context stays protected."
+          }
+        }
+      },
       "AutomationStep": {
         "type": "object",
         "required": [
@@ -19701,9 +19918,55 @@
           "config": {
             "type": "object",
             "additionalProperties": true,
-            "description": "Depends on `type`. For `send_email`: `template` (required), `from` (optional when the template stores a sender), `to`, `subject`, `reply_to`, `variables`, and `topic_id`. With a `topic_id` the email is subscription mail, and a contact who unsubscribed from everything or opted out of that topic is skipped. Without one the email always sends, as a receipt or a password reset must."
+            "description": "Depends on `type`. For `send_email`: `template` (required), `from` (optional when the template stores a sender), `to`, `subject`, `reply_to`, `variables`, `variable_mapping`, and `topic_id`. With a `topic_id` the email is subscription mail, and a contact who unsubscribed from everything or opted out of that topic is skipped. Without one the email always sends, as a receipt or a password reset must. Literal variables are not interpreted as field paths. Condition config uses Rule; send_email config uses SendEmailConfig."
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "send_email"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "required": [
+                "config"
+              ],
+              "properties": {
+                "config": {
+                  "$ref": "#/components/schemas/SendEmailConfig"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "condition"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "required": [
+                "config"
+              ],
+              "properties": {
+                "config": {
+                  "$ref": "#/components/schemas/Rule"
+                }
+              }
+            }
+          }
+        ]
       },
       "AutomationConnection": {
         "type": "object",

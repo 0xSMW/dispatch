@@ -32,19 +32,24 @@ Contact creation and property changes are not automation triggers by themselves.
 A Condition chooses the met or not-met path. It reads:
 
 - `event.<field>` from the original triggering payload, such as `event.plan`.
+- `event.received_at` from the recorded event's timestamp. A payload field with that name cannot replace it.
 - `contact.<field>` from the current live contact when the condition executes. Custom properties are flattened, so use `contact.plan`, not `contact.properties.plan`.
-- Built-in contact fields: `id`, `email`, `first_name`, `last_name`, and `unsubscribed`. With no live contact, the contact context is null.
+- Built-in contact fields: `id`, `email`, `first_name`, `last_name`, `created_at`, and `unsubscribed`. With no live contact, the contact context is null.
+- `contact.topics`, the topic IDs the contact receives, with defaults applied and an empty list for a global opt-out.
+- `contact.segments`, the contact's live static segment IDs.
 
-Property definition fallbacks are not applied to this condition context. Use `exists` or `is_empty` when a field may be absent.
+Property definition fallbacks are not applied to this condition context. Existing stored properties named `topics` or `segments` retain precedence over the membership lists. Use `exists` or `is_empty` when a field may be absent. Wait-for-event filters use the same context, with `event.received_at` belonging to the event that satisfies the wait.
 
 | Operator | Meaning |
 |:---|:---|
 | `eq`, `neq` | Strict equality or inequality. The number `3` is not the string `"3"`. |
-| `gt`, `gte`, `lt`, `lte` | Ordered comparison; numbers and numeric strings can be compared. Missing or non-comparable values return false. |
+| `gt`, `gte`, `lt`, `lte` | Ordered comparison; numbers, numeric strings, and ISO dates can be compared. Missing or non-comparable values return false. |
 | `contains` | Case-sensitive substring match for text, or exact item membership for an array. |
+| `not_contains` | The exact negation of `contains`, including when the field is missing. |
 | `starts_with`, `ends_with` | Case-sensitive text prefix or suffix match. |
 | `exists` | Value is neither missing nor null; an empty string still exists. |
 | `is_empty` | Value is missing, null, an empty string, or an empty array. `0` and `false` are not empty. |
+| `within`, `not_within` | Tests an ISO date against the inclusive window from now minus a positive finite duration to now, such as `"7 days"`. Missing or invalid dates return false for both. For valid dates, `not_within` is the complement, including future dates. |
 
 Combine rules with `and` (all match) or `or` (any match). For example, a condition's API `config` can be:
 
@@ -58,7 +63,11 @@ Combine rules with `and` (all match) or `or` (any match). For example, a conditi
 }
 ```
 
-Groups allow 1–50 child rules and at most 10 nested levels. The current custom [property types](audience.md#properties) are string and number.
+Groups allow 1 to 50 child rules and at most 10 nested levels. Custom [property types](audience.md#properties) are string, number, boolean, and date. Use JSON booleans and numbers for typed comparisons, and ISO strings for dates. Date-only values mean UTC midnight.
+
+The field picker uses declared contact properties, the selected event's schema, and topic and segment names. It limits operators to the field's type. Unknown event fields still accept a manually typed field and value.
+
+For example, `{ "type": "rule", "field": "contact.topics", "operator": "contains", "value": "topic_..." }` checks a topic preference. `{ "type": "rule", "field": "event.received_at", "operator": "within", "value": "2 days" }` checks event freshness.
 
 ## Steps
 
@@ -75,6 +84,27 @@ Groups allow 1–50 child rules and at most 10 nested levels. The current custom
 The run ends when its chosen path has no next step. The editor's End marker is not a separate configurable step.
 
 A send step can inherit From from its template and override the subject and reply-to. Trigger payload fields are available as template variables, and explicit step variables override them. Recipient fields are available under `contact.*`, plus `FIRST_NAME`, `LAST_NAME`, and `EMAIL`. See [template variables](templates.md#variables).
+
+### Variable mappings
+
+Use a send step's field picker, or its optional `variable_mapping` config, to map template variable names to dotted context fields:
+
+```json
+{
+  "template": {
+    "id": "template_...",
+    "variables": { "PLAN": "starter" }
+  },
+  "variable_mapping": {
+    "PLAN": "contact.plan",
+    "RECEIVED_AT": "event.received_at"
+  }
+}
+```
+
+Mappings override literal variables when the source exists. They read only own properties, and missing source values are omitted. Existing `template.variables` values stay literal: `"contact.plan"` is text unless supplied through `variable_mapping`. Automatic event payload variables still work. The server builds fresh contact context for the actual recipient, and reserved recipient and unsubscribe variables cannot be replaced by mappings or event data.
+
+Mapped values retain their JSON type and must match the template variable's declared type. Contact properties and event fields can be boolean or date, but template variable declarations remain string, number, or list. Use boolean contact fields in template conditionals rather than mapping them to a declared string variable.
 
 Set a Topic on the send step for Marketing email. It skips deleted contacts, global unsubscribes, and topic opt-outs, adds recipient-specific unsubscribe links and one-click headers, and checks opt-outs again at delivery. With no topic, the step is Transactional and does not enforce marketing subscriptions, including for a deleted contact's address. A template that prints an unsubscribe link needs a topic.
 

@@ -10,7 +10,7 @@ from email.message import Message
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
 
-from dispatch import Dispatch, DispatchError
+from dispatch import ContactPropertyInput, Dispatch, DispatchError, ImportColumnMap, SendEmailConfig
 
 
 class Recorder(BaseHTTPRequestHandler):
@@ -164,6 +164,28 @@ class TestDispatch(unittest.TestCase):
         self.assertEqual(sent["path"], "/emails")
         self.assertEqual(sent["headers"]["idempotency-key"], "idem-1")
         self.assertEqual(sent["headers"]["authorization"], "Bearer sk_test")
+
+    def test_typed_property_and_mapping_contracts(self):
+        prop: ContactPropertyInput = {"key": "activated", "type": "boolean", "fallback_value": False}
+        self.client.create_contact_property(prop)
+        self.assertEqual(Recorder.calls[-1]["body"], prop)
+        self.assertIs(Recorder.calls[-1]["body"]["fallback_value"], False)
+        date: ContactPropertyInput = {"key": "last_active_at", "type": "date", "fallback_value": "2026-10-03T09:30:00+02:00"}
+        self.client.create_contact_property(date)
+        self.assertEqual(Recorder.calls[-1]["body"], date)
+        self.client.update_contact_property("prop_1", False)
+        self.assertEqual(Recorder.calls[-1]["body"], {"fallback_value": False})
+        self.client.update_contact_property("prop_1", None)
+        self.assertEqual(Recorder.calls[-1]["body"], {"fallback_value": None})
+        config: SendEmailConfig = {
+            "template": {"id": "template_1", "variables": {"PLAN": "contact.plan", "FLAG": False}},
+            "variable_mapping": {"PLAN": "contact.plan", "WHEN": "event.received_at"},
+        }
+        self.client.create_automation({"name": "Typed", "steps": [{"key": "send", "type": "send_email", "config": config}]})
+        self.assertEqual(Recorder.calls[-1]["body"]["steps"][0]["config"], config)
+        column_map: ImportColumnMap = {"properties": {"when": {"column": "when", "type": "date"}}}
+        self.client.import_contacts("email,when\na@example.com,2026-10-03\n", column_map=column_map)
+        self.assertIn(json.dumps(column_map).encode(), Recorder.calls[-1]["body"])
 
     def test_marketing_split_response(self):
         result = {"id": "email_1", "emails": [

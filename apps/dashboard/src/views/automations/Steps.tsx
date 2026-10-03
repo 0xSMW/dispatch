@@ -6,7 +6,11 @@ import { Field, Select, Switch, TextArea, type Option } from "../../components/F
 import { Menu, type MenuItem } from "../../components/Menu";
 import { Tile } from "../../components/PageHeader";
 import { Time } from "../../components/Time";
+import { ContextField } from "../../components/ContextField";
+import { TypedValue } from "../../components/TypedValue";
 import { useResource } from "../../hooks/useResource";
+import { contextFields, isIsoDate, operatorsForType, propertyTypes, typedValue, valueIssue, valueKind, type ContextField as ContextFieldRow } from "../../lib/rules";
+import type { ContactProperty, EventDefinition, PropertyType } from "../../types";
 import { EmailCountLine, type EmailCounts } from "./EmailMetrics";
 import {
   branchLabels,
@@ -27,6 +31,9 @@ import "../../styles/automations.css";
 
 export type StepOptions = {
   templates: Option[]; segments: Option[]; events: string[]; topics?: Option[];
+  eventDefinitions?: EventDefinition[];
+  contactProperties?: ContactProperty[];
+  eventName?: string;
   templateNames?: Record<string, string>;
   emailCounts?: Record<string, EmailCounts>;
 };
@@ -294,8 +301,13 @@ type FormProps = {
 /** A step's config form. The list card and the canvas side panel both render it. */
 export function StepForm({ node, path, index, actions, disabled, errors, options }: FormProps) {
   const config = node.config;
+  const fields = contextFields({
+    events: options?.eventDefinitions, properties: options?.contactProperties, topics: options?.topics, segments: options?.segments,
+  }, node.type === "wait_for_event" ? String(config.event_name ?? "") : options?.eventName);
   const set = (field: string, value: unknown) =>
     actions?.change(node.key, (current) => ({ ...current, config: { ...current.config, [field]: value } }));
+  const setRuleTypes = (ruleTypes: Record<string, PropertyType>) =>
+    actions?.change(node.key, (current) => ({ ...current, ruleTypes }));
   const text = (field: string) => (config[field] === undefined || config[field] === null ? "" : String(config[field]));
   const json = (field: string, value: unknown) => node.drafts?.[field] ?? (value && Object.keys(value as object).length ? JSON.stringify(value, null, 2) : "");
   const setJson = (field: string, raw: string, apply: (parsed: Record<string, unknown>, current: Node) => Node["config"]) =>
@@ -390,6 +402,13 @@ export function StepForm({ node, path, index, actions, disabled, errors, options
             disabled={disabled}
             wide
           />
+          <VariableMappings
+            mapping={(config.variable_mapping ?? {}) as Record<string, string>}
+            onChange={(mapping) => set("variable_mapping", mapping)}
+            fields={fields}
+            disabled={disabled}
+            error={errors.variable_mapping}
+          />
         </div>
       );
     }
@@ -434,10 +453,12 @@ export function StepForm({ node, path, index, actions, disabled, errors, options
               hint="Resume only when the event payload passes a rule."
               checked={Boolean(config.filter_rule)}
               disabled={disabled}
-              onChange={(on) => set("filter_rule", on ? { type: "rule", field: "event.", operator: "eq", value: "" } : undefined)}
+              onChange={(on) => actions?.change(node.key, (current) => ({
+                ...current, ruleTypes: {}, config: { ...current.config, filter_rule: on ? { type: "rule", field: "event.", operator: "eq", value: "" } : undefined },
+              }))}
             />
             {config.filter_rule ? (
-              <RuleEditor rule={config.filter_rule as Rule} onChange={(rule) => set("filter_rule", rule)} disabled={disabled} />
+              <RuleEditor rule={config.filter_rule as Rule} onChange={(rule) => set("filter_rule", rule)} disabled={disabled} fields={fields} valueTypes={node.ruleTypes} onTypesChange={setRuleTypes} />
             ) : null}
             {errors.filter_rule ? <span className="fieldError" role="alert">{errors.filter_rule}</span> : null}
           </div>
@@ -450,6 +471,9 @@ export function StepForm({ node, path, index, actions, disabled, errors, options
             rule={config as Rule}
             onChange={(rule) => actions?.change(node.key, (current) => ({ ...current, config: rule as Record<string, unknown> }))}
             disabled={disabled}
+            fields={fields}
+            valueTypes={node.ruleTypes}
+            onTypesChange={setRuleTypes}
           />
           {errors.rule ? (
             <span className="fieldError" role="alert">
@@ -582,6 +606,9 @@ export const operatorLabels: Record<string, string> = {
   lt: "less than",
   lte: "at most",
   contains: "contains",
+  not_contains: "does not contain",
+  within: "within the last",
+  not_within: "not within the last",
   starts_with: "starts with",
   ends_with: "ends with",
   exists: "exists",
@@ -590,13 +617,44 @@ export const operatorLabels: Record<string, string> = {
 
 const blankRule: Rule = { type: "rule", field: "", operator: "eq", value: "" };
 
+/** Keep manual types attached to their rules when grouping or removing a sibling. */
+function moveRuleTypes(types: Record<string, PropertyType>, location: string, operation: "wrap" | "unwrap" | number) {
+  const prefix = location ? `${location}.` : "";
+  return Object.fromEntries(Object.entries(types).flatMap(([key, type]) => {
+    if (key !== location && !key.startsWith(prefix)) return [[key, type]];
+    const rest = key === location ? "" : key.slice(prefix.length);
+    if (operation === "wrap") return [[`${prefix}0${rest ? `.${rest}` : ""}`, type]];
+    if (operation === "unwrap") {
+      if (rest !== "0" && !rest.startsWith("0.")) return [];
+      const tail = rest.slice(2);
+      return [[tail ? `${prefix}${tail}` : location, type]];
+    }
+    const [first, ...tail] = rest.split(".");
+    const index = Number(first);
+    if (index === operation) return [];
+    return [[index > operation ? `${prefix}${index - 1}${tail.length ? `.${tail.join(".")}` : ""}` : key, type]];
+  }));
+}
+
 /** One rule, or an all-of / any-of group of rules, as the core `ruleSchema` defines them. */
-export function RuleEditor({ rule, onChange, disabled = false, depth = 0 }: { rule: Rule; onChange: (rule: Rule) => void; disabled?: boolean; depth?: number }) {
+export function RuleEditor({ rule, onChange, disabled = false, depth = 0, fields = [], valueTypes = {}, onTypesChange, location = "" }: {
+  rule: Rule; onChange: (rule: Rule) => void; disabled?: boolean; depth?: number; fields?: ContextFieldRow[];
+  valueTypes?: Record<string, PropertyType>; onTypesChange?: (types: Record<string, PropertyType>) => void; location?: string;
+}) {
   const mode = rule?.type === "and" || rule?.type === "or" ? rule.type : "rule";
+  const rowTypes = (at: string) => ({
+    manualType: valueTypes[at],
+    onTypeChange: onTypesChange ? (type: PropertyType) => onTypesChange({ ...valueTypes, [at]: type }) : undefined,
+  });
   const setMode = (next: string) => {
     if (next === mode) return;
-    if (next === "rule") onChange(rule.type === "rule" ? rule : (rule.rules[0] ?? blankRule));
-    else onChange(rule.type === "rule" ? { type: next as "and" | "or", rules: [rule] } : { ...rule, type: next as "and" | "or" });
+    if (next === "rule") {
+      onTypesChange?.(moveRuleTypes(valueTypes, location, "unwrap"));
+      onChange(rule.type === "rule" ? rule : (rule.rules[0] ?? blankRule));
+    } else {
+      if (rule.type === "rule") onTypesChange?.(moveRuleTypes(valueTypes, location, "wrap"));
+      onChange(rule.type === "rule" ? { type: next as "and" | "or", rules: [rule] } : { ...rule, type: next as "and" | "or" });
+    }
   };
   return (
     <div className={depth ? "ruleEditor nested" : "ruleEditor"}>
@@ -612,7 +670,7 @@ export function RuleEditor({ rule, onChange, disabled = false, depth = 0 }: { ru
         disabled={disabled}
       />
       {rule.type === "rule" ? (
-        <RuleRow rule={rule} onChange={onChange} disabled={disabled} />
+        <RuleRow rule={rule} onChange={onChange} disabled={disabled} fields={fields} {...rowTypes(location)} />
       ) : (
         <div className="stack">
           {rule.rules.map((child, index) => (
@@ -622,6 +680,8 @@ export function RuleEditor({ rule, onChange, disabled = false, depth = 0 }: { ru
                   rule={child}
                   onChange={(next) => onChange({ ...rule, rules: rule.rules.map((item, at) => (at === index ? next : item)) })}
                   disabled={disabled}
+                  fields={fields}
+                  {...rowTypes(`${location ? `${location}.` : ""}${index}`)}
                 />
               ) : (
                 <RuleEditor
@@ -629,6 +689,10 @@ export function RuleEditor({ rule, onChange, disabled = false, depth = 0 }: { ru
                   depth={depth + 1}
                   onChange={(next) => onChange({ ...rule, rules: rule.rules.map((item, at) => (at === index ? next : item)) })}
                   disabled={disabled}
+                  fields={fields}
+                  valueTypes={valueTypes}
+                  onTypesChange={onTypesChange}
+                  location={`${location ? `${location}.` : ""}${index}`}
                 />
               )}
               <button
@@ -636,7 +700,10 @@ export function RuleEditor({ rule, onChange, disabled = false, depth = 0 }: { ru
                 className="ghost icon small"
                 aria-label="Remove rule"
                 disabled={disabled || rule.rules.length <= 1}
-                onClick={() => onChange({ ...rule, rules: rule.rules.filter((_, at) => at !== index) })}
+                onClick={() => {
+                  onTypesChange?.(moveRuleTypes(valueTypes, location, index));
+                  onChange({ ...rule, rules: rule.rules.filter((_, at) => at !== index) });
+                }}
               >
                 <Trash2 size={14} />
               </button>
@@ -663,75 +730,122 @@ export function RuleEditor({ rule, onChange, disabled = false, depth = 0 }: { ru
   );
 }
 
-type ValueKind = "text" | "number" | "boolean";
-
-function kindOf(value: unknown): ValueKind {
-  return typeof value === "number" ? "number" : typeof value === "boolean" ? "boolean" : "text";
-}
-
-function RuleRow({ rule, onChange, disabled }: { rule: Extract<Rule, { type: "rule" }>; onChange: (rule: Rule) => void; disabled: boolean }) {
+function RuleRow({ rule, onChange, disabled, fields, manualType: savedType, onTypeChange }: {
+  rule: Extract<Rule, { type: "rule" }>; onChange: (rule: Rule) => void; disabled: boolean; fields: ContextFieldRow[];
+  manualType?: PropertyType; onTypeChange?: (type: PropertyType) => void;
+}) {
   const unary = rule.operator === "exists" || rule.operator === "is_empty";
-  const kind = kindOf(rule.value);
-  // The number field keeps what was typed. An empty or half-typed value is stored as NaN, which
-  // the editor reports, instead of quietly becoming 0 or null.
-  const [text, setText] = useState(typeof rule.value === "number" && Number.isFinite(rule.value) ? String(rule.value) : "");
-  const convert = (next: ValueKind): unknown =>
-    next === "number" ? Number(rule.value) || 0 : next === "boolean" ? rule.value === true || rule.value === "true" : String(rule.value ?? "");
+  const window = rule.operator === "within" || rule.operator === "not_within";
+  const known = fields.find((field) => field.path === rule.field);
+  const [localType, setLocalType] = useState<PropertyType>();
+  const manualType = savedType ?? (onTypeChange ? undefined : localType) ?? (window || isIsoDate(rule.value) ? "date" : valueKind(rule.value));
+  const setManualType = (type: PropertyType) => {
+    setLocalType(type);
+    onTypeChange?.(type);
+  };
+  const kind = known?.type ?? manualType;
+  const convert = (type: typeof kind): unknown => {
+    if (type === "boolean") return rule.value === true || rule.value === "true";
+    if (type === "number") return Number.isFinite(Number(rule.value)) ? Number(rule.value) : 0;
+    if (type === "date") return isIsoDate(rule.value) ? rule.value : "";
+    return String(rule.value ?? "");
+  };
+  const changeType = (type: typeof kind, field = rule.field) => {
+    const choices = operatorsForType(type);
+    const operator = choices.includes(rule.operator) ? rule.operator : choices[0]!;
+    const next: Rule = { ...rule, field, operator };
+    if (operator === "exists" || operator === "is_empty") delete next.value;
+    else next.value = operator === "within" || operator === "not_within" ? rule.value : convert(type);
+    onChange(next);
+  };
+  const allowed = operatorsForType(kind);
+  // Loaded incompatible operators are visible, never silently rewritten by opening the editor.
+  const operatorOptions = allowed.includes(rule.operator) ? allowed : [rule.operator, ...allowed];
+  const raw = typeof rule.value === "number" && !Number.isFinite(rule.value) ? "" : String(rule.value ?? "");
   return (
     <div className="ruleRow">
-      <Field label="Field" value={rule.field} onChange={(field) => onChange({ ...rule, field })} placeholder="event.plan" mono disabled={disabled} />
+      <ContextField value={rule.field} onChange={(field) => {
+        const selected = fields.find((item) => item.path === field);
+        if (selected) {
+          setManualType(selected.type === "set" ? "string" : selected.type);
+          changeType(selected.type, field);
+        } else changeType(manualType, field);
+      }} fields={fields} disabled={disabled} />
       <Select
         label="Operator"
         value={rule.operator}
         onChange={(operator) => {
           const next: Rule = { ...rule, operator };
           if (operator === "exists" || operator === "is_empty") delete (next as { value?: unknown }).value;
-          else if (next.value === undefined) next.value = "";
+          else if (operator === "within" || operator === "not_within") next.value = window ? rule.value : "1 day";
+          else if (window || next.value === undefined) next.value = convert(kind);
           onChange(next);
         }}
-        options={Object.entries(operatorLabels).map(([value, label]) => ({ value, label }))}
+        options={operatorOptions.map((value) => ({ value, label: operatorLabels[value] ?? value }))}
         disabled={disabled}
       />
       {unary ? null : (
         <>
-          <Select
+          {!known ? <Select
             label="Type"
             value={kind}
             onChange={(next) => {
-              const value = convert(next as ValueKind);
-              if (next === "number") setText(String(value));
-              onChange({ ...rule, value });
+              setManualType(next as PropertyType);
+              changeType(next as PropertyType);
             }}
-            options={[
-              { value: "text", label: "Text" },
-              { value: "number", label: "Number" },
-              { value: "boolean", label: "True or false" },
-            ]}
+            options={propertyTypes}
             disabled={disabled}
-          />
-          {kind === "boolean" ? (
+          /> : <Field label="Type" value={kind} onChange={() => undefined} disabled />}
+          {window ? (
+            <Field label="Duration" value={raw} onChange={(value) => onChange({ ...rule, value })} placeholder="7 days" hint="Inclusive, from now minus this duration through now." disabled={disabled} />
+          ) : kind === "set" ? (
             <Select
               label="Value"
-              value={String(rule.value)}
-              onChange={(value) => onChange({ ...rule, value: value === "true" })}
-              options={["true", "false"]}
+              value={raw}
+              onChange={(value) => onChange({ ...rule, value })}
+              options={raw && !known?.choices?.some((choice) => choice.value === raw) ? [{ value: raw, label: raw }, ...(known?.choices ?? [])] : known?.choices ?? []}
+              placeholder="Choose a member"
               disabled={disabled}
             />
           ) : (
-            <Field
-              label="Value"
-              type={kind === "number" ? "number" : "text"}
-              value={kind === "number" ? text : String(rule.value ?? "")}
+            <TypedValue
+              key={`${rule.field}:${kind}`}
+              type={kind}
+              value={raw}
               onChange={(value) => {
-                if (kind !== "number") return onChange({ ...rule, value });
-                setText(value);
-                onChange({ ...rule, value: value.trim() === "" ? Number.NaN : Number(value) });
+                onChange({ ...rule, value: kind === "number" && !value.trim() ? Number.NaN : typedValue(kind, value) ?? "" });
               }}
+              error={valueIssue(kind, raw)}
               disabled={disabled}
             />
           )}
         </>
       )}
+    </div>
+  );
+}
+
+function VariableMappings({ mapping, onChange, fields, disabled, error }: {
+  mapping: Record<string, string>; onChange: (mapping: Record<string, string>) => void; fields: ContextFieldRow[]; disabled: boolean; error?: string;
+}) {
+  const entries = Object.entries(mapping);
+  const update = (index: number, key: string, path: string) => {
+    if (entries.some(([name], at) => at !== index && name === key)) return;
+    onChange(Object.fromEntries(entries.map((entry, at) => at === index ? [key, path] : entry)));
+  };
+  return (
+    <div className="wide stack" role="group" aria-label="Variable mappings">
+      <strong>Variable mappings</strong>
+      <span className="fieldHint">Read a variable from the event or current contact. Mappings override literal variables above; missing fields are omitted.</span>
+      {entries.map(([name, path], index) => (
+        <div className="variableMapping" key={index}>
+          <Field label="Variable name" value={name} onChange={(key) => update(index, key, path)} placeholder="first_name" mono disabled={disabled} />
+          <ContextField label="Context field" value={path} onChange={(value) => update(index, name, value)} fields={fields} disabled={disabled} />
+          <button type="button" className="ghost icon small" aria-label={`Remove mapping ${name || index + 1}`} disabled={disabled} onClick={() => onChange(Object.fromEntries(entries.filter((_, at) => at !== index)))}><Trash2 size={14} /></button>
+        </div>
+      ))}
+      {error ? <span className="fieldError" role="alert">{error}</span> : null}
+      <div><button type="button" className="secondary small" disabled={disabled || entries.some(([name]) => !name)} onClick={() => onChange(Object.fromEntries([...entries, ["", ""]]))}>Add mapping</button></div>
     </div>
   );
 }

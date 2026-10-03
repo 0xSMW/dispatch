@@ -1,5 +1,7 @@
 export { sandboxAddress } from "./sandbox.js";
 export { awsCredentials } from "./aws.js";
+export { isIsoDate, propertyTypes, propertyValueMatches, type PropertyType } from "./properties.js";
+import { isIsoDate, propertyTypes, propertyValueMatches, type PropertyType } from "./properties.js";
 import { createCipheriv, createDecipheriv, createHash, createHmac, hkdfSync, randomBytes, randomUUID, scrypt, timingSafeEqual } from "node:crypto";
 import { lookup as lookupCallback, type LookupAddress } from "node:dns";
 import { lookup } from "node:dns/promises";
@@ -643,14 +645,17 @@ export const contactTopicsSchema = z.object({
   })).min(1)
 });
 
-export const propertySchema = z.object({
+const propertyFields = z.object({
   key: z.string().regex(/^[A-Za-z0-9_]{1,50}$/, "key must be letters, digits, or underscores, 50 characters at most"),
-  type: z.enum(["string", "number"]).default("string"),
-  fallback_value: z.union([z.string().max(500), z.number()]).nullable().optional()
+  type: z.enum(propertyTypes).default("string"),
+  fallback_value: z.union([z.string().max(500), z.number().finite(), z.boolean()]).nullable().optional()
+});
+export const propertySchema = propertyFields.refine((value) => propertyValueMatches(value.type, value.fallback_value), {
+  message: "fallback_value must match the property's type", path: ["fallback_value"]
 });
 export type PropertyInput = z.input<typeof propertySchema>;
 
-export const propertyUpdateSchema = propertySchema.pick({ fallback_value: true });
+export const propertyUpdateSchema = propertyFields.pick({ fallback_value: true });
 
 export const suppressionSchema = z.object({
   email: z.string().email(),
@@ -742,7 +747,7 @@ function jsonField(value: unknown) {
 
 const importColumn = z.object({
   column: z.string().min(1).max(200),
-  type: z.enum(["string", "number", "boolean"]).optional()
+  type: z.enum(propertyTypes).optional()
 });
 
 // A field left out is found by its usual header name. A field set to null is not imported, even
@@ -845,8 +850,19 @@ export type CustomEventInput = z.input<typeof customEventSchema>;
 
 export const customEventUpdateSchema = customEventSchema.partial();
 
-export const operators = ["eq", "neq", "gt", "gte", "lt", "lte", "contains", "starts_with", "ends_with", "exists", "is_empty"] as const;
+export const operators = ["eq", "neq", "gt", "gte", "lt", "lte", "contains", "not_contains", "starts_with", "ends_with", "within", "not_within", "exists", "is_empty"] as const;
 export type Operator = (typeof operators)[number];
+export type RuleFieldType = PropertyType | "set";
+export function operatorsForType(type: RuleFieldType): readonly Operator[] {
+  const unary: Operator[] = ["exists", "is_empty"];
+  switch (type) {
+    case "string": return ["eq", "neq", "contains", "not_contains", "starts_with", "ends_with", ...unary];
+    case "number": return ["eq", "neq", "gt", "gte", "lt", "lte", ...unary];
+    case "boolean": return ["eq", "neq", ...unary];
+    case "date": return ["eq", "neq", "gt", "gte", "lt", "lte", "within", "not_within", ...unary];
+    case "set": return ["contains", "not_contains", ...unary];
+  }
+}
 
 export type Rule =
   | { type: "rule"; field: string; operator: Operator; value?: unknown }
@@ -854,7 +870,10 @@ export type Rule =
 
 const nestedRule: z.ZodType<Rule> = z.lazy(() =>
   z.union([
-    z.object({ type: z.literal("rule"), field: z.string().min(1).max(200), operator: z.enum(operators), value: z.unknown().optional() }),
+    z.object({ type: z.literal("rule"), field: z.string().min(1).max(200), operator: z.enum(operators), value: z.unknown().optional() })
+      .refine((rule) => rule.operator !== "within" && rule.operator !== "not_within" || validWindow(rule.value), {
+        message: "Date windows need a positive duration, such as 30 days", path: ["value"]
+      }),
     z.object({ type: z.enum(["and", "or"]), rules: z.array(nestedRule).min(1).max(50) })
   ])
 );
@@ -894,9 +913,19 @@ function comparable(actual: unknown, expected: unknown): [number, number] | null
 }
 
 // Reads a dotted path such as "event.plan" or "contact.first_name" from the run context.
-export function evaluate(rule: Rule, context: Record<string, unknown>): boolean {
+function validWindow(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 60) return false;
+  try {
+    const seconds = durationSeconds(value);
+    return Number.isFinite(seconds) && seconds > 0;
+  } catch {
+    return false;
+  }
+}
+
+export function evaluate(rule: Rule, context: Record<string, unknown>, now = Date.now()): boolean {
   if (rule.type !== "rule") {
-    return rule.type === "and" ? rule.rules.every((child) => evaluate(child, context)) : rule.rules.some((child) => evaluate(child, context));
+    return rule.type === "and" ? rule.rules.every((child) => evaluate(child, context, now)) : rule.rules.some((child) => evaluate(child, context, now));
   }
   const actual = rule.field
     .split(".")
@@ -911,6 +940,14 @@ export function evaluate(rule: Rule, context: Record<string, unknown>): boolean 
     case "lt": return order !== null && order[0] < order[1];
     case "lte": return order !== null && order[0] <= order[1];
     case "contains": return Array.isArray(actual) ? actual.includes(expected) : String(actual ?? "").includes(String(expected));
+    case "not_contains": return !(Array.isArray(actual) ? actual.includes(expected) : String(actual ?? "").includes(String(expected)));
+    case "within":
+    case "not_within": {
+      if (!isIsoDate(actual) || !validWindow(expected) || !Number.isFinite(now)) return false;
+      const timestamp = Date.parse(actual);
+      const within = timestamp >= now - durationSeconds(expected) * 1_000 && timestamp <= now;
+      return rule.operator === "within" ? within : !within;
+    }
     case "starts_with": return String(actual ?? "").startsWith(String(expected));
     case "ends_with": return String(actual ?? "").endsWith(String(expected));
     case "exists": return actual !== undefined && actual !== null;
@@ -946,7 +983,8 @@ export const stepConfigs = {
       subject: z.string().min(1).max(998).optional(),
       reply_to: addresses.optional(),
       template: templateRef,
-      variables: z.record(z.unknown()).optional()
+      variables: z.record(z.unknown()).optional(),
+      variable_mapping: z.record(z.string().regex(/^(event|contact)\.[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*$/, "Use an event or contact field")).optional()
     })
     .transform(({ template, variables, ...rest }) => ({ ...rest, template: { id: template.id, variables: { ...variables, ...template.variables } } })),
   delay: z

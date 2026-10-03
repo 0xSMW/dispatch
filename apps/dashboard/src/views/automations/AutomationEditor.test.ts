@@ -90,6 +90,34 @@ describe("AutomationEditor", () => {
     expect(screen.getByText("Saved")).toBeTruthy();
   });
 
+  it("loads typed field sources and saves boolean rules and additive send mappings", async () => {
+    const fetch = api((url, init) => {
+      if (url.pathname === "/events") return list([{ id: "e1", name: "user.created", schema: { plan: "string", active: "boolean", seats: "number" } }]);
+      if (url.pathname === "/contact-properties") return list([{ id: "p1", key: "renewed", type: "date", fallback_value: null }]);
+      if (url.pathname === "/topics") return list([{ id: "topic_news", name: "News" }]);
+      if (init.method === "PATCH") return { body: { ...automation, ...JSON.parse(String(init.body)) } };
+      return undefined;
+    });
+    open();
+    const rule = await screen.findByRole("article", { name: "Step pro" });
+    await within(rule).findByRole("option", { name: "renewed (date)" });
+    expect(within(rule).getByRole("option", { name: "active (boolean)" })).toBeTruthy();
+    fireEvent.change(within(rule).getByLabelText("Choose field"), { target: { value: "event.active" } });
+    fireEvent.change(within(rule).getByLabelText("Value"), { target: { value: "true" } });
+    const send = screen.getByRole("article", { name: "Step welcome" });
+    fireEvent.click(within(send).getByRole("button", { name: "Add mapping" }));
+    fireEvent.change(within(send).getByLabelText("Variable name"), { target: { value: "plan" } });
+    fireEvent.change(within(send).getByLabelText("Choose context field"), { target: { value: "event.plan" } });
+    fireEvent.change(within(send).getByLabelText("Variables"), { target: { value: '{"plan":"literal","paid":false}' } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
+    const body = JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "PATCH")![1]!.body));
+    expect(body.steps[1].config).toMatchObject({ variable_mapping: { plan: "event.plan" }, template: { id: "tpl_1", variables: { plan: "literal", paid: false } } });
+    expect(body.steps[2].config).toEqual({ type: "rule", field: "event.active", operator: "eq", value: true });
+    expect(JSON.stringify(body)).not.toContain("ruleTypes");
+    expect(fetch.mock.calls.some(([raw]) => new URL(String(raw)).pathname === "/contact-properties")).toBe(true);
+  });
+
   it("loads email counts once for all send steps and refreshes only when the date range changes", async () => {
     const fetch = api((url) => {
       if (url.pathname === "/automations/automation_1") return { body: {

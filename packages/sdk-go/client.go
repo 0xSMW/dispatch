@@ -234,9 +234,10 @@ type Contact struct {
 }
 
 type ContactProperty struct {
-	Object        string `json:"object,omitempty"`
-	ID            string `json:"id"`
-	Key           string `json:"key"`
+	Object string `json:"object,omitempty"`
+	ID     string `json:"id"`
+	Key    string `json:"key"`
+	// Type is string, number, boolean, or date. Dates remain ISO strings.
 	Type          string `json:"type"`
 	FallbackValue any    `json:"fallback_value,omitempty"`
 	CreatedAt     string `json:"created_at,omitempty"`
@@ -481,9 +482,18 @@ type TopicChoice struct {
 }
 
 type ContactPropertyInput struct {
-	Key           string `json:"key"`
-	Type          string `json:"type,omitempty"`
-	FallbackValue any    `json:"fallback_value,omitempty"`
+	Key string `json:"key"`
+	// Type is string (the default), number, boolean, or date.
+	Type string `json:"type,omitempty"`
+	// FallbackValue must match Type. Dates are ISO strings; nil clears the fallback.
+	FallbackValue any `json:"fallback_value,omitempty"`
+}
+
+// ImportColumn maps a CSV header to a field. Type is string, number, boolean, or date.
+// A declared property type takes precedence over the mapping's type.
+type ImportColumn struct {
+	Column string `json:"column"`
+	Type   string `json:"type,omitempty"`
 }
 
 type ContactImportInput struct {
@@ -533,6 +543,19 @@ type AutomationStep struct {
 	Key    string         `json:"key"`
 	Type   string         `json:"type"`
 	Config map[string]any `json:"config,omitempty"`
+}
+
+// SendEmailConfig uses literal Variables and optional dotted context mappings.
+// Mappings override literals; recipient and unsubscribe context stays protected.
+type SendEmailConfig struct {
+	Template        any               `json:"template"`
+	From            string            `json:"from,omitempty"`
+	To              string            `json:"to,omitempty"`
+	Subject         string            `json:"subject,omitempty"`
+	ReplyTo         any               `json:"reply_to,omitempty"`
+	TopicID         string            `json:"topic_id,omitempty"`
+	Variables       map[string]any    `json:"variables,omitempty"`
+	VariableMapping map[string]string `json:"variable_mapping,omitempty"`
 }
 
 type AutomationConnection struct {

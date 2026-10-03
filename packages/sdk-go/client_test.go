@@ -64,6 +64,46 @@ func TestNewClient(t *testing.T) {
 	}
 }
 
+func TestTypedPropertyAndMappingContracts(t *testing.T) {
+	client, calls := recorder(t, nil)
+	if _, err := client.CreateContactProperty(ContactPropertyInput{Key: "activated", Type: "boolean", FallbackValue: false}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.CreateContactProperty(ContactPropertyInput{Key: "last_active_at", Type: "date", FallbackValue: "2026-10-03T09:30:00+02:00"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.UpdateContactProperty("prop_1", nil); err != nil {
+		t.Fatal(err)
+	}
+	for index, want := range []Map{
+		{"key": "activated", "type": "boolean", "fallback_value": false},
+		{"key": "last_active_at", "type": "date", "fallback_value": "2026-10-03T09:30:00+02:00"},
+		{"fallback_value": nil},
+	} {
+		if !reflect.DeepEqual((*calls)[index].Body, map[string]any(want)) {
+			t.Fatalf("request %d: %#v", index, (*calls)[index].Body)
+		}
+	}
+	config := SendEmailConfig{Template: Map{"id": "template_1", "variables": Map{"PLAN": "contact.plan", "FLAG": false}}, VariableMapping: map[string]string{"PLAN": "contact.plan", "WHEN": "event.received_at"}}
+	if _, err := client.CreateAutomation(Map{"name": "Typed", "steps": []Map{{"key": "send", "type": "send_email", "config": config}}}); err != nil {
+		t.Fatal(err)
+	}
+	body := (*calls)[3].Body.(map[string]any)
+	got := body["steps"].([]any)[0].(map[string]any)["config"].(map[string]any)
+	if !reflect.DeepEqual(got["variable_mapping"], map[string]any{"PLAN": "contact.plan", "WHEN": "event.received_at"}) {
+		t.Fatalf("mappings: %#v", got)
+	}
+	if got["template"].(map[string]any)["variables"].(map[string]any)["PLAN"] != "contact.plan" {
+		t.Fatalf("literal changed: %#v", got)
+	}
+	if _, err := client.ImportContacts(ContactImportInput{File: []byte("email,when\na@example.com,2026-10-03\n"), ColumnMap: map[string]any{"properties": map[string]ImportColumn{"when": {Column: "when", Type: "date"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string((*calls)[4].Raw), `"type":"date"`) {
+		t.Fatalf("date mapping missing: %s", (*calls)[4].Raw)
+	}
+}
+
 func TestMarketingSplitResponse(t *testing.T) {
 	split := []SplitEmail{{ID: "email_1", To: "ada@example.com", Sandbox: true}, {ID: "email_2", To: "bob@dispatch-fixture.net", Sandbox: false}}
 	result := Map{"id": "email_1", "emails": split}

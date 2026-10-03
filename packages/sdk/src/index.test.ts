@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { signWebhook } from "@dispatchmail/core";
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
-import { Dispatch, WebhookVerificationError, type Result } from "./index.js";
+import { Dispatch, WebhookVerificationError, type ImportColumnMap, type Operator, type PropertyType, type PropertyValue, type Result, type Rule, type SendEmailConfig } from "./index.js";
 
 const base = "http://localhost:3100";
 
@@ -58,6 +58,30 @@ describe("constructor", () => {
 });
 
 describe("transport", () => {
+  it("preserves typed property fallbacks, date imports, rules, and literal send mappings", async () => {
+    const fetch = stub({ id: "prop_1", object: "contact_property", key: "activated", type: "boolean", fallback_value: false });
+    const client = new Dispatch({ apiKey: "sk_test" });
+    const created = await client.contactProperties.create({ key: "activated", type: "boolean", fallbackValue: false });
+    expectTypeOf(created.data!.type).toEqualTypeOf<PropertyType>();
+    expectTypeOf(created.data!.fallback_value).toEqualTypeOf<PropertyValue>();
+    expect(request(fetch).body).toEqual({ key: "activated", type: "boolean", fallback_value: false });
+    await client.contactProperties.update({ id: "prop_1", fallbackValue: null });
+    expect(request(fetch, 1).body).toEqual({ fallback_value: null });
+    await client.contactProperties.create({ key: "last_active_at", type: "date", fallbackValue: "2026-10-03T09:30:00+02:00" });
+    expect(request(fetch, 2).body.fallback_value).toBe("2026-10-03T09:30:00+02:00");
+
+    const columnMap: ImportColumnMap = { properties: { last_active_at: { column: "Last active", type: "date" } } };
+    await client.contacts.imports.create({ file: "email,Last active\na@example.com,2026-10-03\n", columnMap });
+    const form = request(fetch, 3).body as FormData;
+    expect(JSON.parse(String(form.get("column_map")))).toEqual(columnMap);
+
+    const config: SendEmailConfig = { template: { id: "template_1", variables: { PLAN: "contact.plan", camelKey: false } }, variable_mapping: { PLAN: "contact.plan", WHEN: "event.received_at" } };
+    const rule: Rule = { type: "rule", field: "event.received_at", operator: "within", value: "2 days" };
+    expectTypeOf<Operator>().extract<"not_contains" | "within" | "not_within">().toEqualTypeOf<"not_contains" | "within" | "not_within">();
+    await client.automations.create({ name: "Typed", steps: [{ key: "send", type: "send_email", config }, { key: "condition", type: "condition", config: rule }] });
+    expect(request(fetch, 4).body.steps).toEqual([{ key: "send", type: "send_email", config }, { key: "condition", type: "condition", config: rule }]);
+  });
+
   it("exposes typed sandbox flags on send, batch, list, and mixed detail responses", async () => {
     const client = new Dispatch({ apiKey: "sk_test" });
     const sent = { id: "email_1", sandbox: true };

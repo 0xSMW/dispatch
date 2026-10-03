@@ -119,6 +119,37 @@ describe("Contact", () => {
     });
   });
 
+  it("edits boolean/date values with typed controls and prevents malformed ISO writes", async () => {
+    const typed = { ...ada, properties: { active: { value: true, type: "boolean" }, renewed: { value: "2026-10-04", type: "date" }, topics: { value: false, type: "boolean" } } };
+    const fetch = stubApi({
+      "GET /contacts/contact_ada": typed,
+      "PATCH /contacts/contact_ada": typed,
+      "GET /contact-properties": list([
+        { key: "active", type: "boolean", fallback_value: false },
+        { key: "renewed", type: "date", fallback_value: null },
+        { key: "topics", type: "boolean", fallback_value: false },
+      ]),
+      "GET /contacts/contact_ada/segments": list([]), "GET /segments": list([]),
+      "GET /contacts/contact_ada/topics": list([]), "GET /topics": list([]),
+      "GET /contacts/contact_ada/activity": list([]),
+    });
+    open();
+    await screen.findByLabelText("active");
+    fireEvent.change(screen.getByLabelText("active"), { target: { value: "false" } });
+    fireEvent.change(screen.getByLabelText("topics"), { target: { value: "true" } });
+    fireEvent.change(screen.getByLabelText("renewed format"), { target: { value: "text" } });
+    fireEvent.change(screen.getByLabelText("renewed"), { target: { value: "2026-02-30" } });
+    expect(screen.getByRole("button", { name: /^Save/ })).toHaveProperty("disabled", true);
+    fireEvent.submit(screen.getByLabelText("renewed").closest("form")!);
+    expect(calls(fetch).some((call) => call.startsWith("PATCH"))).toBe(false);
+    const date = "2026-10-05T12:34:56+05:30";
+    fireEvent.change(screen.getByLabelText("renewed"), { target: { value: date } });
+    fireEvent.click(screen.getByRole("button", { name: /^Save/ }));
+    await waitFor(() => expect(bodyOf(fetch, "PATCH /contacts/contact_ada")).toEqual({
+      first_name: "Ada", last_name: null, properties: { active: false, topics: true, renewed: date },
+    }));
+  });
+
   it("unsubscribes the contact", async () => {
     const fetch = api();
     open();
@@ -157,5 +188,10 @@ describe("propertyPatch", () => {
         { "property:n": "3", "property:same": "1" },
       ),
     ).toEqual({ first_name: null, last_name: "L", properties: { n: 4, s: "hi" } });
+  });
+  it("preserves false, ISO strings and null for cleared boolean/date properties", () => {
+    expect(propertyPatch({ first_name: "", last_name: "", "property:b": "false", "property:d": "2026-10-04T12:34:56+05:30", "property:clear": "" }, { b: "boolean", d: "date", clear: "date" }, { "property:clear": "2026-10-03" })).toEqual({
+      first_name: null, last_name: null, properties: { b: false, d: "2026-10-04T12:34:56+05:30", clear: null },
+    });
   });
 });

@@ -1638,7 +1638,7 @@ dispatch contact-properties create [options]
 | Option | Description |
 |:---|:---|
 | `--key <key>` | Property key, such as plan |
-| `--type <type>` | Value type. One of `string`, `number`. Default `string`. |
+| `--type <type>` | Value type. One of `string`, `number`, `boolean`, `date`. Default `string`. |
 | `--fallback-value <value>` | Value used when a contact has none |
 
 #### `dispatch contact-properties get`

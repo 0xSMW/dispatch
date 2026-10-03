@@ -90,7 +90,7 @@ export function ImportContacts({ onClose, onDone }: { onClose: () => void; onDon
   const start = useMutation(
     () => {
       const form = new FormData();
-      form.append("column_map", JSON.stringify(columnMap(mapping!)));
+      form.append("column_map", JSON.stringify(columnMap(mapping!, properties.data?.data)));
       form.append("on_conflict", onConflict);
       form.append("segments", JSON.stringify(segmentIds.map((id) => ({ id }))));
       form.append(
@@ -192,7 +192,7 @@ export function ImportContacts({ onClose, onDone }: { onClose: () => void; onDon
         ) : null}
 
         {step === "map" && mapping && head ? (
-          <MapColumns headers={head.headers} mapping={mapping} onChange={setMapping} onConflict={onConflict} setOnConflict={setOnConflict} />
+          <MapColumns headers={head.headers} mapping={mapping} onChange={setMapping} onConflict={onConflict} setOnConflict={setOnConflict} properties={properties.data?.data ?? []} />
         ) : null}
 
         {step === "audience" ? (
@@ -299,12 +299,14 @@ function MapColumns({
   onChange,
   onConflict,
   setOnConflict,
+  properties,
 }: {
   headers: string[];
   mapping: Mapping;
   onChange: (mapping: Mapping) => void;
   onConflict: "upsert" | "skip";
   setOnConflict: (value: "upsert" | "skip") => void;
+  properties: ContactProperty[];
 }) {
   const options = headers.map((header) => ({ value: header, label: header }));
   return (
@@ -340,6 +342,7 @@ function MapColumns({
             <span>Type</span>
           </div>
           {mapping.properties.map((item, position) => {
+            const declared = properties.find((property) => property.key === item.key);
             const update = (patch: Partial<typeof item>) =>
               onChange({
                 ...mapping,
@@ -356,16 +359,22 @@ function MapColumns({
                   className="mono"
                   value={item.key}
                   disabled={!item.include}
-                  onChange={(event) => update({ key: event.target.value.replace(/[^A-Za-z0-9_]/g, "").slice(0, 50) })}
+                  onChange={(event) => {
+                    const key = event.target.value.replace(/[^A-Za-z0-9_]/g, "").slice(0, 50);
+                    const property = properties.find((row) => row.key === key);
+                    update({ key, ...(property ? { type: property.type } : {}) });
+                  }}
                 />
                 <select
                   aria-label={`Type for ${item.column}`}
-                  value={item.type}
-                  disabled={!item.include}
+                  value={declared?.type ?? item.type}
+                  disabled={!item.include || Boolean(declared)}
                   onChange={(event) => update({ type: event.target.value as PropertyType })}
                 >
                   <option value="string">String</option>
                   <option value="number">Number</option>
+                  <option value="boolean">True or false</option>
+                  <option value="date">Date</option>
                 </select>
               </div>
             );

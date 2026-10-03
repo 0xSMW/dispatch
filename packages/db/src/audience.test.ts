@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ApiError } from "@dispatchmail/core";
+import { ApiError, type PropertyType } from "@dispatchmail/core";
 import {
   addSuppressions,
   assertPropertyValues,
@@ -12,6 +12,7 @@ import {
   presentTopic,
   removeSuppressions,
   topicDefaultStatus,
+  updateProperty,
   wrapProperties,
 } from "./audience.js";
 
@@ -63,6 +64,26 @@ describe("audience presenters", () => {
     expect(() => assertPropertyValues({ seats: null, note: "ok" }, definitions)).not.toThrow();
   });
 
+  it("validates four declared types without restricting undeclared or legacy keys", () => {
+    const definitions = [
+      { key: "plan", type: "string" }, { key: "seats", type: "number" },
+      { key: "activated", type: "boolean" }, { key: "last_active_at", type: "date" },
+    ];
+    const properties = { plan: "free", seats: 0, activated: false, last_active_at: "2026-10-03T09:30:00+02:00", topics: ["legacy"], note: { arbitrary: true } };
+    expect(() => assertPropertyValues(properties, definitions)).not.toThrow();
+    expect(properties.last_active_at).toBe("2026-10-03T09:30:00+02:00");
+    for (const patch of [{ plan: 1 }, { seats: "1" }, { seats: Infinity }, { activated: "false" }, { activated: 0 }, { last_active_at: "2026-02-30" }, { last_active_at: "2026-10-03T09:30:00" }, { last_active_at: 1 }]) {
+      expect(() => assertPropertyValues(patch, definitions)).toThrow(ApiError);
+    }
+    expect(() => assertPropertyValues({ activated: null, last_active_at: null }, definitions)).not.toThrow();
+    expect(wrapProperties({ activated: false, last_active_at: "2026-10-03", undeclared_flag: true }, definitions)).toEqual({
+      activated: { value: false, type: "boolean" },
+      last_active_at: { value: "2026-10-03", type: "date" },
+      undeclared_flag: { value: true, type: "boolean" },
+    });
+    expect(() => assertPropertyValues({ topics: "legacy" }, [{ key: "topics", type: "string" }])).not.toThrow();
+  });
+
   it("maps topic defaults and omits a segment description", () => {
     expect(topicDefaultStatus({ default_subscription: "opt_out" })).toBe("unsubscribed");
     expect(topicDefaultStatus({ default_status: "subscribed" })).toBe("subscribed");
@@ -106,6 +127,48 @@ describe("audience queries", () => {
     await createProperty(match, "tenant_1", { key: "plan", type: "string", fallback_value: "pro" });
     expect(match.queries[1].sql).toContain("fallback_value = $3");
     expect(match.queries[1].sql).not.toContain("type =");
+  });
+
+  it.each([
+    ["string", "free", 1],
+    ["number", 0, "0"],
+    ["boolean", false, "false"],
+    ["date", "2026-10-03T09:30:00+02:00", "2026-02-30"],
+  ] as Array<[PropertyType, string | number | boolean, string | number]>)
+  ("validates %s fallbacks on create and update before writing", async (type, valid, invalid) => {
+    const inserted = client((sql) => ({ rows: sql.startsWith("select") ? [] : [{ id: "prop_1", key: "value", type, fallback_value: valid }] }));
+    await createProperty(inserted, "tenant_1", { key: "value", type, fallback_value: valid });
+    expect(inserted.queries[1].params[4]).toBe(JSON.stringify(valid));
+    const badCreate = client(() => ({ rows: [] }));
+    await expect(createProperty(badCreate, "tenant_1", { key: "value", type, fallback_value: invalid })).rejects.toMatchObject({ name: "validation_error" });
+    expect(badCreate.queries).toHaveLength(1);
+
+    const updated = client((sql) => ({ rows: sql.startsWith("select") ? [{ key: "value", type }] : [{ id: "prop_1", key: "value", type, fallback_value: valid }] }));
+    await updateProperty(updated, "tenant_1", "prop_1", valid);
+    expect(updated.queries[0].params).toEqual(["tenant_1", "prop_1"]);
+    expect(updated.queries[1].params[2]).toBe(JSON.stringify(valid));
+    await updateProperty(updated, "tenant_1", "prop_1", null);
+    expect(updated.queries[3].params[2]).toBe("null");
+    const badUpdate = client(() => ({ rows: [{ key: "value", type }] }));
+    await expect(updateProperty(badUpdate, "tenant_1", "prop_1", invalid)).rejects.toMatchObject({ name: "validation_error" });
+    expect(badUpdate.queries).toHaveLength(1);
+  });
+
+  it.each(["topics", "segments"])("refuses new %s definitions but permits live legacy updates", async (key) => {
+    for (const rows of [[], [{ id: "prop_1", type: "string", deleted_at: "2026-10-01" }]]) {
+      const db = client(() => ({ rows }));
+      await expect(createProperty(db, "tenant_1", { key, type: "string", fallback_value: "legacy" })).rejects.toMatchObject({ name: "validation_error" });
+      expect(db.queries).toHaveLength(1);
+    }
+    const db = client((sql) => ({ rows: sql.startsWith("select") ? [{ id: "prop_1", key, type: "string", deleted_at: null }] : [{ id: "prop_1", key, type: "string", fallback_value: "legacy" }] }));
+    await expect(createProperty(db, "tenant_1", { key, type: "string", fallback_value: "legacy" })).resolves.toMatchObject({ key });
+    await expect(updateProperty(db, "tenant_1", "prop_1", "legacy")).resolves.toMatchObject({ key });
+  });
+
+  it("returns not_found rather than writing when a property does not exist", async () => {
+    const db = client(() => ({ rows: [] }));
+    await expect(updateProperty(db, "tenant_1", "prop_missing", false)).rejects.toMatchObject({ name: "not_found" });
+    expect(db.queries).toHaveLength(1);
   });
 
   it("adds and removes suppressions in one statement", async () => {

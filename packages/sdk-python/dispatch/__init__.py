@@ -11,6 +11,21 @@ from typing import Any, Literal, NotRequired, TypedDict, cast
 
 
 Json = dict[str, Any]
+PropertyType = Literal["string", "number", "boolean", "date"]
+PropertyValue = str | int | float | bool | None
+
+
+class ImportColumn(TypedDict, total=False):
+    column: str
+    type: PropertyType
+
+
+class ImportColumnMap(TypedDict, total=False):
+    email: ImportColumn
+    first_name: ImportColumn | None
+    last_name: ImportColumn | None
+    unsubscribed: ImportColumn | None
+    properties: dict[str, ImportColumn]
 
 LifecycleEventType = Literal["email.unsubscribed", "automation.run.started", "automation.run.completed", "automation.run.failed"]
 
@@ -137,8 +152,8 @@ class ContactUpdateInput(TypedDict, total=False):
 
 class ContactPropertyInput(TypedDict, total=False):
     key: str
-    type: Literal["string", "number"]
-    fallback_value: str | int | float | None
+    type: PropertyType
+    fallback_value: PropertyValue
 
 
 class SuppressionInput(TypedDict, total=False):
@@ -220,13 +235,28 @@ BroadcastUpdateInput = TypedDict(
 )
 
 
+SendEmailConfig = TypedDict(
+    "SendEmailConfig",
+    {
+        "template": str | dict[str, Any],
+        "from": NotRequired[str],
+        "to": NotRequired[str],
+        "subject": NotRequired[str],
+        "reply_to": NotRequired[str | list[str]],
+        "topic_id": NotRequired[str],
+        "variables": NotRequired[dict[str, Any]],
+        "variable_mapping": NotRequired[dict[str, str]],
+    },
+)
+
+
 class AutomationStepInput(TypedDict, total=False):
     key: str
     type: Literal[
         "trigger", "send_email", "delay", "wait_for_event", "condition",
         "add_to_segment", "contact_update", "contact_delete",
     ]
-    config: dict[str, Any]
+    config: SendEmailConfig | dict[str, Any]
 
 
 AutomationConnectionInput = TypedDict(
@@ -652,7 +682,7 @@ class Dispatch:
     def import_contacts(
         self,
         file: bytes | str,
-        column_map: Json | None = None,
+        column_map: ImportColumnMap | Json | None = None,
         on_conflict: Literal["upsert", "skip"] | None = None,
         segments: list[dict[str, str]] | None = None,
         topics: list[dict[str, str]] | None = None,
@@ -687,7 +717,7 @@ class Dispatch:
     def contact_property(self, property_id: str) -> Json:
         return self._request("GET", _path("contact-properties", property_id))
 
-    def update_contact_property(self, property_id: str, fallback_value: str | int | float | None) -> Json:
+    def update_contact_property(self, property_id: str, fallback_value: PropertyValue) -> Json:
         return self._request("PATCH", _path("contact-properties", property_id), {"fallback_value": fallback_value})
 
     def delete_contact_property(self, property_id: str) -> Json:
@@ -1027,6 +1057,10 @@ __all__ = [
     "ContactInput",
     "ContactUpdateInput",
     "ContactPropertyInput",
+    "PropertyType",
+    "PropertyValue",
+    "ImportColumn",
+    "ImportColumnMap",
     "SuppressionInput",
     "TopicInput",
     "TopicUpdateInput",
@@ -1039,6 +1073,7 @@ __all__ = [
     "AutomationInput",
     "AutomationUpdateInput",
     "AutomationStepInput",
+    "SendEmailConfig",
     "AutomationConnectionInput",
     "EventDefinitionInput",
     "WebhookInput",

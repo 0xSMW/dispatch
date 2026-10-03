@@ -28,6 +28,7 @@ export type AutomationRun = {
   request_id: string;
   email: string | null;
   data: Record<string, unknown>;
+  received_at?: string | Date;
 };
 
 export type AutomationRunOptions = {
@@ -101,7 +102,7 @@ export async function executeAutomationRun(db: Db, tenantId: string, runId: stri
     const loaded = await db.query<RunRow>(
       `select r.id, r.tenant_id, r.automation_id, r.event_id, coalesce(e.request_id, r.id) as request_id,
          r.state, r.next_step_index, r.next_step_key, r.resume_data, a.trigger, a.steps, a.connections,
-         (a.deleted_at is not null) as automation_deleted, e.email, e.data
+         (a.deleted_at is not null) as automation_deleted, e.email, e.data, e.created_at as received_at
        from automation_runs r
        join automations a on a.id = r.automation_id
        join custom_events e on e.id = r.event_id
@@ -328,8 +329,19 @@ export async function contactContext(db: Queryable, tenantId: string, email: str
     last_name: string | null;
     properties: Record<string, unknown> | null;
     unsubscribed_at: string | null;
+    created_at: string | Date;
+    topics: string[];
+    segments: string[];
   }>(
-    `select id, email, first_name, last_name, properties, unsubscribed_at
+    `select id, email, first_name, last_name, properties, unsubscribed_at, created_at,
+       array(select t.id from topics t
+         left join topic_subscriptions s on s.tenant_id = t.tenant_id and s.topic_id = t.id and s.contact_id = contacts.id
+         where t.tenant_id = contacts.tenant_id and t.deleted_at is null
+           and coalesce(s.status, t.default_status) = 'subscribed' order by t.id) as topics,
+       array(select s.id from segments s
+         join segment_contacts m on m.tenant_id = s.tenant_id and m.segment_id = s.id
+         where s.tenant_id = contacts.tenant_id and m.contact_id = contacts.id and s.deleted_at is null
+         order by s.id) as segments
      from contacts where tenant_id = $1 and lower(email) = lower($2) and deleted_at is null
      order by created_at limit 1`,
     [tenantId, email]
@@ -338,12 +350,28 @@ export async function contactContext(db: Queryable, tenantId: string, email: str
   if (!contact) return null;
   return {
     ...(contact.properties ?? {}),
+    ...(!Object.hasOwn(contact.properties ?? {}, "topics") ? { topics: contact.unsubscribed_at ? [] : contact.topics ?? [] } : {}),
+    ...(!Object.hasOwn(contact.properties ?? {}, "segments") ? { segments: contact.segments ?? [] } : {}),
     id: contact.id,
     email: contact.email,
     first_name: contact.first_name,
     last_name: contact.last_name,
-    unsubscribed: Boolean(contact.unsubscribed_at)
+    unsubscribed: Boolean(contact.unsubscribed_at),
+    created_at: contact.created_at instanceof Date ? contact.created_at.toISOString() : contact.created_at
   };
+}
+
+export function eventContext(data: Record<string, unknown>, receivedAt?: string | Date) {
+  return { ...data, received_at: receivedAt instanceof Date ? receivedAt.toISOString() : receivedAt };
+}
+
+export function mappedVariables(mapping: Record<string, string> | undefined, context: Record<string, unknown>) {
+  return Object.fromEntries(Object.entries(mapping ?? {}).flatMap(([key, field]) => {
+    const value = field.split(".").reduce<unknown>((current, part) =>
+      current !== null && typeof current === "object" && Object.hasOwn(current, part)
+        ? (current as Record<string, unknown>)[part] : undefined, context);
+    return value === undefined ? [] : [[key, value]];
+  }));
 }
 
 async function executeStep(db: Queryable, run: AutomationRun, step: Step, options: AutomationRunOptions): Promise<Record<string, unknown>> {
@@ -351,7 +379,7 @@ async function executeStep(db: Queryable, run: AutomationRun, step: Step, option
 
   if (step.type === "condition") {
     const contact = await contactContext(db, run.tenant_id, run.email);
-    return { result: evaluate(step.config as Rule, { event: run.data, contact }) };
+    return { result: evaluate(step.config as Rule, { event: eventContext(run.data, run.received_at), contact }) };
   }
 
   if (step.type === "send_email") {
@@ -371,7 +399,9 @@ async function executeStep(db: Queryable, run: AutomationRun, step: Step, option
         if (deleted.rows[0]) return { skipped: "contact_deleted", email: to };
       }
     }
-    const variables = { ...run.data, event: run.data, email: run.email, ...config.template.variables };
+    const event = eventContext(run.data, run.received_at);
+    const variables = { ...run.data, event, email: run.email, ...config.template.variables,
+      ...mappedVariables(config.variable_mapping, { event, contact: recipient }) };
     const emailId = id("email");
     const context = recipientContext({
       email: to, first_name: recipient?.first_name ?? null, last_name: recipient?.last_name ?? null,
@@ -630,7 +660,7 @@ export async function fireEvent(
        for update of r skip locked`,
       [tenantId, input.name, email]
     );
-    const resumed = waiting.rows.filter((run) => matchesFilter(run, { event: input.data, contact })).map((run) => run.id);
+    const resumed = waiting.rows.filter((run) => matchesFilter(run, { event: eventContext(fired.data, fired.created_at), contact })).map((run) => run.id);
     if (resumed.length > 0) {
       await client.query(
         `update automation_runs

@@ -6,12 +6,12 @@ import { mapRecord, resolveColumns, runImport, startImports } from "./imports.js
 type Query = { sql: string; params: unknown[] };
 
 // A fake pool: contacts that already exist come back with created = false, like xmax <> 0.
-function fakeDb(existing: string[] = [], options: { skip?: boolean } = {}) {
+function fakeDb(existing: string[] = [], options: { skip?: boolean; definitions?: Array<{ key: string; type: string }> } = {}) {
   const queries: Query[] = [];
   const known = new Set(existing);
   const query = vi.fn(async (sql: string, params: unknown[] = []) => {
     queries.push({ sql, params });
-    if (sql.includes("from contact_properties")) return { rows: [{ key: "seats", type: "number" }], rowCount: 1 };
+    if (sql.includes("from contact_properties")) return { rows: options.definitions ?? [{ key: "seats", type: "number" }], rowCount: 1 };
     if (sql.includes("insert into contacts")) {
       const emails = params[2] as string[];
       const ids = params[0] as string[];
@@ -59,6 +59,30 @@ const savedCounts = (queries: Query[]) =>
   queries.filter((query) => query.sql.startsWith("update contact_imports set counts")).map((query) => JSON.parse(query.params[1] as string));
 
 describe("contact import", () => {
+  it("imports typed booleans and dates and counts invalid nonempty cells as row errors", async () => {
+    const { db, queries } = fakeDb([], { definitions: [{ key: "activated", type: "boolean" }, { key: "last_active_at", type: "date" }] });
+    const csv = [
+      "email,activated,last_active_at",
+      "a@example.com,TRUE,2026-10-03",
+      "b@example.com,No,2026-10-03T09:30:00+02:00",
+      "c@example.com,maybe,2026-10-03",
+      "d@example.com,false,2026-02-30",
+      "e@example.com,,",
+    ].join("\n");
+    const counts = await runImport(db, storage(csv), job({ column_map: { properties: {
+      activated: { column: "activated", type: "string" },
+      last_active_at: { column: "last_active_at", type: "string" },
+    } } }));
+    expect(counts).toEqual({ total: 5, created: 3, updated: 0, skipped: 0, failed: 2 });
+    const insert = queries.find((query) => query.sql.includes("insert into contacts"))!;
+    expect(insert.params[2]).toEqual(["a@example.com", "b@example.com", "e@example.com"]);
+    expect(insert.params[5]).toEqual([
+      JSON.stringify({ activated: true, last_active_at: "2026-10-03" }),
+      JSON.stringify({ activated: false, last_active_at: "2026-10-03T09:30:00+02:00" }),
+      "{}",
+    ]);
+    expect(queries.find((query) => query.sql.includes("set status = $2"))?.params[1]).toBe("completed");
+  });
   it("upserts in batches, writes counts after each batch, and counts created and updated from xmax", async () => {
     const { db, queries } = fakeDb(["b@example.com"]);
     const csv = ["Email,First Name,seats", "a@example.com,Ada,3", "b@example.com,Bo,", "c@example.com,Cy,4", "not-an-email,Dee,1", "d@example.com,,2"].join("\n");
@@ -168,6 +192,27 @@ describe("contact import", () => {
 });
 
 describe("column mapping", () => {
+  it.each([["true", true], ["TRUE", true], ["Yes", true], ["1", true], ["false", false], ["FALSE", false], ["No", false], ["0", false]])("reads boolean property token %s as %s", (raw, value) => {
+    const columns = { email: "email", properties: [{ key: "activated", column: "flag", type: "boolean" as const }] };
+    expect(mapRecord({ email: "a@example.com", flag: ` ${raw} ` }, columns)?.properties).toEqual({ activated: value });
+  });
+
+  it.each(["y", "n", "unsubscribed", "on", "off", "maybe", "2"])("rejects nonempty boolean property token %s", (raw) => {
+    expect(mapRecord({ email: "a@example.com", flag: raw }, { email: "email", properties: [{ key: "flag", column: "flag", type: "boolean" }] })).toBeNull();
+  });
+
+  it("keeps valid ISO strings, skips empty cells, and accepts date mappings without a definition", () => {
+    const columns = resolveColumns(["email", "when", "flag"], { properties: { when: { column: "when", type: "date" }, flag: { column: "flag", type: "boolean" } } }, []);
+    for (const when of ["2024-02-29", "2026-10-03T09:30:00.123Z", "2026-10-03T09:30:00-05:00"]) {
+      expect(mapRecord({ email: "a@example.com", when, flag: "" }, columns)?.properties).toEqual({ when });
+    }
+    expect(mapRecord({ email: "a@example.com", when: "", flag: "" }, columns)?.properties).toEqual({});
+    for (const when of ["2025-02-29", "October 3, 2026", "2026-10-03T09:30:00", "123"]) {
+      expect(mapRecord({ email: "a@example.com", when }, columns)).toBeNull();
+    }
+    // The consent flag keeps its established permissive parsing.
+    expect(mapRecord({ email: "a@example.com", unsub: "unsubscribed" }, { email: "email", unsubscribed: "unsub", properties: [] })?.unsubscribed).toBe(true);
+  });
   it("maps by header name case-insensitively and lets the definition type win", () => {
     const columns = resolveColumns(["EMAIL", "Plan"], { properties: { plan: { column: "plan", type: "string" } } }, [{ key: "plan", type: "number" }]);
     expect(columns.email).toBe("EMAIL");

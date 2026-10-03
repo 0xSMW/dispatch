@@ -7,6 +7,8 @@ import { copyText } from "../../components/Copy";
 import { Failed } from "../../components/Empty";
 import { Facts } from "../../components/Facts";
 import { Field, Switch } from "../../components/Field";
+import { TypedValue } from "../../components/TypedValue";
+import { typedValue, valueIssue } from "../../lib/rules";
 import { metaKey } from "../../components/Kbd";
 import { Menu } from "../../components/Menu";
 import { PageHeader } from "../../components/PageHeader";
@@ -30,6 +32,7 @@ import type {
   List,
   Segment,
   Topic,
+  PropertyType,
 } from "../../types";
 import "../../styles/audience.css";
 
@@ -140,11 +143,11 @@ function initial(contact: ContactRow): Values {
 
 /** The `PATCH /contacts/:id` body: changed properties only. A cleared property is sent as null, which deletes it. */
 export function propertyPatch(values: Values, types: Record<string, string>, before: Values = {}) {
-  const properties: Record<string, string | number | null> = {};
+  const properties: Record<string, string | number | boolean | null> = {};
   for (const [key, type] of Object.entries(types)) {
     const raw = (values[`property:${key}`] ?? "").trim();
     if (raw === (before[`property:${key}`] ?? "").trim()) continue;
-    properties[key] = raw === "" ? null : type === "number" ? Number(raw) : raw;
+    properties[key] = typedValue(type as PropertyType, raw);
   }
   return {
     first_name: values.first_name.trim() || null,
@@ -167,9 +170,14 @@ function Properties({ contact, onSaved }: { contact: ContactRow; onSaved: (row: 
   for (const definition of definitions.data?.data ?? []) types[definition.key] = definition.type;
   for (const [key, entry] of Object.entries(contact.properties ?? {})) types[key] ??= entry.type;
   const fallbacks = new Map((definitions.data?.data ?? []).map((definition) => [definition.key, definition.fallback_value]));
+  const before = initial(contact);
+  const issues = Object.fromEntries(Object.entries(types).map(([key, type]) => [
+    key, values[`property:${key}`] === before[`property:${key}`] ? null : valueIssue(type as PropertyType, values[`property:${key}`] ?? ""),
+  ]));
+  const invalid = Object.values(issues).some(Boolean);
 
   const save = useMutation(
-    () => client.patch<ContactRow>(`/contacts/${contact.id}`, propertyPatch(values, types, initial(contact))),
+    () => client.patch<ContactRow>(`/contacts/${contact.id}`, propertyPatch(values, types, before)),
     {
       success: "Contact saved.",
       onSuccess: (row) => {
@@ -178,12 +186,12 @@ function Properties({ contact, onSaved }: { contact: ContactRow; onSaved: (row: 
       },
     },
   );
-  const dirty = JSON.stringify(values) !== JSON.stringify(initial(contact));
-  useHotkey(shortcuts.save.combo, () => void save.mutate(), { enabled: can && dirty && !save.isLoading });
+  const dirty = JSON.stringify(values) !== JSON.stringify(before);
+  useHotkey(shortcuts.save.combo, () => void save.mutate(), { enabled: can && dirty && !invalid && !save.isLoading });
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    void save.mutate();
+    if (can && !invalid) void save.mutate();
   }
 
   const set = (key: string) => (value: string) => setValues((current) => ({ ...current, [key]: value }));
@@ -204,16 +212,17 @@ function Properties({ contact, onSaved }: { contact: ContactRow; onSaved: (row: 
           {Object.entries(types).map(([key, type]) => {
             const fallback = fallbacks.get(key);
             return (
-              <Field
-                key={key}
+              <TypedValue
+                key={`${key}:${type}`}
                 label={key}
-                mono
-                type={type === "number" ? "number" : "text"}
+                type={type as PropertyType}
                 value={values[`property:${key}`] ?? ""}
                 onChange={set(`property:${key}`)}
                 placeholder={fallback === null || fallback === undefined ? undefined : String(fallback)}
-                hint={fallbacks.has(key) ? undefined : "Not a defined property."}
+                hint={fallbacks.has(key) ? fallback === null || fallback === undefined ? undefined : `Fallback: ${String(fallback)}` : "Not a defined property."}
                 disabled={!can}
+                error={issues[key]}
+                nullable
               />
             );
           })}
@@ -221,7 +230,7 @@ function Properties({ contact, onSaved }: { contact: ContactRow; onSaved: (row: 
         {definitions.loading ? <Skeleton lines={1} width="medium" /> : null}
         {can ? (
           <div className="toolbar">
-            <button type="submit" disabled={!dirty || save.isLoading} aria-busy={save.isLoading}>
+            <button type="submit" disabled={!dirty || invalid || save.isLoading} aria-busy={save.isLoading}>
               {save.isLoading ? <span className="spinner" aria-hidden /> : null}
               Save <kbd>{metaKey}S</kbd>
             </button>

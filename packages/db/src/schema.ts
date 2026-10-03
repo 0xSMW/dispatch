@@ -855,4 +855,9 @@ create table if not exists send_slots (
 -- Sandbox attribution is stored separately from delivery status, including mixed recipients.
 alter table emails add column if not exists sandbox boolean not null default false;
 alter table email_recipients add column if not exists sandbox boolean not null default false;
+
+-- Boolean and ISO date contact property definitions.
+alter table contact_properties drop constraint if exists contact_properties_type_check;
+alter table contact_properties add constraint contact_properties_type_check
+  check (type in ('string', 'number', 'boolean', 'date'));
 `;

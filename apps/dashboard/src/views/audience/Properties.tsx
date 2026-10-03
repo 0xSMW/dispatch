@@ -5,6 +5,7 @@ import { CsvExport, type CsvColumn } from "../../components/CsvExport";
 import { copyText } from "../../components/Copy";
 import { Empty } from "../../components/Empty";
 import { Field, Select } from "../../components/Field";
+import { TypedValue } from "../../components/TypedValue";
 import { ListPage } from "../../components/ListPage";
 import { Menu } from "../../components/Menu";
 import { Modal } from "../../components/Modal";
@@ -14,7 +15,8 @@ import { toast } from "../../components/Toast";
 import { useList } from "../../hooks/useList";
 import { useMutation } from "../../hooks/useMutation";
 import { useCan, useClient } from "../../shell/session";
-import type { ContactProperty } from "../../types";
+import type { ContactProperty, PropertyType } from "../../types";
+import { propertyTypes, typedValue, valueIssue } from "../../lib/rules";
 import { audienceTabs } from "../tabs";
 import "../../styles/audience.css";
 
@@ -28,12 +30,8 @@ export const propertyCsv: Array<CsvColumn<ContactProperty>> = [
   { header: "created_at", value: (row) => row.created_at },
 ];
 
-/** Turns the fallback text into the value the API stores: a number for number properties, null when empty. */
-export function fallbackValue(type: "string" | "number", raw: string): string | number | null {
-  const text = raw.trim();
-  if (!text) return null;
-  return type === "number" ? Number(text) : raw;
-}
+/** Typed values, with null for an absent fallback and unchanged ISO date strings. */
+export const fallbackValue = typedValue;
 
 function showFallback(value: ContactProperty["fallback_value"]) {
   return value === null || value === undefined || value === "" ? <span className="dim">—</span> : <span className="mono">{String(value)}</span>;
@@ -111,9 +109,10 @@ export function Properties() {
 
 function CreateProperty({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
   const client = useClient();
-  const [form, setForm] = useState<{ key: string; type: "string" | "number"; fallback: string }>({ key: "", type: "string", fallback: "" });
+  const [form, setForm] = useState<{ key: string; type: PropertyType; fallback: string }>({ key: "", type: "string", fallback: "" });
   const invalidKey = form.key !== "" && !keyPattern.test(form.key);
-  const invalidFallback = form.type === "number" && form.fallback.trim() !== "" && Number.isNaN(Number(form.fallback));
+  const reserved = form.key === "topics" || form.key === "segments";
+  const invalidFallback = valueIssue(form.type, form.fallback);
   const { mutate, isLoading } = useMutation(
     () => {
       const body: Record<string, unknown> = { key: form.key, type: form.type };
@@ -135,9 +134,9 @@ function CreateProperty({ onClose, onDone }: { onClose: () => void; onDone: () =
       isOpen
       title="Add property"
       onClose={onClose}
-      onSubmit={() => void mutate()}
+      onSubmit={() => { if (form.key && !invalidKey && !reserved && !invalidFallback) void mutate(); }}
       submitLabel="Add"
-      submitDisabled={!form.key || invalidKey || invalidFallback}
+      submitDisabled={!form.key || invalidKey || reserved || Boolean(invalidFallback)}
       submitting={isLoading}
     >
       <div className="form">
@@ -149,26 +148,25 @@ function CreateProperty({ onClose, onDone }: { onClose: () => void; onDone: () =
           mono
           required
           autoFocus
-          error={invalidKey ? "Letters, digits, and underscores, 50 at most." : null}
+          error={invalidKey ? "Letters, digits, and underscores, 50 at most." : reserved ? "Topics and segments are reserved context fields." : null}
           hint="Use it in templates as {{{company_name}}}."
         />
         <Select
           label="Type"
           value={form.type}
-          onChange={(type) => setForm({ ...form, type: type as "string" | "number" })}
-          options={[
-            { value: "string", label: "String" },
-            { value: "number", label: "Number" },
-          ]}
+          onChange={(type) => setForm({ ...form, type: type as PropertyType, fallback: "" })}
+          options={propertyTypes}
           hint="The type cannot change later."
         />
-        <Field
+        <TypedValue
+          key={form.type}
           label="Fallback value"
-          type={form.type === "number" ? "number" : "text"}
+          type={form.type}
           value={form.fallback}
           onChange={(fallback) => setForm({ ...form, fallback })}
           hint="Used when a contact has no value."
-          error={invalidFallback ? "Enter a number." : null}
+          error={invalidFallback}
+          nullable
         />
       </div>
     </Modal>
@@ -178,7 +176,7 @@ function CreateProperty({ onClose, onDone }: { onClose: () => void; onDone: () =
 function EditFallback({ property, onClose, onDone }: { property: ContactProperty; onClose: () => void; onDone: () => void }) {
   const client = useClient();
   const [fallback, setFallback] = useState(property.fallback_value === null ? "" : String(property.fallback_value));
-  const invalid = property.type === "number" && fallback.trim() !== "" && Number.isNaN(Number(fallback));
+  const invalid = valueIssue(property.type, fallback);
   const { mutate, isLoading } = useMutation(
     () => client.patch(`/contact-properties/${property.id}`, { fallback_value: fallbackValue(property.type, fallback) }),
     {
@@ -191,17 +189,18 @@ function EditFallback({ property, onClose, onDone }: { property: ContactProperty
   );
 
   return (
-    <Modal isOpen title={property.key} onClose={onClose} onSubmit={() => void mutate()} submitDisabled={invalid} submitting={isLoading}>
+    <Modal isOpen title={property.key} onClose={onClose} onSubmit={() => { if (!invalid) void mutate(); }} submitDisabled={Boolean(invalid)} submitting={isLoading}>
       <div className="form">
         <Field label="Type" value={property.type} onChange={() => undefined} disabled hint="The name and type cannot change." />
-        <Field
+        <TypedValue
           label="Fallback value"
-          type={property.type === "number" ? "number" : "text"}
+          type={property.type}
           value={fallback}
           onChange={setFallback}
           autoFocus
           hint="Leave empty for no fallback."
-          error={invalid ? "Enter a number." : null}
+          error={invalid}
+          nullable
         />
       </div>
     </Modal>

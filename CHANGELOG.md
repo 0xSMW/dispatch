@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Add Boolean and Date contact properties with typed fallbacks and CSV imports. Dates stay ISO strings; boolean property cells accept true/false, yes/no, and 1/0. Invalid nonempty boolean/date cells now fail the row instead of silently becoming false or text. Undeclared keys remain allowed.
+- Add fresh topic/static-segment membership and recorded event time to automation context, plus `not_contains`, `within`, and `not_within` rules and typed field pickers. Reserve `topics` and `segments` for new property definitions while preserving live legacy definitions and values.
+- Add optional `send_email.variable_mapping` for dotted event/contact fields. Existing template variables remain literal, automatic event payload variables still work, and recipient and unsubscribe context stays protected. Transactional send requirements are unchanged.
+
 - Clarify topic subscriptions, static segments, event-created contacts, delay examples and canvas endings. Link Suppressions from Audience as well as Emails. Stop confirmation shows the current count and warns that every run in progress is cancelled, not paused.
 - Download a domain's actual DNS records as a BIND zone file for import into DNS hosts other than Route 53, including from a viewer session.
 - Keep canvas step and ending buttons clickable inside React Flow's non-selectable wrappers.

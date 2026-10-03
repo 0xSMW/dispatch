@@ -27,6 +27,10 @@ import {
 import { appendEvent, connect, executeAutomationRun, reconcileBroadcastSent, tx, unsubscribeToken, type Db } from "@dispatchmail/db";
 import type { Storage } from "@dispatchmail/storage";
 import { schema } from "../../../packages/db/src/schema.js";
+import { contactContext } from "../../../packages/db/src/automations.js";
+import { createImport, claimImports } from "../../../packages/db/src/imports.js";
+import { runImport } from "../../worker/src/imports.js";
+import { Readable } from "node:stream";
 import { deliverJob, type Job } from "../../worker/src/deliver.js";
 import { applySesEvent } from "../../worker/src/events.js";
 import type { FastifyInstance } from "fastify";
@@ -2548,6 +2552,125 @@ describe.skipIf(!live)("delivery", () => {
         server.close((error) => (error ? reject(error) : resolve())),
       );
     }
+  });
+});
+
+describe.skipIf(!live)("typed properties and rules", () => {
+  it("wakes a date-filtered event wait using the stored received time, not payload metadata", async () => {
+    for (const name of ["typed.wait.start", "typed.wait.done"]) expect((await post(fullKey, "/events", { name })).status).toBe(200);
+    const flow = await post(fullKey, "/automations", { name: "Typed wait", enabled: true, steps: [
+      { key: "start", type: "trigger", config: { event_name: "typed.wait.start" } },
+      { key: "wait", type: "wait_for_event", config: { event_name: "typed.wait.done", filter_rule: {
+        type: "rule", field: "event.received_at", operator: "within", value: "1 day",
+      } } },
+    ], connections: [{ from: "start", to: "wait" }] });
+    expect(flow.status).toBe(200);
+    expect((await post(fullKey, "/events/send", { event: "typed.wait.start", email: "wait@example.com" })).status).toBe(202);
+    const run = (await db.query<{ id: string; tenant_id: string }>("select id,tenant_id from automation_runs")).rows[0]!;
+    await executeAutomationRun(db, run.tenant_id, run.id);
+    expect((await db.query("select state from automation_runs")).rows).toEqual([{ state: "waiting" }]);
+    expect((await post(fullKey, "/events/send", { event: "typed.wait.done", email: "WAIT@example.com", payload: { received_at: "invalid" } })).status).toBe(202);
+    expect((await db.query("select state from automation_runs")).rows).toEqual([{ state: "ready" }]);
+    await executeAutomationRun(db, run.tenant_id, run.id);
+    expect((await db.query("select state from automation_runs")).rows).toEqual([{ state: "done" }]);
+  });
+
+  it("stores four types across repeated migrations and protects reserved definitions and viewer writes", async () => {
+    const fixtures = [["plan", "string", "free"], ["seats", "number", 3], ["activated", "boolean", false], ["last_active_at", "date", "2026-10-01T01:02:03+02:00"]] as const;
+    for (const [key, type, fallback_value] of fixtures) {
+      expect((await post(fullKey, "/contact-properties", { key, type, fallback_value })).status).toBe(200);
+    }
+    await db.query(schema);
+    await db.query(schema);
+    expect((await call(fullKey, "GET", "/contact-properties")).json.data).toEqual(expect.arrayContaining(
+      fixtures.map(([key, type, fallback_value]) => expect.objectContaining({ key, type, fallback_value })),
+    ));
+    for (const key of ["topics", "segments"]) {
+      expect((await post(fullKey, "/contact-properties", { key, type: "string" })).status).toBe(400);
+    }
+    const saved = await post(fullKey, "/contacts", { email: "typed@example.com", properties: {
+      plan: "pro", seats: 4, activated: true, last_active_at: "2026-10-02", undeclared: { ok: true },
+    } });
+    expect(saved.status).toBe(200);
+    expect(saved.json.properties).toMatchObject({
+      activated: { type: "boolean", value: true }, last_active_at: { type: "date", value: "2026-10-02" }, undeclared: { value: { ok: true } },
+    });
+    for (const properties of [{ activated: "true" }, { last_active_at: "2026-02-30" }, { seats: "4" }, { plan: false }]) {
+      expect((await call(fullKey, "PATCH", `/contacts/${saved.json.id}`, { properties })).status).toBe(400);
+    }
+    const tenant = (await db.query<{ tenant_id: string }>("select tenant_id from contacts where id = $1", [saved.json.id])).rows[0]!.tenant_id;
+    await db.query("insert into contact_properties (id, tenant_id, key, type) values ($1,$2,'topics','string')", [id("prop"), tenant]);
+    expect((await post(fullKey, "/contact-properties", { key: "topics", type: "string", fallback_value: "legacy" })).status).toBe(200);
+    expect((await call(fullKey, "PATCH", `/contacts/${saved.json.id}`, { properties: { topics: "legacy", segments: false } })).status).toBe(200);
+    expect(await contactContext(db, tenant, "TYPED@example.com")).toMatchObject({ topics: "legacy", segments: false });
+    const otherKey = await seedTenant();
+    expect((await call(otherKey, "GET", `/contacts/${saved.json.id}`)).status).toBe(404);
+    expect((await call(otherKey, "GET", "/contact-properties")).json.data).toEqual([]);
+    const viewer = await teammate("Viewer");
+    const signed = await signInAs(viewer.email, viewer.password);
+    expect((await post(signed.token, "/contact-properties", { key: "hidden", type: "boolean" })).status).toBe(403);
+    expect((await call(signed.token, "PATCH", `/contacts/${saved.json.id}`, { properties: { activated: false } })).status).toBe(403);
+  });
+
+  it("imports typed booleans and ISO dates into actual JSONB with row errors and retry-safe counts", async () => {
+    for (const [key, type] of [["activated", "boolean"], ["last_active_at", "date"]]) {
+      expect((await post(fullKey, "/contact-properties", { key, type })).status).toBe(200);
+    }
+    const tenant = (await db.query<{ tenant_id: string }>("select tenant_id from contact_properties limit 1")).rows[0]!.tenant_id;
+    const importId = id("import");
+    await createImport(db, { id: importId, tenantId: tenant, storageKey: `imports/${tenant}/${importId}`,
+      columnMap: { properties: { activated: { column: "active" }, last_active_at: { column: "date" } } },
+      onConflict: "upsert", segments: [], topics: [] });
+    const job = (await claimImports(db, 1))[0]!;
+    const csv = "email,active,date\none@example.com,YES,2026-10-01\ntwo@example.com,0,2026-10-02T03:04:05Z\nbadbool@example.com,maybe,2026-10-01\nbaddate@example.com,true,2026-02-30\n";
+    const counts = await runImport(db, { stream: async () => Readable.from([csv]) }, job);
+    expect(counts).toEqual({ total: 4, created: 2, updated: 0, skipped: 0, failed: 2 });
+    expect((await db.query("select email, properties from contacts order by email")).rows).toEqual([
+      { email: "one@example.com", properties: { activated: true, last_active_at: "2026-10-01" } },
+      { email: "two@example.com", properties: { activated: false, last_active_at: "2026-10-02T03:04:05Z" } },
+    ]);
+    expect((await db.query("select status, counts from contact_imports where id = $1", [importId])).rows).toEqual([{ status: "completed", counts }]);
+    const restarted = await runImport(db, { stream: async () => Readable.from([csv]) }, { ...job, row_offset: 4, counts });
+    expect(restarted).toEqual(counts);
+    expect((await db.query("select id from contacts")).rows).toHaveLength(2);
+  });
+
+  it("routes receiving topics with defaults and fresh changes, preserves segment membership and maps immutable event age", async () => {
+    const subscribed = await post(fullKey, "/topics", { name: "Receiving", key: "receiving", default_subscription: "opt_in" });
+    const optedOut = await post(fullKey, "/topics", { name: "Not receiving", key: "not_receiving", default_subscription: "opt_out" });
+    const segment = await post(fullKey, "/segments", { name: "Members" });
+    const contact = await post(fullKey, "/contacts", { email: "member@example.com", first_name: "Ada" });
+    expect((await post(fullKey, `/segments/${segment.json.id}/contacts`, { email: "member@example.com" })).status).toBe(200);
+    const tenant = (await db.query<{ tenant_id: string }>("select tenant_id from contacts where id=$1", [contact.json.id])).rows[0]!.tenant_id;
+    expect(await contactContext(db, tenant, "MEMBER@example.com")).toMatchObject({ topics: [subscribed.json.id], segments: [segment.json.id], created_at: expect.any(String) });
+    const template = await post(fullKey, "/templates", { name: "Mapped", subject: "Mapped", text: "{{{NAME}}}: {{{SEATS}}}: {{{WHEN}}}", variables: ["NAME", { key: "SEATS", type: "number" }, "WHEN"], publish: true });
+    expect((await post(fullKey, "/events", { name: "typed.context" })).status).toBe(200);
+    const flow = await post(fullKey, "/automations", { name: "Typed context", enabled: true, steps: [
+      { key: "start", type: "trigger", config: { event_name: "typed.context" } },
+      { key: "check", type: "condition", config: { type: "and", rules: [
+        { type: "rule", field: "contact.topics", operator: "contains", value: subscribed.json.id },
+        { type: "rule", field: "contact.topics", operator: "not_contains", value: optedOut.json.id },
+        { type: "rule", field: "contact.segments", operator: "contains", value: segment.json.id },
+        { type: "rule", field: "event.received_at", operator: "within", value: "1 day" },
+      ] } },
+      { key: "send", type: "send_email", config: { from: "hello@dispatch-fixture.net", template: template.json.id,
+        variable_mapping: { NAME: "contact.first_name", SEATS: "event.seats", WHEN: "event.received_at" } } },
+    ], connections: [{ from: "start", to: "check" }, { from: "check", to: "send", type: "condition_met" }] });
+    expect(flow.status).toBe(200);
+    const fire = () => post(fullKey, "/events/send", { event: "typed.context", email: "MEMBER@example.com", payload: { seats: 3, received_at: "spoof" } });
+    expect((await fire()).status).toBe(202);
+    const run = (await db.query<{ id: string }>("select id from automation_runs")).rows[0]!;
+    await executeAutomationRun(db, tenant, run.id);
+    const event = (await db.query<{ created_at: Date }>("select created_at from custom_events")).rows[0]!;
+    const emails = await db.query<{ text: string }>("select text from emails");
+    expect(emails.rows).toEqual([{ text: `Ada: 3: ${event.created_at.toISOString()}` }]);
+    expect((await call(fullKey, "PATCH", `/contacts/${contact.json.id}`, { unsubscribed: true })).status).toBe(200);
+    expect(await contactContext(db, tenant, "member@example.com")).toMatchObject({ topics: [], segments: [segment.json.id] });
+    expect((await fire()).status).toBe(202);
+    const second = (await db.query<{ id: string }>("select id from automation_runs where id <> $1", [run.id])).rows[0]!;
+    await executeAutomationRun(db, tenant, second.id);
+    expect((await db.query("select id from emails")).rows).toHaveLength(1);
+    expect((await db.query("select data from automation_steps where run_id=$1 and step_key='check'", [second.id])).rows).toEqual([{ data: { result: false } }]);
   });
 });
 

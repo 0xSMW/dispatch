@@ -6,10 +6,10 @@ const emit = vi.hoisted(() => vi.fn());
 vi.mock("./emails.js", () => ({ ingestEmail }));
 vi.mock("./events.js", () => ({ emit }));
 
-const { executeAutomationRun, fireEvent, stepLimit } = await import("./automations.js");
+const { executeAutomationRun, fireEvent, stepLimit, contactContext, eventContext, mappedVariables } = await import("./automations.js");
 
 type StepRow = { step_key: string | null; step_index: number; type: string; state: string; data: Record<string, unknown>; error?: string };
-type Contact = { id: string; email: string; unsubscribed_at?: string | null; deleted?: boolean; properties?: Record<string, unknown> };
+type Contact = { id: string; email: string; unsubscribed_at?: string | null; deleted?: boolean; properties?: Record<string, unknown>; topics?: string[]; segments?: string[] };
 
 // An in-memory stand-in for the tables the executor touches. Writes made inside a transaction
 // are undone on rollback, the way the step transaction depends on.
@@ -47,7 +47,8 @@ function fake(run: {
       connections: run.connections ?? [],
       automation_deleted: run.deleted ?? false,
       email: run.email === undefined ? "ada@example.com" : run.email,
-      data: run.data ?? {}
+      data: run.data ?? {},
+      received_at: "2026-10-04T00:00:00Z"
     },
     steps: [...(run.rows ?? [])] as StepRow[],
     contacts: [...(run.contacts ?? [])] as Contact[],
@@ -156,7 +157,7 @@ function fake(run: {
       const found = state.contacts.find((contact) => !contact.deleted && contact.email.toLowerCase() === String(params[1]).toLowerCase());
       return {
         rows: found
-          ? [{ id: found.id, email: found.email, first_name: null, last_name: null, properties: found.properties ?? {}, unsubscribed_at: found.unsubscribed_at ?? null }]
+          ? [{ id: found.id, email: found.email, first_name: null, last_name: null, properties: found.properties ?? {}, unsubscribed_at: found.unsubscribed_at ?? null, created_at: "2026-09-01T00:00:00Z", topics: found.topics ?? [], segments: found.segments ?? [] }]
           : []
       };
     }
@@ -526,6 +527,42 @@ describe("executeAutomationRun", () => {
     const { db, state } = fake({ steps: [{ key: "start", type: "trigger", config: { event_name: "e" } }], connections: [] });
     await executeAutomationRun(db, "tenant_1", "run_1");
     expect(state.run.state).toBe("done");
+  });
+});
+
+describe("typed automation context", () => {
+  it("adds memberships and created time while preserving legacy reserved properties", async () => {
+    const current = fake({ steps: [], contacts: [{ id: "contact_1", email: "ada@example.com", topics: ["topic_1"], segments: ["seg_1"], properties: { activated: false } }] });
+    expect(await contactContext(current.db, "tenant_1", "ADA@example.com")).toMatchObject({
+      activated: false, topics: ["topic_1"], segments: ["seg_1"], created_at: "2026-09-01T00:00:00Z", unsubscribed: false,
+    });
+    current.state.contacts[0]!.unsubscribed_at = "2026-10-01";
+    expect(await contactContext(current.db, "tenant_1", "ada@example.com")).toMatchObject({ topics: [], segments: ["seg_1"] });
+    current.state.contacts[0]!.properties = { topics: "legacy", segments: false };
+    expect(await contactContext(current.db, "tenant_1", "ada@example.com")).toMatchObject({ topics: "legacy", segments: false });
+    expect(await contactContext(current.db, "tenant_1", null)).toBeNull();
+  });
+  it("uses received time instead of a payload spoof and maps only own context fields", () => {
+    const event = eventContext({ received_at: "spoof", plan: "pro" }, "2026-10-04T00:00:00Z");
+    expect(event.received_at).toBe("2026-10-04T00:00:00Z");
+    const contact = Object.assign(Object.create({ hidden: "secret" }), { activated: false, seats: 3 });
+    expect(mappedVariables({ PLAN: "event.plan", ACTIVE: "contact.activated", SEATS: "contact.seats", SECRET: "contact.hidden", MISSING: "event.absent" }, { event, contact })).toEqual({ PLAN: "pro", ACTIVE: false, SEATS: 3 });
+  });
+  it("routes against receiving topics and maps fresh recipient values", async () => {
+    const run = fake({
+      steps: [
+        { key: "trigger", type: "trigger", config: { event_name: "user.created" } },
+        { key: "rule", type: "condition", config: { type: "rule", field: "contact.topics", operator: "contains", value: "topic_1" } },
+        { key: "send", type: "send_email", config: { template: { id: "tmpl_1", variables: { PLAN: "literal" } }, variable_mapping: { PLAN: "event.plan", ACTIVE: "contact.activated", AGE: "event.received_at" } } },
+      ],
+      connections: [{ from: "trigger", to: "rule" }, { from: "rule", to: "send", type: "condition_met" }],
+      data: { plan: "pro", received_at: "spoof" },
+      contacts: [{ id: "contact_1", email: "ada@example.com", topics: ["topic_1"], properties: { activated: false } }],
+    });
+    ingestEmail.mockResolvedValue({ email: { id: "email_1", status: "queued" } });
+    await executeAutomationRun(run.db, "tenant_1", "run_1");
+    expect(run.state.steps.find((step) => step.step_key === "rule")?.data).toEqual({ result: true });
+    expect(ingestEmail.mock.calls.at(-1)?.[1].variables).toMatchObject({ PLAN: "pro", ACTIVE: false, AGE: "2026-10-04T00:00:00Z" });
   });
 });
 

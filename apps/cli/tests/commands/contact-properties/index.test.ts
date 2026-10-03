@@ -34,4 +34,23 @@ describe("contact-properties", () => {
     expect(errorJson(stderr()).error.code).toBe("invalid_flag");
     expect(method("contactProperties.create")).not.toHaveBeenCalled();
   });
+  it("creates and updates actual boolean and unchanged ISO date fallbacks", async () => {
+    spies();
+    await run(contactProperties, ["create", "--key", "activated", "--type", "boolean", "--fallback-value", "false"]);
+    expect(method("contactProperties.create")).toHaveBeenCalledWith({ key: "activated", type: "boolean", fallbackValue: false });
+    await run(contactProperties, ["create", "--key", "last_active_at", "--type", "date", "--fallback-value", "2026-10-01T01:02:03+02:00"]);
+    expect(method("contactProperties.create")).toHaveBeenLastCalledWith({ key: "last_active_at", type: "date", fallbackValue: "2026-10-01T01:02:03+02:00" });
+    method("contactProperties.get").mockResolvedValue(ok({ id: "prop_bool", type: "boolean" }));
+    await run(contactProperties, ["update", "prop_bool", "--fallback-value", "true"]);
+    expect(method("contactProperties.update")).toHaveBeenLastCalledWith({ id: "prop_bool", fallbackValue: true });
+    method("contactProperties.get").mockResolvedValue(ok({ id: "prop_date", type: "date" }));
+    await run(contactProperties, ["update", "prop_date", "--fallback-value", "2026-10-02"]);
+    expect(method("contactProperties.update")).toHaveBeenLastCalledWith({ id: "prop_date", fallbackValue: "2026-10-02" });
+  });
+  it("refuses invalid boolean flag text instead of sending a string or false", async () => {
+    const { stderr } = spies();
+    expect(await run(contactProperties, ["create", "--key", "activated", "--type", "boolean", "--fallback-value", "maybe"])).toBe(1);
+    expect(errorJson(stderr()).error.code).toBe("invalid_flag");
+    expect(method("contactProperties.create")).not.toHaveBeenCalled();
+  });
 });

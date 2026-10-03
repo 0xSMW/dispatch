@@ -280,6 +280,45 @@ function open(path: string) {
 describe("AutomationEditor on the canvas", () => {
   beforeEach(() => signIn());
 
+  it("shares manual date types and send mappings across list and canvas without wire metadata", async () => {
+    const fetch = api((url, init) => init.method === "PATCH" ? { body: { ...automation, ...JSON.parse(String(init.body)) } } : undefined);
+    open("/automations/automation_1/editor");
+    const card = await screen.findByRole("article", { name: "Step pro" });
+    fireEvent.change(within(card).getByLabelText("Type"), { target: { value: "date" } });
+    fireEvent.change(within(card).getByLabelText("Value"), { target: { value: "2026-10-04" } });
+    fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Step pro" }));
+    const condition = screen.getByRole("region", { name: "Step pro settings" });
+    expect(within(condition).getByLabelText("Type")).toHaveProperty("value", "date");
+    fireEvent.change(within(condition).getByLabelText("Operator"), { target: { value: "within" } });
+    fireEvent.change(within(condition).getByLabelText("Duration"), { target: { value: "2 days" } });
+    fireEvent.click(screen.getByRole("button", { name: "Step welcome" }));
+    const send = screen.getByRole("region", { name: "Step welcome settings" });
+    fireEvent.click(within(send).getByRole("button", { name: "Add mapping" }));
+    fireEvent.change(within(send).getByLabelText("Variable name"), { target: { value: "received" } });
+    fireEvent.change(within(send).getByLabelText("Choose context field"), { target: { value: "event.received_at" } });
+    fireEvent.click(screen.getByRole("button", { name: "List" }));
+    expect(await within(screen.getByRole("article", { name: "Step welcome" })).findByLabelText("Context field")).toHaveProperty("value", "event.received_at");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
+    const body = JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "PATCH")![1]!.body));
+    expect(body.steps[1].config.variable_mapping).toEqual({ received: "event.received_at" });
+    expect(body.steps[2].config).toEqual({ type: "rule", field: "event.plan", operator: "within", value: "2 days" });
+    expect(JSON.stringify(body)).not.toContain("ruleTypes");
+  });
+
+  it("keeps typed rule and mapping controls disabled for viewers", async () => {
+    signIn("sess_test", ["read"]);
+    api();
+    open("/automations/automation_1/editor?view=canvas");
+    fireEvent.click(await screen.findByRole("button", { name: "Step pro" }));
+    const condition = screen.getByRole("region", { name: "Step pro settings" });
+    for (const field of condition.querySelectorAll("select, input")) expect(field).toHaveProperty("disabled", true);
+    fireEvent.click(screen.getByRole("button", { name: "Step welcome" }));
+    expect(within(screen.getByRole("region", { name: "Step welcome settings" })).getByRole("button", { name: "Add mapping" })).toHaveProperty("disabled", true);
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+  });
+
   it("switches between List and Canvas and saves the same graph the list test saves", async () => {
     const fetch = api((url, init) =>
       url.pathname === "/automations/automation_1" && init.method === "PATCH" ? { body: { ...automation, ...JSON.parse(String(init.body)) } } : undefined,

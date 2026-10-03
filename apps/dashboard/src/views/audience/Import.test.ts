@@ -96,6 +96,38 @@ describe("ImportContacts", () => {
     expect(keyCollisions(mapping)).toEqual([]);
   });
 
+  it("offers four property types and preserves declared boolean/date types in uploaded mappings", async () => {
+    const fetch = stubApi({
+      "GET /segments": list([]), "GET /topics": list([]),
+      "GET /contact-properties": list([{ key: "active", type: "boolean" }, { key: "renewed", type: "date" }, { key: "topics", type: "number" }]),
+      "POST /contacts/imports": { object: "contact_import", id: "import_typed" },
+      "GET /contacts/imports/import_typed": { object: "contact_import", id: "import_typed", status: "completed", counts, error: null },
+    });
+    show(h(ImportContacts, { onClose: vi.fn(), onDone: vi.fn() }));
+    const dialog = await screen.findByRole("dialog");
+    await waitFor(() => expect(calls(fetch)).toContain("GET /contact-properties?limit=100"));
+    fireEvent.change(within(dialog).getByLabelText("CSV file"), { target: { files: [new File(["Email,Active,Renewed,Topics,Other\nada@example.com,false,2026-10-04,2,true\n"], "typed.csv")] } });
+    await within(dialog).findByText("ada@example.com");
+    await next(dialog);
+    expect(within(dialog).getByLabelText("Type for Active")).toHaveProperty("value", "boolean");
+    expect(within(dialog).getByLabelText("Type for Active")).toHaveProperty("disabled", true);
+    expect(within(dialog).getByLabelText("Type for Renewed")).toHaveProperty("value", "date");
+    expect(within(dialog).getByLabelText("Type for Topics")).toHaveProperty("value", "number");
+    fireEvent.click(within(dialog).getByLabelText("Other"));
+    const other = within(dialog).getByLabelText("Type for Other");
+    expect([...other.querySelectorAll("option")].map((option) => option.value)).toEqual(["string", "number", "boolean", "date"]);
+    fireEvent.change(other, { target: { value: "boolean" } });
+    await next(dialog);
+    await next(dialog);
+    await next(dialog);
+    await waitFor(() => expect(calls(fetch)).toContain("POST /contacts/imports"));
+    const form = fetch.mock.calls.find(([, init]) => init?.method === "POST")![1]!.body as FormData;
+    expect(JSON.parse(String(form.get("column_map"))).properties).toEqual({
+      active: { column: "Active", type: "boolean" }, renewed: { column: "Renewed", type: "date" },
+      topics: { column: "Topics", type: "number" }, other: { column: "Other", type: "boolean" },
+    });
+  });
+
   it("keeps Next disabled until a column is mapped to email", async () => {
     api();
     show(h(ImportContacts, { onClose: vi.fn(), onDone: vi.fn() }));

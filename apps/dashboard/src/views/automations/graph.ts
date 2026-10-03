@@ -3,6 +3,8 @@
 // The API stores `steps: [{ key, type, config }]` and `connections: [{ from, to, type }]`. The
 // builder shows the same thing as a tree: one ordered list after the trigger, where a condition
 // (and a wait_for_event that branches) ends its list and holds one nested list per outgoing edge.
+import { contextFields, isIsoDate, operatorsForType, type ContextField, type RuleSources } from "../../lib/rules";
+import type { PropertyType } from "../../types";
 
 export const stepTypes = [
   "send_email",
@@ -24,6 +26,8 @@ export type Node = {
   branches?: Partial<Record<Branch, Node[]>>;
   /** Raw text of JSON fields while the user types, keyed by field name. Never sent. */
   drafts?: Record<string, string>;
+  /** Manual types for undeclared fields, by rule index path. Editor-only, shared by both views. */
+  ruleTypes?: Record<string, PropertyType>;
 };
 
 export type Tree = { trigger: string; event: string; steps: Node[] };
@@ -328,14 +332,14 @@ export function emailIssue(value: unknown): string | null {
 
 export type Rule = { type: "rule"; field: string; operator: string; value?: unknown } | { type: "and" | "or"; rules: Rule[] };
 
-export function ruleIssue(rule: unknown): string | null {
+export function ruleIssue(rule: unknown, fields: ContextField[] = [], manualTypes: Record<string, PropertyType> = {}, location = ""): string | null {
   const value = rule as Partial<Rule> | undefined;
   if (!value || typeof value !== "object") return "Add a rule.";
   if (value.type === "and" || value.type === "or") {
     const rules = (value as { rules?: unknown[] }).rules ?? [];
     if (!rules.length) return "A group needs at least one rule.";
-    for (const child of rules) {
-      const issue = ruleIssue(child);
+    for (const [index, child] of rules.entries()) {
+      const issue = ruleIssue(child, fields, manualTypes, location ? `${location}.${index}` : String(index));
       if (issue) return issue;
     }
     return null;
@@ -344,11 +348,23 @@ export function ruleIssue(rule: unknown): string | null {
   const compared = (value as { value?: unknown }).value;
   // An emptied or half-typed number. Saved as it is, JSON would turn it into null.
   if (typeof compared === "number" && !Number.isFinite(compared)) return "Enter a number to compare with.";
+  const leaf = value as { field: string; operator: string; value?: unknown };
+  const type = fields.find((field) => field.path === leaf.field)?.type ?? manualTypes[location];
+  if (type && !operatorsForType(type).includes(leaf.operator)) return `Choose an operator for a ${type} field.`;
+  if (leaf.operator === "exists" || leaf.operator === "is_empty") return null;
+  if (leaf.operator === "within" || leaf.operator === "not_within") {
+    const seconds = typeof compared === "string" ? durationSeconds(compared) : null;
+    return seconds !== null && Number.isFinite(seconds) && seconds > 0 ? null : "Enter a positive duration, such as 7 days.";
+  }
+  if (type === "date" && !isIsoDate(compared)) return "Use an ISO date or a timestamp with a timezone.";
+  if (type === "number" && typeof compared !== "number") return "Enter a number to compare with.";
+  if (type === "boolean" && typeof compared !== "boolean") return "Choose true or false.";
+  if (type === "set" && (typeof compared !== "string" || !compared)) return "Choose a topic or segment.";
   return null;
 }
 
 /** Field errors for one step, keyed by field name. */
-export function stepIssues(node: Node): Record<string, string> {
+export function stepIssues(node: Node, fields: ContextField[] = []): Record<string, string> {
   const issues: Record<string, string | null> = {};
   const config = node.config;
   for (const [field, text] of Object.entries(node.drafts ?? {})) {
@@ -368,6 +384,13 @@ export function stepIssues(node: Node): Record<string, string> {
       const template = config.template as { id?: string } | string | undefined;
       const id = typeof template === "string" ? template : template?.id;
       if (!id) issues.template = "Choose a template.";
+      if (config.variable_mapping !== undefined) {
+        const mapping = config.variable_mapping;
+        if (!mapping || typeof mapping !== "object" || Array.isArray(mapping)) issues.variable_mapping = "Mappings must be an object.";
+        else if (Object.entries(mapping).some(([name, path]) => !name.trim() || typeof path !== "string" || !/^(event|contact)\.[^\s.]+(?:\.[^\s.]+)*$/.test(path))) {
+          issues.variable_mapping = "Each mapping needs a variable name and a dotted event or contact field.";
+        }
+      }
       break;
     }
     case "delay":
@@ -379,10 +402,10 @@ export function stepIssues(node: Node): Record<string, string> {
       // Only a timeout branch with steps in it needs a timeout. A wait that came from the API
       // with just an "event received" edge has none, and has to save unchanged.
       if (node.branches?.timeout?.length && !config.timeout) issues.timeout = "A timeout branch needs a timeout.";
-      if (config.filter_rule) issues.filter_rule = ruleIssue(config.filter_rule);
+      if (config.filter_rule) issues.filter_rule = ruleIssue(config.filter_rule, fields, node.ruleTypes);
       break;
     case "condition":
-      issues.rule = ruleIssue(config);
+      issues.rule = ruleIssue(config, fields, node.ruleTypes);
       break;
     case "add_to_segment":
       if (!config.segment_id) issues.segment_id = "Choose a segment.";
@@ -397,12 +420,13 @@ export function stepIssues(node: Node): Record<string, string> {
 }
 
 /** Every step's field errors, keyed by step key, plus a trigger error under `trigger`. */
-export function treeIssues(tree: Tree): Record<string, Record<string, string>> {
+export function treeIssues(tree: Tree, sources?: RuleSources): Record<string, Record<string, string>> {
   const all: Record<string, Record<string, string>> = {};
   if (!tree.event.trim()) all[tree.trigger] = { event_name: "Enter the event that starts this automation." };
   const walk = (list: Node[]) => {
     for (const node of list) {
-      const issues = stepIssues(node);
+      const fields = sources ? contextFields(sources, node.type === "wait_for_event" ? String(node.config.event_name ?? "") : tree.event) : [];
+      const issues = stepIssues(node, fields);
       if (Object.keys(issues).length) all[node.key] = issues;
       for (const branch of Object.values(node.branches ?? {})) walk(branch ?? []);
     }
@@ -414,7 +438,7 @@ export function treeIssues(tree: Tree): Record<string, Record<string, string>> {
 /** The config fields each card shows an error under. Anything else goes on the card as a whole. */
 const cardFields: Record<string, string[]> = {
   trigger: ["event_name"],
-  send_email: ["template", "from", "to", "variables"],
+  send_email: ["template", "from", "to", "variables", "variable_mapping"],
   delay: ["duration"],
   wait_for_event: ["event_name", "timeout", "filter_rule"],
   condition: ["rule"],
