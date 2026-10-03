@@ -23,6 +23,7 @@
     "format": "prettier --write .",
     "lint": "pnpm -r lint",
     "load": "tsx scripts/load.ts",
+    "audit:prod": "node scripts/audit-production.mjs",
     "test": "vitest run",
     "test:unit": "vitest run --exclude apps/api/src/accept.test.ts",
     "typecheck": "pnpm -r typecheck",
@@ -41,7 +42,18 @@
   },
   "pnpm": {
     "overrides": {
-      "@types/node": "^24.19.1"
+      "@types/node": "^24.19.1",
+      "@workflow/core>devalue": "5.9.3",
+      "@workflow/core>nanoid": "5.1.16",
+      "fast-uri@3": "3.1.8",
+      "find-my-way@9": "9.9.0",
+      "postcss@8": "8.5.28",
+      "nanoid@3": "3.3.18",
+      "esbuild@0.28": "0.28.2",
+      "@babel/core@7": "7.29.7",
+      "browserslist@4": "4.29.3",
+      "baseline-browser-mapping@2": "2.11.27",
+      "vite@6": "6.4.3"
     }
   }
 }
