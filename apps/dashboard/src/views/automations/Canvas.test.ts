@@ -170,6 +170,27 @@ describe("Canvas", () => {
     expect(within(panel).getByText("headers: Too many headers")).toBeTruthy();
   });
 
+  it.each([
+    { config: { type: "contact_created" }, label: "Contact added", summary: "Any new contact" },
+    { config: { type: "contact_updated", field: "unsubscribed", from: false, to: true }, label: "Contact changes", summary: "unsubscribed: false → true" },
+    { config: { type: "topic_subscribed", topic_id: "topic_1" }, label: "Subscribed to topic", summary: "News" },
+    { config: { type: "segment_added", segment_id: "seg_1" }, label: "Added to segment", summary: "Trials" },
+  ])("draws the shared $label label and summary in the canvas and panel", async ({ config, label, summary }) => {
+    const contactTree = toTree([{ key: "trigger", type: "trigger", config }]).tree;
+    const onTrigger = vi.fn();
+    show({ tree: contactTree, actions: spies(), onTrigger, options: {
+      templates: [], events: [], segments: [{ value: "seg_1", label: "Trials" }], topics: [{ value: "topic_1", label: "News" }],
+    } });
+    const trigger = await screen.findByRole("button", { name: "Trigger" });
+    expect(within(trigger).getByText(label)).toBeTruthy();
+    expect(within(trigger).getByText(summary)).toBeTruthy();
+    fireEvent.click(trigger);
+    const panel = within(screen.getByRole("region", { name: "Trigger settings" }));
+    expect(panel.getByText(label)).toBeTruthy();
+    fireEvent.change(panel.getByLabelText("Trigger"), { target: { value: "contact_created" } });
+    expect(onTrigger).toHaveBeenCalledWith({ type: "contact_created" });
+  });
+
   it("shows each condition its own number when the selection moves between two of them", async () => {
     const nested = toTree(
       [

@@ -41,7 +41,7 @@ export function registerUnsubscribe(app: FastifyInstance, deps: { db: Db; secret
       const payload = readToken(request, secret);
       const action = unsubscribeAction(request.body);
       await tx(db, async (client) => {
-        const change = await applyUnsubscribe(client, payload, action);
+        const change = await applyUnsubscribe(client, payload, action, request.request_id);
         await emit(client, {
           tenantId: payload.tenant_id,
           requestId: request.request_id,

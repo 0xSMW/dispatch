@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionProvider } from "../../shell/session";
 import { h, mockFetch, signIn, type Reply } from "../../testing";
 import { AutomationEditor } from "./AutomationEditor";
-import { keys } from "./graph";
+import { keys, type TriggerConfig } from "./graph";
 
 // New steps get a random key suffix. Tests count instead, so keys can be named.
 beforeEach(() => {
@@ -88,6 +88,70 @@ describe("AutomationEditor", () => {
     expect(screen.getByRole("region", { name: "True branch of pro" })).toBeTruthy();
     expect(screen.getByRole("region", { name: "False branch of pro" })).toBeTruthy();
     expect(screen.getByText("Saved")).toBeTruthy();
+  });
+
+  it("loads and saves native contact change bounds without requiring an event", async () => {
+    const config = { type: "contact_updated", field: "unsubscribed", from: false, to: true };
+    const fetch = api((url, init) => {
+      if (url.pathname === "/automations/automation_1") return { body: { ...automation, trigger: null, trigger_config: config,
+        steps: [{ key: "trigger", type: "trigger", config }], connections: [], ...(init.method === "PATCH" ? JSON.parse(String(init.body)) : {}),
+      } };
+      return undefined;
+    });
+    open();
+    const card = within(await screen.findByRole("article", { name: "Trigger" }));
+    expect(card.getByText("Contact changes")).toBeTruthy();
+    expect(card.getByLabelText("From")).toHaveProperty("value", "false");
+    expect(card.getByLabelText("To")).toHaveProperty("value", "true");
+    expect(card.queryByLabelText("Event")).toBeNull();
+    fireEvent.change(card.getByLabelText("To"), { target: { value: "false" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
+    expect(JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "PATCH")![1]!.body)).steps).toEqual([
+      { key: "trigger", type: "trigger", config: { ...config, to: false } },
+    ]);
+  });
+
+  it.each([
+    { type: "topic_subscribed", topic_id: "missing" },
+    { type: "segment_added", segment_id: "missing" },
+  ] as TriggerConfig[])("warns about a deleted $type resource and blocks Start until it is replaced", async (config) => {
+    const fetch = api((url, init) => {
+      if (url.pathname === "/topics") return list([{ id: "topic_1", name: "News" }]);
+      if (url.pathname === "/automations/automation_1") return { body: {
+        ...automation, trigger: null, trigger_config: config, steps: [{ key: "trigger", type: "trigger", config }], connections: [],
+        ...(init.method === "PATCH" ? JSON.parse(String(init.body)) : {}),
+      } };
+      return undefined;
+    });
+    open();
+    expect(await screen.findByText(/Its (topic|segment) was deleted/)).toBeTruthy();
+    const start = screen.getByRole("button", { name: "Start" });
+    expect(start).toHaveProperty("disabled", true);
+    fireEvent.click(start);
+    expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
+    fireEvent.change(screen.getByLabelText(config.type === "topic_subscribed" ? "Topic" : "Segment"), {
+      target: { value: config.type === "topic_subscribed" ? "topic_1" : "seg_1" },
+    });
+    await waitFor(() => expect(start).toHaveProperty("disabled", false));
+    fireEvent.click(start);
+    await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
+    expect(JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "PATCH")![1]!.body)).status).toBe("enabled");
+  });
+
+  it("shows contact triggers read-only to viewers", async () => {
+    signIn("sess_viewer", ["read"]);
+    const config = { type: "contact_updated", field: "unsubscribed", from: false, to: true };
+    const fetch = api((url) => url.pathname === "/automations/automation_1" ? { body: {
+      ...automation, trigger: null, steps: [{ key: "trigger", type: "trigger", config }], connections: [],
+    } } : undefined);
+    open();
+    const card = within(await screen.findByRole("article", { name: "Trigger" }));
+    for (const control of card.getAllByRole("combobox")) expect(control).toHaveProperty("disabled", true);
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Start" })).toBeNull();
+    fireEvent.keyDown(document.body, { key: "s", metaKey: true });
+    expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
   });
 
   it("loads typed field sources and saves boolean rules and additive send mappings", async () => {

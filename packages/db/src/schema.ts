@@ -860,4 +860,34 @@ alter table email_recipients add column if not exists sandbox boolean not null d
 alter table contact_properties drop constraint if exists contact_properties_type_check;
 alter table contact_properties add constraint contact_properties_type_check
   check (type in ('string', 'number', 'boolean', 'date'));
+
+-- Contact trigger namespaces and transactional transition history.
+alter table automations add column if not exists trigger_type text not null default 'event';
+alter table automations drop constraint if exists automations_trigger_type_check;
+alter table automations add constraint automations_trigger_type_check
+  check (trigger_type in ('event', 'contact_created', 'contact_updated', 'topic_subscribed', 'segment_added'));
+create index if not exists automations_tenant_trigger_type_idx
+  on automations (tenant_id, trigger_type, trigger) where deleted_at is null and enabled;
+alter table automations add column if not exists reentry text not null default 'every_time';
+alter table automations drop constraint if exists automations_reentry_check;
+alter table automations add constraint automations_reentry_check check (reentry in ('once', 'every_time'));
+create table if not exists automation_enrollments (
+  tenant_id text not null references tenants(id) on delete cascade,
+  automation_id text not null references automations(id) on delete cascade,
+  contact_id text not null,
+  created_at timestamptz not null default now(),
+  primary key (automation_id, contact_id)
+);
+create table if not exists contact_changes (
+  id text primary key,
+  tenant_id text not null references tenants(id) on delete cascade,
+  contact_id text not null,
+  field text not null,
+  from_value jsonb,
+  to_value jsonb,
+  request_id text not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists contact_changes_tenant_contact_created_idx
+  on contact_changes (tenant_id, contact_id, created_at);
 `;

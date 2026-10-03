@@ -87,11 +87,16 @@ describe("unsubscribe tokens", () => {
 });
 
 describe("applyUnsubscribe", () => {
-  const contact = { id: "contact_1", email: "ada@example.com", unsubscribed_at: null };
+  const contact = {
+    id: "contact_1", email: "ada@example.com", first_name: "Ada", last_name: null, properties: {},
+    unsubscribed_at: null, deleted_at: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
+  };
+  const optedOut = { ...contact, unsubscribed_at: "2026-10-03T00:00:00Z" };
 
   it("records an email-address opt-out on an existing contact without reviving it", async () => {
     const db = client((sql) => {
       if (sql.includes("from contacts")) return { rows: [contact] };
+      if (sql.includes("update contacts")) return { rows: [optedOut] };
       return { rows: [] };
     });
     const change = await applyUnsubscribe(db, {
@@ -108,6 +113,7 @@ describe("applyUnsubscribe", () => {
     const db = client((sql) => {
       if (sql.includes("from contacts")) return { rows: [contact] };
       if (sql.includes("from broadcasts")) return { rows: [{ topic_id: "topic_news" }] };
+      if (sql.includes("as before from topics")) return { rows: [{ id: "topic_news", before: "subscribed" }] };
       if (sql.includes("from topics t")) return { rows: [] };
       if (sql.includes("from topics")) return { rows: [{ id: "topic_news" }] };
       if (sql.includes("insert into topic_subscriptions")) return { rows: [{ topic_id: "topic_news", status: "unsubscribed" }] };
@@ -124,6 +130,7 @@ describe("applyUnsubscribe", () => {
   it("records the unsubscribe on the broadcast's email, which the metric counts", async () => {
     const db = client((sql) => {
       if (sql.includes("from contacts")) return { rows: [contact] };
+      if (sql.includes("update contacts")) return { rows: [optedOut] };
       if (sql.includes("from broadcasts")) return { rows: [{ topic_id: null }] };
       if (sql.includes("update broadcast_recipients")) return { rows: [{ email_id: "email_9" }] };
       if (sql.includes("insert into email_events")) return { rows: [{ id: "event_1", tenant_id: "tenant_1", request_id: null, email_id: "email_9", type: "email.unsubscribed", data: {} }] };
@@ -140,6 +147,7 @@ describe("applyUnsubscribe", () => {
   it("treats a deleted topic as no topic, so an old one-click link still works", async () => {
     const db = client((sql) => {
       if (sql.includes("from contacts")) return { rows: [contact] };
+      if (sql.includes("update contacts")) return { rows: [optedOut] };
       if (sql.includes("from broadcasts b")) return { rows: [{ topic_id: null }] };
       return { rows: [] };
     });
@@ -151,6 +159,7 @@ describe("applyUnsubscribe", () => {
   it("unsubscribes from everything on one-click when the broadcast has no topic", async () => {
     const db = client((sql) => {
       if (sql.includes("from contacts")) return { rows: [contact] };
+      if (sql.includes("update contacts")) return { rows: [optedOut] };
       if (sql.includes("from broadcasts")) return { rows: [{ topic_id: null }] };
       return { rows: [] };
     });
@@ -178,7 +187,8 @@ describe("applyUnsubscribe", () => {
     const db = client((sql) => {
       if (sql.includes("from contacts")) return { rows: [contact] };
       if (sql.includes("from broadcasts")) return { rows: [{ topic_id: "topic_news" }] };
-      if (sql.includes("from topics")) return { rows: [{ id: "topic_news" }] };
+      if (sql.includes("from topics")) return { rows: [{ id: "topic_news", before: "subscribed" }] };
+      if (sql.includes("insert into topic_subscriptions")) return { rows: [{ topic_id: "topic_news", status: last === "opt_out" ? "unsubscribed" : "subscribed" }] };
       return { rows: [] };
     });
     await applyUnsubscribe(db, payload, {

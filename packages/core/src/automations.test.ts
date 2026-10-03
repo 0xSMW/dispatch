@@ -48,7 +48,7 @@ describe("normalizeAutomation", () => {
       ["step_3", "delay"],
       ["step_4", "send_email"]
     ]);
-    expect(result.steps[0]!.config).toEqual({ event_name: "user.signed_up" });
+    expect(result.steps[0]!.config).toEqual({ type: "event", event_name: "user.signed_up" });
     expect(result.steps[2]!.config).toEqual({ event_name: "user.activated", timeout: "3600 seconds" });
     expect(result.steps[3]!.config).toEqual({ duration: "60 seconds" });
     expect(result.steps[4]!.config).toMatchObject({ template: { id: "welcome", variables: { plan: "pro" } } });
@@ -69,10 +69,10 @@ describe("normalizeAutomation", () => {
 
   it("names the step whose config is wrong", () => {
     const steps = [{ key: "start", type: "trigger", config: {} }];
-    expect(() => normalizeAutomation({ steps })).toThrow(/event_name|Required/);
+    expect(() => normalizeAutomation({ steps })).toThrow(/event_name|Required|discriminator/);
     const parsed = automationGraphSchema.safeParse({ steps });
     expect(parsed.success).toBe(false);
-    if (!parsed.success) expect(parsed.error.issues[0]!.path).toEqual(["steps", 0, "config", "event_name"]);
+    if (!parsed.success) expect(parsed.error.issues[0]!.path).toEqual(["steps", 0, "config", "type"]);
   });
 });
 

@@ -104,6 +104,86 @@ func TestTypedPropertyAndMappingContracts(t *testing.T) {
 	}
 }
 
+func TestAutomationTriggerContracts(t *testing.T) {
+	configs := []AutomationTriggerConfig{
+		{Type: TriggerEvent, EventName: "user.created"},
+		{Type: TriggerContactCreated},
+		{Type: TriggerContactUpdated},
+		{Type: TriggerContactUpdated, Field: "unsubscribed", From: json.RawMessage("false"), To: json.RawMessage("true")},
+		{Type: TriggerContactUpdated, Field: "properties.score", From: json.RawMessage("0"), To: json.RawMessage("42.5")},
+		{Type: TriggerContactUpdated, Field: "properties.last_active_at", From: json.RawMessage("null"), To: json.RawMessage(`"2026-10-03T09:30:00+02:00"`)},
+		{Type: TriggerContactUpdated, Field: "first_name", From: json.RawMessage(`"Ada"`), To: json.RawMessage("null")},
+		{Type: TriggerTopicSubscribed, TopicID: "topic_1"},
+		{Type: TriggerSegmentAdded, SegmentID: "segment_1"},
+	}
+	for _, config := range configs {
+		t.Run(string(config.Type)+"/"+config.Field, func(t *testing.T) {
+			var trigger *string
+			if config.Type == TriggerEvent {
+				trigger = Ptr(config.EventName)
+			}
+			want := Automation{ID: "a1", Name: "Contacts", Trigger: trigger, TriggerConfig: config, Reentry: ReentryEveryTime}
+			client, calls := recorder(t, map[string]canned{
+				"POST /automations":              {200, want},
+				"PATCH /automations/a1":          {200, want},
+				"GET /automations/a1":            {200, want},
+				"POST /automations/a1/duplicate": {200, want},
+				"GET /automations":               {200, ListResponse[Automation]{Object: "list", Data: []Automation{want}}},
+			})
+			steps := []AutomationStep{{Key: "start", Type: "trigger", Config: config}}
+			input := AutomationInput{Name: "Contacts", Steps: steps, Reentry: ReentryEveryTime}
+			created, err := client.CreateAutomation(input)
+			if err != nil || !reflect.DeepEqual(created, &want) {
+				t.Fatalf("create: %+v, %v", created, err)
+			}
+			body := (*calls)[0].Body.(map[string]any)
+			var expected map[string]any
+			raw, err := json.Marshal(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(raw, &expected); err != nil {
+				t.Fatal(err)
+			}
+			got := body["steps"].([]any)[0].(map[string]any)["config"]
+			if body["reentry"] != "every_time" || !reflect.DeepEqual(got, expected) {
+				t.Fatalf("wire config: %#v", body)
+			}
+			updated, err := client.UpdateAutomation("a1", Map{"steps": steps, "reentry": ReentryOnce})
+			if err != nil || !reflect.DeepEqual(updated, &want) || (*calls)[1].Body.(map[string]any)["reentry"] != "once" {
+				t.Fatalf("update: %+v, %v", updated, err)
+			}
+			if !reflect.DeepEqual((*calls)[1].Body.(map[string]any)["steps"].([]any)[0].(map[string]any)["config"], expected) {
+				t.Fatalf("update config changed: %#v", (*calls)[1].Body)
+			}
+			gotAutomation, err := client.Automation("a1")
+			if err != nil || !reflect.DeepEqual(gotAutomation, &want) {
+				t.Fatalf("get: %+v, %v", gotAutomation, err)
+			}
+			duplicate, err := client.DuplicateAutomation("a1")
+			if err != nil || !reflect.DeepEqual(duplicate, &want) {
+				t.Fatalf("duplicate: %+v, %v", duplicate, err)
+			}
+			list, err := client.Automations()
+			if err != nil || len(list.Data) != 1 || !reflect.DeepEqual(list.Data[0], want) {
+				t.Fatalf("list: %+v, %v", list, err)
+			}
+		})
+	}
+	client, calls := recorder(t, nil)
+	input := AutomationInput{Name: "Legacy", Trigger: "user.created", Steps: []AutomationStep{{Key: "start", Type: "trigger", Config: Map{"event_name": "user.created"}}}}
+	if _, err := client.CreateAutomation(input); err != nil {
+		t.Fatal(err)
+	}
+	body := (*calls)[0].Body.(map[string]any)
+	if body["trigger"] != "user.created" || body["steps"].([]any)[0].(map[string]any)["config"].(map[string]any)["event_name"] != "user.created" {
+		t.Fatalf("legacy trigger: %#v", body)
+	}
+	if _, exists := body["reentry"]; exists {
+		t.Fatalf("optional reentry was sent: %#v", body)
+	}
+}
+
 func TestMarketingSplitResponse(t *testing.T) {
 	split := []SplitEmail{{ID: "email_1", To: "ada@example.com", Sandbox: true}, {ID: "email_2", To: "bob@dispatch-fixture.net", Sandbox: false}}
 	result := Map{"id": "email_1", "emails": split}

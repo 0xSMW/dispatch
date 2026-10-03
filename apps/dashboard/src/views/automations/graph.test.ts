@@ -12,12 +12,20 @@ import {
   removeStep,
   ruleIssue,
   setWaitBranches,
+  setTrigger,
   stepIssues,
   toGraph,
   toTree,
   treeIssues,
+  treeTrigger,
+  triggerIssues,
+  triggerLabels,
+  triggerSummary,
+  triggerWarning,
+  automationTrigger,
   updateNode,
   type Graph,
+  type TriggerConfig,
 } from "./graph";
 import { contextFields } from "../../lib/rules";
 
@@ -52,7 +60,9 @@ describe("toTree and toGraph", () => {
     expect(tree.steps.map((node) => node.key)).toEqual(["welcome", "pro"]);
     expect(tree.steps[1]!.branches?.condition_met?.map((node) => node.key)).toEqual(["upsell"]);
     expect(tree.steps[1]!.branches?.condition_not_met?.map((node) => node.key)).toEqual(["tag"]);
-    expect(toGraph(tree)).toEqual(graph);
+    expect(toGraph(tree)).toEqual({
+      ...graph, steps: [{ ...graph.steps[0], config: { type: "event", event_name: "user.created" } }, ...graph.steps.slice(1)],
+    });
   });
 
   it("reads a legacy default edge out of a condition as both branches and flags the join", () => {
@@ -88,6 +98,77 @@ describe("toTree and toGraph", () => {
       { from: "t", to: "w", type: "default" },
       { from: "w", to: "x", type: "timeout" },
     ]);
+  });
+});
+
+describe("contact triggers", () => {
+  const configs: TriggerConfig[] = [
+    { type: "event", event_name: "signup" },
+    { type: "contact_created" },
+    { type: "contact_updated" },
+    { type: "contact_updated", field: "plan", from: "free", to: "pro" },
+    { type: "contact_updated", field: "unsubscribed", from: false, to: true },
+    { type: "contact_updated", field: "seats", from: 0, to: 12 },
+    { type: "contact_updated", field: "renewed", from: null, to: "2026-10-03" },
+    { type: "topic_subscribed", topic_id: "topic_1" },
+    { type: "segment_added", segment_id: "seg_1" },
+  ];
+  const sources = {
+    properties: [{ key: "plan", type: "string" as const }, { key: "seats", type: "number" as const }, { key: "renewed", type: "date" as const }],
+    topics: [{ value: "topic_1", label: "News" }],
+    segments: [{ value: "seg_1", label: "Trials" }],
+  };
+
+  it.each(configs)("preserves $type config and step edits across a graph round trip", (config) => {
+    const input = { ...graph, steps: [{ ...graph.steps[0]!, config }, ...graph.steps.slice(1)] };
+    const { tree, problem } = toTree(input.steps, input.connections);
+    expect(problem).toBeNull();
+    expect(treeTrigger(tree)).toEqual(config);
+    expect(toGraph(tree)).toEqual(input);
+    const edited = insertStep(tree, [], 0, "delay");
+    expect(toGraph(edited).steps[0]!.config).toEqual(config);
+    expect(treeIssues(edited, sources)[tree.trigger]).toBeUndefined();
+  });
+
+  it("uses shared labels and summaries, preserving native false, zero and null values", () => {
+    expect(Object.values(triggerLabels)).toEqual(["Event received", "Contact added", "Contact changes", "Subscribed to topic", "Added to segment"]);
+    expect(triggerSummary({ type: "contact_created" })).toBe("Any new contact");
+    expect(triggerSummary({ type: "contact_updated" })).toBe("Any change");
+    expect(triggerSummary({ type: "contact_updated", field: "plan", from: "free", to: "pro" })).toBe("plan: free → pro");
+    expect(triggerSummary({ type: "contact_updated", field: "unsubscribed", from: false, to: true })).toBe("unsubscribed: false → true");
+    expect(triggerSummary({ type: "contact_updated", field: "seats", from: null, to: 0 })).toBe("seats: No value → 0");
+    expect(triggerSummary({ type: "topic_subscribed", topic_id: "topic_1" }, sources)).toBe("News");
+    expect(triggerSummary({ type: "segment_added", segment_id: "seg_1" }, sources)).toBe("Trials");
+  });
+
+  it("reads new list responses and legacy event rows, and resets event context when the trigger changes", () => {
+    expect(automationTrigger({ trigger: "signup" })).toEqual({ type: "event", event_name: "signup" });
+    expect(automationTrigger({ trigger: null, trigger_config: configs[1] })).toEqual(configs[1]);
+    const tree = toTree(graph.steps, graph.connections).tree;
+    const contact = setTrigger(tree, { type: "contact_created" });
+    expect(contact.event).toBe("");
+    expect(setTrigger(contact, { type: "event", event_name: "paid" }).event).toBe("paid");
+  });
+
+  it("validates typed bounds and does not mistake an unloaded resource list for deletion", () => {
+    expect(triggerIssues({ type: "event", event_name: "@contact.created" }).event_name).toMatch(/cannot start/);
+    expect(triggerIssues({ type: "contact_updated", to: true }).field).toMatch(/Choose a field/);
+    expect(triggerIssues({ type: "contact_updated", field: "seats", to: "2" }, sources).to).toMatch(/number/);
+    expect(triggerIssues({ type: "contact_updated", field: "seats", to: NaN }, sources).to).toMatch(/finite/);
+    expect(triggerIssues({ type: "contact_updated", field: "unsubscribed", to: "false" }, sources).to).toMatch(/true or false/);
+    expect(triggerIssues({ type: "contact_updated", field: "renewed", to: "2025-02-29" }, sources).to).toMatch(/ISO/);
+    expect(triggerIssues({ type: "contact_updated", field: "missing" }, sources).field).toMatch(/declared/);
+    expect(triggerWarning(configs[7]!)).toBeNull();
+    expect(triggerWarning(configs[7]!, { topics: [] })).toBe("Its topic was deleted");
+    expect(triggerWarning(configs[8]!, { segments: [] })).toBe("Its segment was deleted");
+  });
+
+  it("puts each trigger API validation issue on its actual picker", () => {
+    const { cards } = placeIssues([{ key: "start", type: "trigger", config: {} }],
+      ["type", "field", "from", "to", "topic_id", "segment_id"].map((field) => ({ path: `steps.0.config.${field}`, message: `Invalid ${field}` })));
+    expect(cards.start).toEqual({
+      type: "Invalid type", field: "Invalid field", from: "Invalid from", to: "Invalid to", topic_id: "Invalid topic_id", segment_id: "Invalid segment_id",
+    });
   });
 });
 

@@ -1,6 +1,8 @@
 import type { Db, Queryable } from "./index.js";
-import { findBy, tx, upsertContact } from "./index.js";
-import { assertPropertyValues, deleteContact, propertyDefinitions } from "./audience.js";
+import { findBy, tx } from "./index.js";
+import { addContactSegment, assertPropertyValues, contactColumns, deleteContact, mergeProperties, propertyDefinitions, updateContact, type ContactRow } from "./audience.js";
+import { dispatchContactWrite, dispatchSegmentAdded, recordEvent, startRuns } from "./contact-triggers.js";
+export type { FiredEvent } from "./contact-triggers.js";
 import { ingestEmail } from "./emails.js";
 import { emit } from "./events.js";
 import { recipientContext } from "./broadcasts.js";
@@ -17,7 +19,8 @@ import {
   type Connection,
   type Rule,
   type Step,
-  type StepConfig
+  type StepConfig,
+  type TriggerConfig
 } from "@dispatchmail/core";
 
 export type AutomationRun = {
@@ -42,6 +45,8 @@ export type AutomationRow = {
   id: string;
   name: string;
   trigger: string;
+  trigger_type?: TriggerConfig["type"];
+  reentry?: "once" | "every_time";
   steps: Array<Record<string, unknown>>;
   connections: unknown[] | null;
   enabled: boolean;
@@ -54,7 +59,7 @@ export type Outcome = Connection["type"];
 export const stepLimit = 100;
 export const activeStates = ["ready", "running", "waiting"];
 
-export const automationColumns = "id, name, trigger, steps, connections, enabled, created_at, updated_at";
+export const automationColumns = "id, name, trigger, trigger_type, reentry, steps, connections, enabled, created_at, updated_at";
 
 export async function findAutomation(db: Queryable, tenantId: string, automationId: string) {
   return findBy<AutomationRow>(db, "automations", tenantId, automationId, { select: automationColumns });
@@ -62,7 +67,7 @@ export async function findAutomation(db: Queryable, tenantId: string, automation
 
 // Stored rows may still hold the linear format, so every reader normalizes.
 export function automationGraph(row: { trigger?: string | null; steps: Array<Record<string, unknown>>; connections?: unknown[] | null }) {
-  return normalizeAutomation({ trigger: row.trigger, steps: row.steps, connections: row.connections ?? [] });
+  return normalizeAutomation({ trigger: row.trigger, steps: row.steps, connections: row.connections ?? [] }, true);
 }
 
 export function walker(graph: { steps: Step[]; connections: Connection[] }) {
@@ -304,19 +309,30 @@ async function pauseAutomation(db: Db, tenantId: string, runId: string, index: n
 
 // Addresses are matched without regard to case. A deleted contact is reported as deleted so a
 // step can leave it alone: an automation must not bring back someone who was erased.
-async function stepContact(db: Queryable, tenantId: string, email: string) {
-  const row = await db.query<{ id: string; email: string; deleted: boolean }>(
-    `select id, email, (deleted_at is not null) as deleted
+async function stepContact(db: Queryable, tenantId: string, email: string, requestId: string, originRunId: string) {
+  const read = () => db.query<ContactRow & { deleted: boolean }>(
+    `select ${contactColumns}, (deleted_at is not null) as deleted
      from contacts where tenant_id = $1 and lower(email) = lower($2)
      order by deleted_at nulls first, created_at
-     limit 1`,
+     limit 1 for update`,
     [tenantId, email]
   );
+  let row = await read();
   const found = row.rows[0];
   if (found?.deleted) return { deleted: true as const };
-  if (found) return { deleted: false as const, id: found.id, email: found.email };
-  const created = await upsertContact(db, tenantId, email.toLowerCase());
-  return { deleted: false as const, id: created.id, email: created.email };
+  if (found) return { ...found, deleted: false as const };
+  const inserted = await db.query<ContactRow>(
+    `insert into contacts (id, tenant_id, email) values ($1, $2, lower($3))
+     on conflict do nothing returning ${contactColumns}`, [id("contact"), tenantId, email]
+  );
+  const created = inserted.rows[0];
+  if (created) {
+    await dispatchContactWrite(db, tenantId, requestId, null, created, { created: true, originRunId });
+    return { ...created, deleted: false as const };
+  }
+  row = await read();
+  if (!row.rows[0] || row.rows[0].deleted) return { deleted: true as const };
+  return { ...row.rows[0], deleted: false as const };
 }
 
 // The condition context: { event: <payload>, contact: <contact with properties flattened> }.
@@ -445,30 +461,12 @@ async function executeStep(db: Queryable, run: AutomationRun, step: Step, option
     const email = config.email ?? run.email;
     if (!email) throw new ApiError("validation_error", 422, "contact_update step needs an email");
     assertPropertyValues(config.properties, await propertyDefinitions(db, run.tenant_id));
-    const contact = await stepContact(db, run.tenant_id, email);
+    const contact = await stepContact(db, run.tenant_id, email, run.request_id, run.id);
     if (contact.deleted) return { skipped: "contact_deleted", email };
-    const row = await db.query<{ id: string; email: string }>(
-      `update contacts set
-         first_name = coalesce($5, first_name),
-         last_name = coalesce($6, last_name),
-         properties = properties || $3::jsonb,
-         unsubscribed_at = case
-           when $4::boolean is null then unsubscribed_at
-           when $4 then coalesce(unsubscribed_at, now())
-           else null
-         end,
-         updated_at = now()
-       where tenant_id = $1 and id = $2
-       returning id, email`,
-      [
-        run.tenant_id,
-        contact.id,
-        JSON.stringify(config.properties ?? {}),
-        config.unsubscribed ?? null,
-        config.first_name ?? null,
-        config.last_name ?? null
-      ]
-    );
+    const updated = await updateContact(db, run.tenant_id, contact.id, {
+      ...config, properties: mergeProperties(contact.properties, config.properties ?? {})
+    });
+    await dispatchContactWrite(db, run.tenant_id, run.request_id, contact, updated, { originRunId: run.id });
     // The same event a PATCH /contacts/:id produces, so webhooks hear about changes an
     // automation makes. Keyed on the run and step, so a step that is retried emits it once.
     await emit(db, {
@@ -476,10 +474,10 @@ async function executeStep(db: Queryable, run: AutomationRun, step: Step, option
       requestId: run.request_id,
       type: "contact.updated",
       resourceId: contact.id,
-      data: { id: contact.id, email: row.rows[0]?.email ?? contact.email },
+      data: { id: contact.id, email: updated.email },
       key: `${contact.id}:contact.updated:${run.id}:${step.key}`,
     });
-    return { contact_id: row.rows[0]?.id ?? contact.id, email };
+    return { contact_id: updated.id, email };
   }
 
   if (step.type === "contact_delete") {
@@ -513,28 +511,15 @@ async function executeStep(db: Queryable, run: AutomationRun, step: Step, option
       config.segment_id
     ]);
     if (!segment.rows[0]) throw new ApiError("not_found", 404, "Segment not found");
-    const contact = await stepContact(db, run.tenant_id, email);
+    const contact = await stepContact(db, run.tenant_id, email, run.request_id, run.id);
     if (contact.deleted) return { skipped: "contact_deleted", email };
-    await db.query(
-      `insert into segment_contacts (id, tenant_id, segment_id, contact_id)
-       values ($1, $2, $3, $4)
-       on conflict (tenant_id, segment_id, contact_id) do nothing`,
-      [id("member"), run.tenant_id, config.segment_id, contact.id]
-    );
+    const member = await addContactSegment(db, run.tenant_id, contact.id, config.segment_id);
+    await dispatchSegmentAdded(db, run.tenant_id, run.request_id, contact, config.segment_id, member.added, run.id);
     return { segment_id: config.segment_id, contact_id: contact.id, email };
   }
 
   throw new ApiError("validation_error", 422, `Unsupported automation step: ${step.type}`);
 }
-
-export type FiredEvent = {
-  id: string;
-  request_id: string;
-  name: string;
-  email: string | null;
-  data: Record<string, unknown>;
-  created_at: string;
-};
 
 // The limits POST /contacts sets. A name that breaks them is left out, and the event still goes.
 function eventName(value: unknown) {
@@ -547,28 +532,29 @@ function eventName(value: unknown) {
 // contact with no name gets the event's, and a name it has is never changed.
 // A deleted contact keeps its address in the unique index, so its row is found here and nothing
 // is created or revived: the deletion may have been a privacy request.
-async function eventContact(client: Queryable, tenantId: string, requestId: string, eventId: string, email: string, data: Record<string, unknown>) {
+async function eventContact(client: Queryable, tenantId: string, requestId: string, eventId: string, email: string, data: Record<string, unknown>, retried = false) {
   const firstName = eventName(data.first_name);
   const lastName = eventName(data.last_name);
-  const found = await client.query<{ id: string; first_name: string | null; last_name: string | null; deleted_at: string | null }>(
-    "select id, first_name, last_name, deleted_at from contacts where tenant_id = $1 and lower(email) = lower($2) limit 1",
+  const found = await client.query<ContactRow & { deleted_at: string | null }>(
+    `select ${contactColumns}, deleted_at from contacts where tenant_id = $1 and lower(email) = lower($2) limit 1 for update`,
     [tenantId, email],
   );
   const current = found.rows[0];
   if (current) {
     const blank = (value: string | null) => !value?.trim();
     if (current.deleted_at || !((firstName && blank(current.first_name)) || (lastName && blank(current.last_name)))) return;
-    const named = await client.query<{ id: string; email: string }>(
+    const named = await client.query<ContactRow>(
       `update contacts set
          first_name = coalesce(nullif(trim(first_name), ''), $3, first_name),
          last_name = coalesce(nullif(trim(last_name), ''), $4, last_name),
          updated_at = now()
        where tenant_id = $1 and id = $2 and deleted_at is null
-       returning id, email`,
+       returning ${contactColumns}`,
       [tenantId, current.id, firstName, lastName],
     );
     const contact = named.rows[0];
     if (!contact) return;
+    await dispatchContactWrite(client, tenantId, requestId, current, contact);
     await emit(client, {
       tenantId,
       requestId,
@@ -581,15 +567,20 @@ async function eventContact(client: Queryable, tenantId: string, requestId: stri
   }
   // No conflict target, so both unique indexes on the address arbitrate. Two events for one new
   // address at once then make one contact, and the second neither fails nor changes it.
-  const inserted = await client.query<{ id: string; email: string }>(
+  const inserted = await client.query<ContactRow>(
     `insert into contacts (id, tenant_id, email, first_name, last_name)
      values ($1, $2, lower($3), $4, $5)
      on conflict do nothing
-     returning id, email`,
+     returning ${contactColumns}`,
     [id("contact"), tenantId, email, firstName, lastName],
   );
   const contact = inserted.rows[0];
-  if (!contact) return;
+  if (!contact) {
+    // A concurrent creator won. Re-read under its row lock before filling missing names.
+    if (!retried) await eventContact(client, tenantId, requestId, eventId, email, data, true);
+    return;
+  }
+  await dispatchContactWrite(client, tenantId, requestId, null, contact, { created: true });
   await emit(client, {
     tenantId,
     requestId,
@@ -611,33 +602,15 @@ export async function fireEvent(
 ) {
   const email = input.email ? input.email.toLowerCase() : null;
   return tx(db, async (client) => {
-    const event = await client.query<FiredEvent>(
-      `insert into custom_events (id, tenant_id, request_id, name, email, data)
-       values ($1, $2, $3, $4, $5, $6)
-       returning id, request_id, name, email, data, created_at`,
-      [id("ce"), tenantId, requestId, input.name, email, JSON.stringify(input.data)]
-    );
-    const fired = event.rows[0]!;
+    const fired = await recordEvent(client, tenantId, requestId, { ...input, email });
     if (email) await eventContact(client, tenantId, requestId, fired.id, email, input.data);
     const contact = await contactContext(client, tenantId, email);
 
-    const automations = await client.query<{ id: string }>(
-      `select id from automations
-       where tenant_id = $1 and trigger = $2 and enabled = true and deleted_at is null
-       order by created_at`,
-      [tenantId, input.name]
-    );
-    const runs: string[] = [];
-    for (const automation of automations.rows) {
-      const run = await client.query<{ id: string }>(
-        `insert into automation_runs (id, tenant_id, automation_id, event_id, state)
-         values ($1, $2, $3, $4, 'ready')
-         returning id`,
-        [id("run"), tenantId, automation.id, fired.id]
-      );
-      runs.push(run.rows[0]!.id);
-      await emitRunEvent(client, tenantId, run.rows[0]!.id, "automation.run.started");
-    }
+    const contactRow = email ? await client.query<ContactRow>(
+      `select ${contactColumns} from contacts where tenant_id = $1 and lower(email) = lower($2) and deleted_at is null`,
+      [tenantId, email]
+    ) : null;
+    const runs = await startRuns(client, tenantId, fired, { triggerType: "event", key: input.name, contact: contactRow?.rows[0] ?? null });
 
     const waiting = await client.query<{
       id: string;

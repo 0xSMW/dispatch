@@ -251,12 +251,29 @@ export type SendEmailConfig = {
   variable_mapping?: Record<string, string>;
 };
 
+/** Dates are ISO strings; transition values retain their JSON primitive types. */
+export type AutomationTriggerConfig =
+  | { type: "event"; event_name: string }
+  | { type: "contact_created" }
+  | { type: "contact_updated"; field?: string; from?: PropertyValue; to?: PropertyValue }
+  | { type: "topic_subscribed"; topic_id: string }
+  | { type: "segment_added"; segment_id: string };
+
+export type AutomationReentry = "once" | "every_time";
+
+export type Automation = Row & {
+  trigger: string | null;
+  trigger_config: AutomationTriggerConfig;
+  reentry: AutomationReentry;
+};
+
 export type AutomationCreate = {
   name: string;
   status?: "enabled" | "disabled";
   steps: Array<Record<string, unknown>>;
   connections?: Array<{ from: string; to: string; type?: string }>;
   trigger?: string;
+  reentry?: AutomationReentry;
   [key: string]: unknown;
 };
 
@@ -1055,19 +1072,19 @@ class Automations extends Resource {
   readonly runs = new AutomationRuns(this.client);
 
   create(payload: AutomationCreate) {
-    return this.client.call<Row>("POST", "/automations", wire(payload));
+    return this.client.call<Automation>("POST", "/automations", wire(payload));
   }
 
   list(page: Page & { status?: string } = {}) {
-    return this.client.call<List>("GET", `/automations${query(page)}`);
+    return this.client.call<List<Automation>>("GET", `/automations${query(page)}`);
   }
 
   get(id: string) {
-    return this.client.call<Row>("GET", `/automations/${seg(id)}`);
+    return this.client.call<Automation>("GET", `/automations/${seg(id)}`);
   }
 
   update(id: string, payload: Partial<AutomationCreate>) {
-    return this.client.call<Row>("PATCH", `/automations/${seg(id)}`, wire(payload));
+    return this.client.call<Automation>("PATCH", `/automations/${seg(id)}`, wire(payload));
   }
 
   remove(id: string) {
@@ -1075,7 +1092,7 @@ class Automations extends Resource {
   }
 
   duplicate(id: string, options: { name?: string } = {}) {
-    return this.client.call<Row>("POST", `/automations/${seg(id)}/duplicate`, wire(options));
+    return this.client.call<Automation>("POST", `/automations/${seg(id)}/duplicate`, wire(options));
   }
 
   stop(id: string) {

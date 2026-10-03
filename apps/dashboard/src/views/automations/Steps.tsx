@@ -33,6 +33,12 @@ export type StepOptions = {
   templates: Option[]; segments: Option[]; events: string[]; topics?: Option[];
   eventDefinitions?: EventDefinition[];
   contactProperties?: ContactProperty[];
+  topicsReady?: boolean;
+  segmentsReady?: boolean;
+  propertiesReady?: boolean;
+  topicsError?: string | null;
+  segmentsError?: string | null;
+  propertiesError?: string | null;
   eventName?: string;
   templateNames?: Record<string, string>;
   emailCounts?: Record<string, EmailCounts>;

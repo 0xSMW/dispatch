@@ -45,14 +45,20 @@ describe("publishedTemplate", () => {
 });
 
 describe("upsertContact", () => {
+  const stored = {
+    id: "cnt_1", email: "ada@example.com", first_name: null, last_name: null, properties: {},
+    unsubscribed_at: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
+  };
+
   it("handles email string", async () => {
     const mockDb = {
       query: vi.fn().mockResolvedValue({
-        rows: [{ id: "cnt_1", email: "ada@example.com" }]
+        rows: [stored]
       })
     };
     const contact = await upsertContact(mockDb, "tenant_1", "ada@example.com");
     expect(contact.id).toBe("cnt_1");
+    expect(contact).toMatchObject({ created: true, revived: false, before: null });
     expect(mockDb.query).toHaveBeenCalledWith(
       expect.stringContaining("insert into contacts"),
       expect.arrayContaining(["tenant_1", "ada@example.com"])
@@ -62,15 +68,34 @@ describe("upsertContact", () => {
   it("handles contact object with properties and unsubscribe status", async () => {
     const mockDb = {
       query: vi.fn().mockResolvedValue({
-        rows: [{ id: "cnt_1", email: "ada@example.com", unsubscribed_at: "2026-10-01T00:00:00Z" }]
+        rows: [{ ...stored, first_name: "Ada", properties: { plan: "pro" }, unsubscribed_at: "2026-10-01T00:00:00Z" }]
       })
     };
     const contact = await upsertContact(mockDb, "tenant_1", {
       email: "ada@example.com",
       first_name: "Ada",
+      properties: { plan: "pro" },
       unsubscribed: true
     });
     expect(contact.unsubscribed_at).toBe("2026-10-01T00:00:00Z");
+    expect(mockDb.query.mock.calls[0]![1]!.slice(2)).toEqual(["ada@example.com", "Ada", null, '{"plan":"pro"}', true]);
+  });
+
+  it.each([null, "2026-10-02T00:00:00Z"])("locks a conflicting contact and returns its complete previous snapshot (deleted_at=%s)", async (deletedAt) => {
+    const before = { ...stored, first_name: "Grace", properties: { plan: "free" }, unsubscribed_at: "2026-10-01T00:00:00Z", deleted_at: deletedAt };
+    const after = { ...stored, first_name: "Ada", properties: { plan: "pro" }, unsubscribed_at: before.unsubscribed_at };
+    const query = vi.fn().mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [before] }).mockResolvedValueOnce({ rows: [after] });
+    const contact = await upsertContact({ query }, "tenant_1", { email: "ADA@example.com", first_name: "Ada", properties: { plan: "pro" } });
+    expect(contact).toEqual({ ...after, created: false, revived: Boolean(deletedAt), before });
+    expect(query.mock.calls[1]).toEqual([expect.stringContaining("limit 1 for update"), ["tenant_1", "ada@example.com"]]);
+    expect(query.mock.calls[2]![1]).toEqual(["tenant_1", "cnt_1", "Ada", null, true, '{"plan":"pro"}', false, false]);
+    expect(before.properties).toEqual({ plan: "free" });
+  });
+
+  it("does not invent a before snapshot when a concurrent contact disappears", async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [] });
+    await expect(upsertContact({ query }, "tenant_1", "ada@example.com")).rejects.toMatchObject({ name: "conflict", statusCode: 409 });
+    expect(query).toHaveBeenCalledTimes(2);
   });
 });
 

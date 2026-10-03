@@ -250,13 +250,66 @@ SendEmailConfig = TypedDict(
 )
 
 
+class EventTriggerConfig(TypedDict):
+    type: Literal["event"]
+    event_name: str
+
+
+class ContactCreatedTriggerConfig(TypedDict):
+    type: Literal["contact_created"]
+
+
+# "from" is a wire key, not a Python identifier. Do not rename nested config keys.
+ContactUpdatedTriggerConfig = TypedDict(
+    "ContactUpdatedTriggerConfig",
+    {
+        "type": Literal["contact_updated"],
+        "field": NotRequired[str],
+        "from": NotRequired[PropertyValue],
+        "to": NotRequired[PropertyValue],
+    },
+)
+
+
+class TopicSubscribedTriggerConfig(TypedDict):
+    type: Literal["topic_subscribed"]
+    topic_id: str
+
+
+class SegmentAddedTriggerConfig(TypedDict):
+    type: Literal["segment_added"]
+    segment_id: str
+
+
+AutomationTriggerConfig = (
+    EventTriggerConfig | ContactCreatedTriggerConfig | ContactUpdatedTriggerConfig
+    | TopicSubscribedTriggerConfig | SegmentAddedTriggerConfig
+)
+AutomationReentry = Literal["once", "every_time"]
+
+
+class Automation(TypedDict):
+    id: str
+    trigger: str | None
+    trigger_config: AutomationTriggerConfig
+    reentry: AutomationReentry
+    object: NotRequired[str]
+    name: NotRequired[str]
+    status: NotRequired[Literal["enabled", "disabled"]]
+    steps: NotRequired[list[dict[str, Any]]]
+    connections: NotRequired[list[dict[str, Any]]]
+    created_at: NotRequired[str]
+    updated_at: NotRequired[str]
+    request_id: NotRequired[str]
+
+
 class AutomationStepInput(TypedDict, total=False):
     key: str
     type: Literal[
         "trigger", "send_email", "delay", "wait_for_event", "condition",
         "add_to_segment", "contact_update", "contact_delete",
     ]
-    config: SendEmailConfig | dict[str, Any]
+    config: AutomationTriggerConfig | SendEmailConfig | dict[str, Any]
 
 
 AutomationConnectionInput = TypedDict(
@@ -274,6 +327,8 @@ class AutomationInput(TypedDict, total=False):
     status: Literal["enabled", "disabled"]
     steps: list[AutomationStepInput | dict[str, Any]]
     connections: list[AutomationConnectionInput | dict[str, Any]]
+    trigger: str
+    reentry: AutomationReentry
 
 
 class AutomationUpdateInput(TypedDict, total=False):
@@ -281,6 +336,8 @@ class AutomationUpdateInput(TypedDict, total=False):
     status: Literal["enabled", "disabled"]
     steps: list[AutomationStepInput | dict[str, Any]]
     connections: list[AutomationConnectionInput | dict[str, Any]]
+    trigger: str
+    reentry: AutomationReentry
 
 
 class EventDefinitionInput(TypedDict, total=False):
@@ -1071,6 +1128,14 @@ __all__ = [
     "BroadcastInput",
     "BroadcastUpdateInput",
     "AutomationInput",
+    "Automation",
+    "AutomationTriggerConfig",
+    "AutomationReentry",
+    "EventTriggerConfig",
+    "ContactCreatedTriggerConfig",
+    "ContactUpdatedTriggerConfig",
+    "TopicSubscribedTriggerConfig",
+    "SegmentAddedTriggerConfig",
     "AutomationUpdateInput",
     "AutomationStepInput",
     "SendEmailConfig",

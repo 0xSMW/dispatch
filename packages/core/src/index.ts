@@ -968,11 +968,46 @@ function checkDuration(value: string, ctx: z.RefinementCtx, path: string) {
   if (seconds < 1 || seconds > maxDelaySeconds) ctx.addIssue({ code: "custom", message: `${path} must be between 1 second and 30 days`, path: [path] });
 }
 
-const eventName = z.string().min(1).max(120);
+const storedEventName = z.string().min(1).max(120);
+const eventName = storedEventName.refine((name) => !name.startsWith("@"), "Event names cannot start with @");
 const stepEmail = z.string().email().optional();
 
+export const triggerTypes = ["event", "contact_created", "contact_updated", "topic_subscribed", "segment_added"] as const;
+const transitionValue = z.union([z.string(), z.number().finite(), z.boolean(), z.null()]);
+const triggerUnion = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("event"), event_name: eventName }),
+  z.object({ type: z.literal("contact_created") }),
+  z.object({
+    type: z.literal("contact_updated"),
+    field: z.string().regex(/^[A-Za-z0-9_]+$/, "Use a contact field without the contact. prefix").optional(),
+    from: transitionValue.optional(),
+    to: transitionValue.optional()
+  }),
+  z.object({ type: z.literal("topic_subscribed"), topic_id: z.string().min(1) }),
+  z.object({ type: z.literal("segment_added"), segment_id: z.string().min(1) })
+]).superRefine((config, ctx) => {
+  if (config.type === "contact_updated" && !config.field && (config.from !== undefined || config.to !== undefined)) {
+    ctx.addIssue({ code: "custom", message: "A field is required for from or to", path: ["field"] });
+  }
+});
+export const triggerSchema = z.preprocess((value) => {
+  if (value && typeof value === "object" && !("type" in value) && "event_name" in value) return { ...value, type: "event" };
+  return value;
+}, triggerUnion);
+export type TriggerConfig = z.infer<typeof triggerSchema>;
+
+export function triggerKey(config: TriggerConfig): string {
+  switch (config.type) {
+    case "event": return config.event_name;
+    case "contact_created": return "@contact.created";
+    case "contact_updated": return "@contact.updated";
+    case "topic_subscribed": return `@topic.subscribed:${config.topic_id}`;
+    case "segment_added": return `@segment.added:${config.segment_id}`;
+  }
+}
+
 export const stepConfigs = {
-  trigger: z.object({ event_name: eventName }),
+  trigger: triggerSchema,
   // `from` may be left out when the template stores a sender. `topic_id` marks the email as
   // subscription mail: without it the step sends to everyone, like a receipt or a password reset.
   send_email: z
@@ -1057,7 +1092,7 @@ function prefixIssues(error: z.ZodError, prefix: Array<string | number>) {
 
 // Accepts the old linear form { trigger, steps: [{ type, ...fields }] } and the graph form
 // { steps: [{ key, type, config }], connections }, and returns the graph form with parsed configs.
-export function normalizeAutomation(input: { trigger?: string | null; steps: Array<Record<string, unknown>>; connections?: unknown[] | null }) {
+export function normalizeAutomation(input: { trigger?: string | null; steps: Array<Record<string, unknown>>; connections?: unknown[] | null }, stored = false) {
   const keyed = input.steps.length > 0 && input.steps.every((step) => "key" in step);
   const raw = keyed
     ? input.steps
@@ -1070,6 +1105,19 @@ export function normalizeAutomation(input: { trigger?: string | null; steps: Arr
 
   const issues: z.ZodIssue[] = [];
   const steps: Step[] = shaped.data.map((step, index) => {
+    // Existing event automations retain their namespace, including old @ names.
+    if (stored && step.type === "trigger" && (!step.config.type || step.config.type === "event")) {
+      const name = storedEventName.safeParse(step.config.event_name);
+      if (name.success) return { ...step, config: { type: "event", event_name: name.data } };
+    }
+    if (stored && step.type === "wait_for_event" && String(step.config.event_name ?? step.config.event).startsWith("@")) {
+      const name = storedEventName.safeParse(step.config.event_name ?? step.config.event);
+      const config = stepConfigs.wait_for_event.safeParse({ ...step.config, event_name: "legacy", event: undefined });
+      if (name.success && config.success) return { ...step, config: { ...config.data, event_name: name.data } };
+      if (!name.success) issues.push(...prefixIssues(name.error, ["steps", index, "config", "event_name"]));
+      if (!config.success) issues.push(...prefixIssues(config.error, ["steps", index, "config"]));
+      return step;
+    }
     const config = stepConfigs[step.type].safeParse(step.config);
     if (config.success) return { ...step, config: config.data as Record<string, unknown> };
     issues.push(...prefixIssues(config.error, ["steps", index, "config"]));
@@ -1144,8 +1192,8 @@ function toGraph(input: { trigger?: string; steps: Array<Record<string, unknown>
   try {
     const graph = normalizeAutomation(input);
     for (const message of automationIssues(graph.steps, graph.connections)) ctx.addIssue({ code: "custom", message, path: ["connections"] });
-    const trigger = graph.steps.find((step) => step.type === "trigger")?.config.event_name as string;
-    return { ...graph, trigger };
+    const trigger_config = graph.steps.find((step) => step.type === "trigger")!.config as TriggerConfig;
+    return { ...graph, trigger: triggerKey(trigger_config), trigger_type: trigger_config.type, trigger_config };
   } catch (error) {
     if (!(error instanceof z.ZodError)) throw error;
     for (const issue of error.issues) ctx.addIssue({ code: "custom", message: issue.message, path: issue.path });
@@ -1158,12 +1206,12 @@ export const automationGraphSchema = z.object(graphFields).transform(toGraph);
 const automationStatus = z.enum(["enabled", "disabled"]);
 
 export const automationSchema = z
-  .object({ name: z.string().min(1).max(120), status: automationStatus.optional(), enabled: z.boolean().optional(), ...graphFields })
-  .transform(({ name, status, enabled, ...graph }, ctx) => ({
-    name,
-    enabled: status ? status === "enabled" : (enabled ?? false),
-    ...toGraph(graph, ctx)
-  }));
+  .object({ name: z.string().min(1).max(120), status: automationStatus.optional(), enabled: z.boolean().optional(), reentry: z.enum(["once", "every_time"]).optional(), ...graphFields })
+  .transform(({ name, status, enabled, reentry, ...graph }, ctx) => {
+    const parsed = toGraph(graph, ctx);
+    return { name, enabled: status ? status === "enabled" : (enabled ?? false), ...parsed,
+      reentry: reentry ?? (parsed.trigger_type === "event" ? "every_time" : "once") };
+  });
 export type AutomationInput = z.input<typeof automationSchema>;
 
 export const automationUpdateSchema = z
@@ -1171,6 +1219,7 @@ export const automationUpdateSchema = z
     name: z.string().min(1).max(120).optional(),
     status: automationStatus.optional(),
     enabled: z.boolean().optional(),
+    reentry: z.enum(["once", "every_time"]).optional(),
     trigger: graphFields.trigger,
     steps: graphFields.steps.optional(),
     connections: graphFields.connections

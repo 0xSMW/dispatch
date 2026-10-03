@@ -9,7 +9,16 @@ vi.mock("./events.js", () => ({ emit }));
 const { executeAutomationRun, fireEvent, stepLimit, contactContext, eventContext, mappedVariables } = await import("./automations.js");
 
 type StepRow = { step_key: string | null; step_index: number; type: string; state: string; data: Record<string, unknown>; error?: string };
-type Contact = { id: string; email: string; unsubscribed_at?: string | null; deleted?: boolean; properties?: Record<string, unknown>; topics?: string[]; segments?: string[] };
+type Contact = {
+  id: string; email: string; first_name?: string | null; last_name?: string | null;
+  unsubscribed_at?: string | null; deleted?: boolean; properties?: Record<string, unknown>; topics?: string[]; segments?: string[];
+};
+
+const contactRow = (contact: Contact) => ({
+  ...contact, first_name: contact.first_name ?? null, last_name: contact.last_name ?? null,
+  properties: contact.properties ?? {}, unsubscribed_at: contact.unsubscribed_at ?? null,
+  created_at: "2026-09-01T00:00:00Z", updated_at: "2026-09-01T00:00:00Z",
+});
 
 // An in-memory stand-in for the tables the executor touches. Writes made inside a transaction
 // are undone on rollback, the way the step transaction depends on.
@@ -147,7 +156,7 @@ function fake(run: {
     if (text.includes("from contact_properties")) return { rows: [] };
     if (text.includes("(deleted_at is not null) as deleted from contacts")) {
       const found = state.contacts.find((contact) => contact.email.toLowerCase() === String(params[1]).toLowerCase());
-      return { rows: found ? [{ id: found.id, email: found.email, deleted: Boolean(found.deleted) }] : [] };
+      return { rows: found ? [{ ...contactRow(found), deleted: Boolean(found.deleted) }] : [] };
     }
     if (text.includes("from contacts where tenant_id = $1 and lower(email) = lower($2) and deleted_at is not null")) {
       const found = state.contacts.find((contact) => contact.deleted && contact.email.toLowerCase() === String(params[1]).toLowerCase());
@@ -157,14 +166,14 @@ function fake(run: {
       const found = state.contacts.find((contact) => !contact.deleted && contact.email.toLowerCase() === String(params[1]).toLowerCase());
       return {
         rows: found
-          ? [{ id: found.id, email: found.email, first_name: null, last_name: null, properties: found.properties ?? {}, unsubscribed_at: found.unsubscribed_at ?? null, created_at: "2026-09-01T00:00:00Z", topics: found.topics ?? [], segments: found.segments ?? [] }]
+          ? [{ ...contactRow(found), topics: found.topics ?? [], segments: found.segments ?? [] }]
           : []
       };
     }
     if (text.startsWith("insert into contacts")) {
       const created = { id: "contact_new", email: String(params[2]) };
       state.contacts.push(created);
-      return { rows: [{ ...created, created: true }] };
+      return { rows: [contactRow(created)] };
     }
     if (text.startsWith("select id from contacts where tenant_id = $1 and lower(email) = lower($2)")) {
       const found = state.contacts.find((contact) => !contact.deleted && contact.email.toLowerCase() === String(params[1]).toLowerCase());
@@ -177,13 +186,22 @@ function fake(run: {
       state.deletedEmails.push(found.email);
       return { rows: [{ id: found.id }] };
     }
-    if (text.startsWith("delete from segment_contacts") || text.startsWith("delete from topic_subscriptions")) {
+    if (text.startsWith("delete from segment_contacts") || text.startsWith("delete from topic_subscriptions") || text.startsWith("delete from automation_enrollments")) {
       state.cleared.push(text.split(" ")[2]!);
       return { rows: [] };
     }
-    if (text.startsWith("update contacts set first_name")) return { rows: [{ id: params[1], email: "updated" }] };
-    if (text.startsWith("select id from segments")) return { rows: [{ id: params[1] }] };
-    if (text.startsWith("insert into segment_contacts")) return { rows: [] };
+    if (text.startsWith("update contacts set first_name")) {
+      const found = state.contacts.find((contact) => !contact.deleted && contact.id === params[1]);
+      if (!found) return { rows: [] };
+      if (params[2]) found.first_name = params[3] as string | null;
+      if (params[4]) found.last_name = params[5] as string | null;
+      if (params[6]) found.properties = JSON.parse(params[7] as string);
+      if (params[8] !== null) found.unsubscribed_at = params[8] ? "2026-10-04T00:00:00Z" : null;
+      return { rows: [contactRow(found)] };
+    }
+    if (text.startsWith("select id") && text.includes("from segments")) return { rows: [{ id: params[1], type: "static" }] };
+    if (text.startsWith("insert into segment_contacts")) return { rows: [{ id: "member_1", contact_id: params[3], segment_id: params[2] }] };
+    if (text.startsWith("insert into contact_changes") || text.includes("from automations")) return { rows: [] };
     throw new Error(`unexpected query: ${text}`);
   });
   const db = { query, connect: async () => ({ query, release: () => undefined }) } as unknown as Db;
@@ -421,13 +439,29 @@ describe("executeAutomationRun", () => {
       steps: [{ key: "start", type: "trigger", config: { event_name: "e" } }, { key: "edit", type: "contact_update", config: { first_name: "Ada" } }],
       connections: [{ from: "start", to: "edit" }]
     };
-    const { db } = fake({ ...flow, email: "ada@example.com", contacts: [{ id: "contact_1", email: "ada@example.com" }] });
+    const { db, query, state } = fake({ ...flow, email: "ada@example.com", contacts: [{ id: "contact_1", email: "ada@example.com" }] });
     await executeAutomationRun(db, "tenant_1", "run_1");
     const changes = emit.mock.calls.filter((call) => call[1]?.type === "contact.updated");
     expect(changes).toHaveLength(1);
     expect(changes[0]![1]).toMatchObject({ type: "contact.updated", resourceId: "contact_1", key: "contact_1:contact.updated:run_1:edit" });
+    expect(state.run.state).toBe("done");
+    const history = query.mock.calls.filter(([sql]) => sql.includes("insert into contact_changes"));
+    expect(history).toHaveLength(1);
+    expect(history[0]![1]!.slice(1)).toEqual(["tenant_1", "contact_1", "first_name", "null", '"Ada"', "req_1"]);
+    expect(query.mock.calls.find(([sql]) => sql.includes("from automations"))![1]).toEqual(["tenant_1", "contact_updated", "@contact.updated"]);
   });
 
+  it("records no history or trigger candidates when contact_update leaves fields unchanged", async () => {
+    const flow = {
+      steps: [{ key: "start", type: "trigger", config: { event_name: "e" } }, { key: "edit", type: "contact_update", config: { first_name: "Ada", properties: { activated: false } } }],
+      connections: [{ from: "start", to: "edit" }],
+    };
+    const { db, state, query } = fake({ ...flow, contacts: [{ id: "contact_1", email: "ada@example.com", first_name: "Ada", properties: { activated: false } }] });
+    await executeAutomationRun(db, "tenant_1", "run_1");
+    expect(state.run.state).toBe("done");
+    expect(state.steps[0]).toMatchObject({ state: "done", data: { contact_id: "contact_1" } });
+    expect(query.mock.calls.some(([sql]) => sql.includes("insert into contact_changes") || sql.includes("from automations"))).toBe(false);
+  });
   it("does not bring a deleted contact back", async () => {
     const flow = {
       steps: [
@@ -474,7 +508,7 @@ describe("executeAutomationRun", () => {
     const { db, state } = fake({ ...flow, email: "ADA@example.com", contacts: [{ id: "contact_1", email: "ada@example.com" }] });
     await executeAutomationRun(db, "tenant_1", "run_1");
     expect(state.deletedEmails).toEqual(["ada@example.com"]);
-    expect(state.cleared).toEqual(["segment_contacts", "topic_subscriptions"]);
+    expect(state.cleared).toEqual(["segment_contacts", "topic_subscriptions", "automation_enrollments"]);
     expect(state.steps[0]!.data).toMatchObject({ contact_id: "contact_1", deleted: true });
 
     const missing = fake(flow);
@@ -578,8 +612,11 @@ describe("fireEvent", () => {
     });
     const query = vi.fn(async (sql: string, _params: unknown[] = []) => {
       if (sql.includes("insert into custom_events")) return { rows: [{ id: "ce_9", name: "plan.changed", data: { plan: "free" } }] };
-      if (sql.includes("select id from contacts")) return { rows: [{ id: "contact_1" }] };
-      if (sql.includes("select id from automations")) return { rows: [{ id: "automation_2" }] };
+      if (sql.includes("from contacts")) return { rows: [{ ...contactRow({ id: "contact_1", email: "ada@example.com" }), deleted_at: null }] };
+      if (sql.includes("from automations")) return { rows: [{
+        id: "automation_2", trigger: "plan.changed", trigger_type: "event", reentry: "every_time",
+        steps: [{ key: "start", type: "trigger", config: { type: "event", event_name: "plan.changed" } }], connections: [],
+      }] };
       if (sql.includes("insert into automation_runs")) return { rows: [{ id: "run_new" }] };
       if (sql.includes("for update of r skip locked")) {
         return {
@@ -612,20 +649,33 @@ describe("fireEvent", () => {
 
   // `existing` is what the lookup by address finds, live or deleted. `inserted` is false when the
   // insert met another event's contact and did nothing.
-  type Found = { id: string; first_name: string | null; last_name: string | null; deleted_at: string | null };
+  type Found = ReturnType<typeof contactRow> & { deleted_at: string | null };
   function contactDb(existing: Found[], inserted = true) {
-    const query = vi.fn(async (sql: string, _params: unknown[] = []) => {
+    let current = existing[0] ? { ...existing[0] } : undefined;
+    const query = vi.fn(async (sql: string, params: unknown[] = []) => {
       if (sql.includes("insert into custom_events")) return { rows: [{ id: "ce_1", name: "user.created", data: {} }] };
-      if (sql.includes("deleted_at from contacts")) return { rows: existing };
-      if (sql.includes("insert into contacts")) return { rows: inserted ? [{ id: "contact_new", email: "ada@example.com" }] : [] };
-      if (sql.includes("update contacts set")) return { rows: existing.filter((row) => !row.deleted_at).map((row) => ({ id: row.id, email: "ada@example.com" })) };
+      if (sql.includes("from contacts")) return { rows: current && (!sql.includes("deleted_at is null") || !current.deleted_at) ? [{ ...current }] : [] };
+      if (sql.includes("insert into contacts")) {
+        if (!inserted) {
+          // A concurrent creator wins the insert and becomes visible on the locked reread.
+          current = live({ first_name: "Concurrent", last_name: "Creator" });
+          return { rows: [] };
+        }
+        current = live({ id: "contact_new", first_name: params[3] as string | null, last_name: params[4] as string | null });
+        return { rows: [{ ...current }] };
+      }
+      if (sql.includes("update contacts set") && current && !current.deleted_at) {
+        if (!current.first_name?.trim()) current.first_name = (params[2] as string | null) ?? current.first_name;
+        if (!current.last_name?.trim()) current.last_name = (params[3] as string | null) ?? current.last_name;
+        return { rows: [{ ...current }] };
+      }
       return { rows: [] };
     });
     const db = { query, connect: async () => ({ query, release: () => undefined }) } as unknown as Db;
     const calls = (text: string) => query.mock.calls.filter((call) => call[0].includes(text));
     return { db, query, inserts: () => calls("insert into contacts"), updates: () => calls("update contacts set") };
   }
-  const live = (names: Partial<Found> = {}): Found => ({ id: "contact_1", first_name: null, last_name: null, deleted_at: null, ...names });
+  const live = (names: Partial<Found> = {}): Found => ({ ...contactRow({ id: "contact_1", email: "ada@example.com" }), deleted_at: null, ...names });
 
   it("creates a contact for an address it has not seen, named from the payload", async () => {
     emit.mockClear();
@@ -635,12 +685,20 @@ describe("fireEvent", () => {
     const [sql, params] = inserts()[0]! as [string, unknown[]];
     // Lowercased, named from the string field only, and subscribed: the insert sets no opt-out.
     expect(params.slice(2, 5)).toEqual(["ada@example.com", "Ada", null]);
-    expect(sql).not.toContain("unsubscribed_at");
+    expect(sql).toContain("(id, tenant_id, email, first_name, last_name)");
+    expect(sql).toContain("returning id, email, first_name, last_name, properties, unsubscribed_at");
     expect(emit).toHaveBeenCalledTimes(1);
     expect(emit.mock.calls[0]![1]).toMatchObject({ type: "contact.created", resourceId: "contact_new", key: "contact_new:contact.created:ce_1" });
     // The contact exists before the runs and their condition context are read.
     const order = query.mock.calls.map((call) => call[0]);
-    expect(order.findIndex((text) => text.includes("insert into contacts"))).toBeLessThan(order.findIndex((text) => text.includes("select id from automations")));
+    expect(order.findIndex((text) => text.includes("insert into contacts"))).toBeLessThan(order.findIndex((text) => text.includes("from automations")));
+    const history = query.mock.calls.filter(([sql]) => sql.includes("insert into contact_changes"));
+    expect(history.map(([, params]) => params.slice(3))).toEqual([
+      ["email", "null", '"ada@example.com"', "req_1"],
+      ["first_name", "null", '"Ada"', "req_1"],
+      ["unsubscribed", "null", "false", "req_1"],
+    ]);
+    expect(query.mock.calls.find(([sql]) => sql.includes("from automations"))![1]).toEqual(["tenant_1", "contact_created", "@contact.created"]);
   });
 
   it("finds a deleted contact by its address and does not bring it back", async () => {
@@ -653,6 +711,7 @@ describe("fireEvent", () => {
     expect(inserts()).toHaveLength(0);
     expect(updates()).toHaveLength(0);
     expect(emit).not.toHaveBeenCalled();
+    expect(query.mock.calls.some(([sql]) => sql.includes("insert into contact_changes"))).toBe(false);
   });
 
   it("leaves a named contact alone, and names one that has no name", async () => {
@@ -662,6 +721,7 @@ describe("fireEvent", () => {
     expect(named.inserts()).toHaveLength(0);
     expect(named.updates()).toHaveLength(0);
     expect(emit).not.toHaveBeenCalled();
+    expect(named.query.mock.calls.some(([sql]) => sql.includes("insert into contact_changes"))).toBe(false);
 
     const nameless = contactDb([live({ first_name: " ", last_name: "Lovelace" })]);
     await fireEvent(nameless.db, "tenant_1", "req_1", { name: "user.created", email: "ada@example.com", data: { first_name: "Ada", last_name: "Byron" } });
@@ -671,6 +731,9 @@ describe("fireEvent", () => {
     expect(sql).toContain("deleted_at is null");
     expect(params).toEqual(["tenant_1", "contact_1", "Ada", "Byron"]);
     expect(emit.mock.calls[0]![1]).toMatchObject({ type: "contact.updated", resourceId: "contact_1", key: "contact_1:contact.updated:ce_1" });
+    expect(nameless.query.mock.calls.filter(([sql]) => sql.includes("insert into contact_changes")).map(([, params]) => params.slice(3))).toEqual([
+      ["first_name", '" "', '"Ada"', "req_1"],
+    ]);
   });
 
   it("lets every unique index arbitrate, so a second event for a new address neither fails nor emits", async () => {

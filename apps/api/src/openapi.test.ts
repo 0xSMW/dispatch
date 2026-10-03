@@ -198,6 +198,18 @@ describe("docs/api/openapi.json", () => {
     expect(refs(spec).filter((pointer) => !resolves(pointer))).toEqual([]);
   });
 
+  it("documents normalized trigger shapes, nullable event names, and reentry", () => {
+    const schemas = spec.components.schemas as unknown as Record<string, { properties?: Record<string, unknown>; oneOf?: Array<{ properties: { type: { const: string } } }> }>;
+    expect(schemas.TriggerConfig.oneOf?.map((config) => config.properties.type.const)).toEqual([
+      "event", "contact_created", "contact_updated", "topic_subscribed", "segment_added"
+    ]);
+    for (const name of ["Automation", "AutomationSummary"]) {
+      expect(schemas[name].properties?.trigger).toMatchObject({ type: ["string", "null"] });
+      expect(schemas[name].properties?.trigger_config).toEqual({ $ref: "#/components/schemas/TriggerConfig" });
+      expect(schemas[name].properties?.reentry).toMatchObject({ enum: ["once", "every_time"] });
+    }
+  });
+
   it("documents sandbox flags on send, batch, split, email and recipient responses", () => {
     const operation = spec.paths["/emails"].post as {
       responses: { "200": { content: { "application/json": { schema: { properties: Record<string, unknown> } } } } };

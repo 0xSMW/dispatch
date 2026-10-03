@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add contact-added, contact-change, topic-subscription and static-segment triggers alongside existing event triggers. Match typed From/To changes, ignore no-ops, and record transactional contact history even without a matching flow. Separate internal events from app events, prevent step self-entry and stop trigger chains at depth five. API, CLI, SDKs and both automation editors use the same five trigger shapes.
 - Add Boolean and Date contact properties with typed fallbacks and CSV imports. Dates stay ISO strings; boolean property cells accept true/false, yes/no, and 1/0. Invalid nonempty boolean/date cells now fail the row instead of silently becoming false or text. Undeclared keys remain allowed.
 - Add fresh topic/static-segment membership and recorded event time to automation context, plus `not_contains`, `within`, and `not_within` rules and typed field pickers. Reserve `topics` and `segments` for new property definitions while preserving live legacy definitions and values.
 - Add optional `send_email.variable_mapping` for dotted event/contact fields. Existing template variables remain literal, automatic event payload variables still work, and recipient and unsubscribe context stays protected. Transactional send requirements are unchanged.

@@ -1,6 +1,8 @@
 import { ApiError, id, seal, unseal } from "@dispatchmail/core";
 import type { Queryable } from "./index.js";
 import { setContactTopics, subscriptionStored, subscriptionWire } from "./audience.js";
+import { contactColumns, type ContactRow } from "./audience.js";
+import { dispatchContactWrite, dispatchTopicChanges } from "./contact-triggers.js";
 import { appendEvent, fanoutEvent } from "./events.js";
 
 export type UnsubscribePayload = {
@@ -182,33 +184,35 @@ async function unsubscribeTopic(db: Queryable, payload: UnsubscribePayload): Pro
   return topic.rows[0]?.id ?? null;
 }
 
-export async function applyUnsubscribe(db: Queryable, payload: UnsubscribePayload, action: UnsubscribeAction) {
+export async function applyUnsubscribe(db: Queryable, payload: UnsubscribePayload, action: UnsubscribeAction, requestId?: string) {
   let next = action;
   const broadcastTopic = await unsubscribeTopic(db, payload);
   if (next.kind === "one_click") {
     next = broadcastTopic ? { kind: "topics", topics: [{ id: broadcastTopic, subscription: "opt_out" }] } : { kind: "all" };
   }
 
-  let contact: { id: string; email: string; unsubscribed_at: string | Date | null };
+  let contact: ContactRow & { deleted_at: string | null };
+  let created = false;
   if (payload.contact_id) {
     const row = await db.query<typeof contact>(
-      "select id, email, unsubscribed_at from contacts where tenant_id = $1 and id = $2 for update",
+      `select ${contactColumns}, deleted_at from contacts where tenant_id = $1 and id = $2 for update`,
       [payload.tenant_id, payload.contact_id],
     );
     if (!row.rows[0]) throw new ApiError("not_found", 404, "Unsubscribe link not found");
     contact = row.rows[0];
   } else {
     const read = () => db.query<typeof contact>(
-      "select id, email, unsubscribed_at from contacts where tenant_id = $1 and lower(email) = lower($2) order by deleted_at nulls first limit 1 for update",
+      `select ${contactColumns}, deleted_at from contacts where tenant_id = $1 and lower(email) = lower($2) order by deleted_at nulls first limit 1 for update`,
       [payload.tenant_id, payload.email],
     );
     let row = await read();
     if (!row.rows[0]) {
-      await db.query(
+      const inserted = await db.query(
         `insert into contacts (id, tenant_id, email, unsubscribed_at)
-         values ($1, $2, $3, case when $4::boolean then now() else null end) on conflict do nothing`,
+         values ($1, $2, $3, case when $4::boolean then now() else null end) on conflict do nothing returning id`,
         [id("contact"), payload.tenant_id, payload.email, next.kind === "all"],
       );
+      created = Boolean(inserted.rows[0]);
       row = await read();
     }
     if (!row.rows[0]) throw new ApiError("not_found", 404, "Unsubscribe link not found");
@@ -218,11 +222,12 @@ export async function applyUnsubscribe(db: Queryable, payload: UnsubscribePayloa
   let type: "contact.updated" | "contact.topics.updated";
   let leftBroadcast: boolean;
   if (next.kind === "all") {
-    await db.query(
+    const updated = await db.query<ContactRow>(
       `update contacts set unsubscribed_at = coalesce(unsubscribed_at, now()), updated_at = now()
-       where tenant_id = $1 and id = $2`,
+       where tenant_id = $1 and id = $2 returning ${contactColumns}`,
       [payload.tenant_id, contact.id],
     );
+    if (!created && !contact.deleted_at) await dispatchContactWrite(db, payload.tenant_id, requestId ?? `unsub_${contact.id}`, contact, updated.rows[0]!);
     type = "contact.updated";
     leftBroadcast = true;
   } else {
@@ -231,7 +236,8 @@ export async function applyUnsubscribe(db: Queryable, payload: UnsubscribePayloa
     for (const topic of next.topics) {
       if (!allowed.has(topic.id)) throw new ApiError("not_found", 404, "Topic not found");
     }
-    await setContactTopics(db, payload.tenant_id, contact.id, next.topics);
+    const topics = await setContactTopics(db, payload.tenant_id, contact.id, next.topics);
+    if (!created && !contact.deleted_at) await dispatchTopicChanges(db, payload.tenant_id, requestId ?? `unsub_${contact.id}`, contact, topics);
     type = "contact.topics.updated";
     // Topic writes are ordered: a repeated topic's last preference is the one saved.
     const subscription = new Map(next.topics.map((topic) => [topic.id, topic.subscription])).get(broadcastTopic ?? "");

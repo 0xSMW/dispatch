@@ -16,7 +16,8 @@ import {
 import "@xyflow/react/dist/style.css";
 import { Badge, statusToVariant } from "../../components/Badge";
 import { Tile } from "../../components/PageHeader";
-import { describe as summary, stepLabels } from "./graph";
+import { describe as summary, stepLabels, triggerLabels, triggerSummary, type TriggerConfig } from "./graph";
+import type { RuleSources } from "../../lib/rules";
 import { slotId, type CanvasEdge, type CanvasNode, type EndNode, type Slot, type StepNode, type TriggerNode } from "./layout";
 import { stepIcons, stepTones } from "./Steps";
 import { EmailCountLine, type EmailCounts } from "./EmailMetrics";
@@ -31,6 +32,8 @@ type Actions = {
   onSelect: (key: string) => void;
   onAdd: (slot: Slot) => void;
   emailCounts?: Record<string, EmailCounts>;
+  triggerConfig?: TriggerConfig;
+  triggerSources?: RuleSources;
 };
 
 // Node and edge components are module-level so React Flow does not remount them on each render.
@@ -86,7 +89,8 @@ function StepBox({ data }: NodeProps<StepNode>) {
 }
 
 function TriggerBox({ data }: NodeProps<TriggerNode>) {
-  const { selected, onSelect } = useContext(FlowActions);
+  const { selected, onSelect, triggerConfig, triggerSources } = useContext(FlowActions);
+  const config = triggerConfig ?? { type: "event", event_name: data.event };
   const classes = ["canvasNode", "nodrag", "nopan", tintOf(data.status), data.issues ? "invalid" : "", selected === data.key ? "selected" : ""];
   return (
     <>
@@ -101,7 +105,7 @@ function TriggerBox({ data }: NodeProps<TriggerNode>) {
       >
         <span className="canvasNodeHead">
           <Tile tone={stepTones.trigger}>{stepIcons.trigger}</Tile>
-          <strong>{stepLabels.trigger}</strong>
+          <strong>{triggerLabels[config.type]}</strong>
           {data.issues ? (
             <span className="canvasIssues" title={`${data.issues} ${data.issues === 1 ? "issue" : "issues"}`}>
               <AlertCircle size={14} aria-hidden />
@@ -109,7 +113,7 @@ function TriggerBox({ data }: NodeProps<TriggerNode>) {
             </span>
           ) : null}
         </span>
-        <span className="canvasNodeLine">{data.event ? <>When <span className="mono">{data.event}</span> fires</> : <span className="dim">No event set</span>}</span>
+        <span className="canvasNodeLine">{triggerSummary(config, triggerSources) || <span className="dim">No event set</span>}</span>
         <span className="canvasNodeLine mono dim">{data.key}</span>
       </button>
     </>
@@ -179,8 +183,8 @@ const edgeTypes = { link: Link };
 export type FlowProps = Actions & { nodes: CanvasNode[]; edges: CanvasEdge[]; label: string };
 
 /** The canvas itself: a dot grid you can pan and zoom, with nodes placed by `layout()`. */
-export default function Flow({ nodes, edges, label, selected, adding, onSelect, onAdd, emailCounts }: FlowProps) {
-  const actions = useMemo(() => ({ selected, adding, onSelect, onAdd, emailCounts }), [selected, adding, onSelect, onAdd, emailCounts]);
+export default function Flow({ nodes, edges, label, selected, adding, onSelect, onAdd, emailCounts, triggerConfig, triggerSources }: FlowProps) {
+  const actions = useMemo(() => ({ selected, adding, onSelect, onAdd, emailCounts, triggerConfig, triggerSources }), [selected, adding, onSelect, onAdd, emailCounts, triggerConfig, triggerSources]);
   return (
     <FlowActions.Provider value={actions}>
       <ReactFlow<CanvasNode, CanvasEdge>

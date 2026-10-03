@@ -4,6 +4,22 @@ Audience holds contacts, custom properties, static segments, and topic preferenc
 
 Contacts are identified by email, matched case-insensitively. Create them through the dashboard, the contact API, or a CSV import. [Firing an event](automations.md#triggers) with a new email address also creates a contact.
 
+## Contact triggers
+
+Enabled automations can start when a contact is added, changes, subscribes to a topic, or joins a static segment. Explicitly creating a previously deleted contact revives it and fires Contact added. Events never revive deleted contacts.
+
+Contact API writes, topic subscriptions, segment additions, event-created contacts and filled names, automation contact steps, and preference-page changes dispatch their actual changes. A contact created solely to record an unsubscribe does not fire Contact added. CSV imports do not start contact-triggered automations in this release; import opt-in and enrollment jobs are not shipped yet.
+
+Identical writes do not fire Contact changes. Re-adding a segment member is a no-op. Topic triggers use the effective preference, with the topic's default applied, and fire only when it moves from not receiving to receiving. An explicit opt-in that merely repeats an Opt in default is not a new subscription transition.
+
+For exact change matching, use raw typed From and To values: boolean `false`, number `3`, or the stored date string, not string versions of booleans or numbers. An omitted value leaves that side unconstrained; explicit null matches an absent or cleared value. A multi-field write starts at most one run per matching automation. See [contact trigger configs and sources](automations.md#contact-changes).
+
+## Change history
+
+Contact field changes are recorded from the release that adds contact triggers onward, even when no automation matches. Earlier changes are not backfilled. No-op writes create no change rows. Each changed field records its raw before and after values, request ID, and timestamp; a multi-field write has several history rows but one internal trigger event.
+
+Contact changes are separate from public fired events and automation-run history. Internal `@` events do not appear in the public fired-event list or satisfy event waits. History is not a replay or enrollment mechanism.
+
 ## Properties
 
 Properties store application-owned values such as `plan`, `project_count`, `activated`, or `last_active_at`.
@@ -63,6 +79,8 @@ Create a segment under Audience → Segments, then manage members from the segme
 
 An automation's Add to segment step can add its contact. Adding an existing member does not create duplicate membership.
 
+An Added to segment trigger starts only on new membership. Deleting its segment stops matching; the automation cannot be enabled again until its trigger changes.
+
 Use a segment to choose a broadcast's audience. Being in a segment is not permission to receive Marketing email: global unsubscribes, topic preferences, and suppressions still apply. Deleting a contact removes its segment memberships.
 
 There are no rule-based dynamic segments in the current release.
@@ -91,6 +109,8 @@ Set per-contact preferences on the contact page or with `PATCH /contacts/{id}/to
 ```
 
 Use `opt_out` to opt out of one topic. A contact's global `unsubscribed` flag blocks all Marketing email even when a topic is opted in.
+
+A Subscribed to topic trigger starts when effective receipt changes from off to on, not on every preference write. Preference-page opt-ins can start it. A global unsubscribe can start a Contact changes trigger watching `unsubscribed`; a new contact created only to store that unsubscribe does not start Contact added. Deleting a trigger's topic stops matching and prevents enabling the automation until its trigger changes.
 
 Give an ordinary send a `topic_id`, or choose a Topic on an automation send step, to make it Marketing. Dispatch adds one-click unsubscribe headers and fills the template's unsubscribe placeholders with signed, recipient-specific preference links. It rechecks opt-outs at delivery. Broadcasts are Marketing and respect global unsubscribes and any selected topic.
 

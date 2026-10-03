@@ -4,9 +4,10 @@ import { Badge } from "../../components/Badge";
 import { Failed } from "../../components/Empty";
 import { Tile } from "../../components/PageHeader";
 import { Skeleton } from "../../components/Skeleton";
-import { canMove, newKey, stepError, stepLabels, type StepType, type Tree } from "./graph";
+import { canMove, newKey, stepError, stepLabels, treeTrigger, triggerLabels, triggerSummary, type TriggerConfig, type StepType, type Tree } from "./graph";
 import { layout, locate, runFocus, slotId, type Slot } from "./layout";
-import { EventInput, RunResult, StepForm, stepIcons, stepTones, type RunStep, type StepActions, type StepOptions } from "./Steps";
+import { RunResult, StepForm, stepIcons, stepTones, type RunStep, type StepActions, type StepOptions } from "./Steps";
+import { TriggerForm, triggerSources } from "./Trigger";
 import "../../styles/canvas.css";
 
 // The canvas view of the builder and the run view. It draws the same tree
@@ -49,13 +50,14 @@ export interface CanvasProps {
   options?: StepOptions;
   /** Sets the trigger's event. The list edits it in the card above the steps. */
   onEvent?: (event: string) => void;
+  onTrigger?: (config: TriggerConfig) => void;
   /** Run view: each step's result by key. */
   run?: Map<string, RunStep>;
   /** Puts the side panel under the canvas, for narrow places such as the run drawer. */
   stacked?: boolean;
 }
 
-export function Canvas({ tree, actions, disabled = false, errors = {}, options, onEvent, run, stacked = false }: CanvasProps) {
+export function Canvas({ tree, actions, disabled = false, errors = {}, options, onEvent, onTrigger, run, stacked = false }: CanvasProps) {
   const editable = Boolean(actions) && !disabled && !run;
   const [selected, setSelected] = useState<string | null>(() => (run ? runFocus(tree, run) : null));
   const [adding, setAdding] = useState<Slot | null>(null);
@@ -120,23 +122,25 @@ export function Canvas({ tree, actions, disabled = false, errors = {}, options, 
     );
   } else if (selected && selected === tree.trigger) {
     const issues = errors[tree.trigger] ?? {};
+    const config = treeTrigger(tree);
     panel = (
       <section className="canvasPanel" aria-label="Trigger settings">
-        <PanelHeader title={stepLabels.trigger} tone={stepTones.trigger} icon={stepIcons.trigger} detail={tree.trigger} onClose={close} />
+        <PanelHeader title={triggerLabels[config.type]} tone={stepTones.trigger} icon={stepIcons.trigger} detail={tree.trigger} onClose={close} />
         {run ? (
           <p className="muted">
-            When <span className="mono">{tree.event}</span> fires
+            {triggerSummary(config, triggerSources(options))}
           </p>
         ) : (
           <div className="form">
-            <EventInput
-              label="Event"
-              value={tree.event}
-              onChange={(event) => onEvent?.(event)}
-              events={options?.events ?? []}
-              error={issues.event_name ?? issues[stepError]}
-              hint="Runs each time your app sends this event with POST /events/send."
-              disabled={!editable || !onEvent}
+            <TriggerForm
+              config={config}
+              onChange={(next) => {
+                if (onTrigger) onTrigger(next);
+                else if (next.type === "event") onEvent?.(next.event_name);
+              }}
+              options={options}
+              errors={issues}
+              disabled={!editable || (!onTrigger && !onEvent)}
             />
           </div>
         )}
@@ -206,6 +210,8 @@ export function Canvas({ tree, actions, disabled = false, errors = {}, options, 
               nodes={nodes}
               edges={edges}
               emailCounts={options?.emailCounts}
+              triggerConfig={treeTrigger(tree)}
+              triggerSources={triggerSources(options)}
               label={run ? "Run canvas" : "Automation canvas"}
               selected={found ? found.node.key : selected === tree.trigger ? tree.trigger : null}
               adding={adding && editable ? slotId(adding) : null}

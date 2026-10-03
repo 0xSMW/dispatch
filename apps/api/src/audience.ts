@@ -27,6 +27,10 @@ import {
   contactTopics,
   createProperty,
   deleteContact,
+  dispatchContactWrite,
+  dispatchSegmentAdded,
+  dispatchTopicChanges,
+  emit,
   findBy,
   findContact,
   findSuppression,
@@ -53,6 +57,7 @@ import {
   type ContactRow,
   type Db,
   type PagingParams,
+  type Queryable,
 } from "@dispatchmail/db";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { contactWhere, suppressionWhere, type ContactQuery, type SuppressionQuery } from "./filters.js";
@@ -79,28 +84,29 @@ export function registerAudience(
   },
 ) {
   const { db, paging, emitChange, slug } = deps;
+  const change = (client: Queryable, request: FastifyRequest, type: EventType, resourceId: string, data: Record<string, unknown>) =>
+    emit(client, { tenantId: request.auth!.tenant_id, requestId: request.request_id, type, resourceId, data, key: `${resourceId}:${type}:${id("change")}` });
 
   app.post("/contacts", async (request) => {
     const input = contactSchema.parse(request.body);
     const tenantId = request.auth!.tenant_id;
     const definitions = await propertyDefinitions(db, tenantId);
     assertPropertyValues(input.properties, definitions);
-    const contact = await upsertContact(db, tenantId, input);
-    for (const segment of input.segments ?? []) {
-      await addContactSegment(db, tenantId, contact.id, segment.id);
-    }
-    if (input.topics?.length) {
-      await setContactTopics(db, tenantId, contact.id, input.topics);
-    }
-    // A repeat create for an address that already exists updates it. Only a new row is "created".
-    await emitChange(request, contact.created ? "contact.created" : "contact.updated", contact.id, {
-      id: contact.id,
-      email: contact.email,
+    return tx(db, async (client) => {
+      const contact = await upsertContact(client, tenantId, input);
+      await dispatchContactWrite(client, tenantId, request.request_id, contact.before, contact, { created: contact.created || contact.revived });
+      for (const segment of input.segments ?? []) {
+        const member = await addContactSegment(client, tenantId, contact.id, segment.id);
+        await dispatchSegmentAdded(client, tenantId, request.request_id, contact, segment.id, member.added);
+      }
+      if (input.topics?.length) {
+        const topics = await setContactTopics(client, tenantId, contact.id, input.topics);
+        await dispatchTopicChanges(client, tenantId, request.request_id, contact, topics);
+        await change(client, request, "contact.topics.updated", contact.id, { id: contact.id, email: contact.email });
+      }
+      await change(client, request, contact.created || contact.revived ? "contact.created" : "contact.updated", contact.id, { id: contact.id, email: contact.email });
+      return presentContact(contact, definitions);
     });
-    if (input.topics?.length) {
-      await emitChange(request, "contact.topics.updated", contact.id, { id: contact.id, email: contact.email });
-    }
-    return presentContact(await findContact(db, tenantId, contact.id), definitions);
   });
 
   app.get("/contacts", async (request) => {
@@ -164,9 +170,13 @@ export function registerAudience(
 
   app.post("/contacts/:id/segments/:segment_id", async (request) => {
     const params = request.params as { id: string; segment_id: string };
-    const contact = await findContact(db, request.auth!.tenant_id, params.id);
-    const member = await addContactSegment(db, request.auth!.tenant_id, contact.id, params.segment_id);
-    return { object: "segment", id: member.segment_id, contact_id: contact.id };
+    return tx(db, async (client) => {
+      const tenantId = request.auth!.tenant_id;
+      const contact = await findContact(client, tenantId, params.id, true);
+      const member = await addContactSegment(client, tenantId, contact.id, params.segment_id);
+      await dispatchSegmentAdded(client, tenantId, request.request_id, contact, params.segment_id, member.added);
+      return { object: "segment", id: params.segment_id, contact_id: contact.id };
+    });
   });
 
   app.delete("/contacts/:id/segments/:segment_id", async (request) => {
@@ -184,10 +194,14 @@ export function registerAudience(
 
   app.patch("/contacts/:id/topics", async (request) => {
     const input = contactTopicsSchema.parse(request.body);
-    const contact = await findContact(db, request.auth!.tenant_id, (request.params as { id: string }).id);
-    await setContactTopics(db, request.auth!.tenant_id, contact.id, input.topics);
-    await emitChange(request, "contact.topics.updated", contact.id, { id: contact.id, email: contact.email });
-    return { object: "list", has_more: false, data: await contactTopics(db, request.auth!.tenant_id, contact.id) };
+    return tx(db, async (client) => {
+      const tenantId = request.auth!.tenant_id;
+      const contact = await findContact(client, tenantId, (request.params as { id: string }).id, true);
+      const topics = await setContactTopics(client, tenantId, contact.id, input.topics);
+      await dispatchTopicChanges(client, tenantId, request.request_id, contact, topics);
+      await change(client, request, "contact.topics.updated", contact.id, { id: contact.id, email: contact.email });
+      return { object: "list", has_more: false, data: await contactTopics(client, tenantId, contact.id) };
+    });
   });
 
   app.get("/contacts/:id", async (request) => {
@@ -198,14 +212,17 @@ export function registerAudience(
 
   app.patch("/contacts/:id", async (request) => {
     const tenantId = request.auth!.tenant_id;
-    const contact = await findContact(db, tenantId, (request.params as { id: string }).id);
     const input = contactUpdateSchema.parse(request.body);
     const definitions = await propertyDefinitions(db, tenantId);
     assertPropertyValues(input.properties, definitions);
-    const properties = input.properties === undefined ? undefined : mergeProperties(contact.properties, input.properties);
-    const updated = await updateContact(db, tenantId, contact.id, { ...input, properties });
-    await emitChange(request, "contact.updated", contact.id, { id: contact.id, email: updated.email });
-    return presentContact(updated, definitions);
+    return tx(db, async (client) => {
+      const contact = await findContact(client, tenantId, (request.params as { id: string }).id, true);
+      const properties = input.properties === undefined ? undefined : mergeProperties(contact.properties, input.properties);
+      const updated = await updateContact(client, tenantId, contact.id, { ...input, properties });
+      await dispatchContactWrite(client, tenantId, request.request_id, contact, updated);
+      await change(client, request, "contact.updated", contact.id, { id: contact.id, email: updated.email });
+      return presentContact(updated, definitions);
+    });
   });
 
   app.delete("/contacts/:id", async (request) => {
@@ -315,27 +332,17 @@ export function registerAudience(
   });
 
   app.post("/topics/:id/subscriptions", async (request) => {
-    const topic = await findBy<{ id: string }>(db, "topics", request.auth!.tenant_id, (request.params as { id: string }).id, {
-      deletedCol: "deleted_at",
-      errorMessage: "Topic not found",
-    });
     const input = subscriptionSchema.parse(request.body);
-    const contact = await upsertContact(db, request.auth!.tenant_id, input.email);
-    const status = input.status === "opt_out" || input.status === "unsubscribed" ? "unsubscribed" : "subscribed";
-    const row = await db.query(
-      `insert into topic_subscriptions (id, tenant_id, topic_id, contact_id, status)
-       values ($1, $2, $3, $4, $5)
-       on conflict (tenant_id, topic_id, contact_id)
-       do update set status = excluded.status, updated_at = now()
-       returning id, topic_id, contact_id, status, created_at, updated_at`,
-      [id("sub"), request.auth!.tenant_id, topic.id, contact.id, status],
-    );
-    await emitChange(request, "contact.topics.updated", contact.id, {
-      id: contact.id,
-      topic_id: topic.id,
-      status: row.rows[0].status,
+    return tx(db, async (client) => {
+      const tenantId = request.auth!.tenant_id;
+      const topic = await findBy<{ id: string }>(client, "topics", tenantId, (request.params as { id: string }).id, { deletedCol: "deleted_at", errorMessage: "Topic not found" });
+      const contact = await upsertContact(client, tenantId, input.email);
+      await dispatchContactWrite(client, tenantId, request.request_id, contact.before, contact, { created: contact.created || contact.revived });
+      const topics = await setContactTopics(client, tenantId, contact.id, [{ id: topic.id, subscription: input.status }]);
+      await dispatchTopicChanges(client, tenantId, request.request_id, contact, topics);
+      await change(client, request, "contact.topics.updated", contact.id, { id: contact.id, topic_id: topic.id, status: topics[0]!.status });
+      return { object: "subscription", ...topics[0]!.row, subscription: subscriptionWire(topics[0]!.status), email: contact.email };
     });
-    return { object: "subscription", ...row.rows[0], subscription: subscriptionWire(row.rows[0].status), email: contact.email };
   });
 
   app.get("/topics/:id", async (request) => {
@@ -440,14 +447,16 @@ export function registerAudience(
   });
 
   app.post("/segments/:id/contacts", async (request) => {
-    const segment = await findBy<{ id: string }>(db, "segments", request.auth!.tenant_id, (request.params as { id: string }).id, {
-      deletedCol: "deleted_at",
-      errorMessage: "Segment not found",
-    });
     const input = segmentContactSchema.parse(request.body);
-    const contact = await upsertContact(db, request.auth!.tenant_id, input.email);
-    const member = await addContactSegment(db, request.auth!.tenant_id, contact.id, segment.id);
-    return { object: "contact", ...member, email: contact.email };
+    return tx(db, async (client) => {
+      const tenantId = request.auth!.tenant_id;
+      const segment = await findBy<{ id: string }>(client, "segments", tenantId, (request.params as { id: string }).id, { deletedCol: "deleted_at", errorMessage: "Segment not found" });
+      const contact = await upsertContact(client, tenantId, input.email);
+      await dispatchContactWrite(client, tenantId, request.request_id, contact.before, contact, { created: contact.created || contact.revived });
+      const { added, ...member } = await addContactSegment(client, tenantId, contact.id, segment.id);
+      await dispatchSegmentAdded(client, tenantId, request.request_id, contact, segment.id, added);
+      return { object: "contact", ...member, email: contact.email };
+    });
   });
 
   app.delete("/segments/:id/contacts/:contact_id", async (request) => {

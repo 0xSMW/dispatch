@@ -20,17 +20,21 @@ import { useSelection } from "../../hooks/useSelection";
 import { each } from "../../lib/bulk";
 import { errorMessage } from "../../lib/client";
 import { learnLinks } from "../../lib/docs";
-import { useClient } from "../../shell/session";
-import type { Automation, EventDefinition } from "../../types";
+import { useCan, useClient } from "../../shell/session";
+import type { Automation, ContactProperty, EventDefinition, Segment, Topic } from "../../types";
 import { automationTabs } from "../tabs";
-import { EventInput } from "./Steps";
+import { automationTrigger, triggerIssues, triggerLabels, triggerSummary, triggerWarning, type TriggerConfig } from "./graph";
+import { TriggerForm, triggerLoading, triggerSources } from "./Trigger";
 import { StopAutomation, isEnabled } from "./Stop";
 
 export const automationCsv: Array<CsvColumn<Automation>> = [
   { header: "id", value: (row) => row.id },
   { header: "name", value: (row) => row.name },
   { header: "status", value: (row) => isEnabled(row) ? "enabled" : "disabled" },
-  { header: "trigger", value: (row) => row.trigger },
+  { header: "trigger", value: (row) => {
+    const config = automationTrigger(row);
+    return config.type === "event" ? config.event_name : `${triggerLabels[config.type]}: ${triggerSummary(config)}`;
+  } },
   { header: "runs", value: (row) => row.run_count },
   { header: "created_at", value: (row) => row.created_at },
 ];
@@ -38,9 +42,22 @@ export const automationCsv: Array<CsvColumn<Automation>> = [
 /** `/automations`: the list, with status filter, create, duplicate, start and stop, and delete. */
 export function Automations() {
   const client = useClient();
+  const can = useCan();
   const navigate = useNavigate();
   const filters = useFilters(["status"]);
   const list = useList<Automation>("/automations", filters);
+  const topics = useList<Topic>("/topics", {}, { all: true });
+  const segments = useList<Segment>("/segments", {}, { all: true });
+  const sources = {
+    topics: !topics.loading && !topics.error ? topics.rows.map((row) => ({ value: row.id, label: row.name })) : undefined,
+    segments: !segments.loading && !segments.error ? segments.rows.map((row) => ({ value: row.id, label: row.name })) : undefined,
+  };
+  const cannotStart = (row: Automation) => {
+    const config = automationTrigger(row);
+    return Boolean(triggerWarning(config, sources))
+      || (config.type === "topic_subscribed" && !sources.topics)
+      || (config.type === "segment_added" && !sources.segments);
+  };
   const selection = useSelection(list.rows.map((row) => row.id));
   const [creating, setCreating] = useState(false);
   const [stopping, setStopping] = useState<Automation | null>(null);
@@ -80,7 +97,7 @@ export function Automations() {
         filters.status ? (
           <Empty title="No automations" body={`No automations are ${filters.status}.`} />
         ) : (
-          <Empty title="No automations" body="An automation runs steps when your app sends an event. Create one to get started." />
+          <Empty title="No automations" body="An automation runs steps when an event is received or a contact changes. Create one to get started." />
         )
       }
       columns={[
@@ -95,7 +112,11 @@ export function Automations() {
             </span>
           ),
         },
-        { header: "Trigger", cell: (row) => <span className="mono">{row.trigger ?? ""}</span> },
+        { header: "Trigger", cell: (row) => {
+          const config = automationTrigger(row);
+          const warning = triggerWarning(config, sources);
+          return <span title={warning ?? undefined}>{config.type === "event" ? config.event_name : `${triggerLabels[config.type]}: ${triggerSummary(config, sources)}`}{warning ? <span className="fieldError"> · {warning}</span> : null}</span>;
+        } },
         { header: "Status", cell: (row) => <Badge value={isEnabled(row) ? "enabled" : "disabled"} /> },
         { header: "Runs", cell: (row) => (row.run_count ?? 0).toLocaleString() },
         { header: "Created", cell: (row) => <Time value={row.created_at} /> },
@@ -108,14 +129,14 @@ export function Automations() {
             { label: "Duplicate", onSelect: () => void duplicate.mutate(row) },
             isEnabled(row)
               ? { label: "Stop", onSelect: () => setStopping(row) }
-              : { label: "Start", onSelect: () => void start.mutate(row) },
+              : { label: "Start", disabled: cannotStart(row), onSelect: () => void start.mutate(row) },
             "divider",
             { label: "Delete", danger: true, onSelect: () => setDeleting([row]) },
           ]}
         />
       )}
     >
-      {creating ? <CreateAutomation onClose={() => setCreating(false)} /> : null}
+      {creating && can ? <CreateAutomation onClose={() => setCreating(false)} /> : null}
       {stopping ? <StopAutomation automation={stopping} onClose={() => setStopping(null)} onDone={() => void list.reload()} /> : null}
       {deleting ? (
         <ConfirmPhrase
@@ -149,13 +170,31 @@ function CreateAutomation({ onClose }: { onClose: () => void }) {
   const client = useClient();
   const navigate = useNavigate();
   const events = useList<EventDefinition>("/events", {}, { all: true });
+  const topics = useList<Topic>("/topics", {}, { all: true });
+  const segments = useList<Segment>("/segments", {}, { all: true });
+  const properties = useList<ContactProperty>("/contact-properties", {}, { all: true });
   const [name, setName] = useState("");
-  const [event, setEvent] = useState("");
+  const [trigger, setTrigger] = useState<TriggerConfig>({ type: "event", event_name: "" });
+  const options = {
+    templates: [],
+    events: events.rows.map((row) => row.name),
+    topics: topics.rows.map((row) => ({ value: row.id, label: row.name })),
+    segments: segments.rows.map((row) => ({ value: row.id, label: row.name })),
+    contactProperties: properties.rows,
+    topicsReady: !topics.loading && !topics.error,
+    segmentsReady: !segments.loading && !segments.error,
+    propertiesReady: !properties.loading && !properties.error,
+    topicsError: topics.error,
+    segmentsError: segments.error,
+    propertiesError: properties.error,
+  };
+  const issues = triggerIssues(trigger, triggerSources(options));
+  const valid = name.trim() && !Object.keys(issues).length && !triggerLoading(trigger, options);
   const create = useMutation(
     () =>
       client.post<Automation>("/automations", {
         name: name.trim(),
-        steps: [{ key: "trigger", type: "trigger", config: { event_name: event.trim() } }],
+        steps: [{ key: "trigger", type: "trigger", config: trigger.type === "event" ? { ...trigger, event_name: trigger.event_name.trim() } : trigger }],
         connections: [],
       }),
     {
@@ -172,19 +211,18 @@ function CreateAutomation({ onClose }: { onClose: () => void }) {
       isOpen
       title="Create automation"
       onClose={onClose}
-      onSubmit={() => void create.mutate()}
+      onSubmit={() => { if (valid) void create.mutate(); }}
       submitLabel="Create"
-      submitDisabled={!name.trim() || !event.trim()}
+      submitDisabled={!valid}
       submitting={create.isLoading}
     >
       <div className="form">
         <Field label="Name" value={name} onChange={setName} placeholder="Welcome series" required autoFocus />
-        <EventInput
-          label="Trigger event"
-          value={event}
-          onChange={setEvent}
-          events={events.rows.map((row) => row.name)}
-          hint="The automation runs each time your app sends this event."
+        <TriggerForm
+          config={trigger}
+          onChange={setTrigger}
+          eventLabel="Trigger event"
+          options={options}
         />
         <p className="fieldHint">New automations start disabled. Add steps in the builder, then start it.</p>
       </div>

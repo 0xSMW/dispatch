@@ -117,6 +117,8 @@ export function registerEvents(
   });
 
   app.post("/events/send", async (request, reply) => {
+    const name = (request.body as { event?: unknown } | undefined)?.event;
+    if (typeof name === "string" && name.startsWith("@")) throw new ApiError("validation_error", 422, "Event names cannot start with @");
     const input = eventSendSchema.parse(request.body);
     const tenantId = request.auth!.tenant_id;
     const email = input.contact_id
@@ -140,6 +142,7 @@ export function registerEvents(
     const page = await paginate<FiredEvent>(db, "custom_events", request.auth!.tenant_id, paging(request), {
       select: "id, request_id, name, email, data, created_at",
       deletedCol: "deleted_at",
+      where: "name not like '@%'",
     });
     return { object: page.object, has_more: page.has_more, data: page.data.map(presentFired) };
   });
@@ -149,6 +152,7 @@ export function registerEvents(
       select: "id, request_id, name, email, data, created_at",
       errorMessage: "Event not found",
     });
+    if (row.name.startsWith("@")) throw new ApiError("not_found", 404, "Event not found");
     return presentFired(row);
   });
 }

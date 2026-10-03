@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { signWebhook } from "@dispatchmail/core";
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
-import { Dispatch, WebhookVerificationError, type ImportColumnMap, type Operator, type PropertyType, type PropertyValue, type Result, type Rule, type SendEmailConfig } from "./index.js";
+import { Dispatch, WebhookVerificationError, type Automation, type AutomationReentry, type AutomationTriggerConfig, type ImportColumnMap, type Operator, type PropertyType, type PropertyValue, type Result, type Rule, type SendEmailConfig } from "./index.js";
 
 const base = "http://localhost:3100";
 
@@ -58,6 +58,44 @@ describe("constructor", () => {
 });
 
 describe("transport", () => {
+  it("preserves contact trigger configs, primitive transitions, and reentry", async () => {
+    const configs: AutomationTriggerConfig[] = [
+      { type: "event", event_name: "user.created" },
+      { type: "contact_created" },
+      { type: "contact_updated" },
+      { type: "contact_updated", field: "unsubscribed", from: false, to: true },
+      { type: "contact_updated", field: "properties.score", from: 0, to: 42.5 },
+      { type: "contact_updated", field: "properties.last_active_at", from: null, to: "2026-10-03T09:30:00+02:00" },
+      { type: "contact_updated", field: "first_name", from: "Ada", to: null },
+      { type: "topic_subscribed", topic_id: "topic_1" },
+      { type: "segment_added", segment_id: "segment_1" },
+    ];
+    const client = new Dispatch({ apiKey: "sk_test" });
+    for (const config of configs) {
+      const automation: Automation = { id: "a1", trigger: config.type === "event" ? config.event_name : null, trigger_config: config, reentry: "every_time" };
+      const fetch = stub(automation);
+      const steps = [{ key: "start", type: "trigger", config }];
+      const created = await client.automations.create({ name: "Contacts", steps, reentry: "every_time" });
+      expectTypeOf(created.data!.trigger).toEqualTypeOf<string | null>();
+      expectTypeOf(created.data!.trigger_config).toEqualTypeOf<AutomationTriggerConfig>();
+      expectTypeOf(created.data!.reentry).toEqualTypeOf<AutomationReentry>();
+      expect(created.data).toEqual(automation);
+      expect(request(fetch).body).toEqual({ name: "Contacts", steps, reentry: "every_time" });
+      await client.automations.update("a1", { steps, reentry: "once" });
+      expect(request(fetch, 1).body).toEqual({ steps, reentry: "once" });
+      expect((await client.automations.get("a1")).data).toEqual(automation);
+      expect((await client.automations.duplicate("a1")).data).toEqual(automation);
+      stub({ object: "list", has_more: false, data: [automation] });
+      const list = await client.automations.list();
+      expectTypeOf(list.data!.data[0]!.trigger).toEqualTypeOf<string | null>();
+      expect(list.data?.data[0]).toEqual(automation);
+    }
+    const fetch = stub();
+    const steps = [{ key: "start", type: "trigger", config: { event_name: "user.created" } }];
+    await client.automations.create({ name: "Legacy", trigger: "user.created", steps });
+    expect(request(fetch).body).toEqual({ name: "Legacy", trigger: "user.created", steps });
+  });
+
   it("preserves typed property fallbacks, date imports, rules, and literal send mappings", async () => {
     const fetch = stub({ id: "prop_1", object: "contact_property", key: "activated", type: "boolean", fallback_value: false });
     const client = new Dispatch({ apiKey: "sk_test" });

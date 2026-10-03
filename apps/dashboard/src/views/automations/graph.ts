@@ -30,7 +30,131 @@ export type Node = {
   ruleTypes?: Record<string, PropertyType>;
 };
 
-export type Tree = { trigger: string; event: string; steps: Node[] };
+export type TriggerConfig =
+  | { type: "event"; event_name: string }
+  | { type: "contact_created" }
+  | { type: "contact_updated"; field?: string; from?: string | number | boolean | null; to?: string | number | boolean | null }
+  | { type: "topic_subscribed"; topic_id: string }
+  | { type: "segment_added"; segment_id: string };
+export type TriggerType = TriggerConfig["type"];
+
+export const triggerChoices = [
+  { value: "event", label: "An event is received" },
+  { value: "contact_created", label: "A contact is added" },
+  { value: "contact_updated", label: "A contact changes" },
+  { value: "topic_subscribed", label: "A contact subscribes to a topic" },
+  { value: "segment_added", label: "A contact is added to a segment" },
+] satisfies Array<{ value: TriggerType; label: string }>;
+
+export const triggerLabels: Record<TriggerType, string> = {
+  event: "Event received",
+  contact_created: "Contact added",
+  contact_updated: "Contact changes",
+  topic_subscribed: "Subscribed to topic",
+  segment_added: "Added to segment",
+};
+
+/** Accepts legacy event configs as well as the normalized API shape. */
+export function readTrigger(config: Record<string, unknown> = {}): TriggerConfig {
+  if (!config.type) return { type: "event", event_name: String(config.event_name ?? "") };
+  return { ...config } as TriggerConfig;
+}
+
+export function defaultTrigger(type: TriggerType): TriggerConfig {
+  switch (type) {
+    case "event": return { type, event_name: "" };
+    case "topic_subscribed": return { type, topic_id: "" };
+    case "segment_added": return { type, segment_id: "" };
+    default: return { type };
+  }
+}
+
+// `event` remains for older trees and callers that edit only the event name.
+export type Tree = { trigger: string; event: string; triggerConfig?: TriggerConfig; steps: Node[] };
+
+export function treeTrigger(tree: Tree): TriggerConfig {
+  if (!tree.triggerConfig || tree.triggerConfig.type === "event") return { type: "event", event_name: tree.event };
+  return tree.triggerConfig;
+}
+
+export function setTrigger(tree: Tree, config: TriggerConfig): Tree {
+  return { ...tree, triggerConfig: config, event: config.type === "event" ? config.event_name : "" };
+}
+
+export function automationTrigger(row: { trigger?: string | null; trigger_config?: TriggerConfig; steps?: GraphStep[] }): TriggerConfig {
+  const config = row.trigger_config ?? row.steps?.find((step) => step.type === "trigger")?.config;
+  return config ? readTrigger(config) : { type: "event", event_name: row.trigger ?? "" };
+}
+
+export function triggerSummary(config: TriggerConfig, sources: RuleSources = {}): string {
+  const value = (item: unknown) => item === null ? "No value" : String(item);
+  switch (config.type) {
+    case "event": return config.event_name;
+    case "contact_created": return "Any new contact";
+    case "contact_updated": {
+      if (!config.field) return "Any change";
+      if (config.from === undefined && config.to === undefined) return `${config.field}: Any change`;
+      return `${config.field}: ${config.from === undefined ? "Any value" : value(config.from)} → ${config.to === undefined ? "Any value" : value(config.to)}`;
+    }
+    case "topic_subscribed": return sources.topics?.find((row) => row.value === config.topic_id)?.label ?? config.topic_id;
+    case "segment_added": return sources.segments?.find((row) => row.value === config.segment_id)?.label ?? config.segment_id;
+  }
+}
+
+/** An absent source means it has not loaded, not that the resource was deleted. */
+export function triggerWarning(config: TriggerConfig, sources: RuleSources = {}): string | null {
+  if (config.type === "topic_subscribed" && config.topic_id && sources.topics && !sources.topics.some((row) => row.value === config.topic_id)) {
+    return "Its topic was deleted";
+  }
+  if (config.type === "segment_added" && config.segment_id && sources.segments && !sources.segments.some((row) => row.value === config.segment_id)) {
+    return "Its segment was deleted";
+  }
+  return null;
+}
+
+export function triggerFields(properties: RuleSources["properties"] = []) {
+  return contextFields({ properties }).filter((field) => field.group === "Contact")
+    .map((field) => ({ key: field.path.slice("contact.".length), type: field.type as PropertyType }));
+}
+
+export function triggerIssues(config: TriggerConfig, sources: RuleSources = {}): Record<string, string> {
+  const issues: Record<string, string> = {};
+  switch (config.type) {
+    case "event":
+      if (!config.event_name.trim()) issues.event_name = "Enter the event that starts this automation.";
+      else if (config.event_name.trim().startsWith("@")) issues.event_name = "Event names cannot start with @.";
+      break;
+    case "contact_updated": {
+      if (!config.field) {
+        if (config.from !== undefined || config.to !== undefined) issues.field = "Choose a field to match From or To.";
+        break;
+      }
+      const field = triggerFields(sources.properties).find((item) => item.key === config.field);
+      if (!field) {
+        if (sources.properties) issues.field = "Choose a built-in field or a declared contact property.";
+        break;
+      }
+      for (const key of ["from", "to"] as const) {
+        const value = config[key];
+        if (value === undefined || value === null) continue;
+        if (field.type === "number" && (typeof value !== "number" || !Number.isFinite(value))) issues[key] = "Enter a finite number.";
+        if (field.type === "boolean" && typeof value !== "boolean") issues[key] = "Choose true or false.";
+        if (field.type === "string" && typeof value !== "string") issues[key] = "Enter a string.";
+        if (field.type === "date" && !isIsoDate(value)) issues[key] = "Use an ISO date or a timestamp with a timezone.";
+      }
+      break;
+    }
+    case "topic_subscribed":
+      if (!config.topic_id) issues.topic_id = "Choose a topic.";
+      else if (triggerWarning(config, sources)) issues.topic_id = "Its topic was deleted";
+      break;
+    case "segment_added":
+      if (!config.segment_id) issues.segment_id = "Choose a segment.";
+      else if (triggerWarning(config, sources)) issues.segment_id = "Its segment was deleted";
+      break;
+  }
+  return issues;
+}
 
 export type GraphStep = { key?: string; type: string; config?: Record<string, unknown> };
 export type Connection = { from: string; to: string; type?: string };
@@ -133,6 +257,7 @@ export function toTree(steps: GraphStep[], connections: Connection[] = []): { tr
   const tree: Tree = {
     trigger: trigger?.key ?? "trigger",
     event: String(trigger?.config?.event_name ?? ""),
+    triggerConfig: readTrigger(trigger?.config),
     steps: trigger ? chain(out(trigger.key ?? "", "default")) : [],
   };
   if (!trigger) problem ??= "This automation has no trigger step.";
@@ -143,7 +268,9 @@ export function toTree(steps: GraphStep[], connections: Connection[] = []): { tr
 
 /** Writes the tree back as the API's steps and connections. */
 export function toGraph(tree: Tree): Graph {
-  const steps: Graph["steps"] = [{ key: tree.trigger, type: "trigger", config: { event_name: tree.event.trim() } }];
+  const trigger = treeTrigger(tree);
+  const config = trigger.type === "event" ? { ...trigger, event_name: trigger.event_name.trim() } : { ...trigger };
+  const steps: Graph["steps"] = [{ key: tree.trigger, type: "trigger", config }];
   const connections: Connection[] = [];
   const walk = (list: Node[], from: { key: string; type: string } | null) => {
     let previous = from;
@@ -398,6 +525,7 @@ export function stepIssues(node: Node, fields: ContextField[] = []): Record<stri
       break;
     case "wait_for_event":
       if (!String(config.event_name ?? "").trim()) issues.event_name = "Enter the event to wait for.";
+      else if (String(config.event_name).trim().startsWith("@")) issues.event_name = "Event names cannot start with @.";
       issues.timeout = durationIssue(config.timeout, false);
       // Only a timeout branch with steps in it needs a timeout. A wait that came from the API
       // with just an "event received" edge has none, and has to save unchanged.
@@ -422,7 +550,8 @@ export function stepIssues(node: Node, fields: ContextField[] = []): Record<stri
 /** Every step's field errors, keyed by step key, plus a trigger error under `trigger`. */
 export function treeIssues(tree: Tree, sources?: RuleSources): Record<string, Record<string, string>> {
   const all: Record<string, Record<string, string>> = {};
-  if (!tree.event.trim()) all[tree.trigger] = { event_name: "Enter the event that starts this automation." };
+  const trigger = triggerIssues(treeTrigger(tree), sources);
+  if (Object.keys(trigger).length) all[tree.trigger] = trigger;
   const walk = (list: Node[]) => {
     for (const node of list) {
       const fields = sources ? contextFields(sources, node.type === "wait_for_event" ? String(node.config.event_name ?? "") : tree.event) : [];
@@ -437,7 +566,7 @@ export function treeIssues(tree: Tree, sources?: RuleSources): Record<string, Re
 
 /** The config fields each card shows an error under. Anything else goes on the card as a whole. */
 const cardFields: Record<string, string[]> = {
-  trigger: ["event_name"],
+  trigger: ["type", "event_name", "field", "from", "to", "topic_id", "segment_id"],
   send_email: ["template", "from", "to", "variables", "variable_mapping"],
   delay: ["duration"],
   wait_for_event: ["event_name", "timeout", "filter_rule"],

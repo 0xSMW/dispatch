@@ -10,7 +10,7 @@ from email.message import Message
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
 
-from dispatch import ContactPropertyInput, Dispatch, DispatchError, ImportColumnMap, SendEmailConfig
+from dispatch import Automation, AutomationInput, AutomationTriggerConfig, AutomationUpdateInput, ContactPropertyInput, Dispatch, DispatchError, ImportColumnMap, SendEmailConfig
 
 
 class Recorder(BaseHTTPRequestHandler):
@@ -186,6 +186,55 @@ class TestDispatch(unittest.TestCase):
         column_map: ImportColumnMap = {"properties": {"when": {"column": "when", "type": "date"}}}
         self.client.import_contacts("email,when\na@example.com,2026-10-03\n", column_map=column_map)
         self.assertIn(json.dumps(column_map).encode(), Recorder.calls[-1]["body"])
+
+    def test_automation_trigger_contracts(self):
+        configs: list[AutomationTriggerConfig] = [
+            {"type": "event", "event_name": "user.created"},
+            {"type": "contact_created"},
+            {"type": "contact_updated"},
+            {"type": "contact_updated", "field": "unsubscribed", "from": False, "to": True},
+            {"type": "contact_updated", "field": "properties.score", "from": 0, "to": 42.5},
+            {"type": "contact_updated", "field": "properties.last_active_at", "from": None, "to": "2026-10-03T09:30:00+02:00"},
+            {"type": "contact_updated", "field": "first_name", "from": "Ada", "to": None},
+            {"type": "topic_subscribed", "topic_id": "topic_1"},
+            {"type": "segment_added", "segment_id": "segment_1"},
+        ]
+        for config in configs:
+            with self.subTest(config=config):
+                automation: Automation = {
+                    "id": "a1", "trigger": config.get("event_name"),
+                    "trigger_config": config, "reentry": "every_time",
+                }
+                for route in [
+                    ("POST", "/automations"), ("PATCH", "/automations/a1"),
+                    ("GET", "/automations/a1"), ("POST", "/automations/a1/duplicate"),
+                ]:
+                    Recorder.responses[route] = (200, automation)
+                Recorder.responses[("GET", "/automations")] = (200, {"object": "list", "has_more": False, "data": [automation]})
+                steps = [{"key": "start", "type": "trigger", "config": config}]
+                create: AutomationInput = {"name": "Contacts", "steps": steps, "reentry": "every_time"}
+                result = self.client.create_automation(create)
+                self.assertEqual(Recorder.calls[-1]["body"], create)
+                self.assertEqual(result["trigger"], automation["trigger"])
+                self.assertEqual(result["trigger_config"], config)
+                self.assertEqual(result["reentry"], "every_time")
+                # bool and int compare equal in Python, so also check JSON primitive types.
+                for key in ("from", "to"):
+                    if key in config:
+                        self.assertIs(type(result["trigger_config"][key]), type(config[key]))
+                        self.assertIs(type(Recorder.calls[-1]["body"]["steps"][0]["config"][key]), type(config[key]))
+                update: AutomationUpdateInput = {"steps": steps, "reentry": "once"}
+                self.client.update_automation("a1", update)
+                self.assertEqual(Recorder.calls[-1]["body"], update)
+                self.assertEqual(self.client.automation("a1")["trigger_config"], config)
+                self.assertEqual(self.client.duplicate_automation("a1")["trigger_config"], config)
+                self.assertEqual(self.client.automations()["data"][0]["trigger_config"], config)
+        legacy: AutomationInput = {
+            "name": "Legacy", "trigger": "user.created",
+            "steps": [{"key": "start", "type": "trigger", "config": {"event_name": "user.created"}}],
+        }
+        self.client.create_automation(legacy)
+        self.assertEqual(Recorder.calls[-1]["body"], legacy)
 
     def test_marketing_split_response(self):
         result = {"id": "email_1", "emails": [

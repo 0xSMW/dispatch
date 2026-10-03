@@ -1,8 +1,9 @@
-import { ApiError, automationGraphSchema, automationSchema, automationUpdateSchema, id } from "@dispatchmail/core";
+import { ApiError, automationGraphSchema, automationSchema, automationUpdateSchema, id, type TriggerConfig } from "@dispatchmail/core";
 import {
   activeStates,
   automationColumns,
   automationGraph,
+  assertTriggerConfig,
   findAutomation,
   emitRunEvent,
   paginate,
@@ -78,7 +79,9 @@ export function presentAutomation(row: AutomationRow) {
     id: row.id,
     name: row.name,
     status: row.enabled ? "enabled" : "disabled",
-    trigger: row.trigger,
+    trigger: row.trigger_type && row.trigger_type !== "event" ? null : row.trigger,
+    trigger_config: graph.steps.find((step) => step.type === "trigger")!.config as TriggerConfig,
+    reentry: row.reentry ?? "every_time",
     steps: graph.steps,
     connections: graph.connections,
     created_at: row.created_at,
@@ -91,7 +94,9 @@ export function presentAutomationRow(row: AutomationRow & { run_count?: number }
     id: row.id,
     name: row.name,
     status: row.enabled ? "enabled" : "disabled",
-    trigger: row.trigger,
+    trigger: row.trigger_type && row.trigger_type !== "event" ? null : row.trigger,
+    trigger_config: automationGraph(row).steps.find((step) => step.type === "trigger")!.config as TriggerConfig,
+    reentry: row.reentry ?? "every_time",
     run_count: row.run_count ?? 0,
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -167,14 +172,14 @@ export function mergeGraph(current: AutomationRow, input: GraphInput) {
   if (input.steps) {
     const keyed = input.steps.every((step) => "key" in step);
     return automationGraphSchema.parse({
-      trigger: input.trigger ?? current.trigger,
+      trigger: input.trigger ?? (keyed ? undefined : current.trigger_type && current.trigger_type !== "event" ? undefined : current.trigger),
       steps: input.steps,
       connections: input.connections ?? (keyed ? automationGraph(current).connections : undefined),
     });
   }
   const graph = automationGraph(current);
   const steps = graph.steps.map((step) =>
-    step.type === "trigger" && input.trigger ? { ...step, config: { ...step.config, event_name: input.trigger } } : step,
+    step.type === "trigger" && input.trigger ? { ...step, config: { type: "event", event_name: input.trigger } } : step,
   );
   return automationGraphSchema.parse({ steps, connections: input.connections ?? graph.connections });
 }
@@ -190,24 +195,30 @@ export function registerAutomations(
 
   async function insert(
     tenantId: string,
-    input: { name: string; enabled: boolean; trigger: string; steps: unknown[]; connections: unknown[] },
+    input: { name: string; enabled: boolean; trigger: string; trigger_type: TriggerConfig["type"]; reentry: "once" | "every_time"; steps: unknown[]; connections: unknown[] },
   ) {
-    const row = await db.query<AutomationRow>(
-      `insert into automations (id, tenant_id, name, trigger, steps, connections, enabled)
-       values ($1, $2, $3, $4, $5, $6, $7)
+    return tx(db, async (client) => {
+      const config = (input.steps as Array<{ type: string; config: TriggerConfig }>).find((step) => step.type === "trigger")!.config;
+      await assertTriggerConfig(client, tenantId, config);
+      const row = await client.query<AutomationRow>(
+        `insert into automations (id, tenant_id, name, trigger, steps, connections, enabled, trigger_type, reentry)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        on conflict (tenant_id, name) where deleted_at is null do nothing
        returning ${automationColumns}`,
-      [
-        id("automation"),
-        tenantId,
-        input.name,
-        input.trigger,
-        JSON.stringify(input.steps),
-        JSON.stringify(input.connections),
-        input.enabled,
-      ],
-    );
-    return row.rows[0] ?? null;
+        [
+          id("automation"),
+          tenantId,
+          input.name,
+          input.trigger,
+          JSON.stringify(input.steps),
+          JSON.stringify(input.connections),
+          input.enabled,
+          input.trigger_type,
+          input.reentry,
+        ],
+      );
+      return row.rows[0] ?? null;
+    });
   }
 
   app.post("/automations", async (request) => {
@@ -254,11 +265,15 @@ export function registerAutomations(
       if (!current) throw new ApiError("not_found", 404, "Automation not found");
       const graph = mergeGraph(current, input);
       const enabled = input.enabled ?? current.enabled;
+      if (graph || enabled) {
+        const config = (graph ?? automationGraph(current)).steps.find((step) => step.type === "trigger")!.config as TriggerConfig;
+        await assertTriggerConfig(client, tenantId, config);
+      }
       if (graph && current.enabled && enabled) {
         throw new ApiError("conflict", 409, "Disable the automation before changing its steps");
       }
       const updated = await client.query<AutomationRow>(
-        `update automations set name = $3, trigger = $4, steps = $5, connections = $6, enabled = $7, updated_at = now()
+        `update automations set name = $3, trigger = $4, steps = $5, connections = $6, enabled = $7, trigger_type = $8, reentry = $9, updated_at = now()
          where tenant_id = $1 and id = $2
          returning ${automationColumns}`,
         [
@@ -269,6 +284,8 @@ export function registerAutomations(
           JSON.stringify(graph?.steps ?? current.steps),
           JSON.stringify(graph?.connections ?? current.connections ?? []),
           enabled,
+          graph?.trigger_type ?? current.trigger_type ?? "event",
+          input.reentry ?? current.reentry ?? "every_time",
         ],
       );
       // Disabling stops the runs in flight, as POST /stop does. A run left waiting would resume
@@ -298,7 +315,7 @@ export function registerAutomations(
     }
     const name = given ?? `${source.name} (copy)`.slice(0, 120);
     const graph = automationGraph(source);
-    const copy = { name, enabled: false, trigger: source.trigger, ...graph };
+    const copy = { name, enabled: false, trigger: source.trigger, trigger_type: source.trigger_type ?? "event", reentry: source.reentry ?? "every_time", ...graph };
     const row =
       (await insert(tenantId, copy)) ?? (await insert(tenantId, { ...copy, name: `${name} ${id("copy").slice(-6)}` }));
     if (!row) throw new ApiError("conflict", 409, `An automation named ${name} already exists`);

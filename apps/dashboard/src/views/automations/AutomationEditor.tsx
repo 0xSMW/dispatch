@@ -29,11 +29,15 @@ import {
   placeIssues,
   removeStep,
   setWaitBranches,
-  stepError,
+  setTrigger,
   stepLabels,
   toGraph,
   toTree,
   treeIssues,
+  treeTrigger,
+  triggerLabels,
+  triggerSummary,
+  triggerWarning,
   updateNode,
   type Graph,
   type ListPath,
@@ -43,7 +47,8 @@ import {
 import { LeaveGuard } from "../templates/editor";
 import { RunMetrics } from "./RunMetrics";
 import { Runs } from "./Runs";
-import { EventInput, StepList, type StepActions, type StepOptions } from "./Steps";
+import { StepList, type StepActions, type StepOptions } from "./Steps";
+import { TriggerForm, triggerLoading, triggerSources } from "./Trigger";
 import { Canvas, ViewSwitch } from "./Canvas";
 import { StopAutomation, isEnabled } from "./Stop";
 import { countsByStep, useEmailMetrics } from "./EmailMetrics";
@@ -125,13 +130,19 @@ export function AutomationEditor() {
       topics: topics.rows.map((item) => ({ value: item.id, label: item.name })),
       eventDefinitions: events.rows,
       contactProperties: properties.rows,
+      topicsReady: !topics.loading && !topics.error,
+      segmentsReady: !segments.loading && !segments.error,
+      propertiesReady: !properties.loading && !properties.error,
+      topicsError: topics.error,
+      segmentsError: segments.error,
+      propertiesError: properties.error,
       eventName: draft?.tree.event ?? stored?.tree.event,
       templateNames: Object.fromEntries(templates.rows.flatMap((item) => [
         [item.id, item.name], ...(item.alias ? [[item.alias, item.name]] : []),
       ])),
       emailCounts: emailMetrics.data && !emailMetrics.error ? countsByStep(emailMetrics.data) : undefined,
     }),
-    [templates.rows, segments.rows, events.rows, topics.rows, properties.rows, draft?.tree.event, stored?.tree.event, emailMetrics.data, emailMetrics.error],
+    [templates.rows, segments.rows, segments.loading, segments.error, events.rows, topics.rows, topics.loading, topics.error, properties.rows, properties.loading, properties.error, draft?.tree.event, stored?.tree.event, emailMetrics.data, emailMetrics.error],
   );
 
   const enabled = row ? isEnabled(row) : false;
@@ -140,8 +151,11 @@ export function AutomationEditor() {
   const locked = !can || enabled || Boolean(problem);
   const dirty = Boolean(draft) && snapshot(draft!) !== saved;
   const issues = useMemo(() => (draft ? treeIssues(draft.tree, {
-    events: events.rows, properties: properties.rows, topics: options.topics, segments: options.segments,
-  }) : {}), [draft, events.rows, properties.rows, options.topics, options.segments]);
+    events: events.rows, ...triggerSources(options),
+  }) : {}), [draft, events.rows, options]);
+  const trigger = draft ? treeTrigger(draft.tree) : null;
+  const resourceWarning = trigger ? triggerWarning(trigger, triggerSources(options)) : null;
+  const triggerPending = trigger ? triggerLoading(trigger, options) : false;
   const nameIssue = draft && !draft.name.trim() ? "Enter a name." : null;
   const valid = !nameIssue && Object.keys(issues).length === 0;
 
@@ -181,7 +195,7 @@ export function AutomationEditor() {
   });
 
   function submit(start: boolean) {
-    if (!draft || save.isLoading) return;
+    if (!can || !draft || save.isLoading || triggerPending || (start && resourceWarning)) return;
     sentDraft.current = null;
     if (problem) {
       if (start) void save.mutate({ status: "enabled" });
@@ -238,7 +252,7 @@ export function AutomationEditor() {
                   Stop
                 </button>
               ) : (
-                <button type="button" disabled={save.isLoading || !draft} aria-busy={save.isLoading} onClick={() => submit(true)}>
+                <button type="button" disabled={save.isLoading || !draft || triggerPending || Boolean(resourceWarning)} aria-busy={save.isLoading} onClick={() => submit(true)}>
                   Start
                 </button>
               )}
@@ -294,6 +308,9 @@ export function AutomationEditor() {
               {apiError}
             </div>
           ) : null}
+          {view === "canvas" && resourceWarning ? (
+            <div className="notice warning" role="status">{resourceWarning}. Change the trigger before starting this automation.</div>
+          ) : null}
 
           <div className="form builderName">
             <Field
@@ -316,18 +333,17 @@ export function AutomationEditor() {
                 <Zap size={14} />
               </Tile>
               <div className="stepTitle">
-                <strong>{stepLabels.trigger}</strong>
+                <strong>{triggerLabels[treeTrigger(draft.tree).type]}</strong>
+                <span className="dim">{triggerSummary(treeTrigger(draft.tree), triggerSources(options))}</span>
                 <span className="mono dim">{draft.tree.trigger}</span>
               </div>
             </header>
             <div className="form">
-              <EventInput
-                label="Event"
-                value={draft.tree.event}
-                onChange={(event) => edit((tree) => ({ ...tree, event }))}
-                events={options.events}
-                error={errors[draft.tree.trigger]?.event_name ?? errors[draft.tree.trigger]?.[stepError]}
-                hint="Runs each time your app sends this event with POST /events/send."
+              <TriggerForm
+                config={treeTrigger(draft.tree)}
+                onChange={(config) => edit((tree) => setTrigger(tree, config))}
+                options={options}
+                errors={errors[draft.tree.trigger]}
                 disabled={locked}
               />
             </div>
@@ -343,7 +359,7 @@ export function AutomationEditor() {
               disabled={locked}
               errors={errors}
               options={options}
-              onEvent={(event) => edit((tree) => ({ ...tree, event }))}
+              onTrigger={(config) => edit((tree) => setTrigger(tree, config))}
             />
           ) : (
             <StepList

@@ -9,6 +9,7 @@ export const update = new Command("update")
   .argument("[id]", "Automation ID")
   .addOption(new Option("--status <status>", "enabled or disabled").choices(["enabled", "disabled"] as const))
   .option("--name <name>", "New name")
+  .option("--trigger <event>", "New event trigger name (use --steps for contact triggers)")
   .option("--steps <json>", "Steps as a JSON array")
   .option("--connections <json>", "Connections as a JSON array")
   .addHelpText(
@@ -16,7 +17,10 @@ export const update = new Command("update")
     helpText({
       output: '{"object":"automation","id":"..."}',
       codes: ["missing_id", "invalid_json", "update_error"],
-      examples: ["dispatch automations update auto_123 --status disabled"],
+      examples: [
+        "dispatch automations update auto_123 --status disabled",
+        "dispatch automations update auto_123 --trigger user.activated",
+      ],
     }),
   )
   .action(async (id, options, command) => {
@@ -28,6 +32,7 @@ export const update = new Command("update")
           compact({
             status: options.status,
             name: options.name,
+            trigger: options.trigger,
             steps: jsonFlag<unknown[]>(options.steps, "--steps"),
             connections: jsonFlag<unknown[]>(options.connections, "--connections"),
           }),

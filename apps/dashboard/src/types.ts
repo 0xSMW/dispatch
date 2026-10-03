@@ -422,7 +422,9 @@ export type Automation = {
   object?: "automation";
   id: string;
   name: string;
-  trigger?: string;
+  trigger?: string | null;
+  trigger_config?: import("./views/automations/graph").TriggerConfig;
+  reentry?: "once" | "every_time";
   status?: "enabled" | "disabled";
   enabled?: boolean;
   steps: AutomationStep[];

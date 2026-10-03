@@ -65,9 +65,75 @@ describe("Automations", () => {
     expect(String(post[0])).toBe("http://localhost:3100/automations");
     expect(JSON.parse(String(post[1]!.body))).toEqual({
       name: "Onboarding",
-      steps: [{ key: "trigger", type: "trigger", config: { event_name: "user.created" } }],
+      steps: [{ key: "trigger", type: "trigger", config: { type: "event", event_name: "user.created" } }],
       connections: [],
     });
+  });
+
+  it.each([
+    { type: "contact_created" },
+    { type: "contact_updated" },
+    { type: "topic_subscribed", topic_id: "topic_1" },
+    { type: "segment_added", segment_id: "seg_1" },
+  ])("creates a $type automation without an event name", async (config) => {
+    const fetch = mockFetch((raw, init) => {
+      if (init.method === "POST") return { body: { id: "automation_3" } };
+      const path = new URL(raw).pathname;
+      const data = path === "/automations" ? rows : path === "/topics" ? [{ id: "topic_1", name: "News" }]
+        : path === "/segments" ? [{ id: "seg_1", name: "Trials" }] : [];
+      return { body: { object: "list", has_more: false, data } };
+    });
+    open();
+    fireEvent.click(await screen.findByRole("button", { name: "Create automation" }));
+    const dialog = within(screen.getByRole("dialog"));
+    fireEvent.change(dialog.getByLabelText("Name"), { target: { value: "Lifecycle" } });
+    fireEvent.change(dialog.getByLabelText("Trigger"), { target: { value: config.type } });
+    if ("topic_id" in config) {
+      await dialog.findByRole("option", { name: "News" });
+      fireEvent.change(dialog.getByLabelText("Topic"), { target: { value: config.topic_id } });
+    }
+    if ("segment_id" in config) {
+      await dialog.findByRole("option", { name: "Trials" });
+      fireEvent.change(dialog.getByLabelText("Segment"), { target: { value: config.segment_id } });
+    }
+    expect(dialog.queryByLabelText("Trigger event")).toBeNull();
+    fireEvent.click(dialog.getByRole("button", { name: /^Create/ }));
+    await waitFor(() => expect(screen.getByTestId("location").textContent).toBe("/automations/automation_3/editor"));
+    const post = fetch.mock.calls.find(([, init]) => init?.method === "POST")!;
+    expect(JSON.parse(String(post[1]!.body))).toEqual({
+      name: "Lifecycle", steps: [{ key: "trigger", type: "trigger", config }], connections: [],
+    });
+  });
+
+  it("shows resource names and blocks starting a trigger with a deleted topic", async () => {
+    const fetch = mockFetch((raw) => {
+      const path = new URL(raw).pathname;
+      return { body: { object: "list", has_more: false, data: path === "/automations" ? [
+        { ...rows[1], trigger: null, trigger_config: { type: "topic_subscribed", topic_id: "missing" } },
+        { ...rows[0], trigger: null, trigger_config: { type: "segment_added", segment_id: "seg_1" } },
+      ] : path === "/segments" ? [{ id: "seg_1", name: "Trials" }] : [] } };
+    });
+    open();
+    expect(await screen.findByText("Added to segment: Trials")).toBeTruthy();
+    expect(await screen.findByText(/Its topic was deleted/)).toBeTruthy();
+    const row = screen.getByText("Win back").closest("tr")!;
+    fireEvent.click(within(row).getByRole("button", { name: "Actions" }));
+    const start = await screen.findByRole("menuitem", { name: "Start" });
+    expect(start).toHaveProperty("disabled", true);
+    fireEvent.click(start);
+    expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
+  });
+
+  it("hides writes from viewers while still showing contact triggers", async () => {
+    signIn("sess_viewer", ["read"]);
+    mockFetch((raw) => ({ body: { object: "list", has_more: false, data: new URL(raw).pathname === "/automations"
+      ? [{ ...rows[1], trigger: null, trigger_config: { type: "contact_created" } }] : [] } }));
+    open();
+    expect(await screen.findByText("Contact added: Any new contact")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Create automation" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.queryByRole("menuitem", { name: "Start" })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: "Delete" })).toBeNull();
   });
 
   it("starts a disabled automation from the row menu", async () => {

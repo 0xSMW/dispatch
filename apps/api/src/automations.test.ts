@@ -54,9 +54,20 @@ function harness(handler: (sql: string, params: unknown[]) => { rows: unknown[] 
 }
 
 describe("automation presenters", () => {
+  it("saves keyed contact graphs without treating their stored internal key as public event input", () => {
+    const current: AutomationRow = { ...legacy, trigger: "@contact.updated", trigger_type: "contact_updated",
+      steps: [{ key: "start", type: "trigger", config: { type: "contact_updated", field: "active", from: false, to: true } }] };
+    expect(mergeGraph(current, { steps: current.steps, connections: [] })).toMatchObject({
+      trigger: "@contact.updated", trigger_type: "contact_updated", trigger_config: { type: "contact_updated", field: "active", from: false, to: true }
+    });
+    expect(mergeGraph(current, { trigger: "profile.updated" })).toMatchObject({ trigger_type: "event", trigger: "profile.updated" });
+  });
   it("presents a stored linear automation as a graph with a status", () => {
     const presented = presentAutomation(legacy);
-    expect(presented).toMatchObject({ object: "automation", status: "enabled", trigger: "user.created" });
+    expect(presented).toMatchObject({
+      object: "automation", status: "enabled", trigger: "user.created",
+      trigger_config: { type: "event", event_name: "user.created" }, reentry: "every_time",
+    });
     expect(presented.steps.map((step) => step.key)).toEqual(["trigger", "step_1", "step_2"]);
     expect(presented.steps[1]).toEqual({ key: "step_1", type: "delay", config: { duration: "60 seconds" } });
     expect(presented.connections).toHaveLength(2);
@@ -65,6 +76,8 @@ describe("automation presenters", () => {
       name: "Welcome",
       status: "disabled",
       trigger: "user.created",
+      trigger_config: { type: "event", event_name: "user.created" },
+      reentry: "every_time",
       run_count: 4,
       created_at: legacy.created_at,
       updated_at: legacy.updated_at,
@@ -122,7 +135,18 @@ describe("automation presenters", () => {
     expect(mergeGraph(legacy, {})).toBeNull();
     const graph = mergeGraph(legacy, { trigger: "user.invited" });
     expect(graph?.trigger).toBe("user.invited");
-    expect(graph?.steps[0]?.config).toEqual({ event_name: "user.invited" });
+    expect(graph?.steps[0]?.config).toEqual({ type: "event", event_name: "user.invited" });
+  });
+
+  it("presents a contact trigger without exposing its internal key as an event", () => {
+    const row: AutomationRow = {
+      ...legacy, trigger: "@contact.updated", trigger_type: "contact_updated", reentry: "once",
+      steps: [{ key: "start", type: "trigger", config: { type: "contact_updated", field: "first_name", to: "Ada" } }],
+      connections: [],
+    };
+    const contract = { trigger: null, trigger_config: { type: "contact_updated", field: "first_name", to: "Ada" }, reentry: "once" };
+    expect(presentAutomation(row)).toMatchObject(contract);
+    expect(presentAutomationRow(row)).toMatchObject(contract);
   });
 });
 
@@ -132,7 +156,10 @@ describe("automation routes", () => {
   it("creates a disabled automation by default from a flat body", async () => {
     const { app, query } = harness((sql, params) =>
       sql.includes("insert into automations")
-        ? { rows: [stored({ enabled: params[6] as boolean, steps: JSON.parse(params[4] as string), connections: JSON.parse(params[5] as string) })] }
+        ? { rows: [stored({
+          enabled: params[6] as boolean, steps: JSON.parse(params[4] as string), connections: JSON.parse(params[5] as string),
+          trigger_type: params[7] as AutomationRow["trigger_type"], reentry: params[8] as AutomationRow["reentry"],
+        })] }
         : { rows: [] },
     );
     const response = await app.inject({
@@ -148,8 +175,14 @@ describe("automation routes", () => {
       },
     });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ object: "automation", status: "disabled", connections: [{ from: "start", to: "hi", type: "default" }] });
-    expect(query.mock.calls[0]![1]![3]).toBe("user.created");
+    expect(response.json()).toMatchObject({
+      object: "automation", status: "disabled", trigger_config: { type: "event", event_name: "user.created" },
+      reentry: "every_time", connections: [{ from: "start", to: "hi", type: "default" }],
+    });
+    const insert = query.mock.calls.find(([sql]) => sql.includes("insert into automations"))!;
+    expect(insert[1]![3]).toBe("user.created");
+    expect(insert[1]!.slice(7)).toEqual(["event", "every_time"]);
+    expect(query.mock.calls.map(([sql]) => sql)).toContain("commit");
   });
 
   it("rejects a graph with a dangling connection", async () => {
@@ -160,6 +193,56 @@ describe("automation routes", () => {
       payload: { name: "Bad", steps: [{ key: "start", type: "trigger", config: { event_name: "e" } }], connections: [{ from: "start", to: "gone" }] },
     });
     expect(response.statusCode).toBe(400);
+  });
+
+  it("creates, patches, and duplicates a typed trigger without losing its reentry policy", async () => {
+    let current: AutomationRow = stored({ enabled: false });
+    const { app, query } = harness((sql, params) => {
+      if (sql.includes("from contact_properties")) return { rows: [{ key: "activated", type: "boolean" }] };
+      if (sql.includes("from automations")) return { rows: [current] };
+      if (sql.includes("insert into automations") || sql.startsWith("update automations")) {
+        const insert = sql.includes("insert into automations");
+        current = stored({
+          id: insert ? String(params[0]) : String(params[1]), name: String(params[2]), trigger: String(params[3]),
+          steps: JSON.parse(params[4] as string), connections: JSON.parse(params[5] as string), enabled: params[6] as boolean,
+          trigger_type: params[7] as AutomationRow["trigger_type"], reentry: params[8] as AutomationRow["reentry"],
+        });
+        return { rows: [current] };
+      }
+      return { rows: [] };
+    });
+    const config = { type: "contact_updated", field: "activated", from: false, to: true };
+    const created = await app.inject({
+      method: "POST", url: "/automations",
+      payload: { name: "Activated", reentry: "once", steps: [{ key: "start", type: "trigger", config }] },
+    });
+    expect(created.statusCode).toBe(200);
+    expect(created.json()).toMatchObject({ trigger: null, trigger_config: config, reentry: "once", status: "disabled" });
+    const insert = query.mock.calls.find(([sql]) => sql.includes("insert into automations"))!;
+    expect(insert[1]![3]).toBe("@contact.updated");
+    expect(insert[1]!.slice(7)).toEqual(["contact_updated", "once"]);
+    const automationId = created.json().id;
+    const patched = await app.inject({ method: "PATCH", url: `/automations/${automationId}`, payload: { name: "Renamed" } });
+    expect(patched.statusCode).toBe(200);
+    expect(patched.json()).toMatchObject({ name: "Renamed", trigger: null, trigger_config: config, reentry: "once" });
+    const copy = await app.inject({ method: "POST", url: `/automations/${automationId}/duplicate` });
+    expect(copy.statusCode).toBe(200);
+    expect(copy.json()).toMatchObject({ name: "Renamed (copy)", trigger: null, trigger_config: config, reentry: "once", status: "disabled" });
+    expect(query.mock.calls.filter(([sql]) => sql.includes("insert into automations")).at(-1)![1]!.slice(7)).toEqual(["contact_updated", "once"]);
+  });
+
+  it.each([
+    [{ type: "contact_updated", field: "activated", to: "true" }, "to for activated must be a boolean"],
+    [{ type: "contact_updated", field: "missing" }, "Contact field missing must be built-in or declared"],
+    [{ type: "topic_subscribed", topic_id: "topic_missing" }, "Its topic was deleted or does not exist"],
+    [{ type: "segment_added", segment_id: "segment_missing" }, "Its segment was deleted or does not exist"],
+  ])("validates a typed trigger against tenant resources before inserting", async (config, message) => {
+    const { app, query } = harness((sql) => ({ rows: sql.includes("from contact_properties") ? [{ key: "activated", type: "boolean" }] : [] }));
+    const response = await app.inject({ method: "POST", url: "/automations", payload: { name: "Invalid", steps: [{ key: "start", type: "trigger", config }] } });
+    expect(response.statusCode).toBe(422);
+    expect(response.json()).toMatchObject({ name: "validation_error", message });
+    expect(query.mock.calls.some(([sql]) => sql.includes("insert into automations"))).toBe(false);
+    expect(query.mock.calls.at(-1)![0]).toBe("rollback");
   });
 
   it("refuses to change steps while enabled, and allows it while disabling", async () => {

@@ -176,12 +176,12 @@ export async function propertyDefinitions(db: Queryable, tenantId: string) {
   return rows.rows;
 }
 
-export async function findContact(db: Queryable, tenantId: string, ref: string) {
+export async function findContact(db: Queryable, tenantId: string, ref: string, lock = false) {
   const byEmail = ref.includes("@");
   const row = await db.query<ContactRow>(
     `select ${contactColumns} from contacts
      where tenant_id = $1 and ${byEmail ? "lower(email)" : "id"} = $2 and deleted_at is null
-     order by created_at limit 1`,
+     order by created_at limit 1${lock ? " for update" : ""}`,
     [tenantId, byEmail ? ref.toLowerCase() : ref],
   );
   if (!row.rows[0]) throw new ApiError("not_found", 404, "Contact not found");
@@ -198,6 +198,7 @@ export async function deleteContact(db: Queryable, tenantId: string, contactId: 
   if (!removed.rows[0]) return false;
   await db.query("delete from segment_contacts where tenant_id = $1 and contact_id = $2", [tenantId, contactId]);
   await db.query("delete from topic_subscriptions where tenant_id = $1 and contact_id = $2 and status = 'subscribed'", [tenantId, contactId]);
+  await db.query("delete from automation_enrollments where tenant_id = $1 and contact_id = $2", [tenantId, contactId]);
   return true;
 }
 
@@ -302,18 +303,24 @@ export async function updateProperty(db: Queryable, tenantId: string, propertyId
 
 export async function addContactSegment(db: Queryable, tenantId: string, contactId: string, segmentId: string) {
   const segment = await db.query(
-    "select id from segments where tenant_id = $1 and id = $2 and deleted_at is null",
+    "select id, case when to_jsonb(segments)->>'rule' is not null then 'dynamic' else coalesce(to_jsonb(segments)->>'type', 'static') end as type from segments where tenant_id = $1 and id = $2 and deleted_at is null",
     [tenantId, segmentId],
   );
   if (!segment.rows[0]) throw new ApiError("not_found", 404, "Segment not found");
+  if (segment.rows[0].type && segment.rows[0].type !== "static") throw new ApiError("validation_error", 422, "Membership writes require a static segment");
   const row = await db.query(
     `insert into segment_contacts (id, tenant_id, segment_id, contact_id)
      values ($1, $2, $3, $4)
-     on conflict (tenant_id, segment_id, contact_id) do update set segment_id = excluded.segment_id
+     on conflict (tenant_id, segment_id, contact_id) do nothing
      returning id, segment_id, contact_id, created_at`,
     [id("member"), tenantId, segmentId, contactId],
   );
-  return row.rows[0];
+  if (row.rows[0]) return { ...row.rows[0], added: true };
+  const existing = await db.query(
+    "select id, segment_id, contact_id, created_at from segment_contacts where tenant_id = $1 and segment_id = $2 and contact_id = $3",
+    [tenantId, segmentId, contactId]
+  );
+  return { ...existing.rows[0], added: false };
 }
 
 export async function removeContactSegment(db: Queryable, tenantId: string, contactId: string, segmentId: string) {
@@ -333,11 +340,14 @@ export async function setContactTopics(
   contactId: string,
   topics: Array<{ id: string; subscription: string }>,
 ) {
-  const saved: Array<{ topic_id: string; status: string }> = [];
-  for (const topic of topics) {
-    const found = await db.query(
-      "select id from topics where tenant_id = $1 and id = $2 and deleted_at is null",
-      [tenantId, topic.id],
+  const saved: Array<{ topic_id: string; before: string; after: string; status: string; row: Record<string, unknown> }> = [];
+  // A request's final preference is its only transition, even with repeated topic IDs.
+  for (const topic of new Map(topics.map((topic) => [topic.id, topic])).values()) {
+    const found = await db.query<{ id: string; before: string }>(
+      `select t.id, coalesce(s.status, t.default_status) as before from topics t
+       left join topic_subscriptions s on s.tenant_id = t.tenant_id and s.topic_id = t.id and s.contact_id = $3
+       where t.tenant_id = $1 and t.id = $2 and t.deleted_at is null`,
+      [tenantId, topic.id, contactId],
     );
     if (!found.rows[0]) throw new ApiError("not_found", 404, "Topic not found");
     const status = subscriptionStored(topic.subscription);
@@ -346,10 +356,10 @@ export async function setContactTopics(
        values ($1, $2, $3, $4, $5)
        on conflict (tenant_id, topic_id, contact_id)
        do update set status = excluded.status, updated_at = now()
-       returning topic_id, status`,
+       returning id, topic_id, contact_id, status, created_at, updated_at`,
       [id("sub"), tenantId, topic.id, contactId, status],
     );
-    saved.push(row.rows[0]);
+    saved.push({ topic_id: topic.id, status, before: found.rows[0]!.before, after: status, row: row.rows[0] });
   }
   return saved;
 }

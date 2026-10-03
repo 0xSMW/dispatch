@@ -19891,6 +19891,105 @@
           }
         }
       },
+      "TriggerConfig": {
+        "description": "Contact triggers use their internal namespace and never wake event waits. Legacy {event_name} inputs normalize to type:event. New event and wait names cannot start with @; old stored event names remain unchanged in responses.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "event_name"
+            ],
+            "properties": {
+              "type": {
+                "const": "event"
+              },
+              "event_name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120,
+                "description": "New input names cannot start with @. Legacy stored event names are preserved in responses."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "const": "contact_created"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "const": "contact_updated"
+              },
+              "field": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_]+$",
+                "description": "Built-in or declared contact field, without contact. A field is required when from or to is supplied."
+              },
+              "from": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean",
+                  "null"
+                ]
+              },
+              "to": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean",
+                  "null"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "topic_id"
+            ],
+            "properties": {
+              "type": {
+                "const": "topic_subscribed"
+              },
+              "topic_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "segment_id"
+            ],
+            "properties": {
+              "type": {
+                "const": "segment_added"
+              },
+              "segment_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Static segment only."
+              }
+            }
+          }
+        ]
+      },
       "AutomationStep": {
         "type": "object",
         "required": [
@@ -19922,6 +20021,46 @@
           }
         },
         "allOf": [
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "trigger"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "required": [
+                "config"
+              ],
+              "properties": {
+                "config": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/TriggerConfig"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "event_name"
+                      ],
+                      "properties": {
+                        "event_name": {
+                          "type": "string",
+                          "pattern": "^[^@]",
+                          "minLength": 1,
+                          "maxLength": 120
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
           {
             "if": {
               "properties": {
@@ -20022,7 +20161,16 @@
           },
           "trigger": {
             "type": "string",
-            "description": "Event name. Used by the linear form."
+            "pattern": "^[^@]",
+            "description": "Event name. Used by the linear form. Contact triggers use a keyed trigger step with TriggerConfig."
+          },
+          "reentry": {
+            "type": "string",
+            "enum": [
+              "once",
+              "every_time"
+            ],
+            "description": "Defaults to once for new contact triggers and every_time for event triggers."
           },
           "steps": {
             "type": "array",
@@ -20062,7 +20210,16 @@
             "type": "boolean"
           },
           "trigger": {
-            "type": "string"
+            "type": "string",
+            "pattern": "^[^@]"
+          },
+          "reentry": {
+            "type": "string",
+            "enum": [
+              "once",
+              "every_time"
+            ],
+            "description": "Changing trigger type retains the stored reentry value."
           },
           "steps": {
             "type": "array",
@@ -20091,6 +20248,8 @@
           "name",
           "status",
           "trigger",
+          "trigger_config",
+          "reentry",
           "steps",
           "connections"
         ],
@@ -20113,7 +20272,21 @@
             ]
           },
           "trigger": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Legacy event name; null for contact triggers."
+          },
+          "trigger_config": {
+            "$ref": "#/components/schemas/TriggerConfig"
+          },
+          "reentry": {
+            "type": "string",
+            "enum": [
+              "once",
+              "every_time"
+            ]
           },
           "steps": {
             "type": "array",
@@ -20144,6 +20317,8 @@
           "name",
           "status",
           "trigger",
+          "trigger_config",
+          "reentry",
           "run_count"
         ],
         "properties": {
@@ -20161,7 +20336,20 @@
             ]
           },
           "trigger": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "trigger_config": {
+            "$ref": "#/components/schemas/TriggerConfig"
+          },
+          "reentry": {
+            "type": "string",
+            "enum": [
+              "once",
+              "every_time"
+            ]
           },
           "run_count": {
             "type": "integer"
@@ -20416,7 +20604,8 @@
         "properties": {
           "name": {
             "type": "string",
-            "description": "Cannot start with `resend:` or `dispatch:`.",
+            "description": "Cannot start with `@`, `resend:` or `dispatch:`.",
+            "pattern": "^[^@]",
             "minLength": 1,
             "maxLength": 120
           },
@@ -20505,7 +20694,8 @@
         "properties": {
           "event": {
             "type": "string",
-            "description": "Event name.",
+            "description": "Event name. Names starting with @ return 422.",
+            "pattern": "^[^@]",
             "minLength": 1,
             "maxLength": 120
           },

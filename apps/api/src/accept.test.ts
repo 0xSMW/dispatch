@@ -24,7 +24,7 @@ import {
   type Provider,
   type ProviderEmail,
 } from "@dispatchmail/core";
-import { appendEvent, connect, executeAutomationRun, reconcileBroadcastSent, tx, unsubscribeToken, type Db } from "@dispatchmail/db";
+import { appendEvent, connect, executeAutomationRun, fireEvent, reconcileBroadcastSent, tx, unsubscribeToken, type Db } from "@dispatchmail/db";
 import type { Storage } from "@dispatchmail/storage";
 import { schema } from "../../../packages/db/src/schema.js";
 import { contactContext } from "../../../packages/db/src/automations.js";
@@ -123,6 +123,231 @@ afterAll(async () => {
 });
 
 describe.skipIf(!live)("accept", () => {
+  it("contact triggers normalize contracts, record exact multi-field history, and suppress no-op writes", async () => {
+    const plan = await post(fullKey, "/contact-properties", { key: "plan", type: "string" });
+    const active = await post(fullKey, "/contact-properties", { key: "active", type: "boolean" });
+    expect([plan.status, active.status]).toEqual([200, 200]);
+    const created = await contactFlow({ type: "contact_created" });
+    const updated = await contactFlow({ type: "contact_updated", field: "plan", from: "free", to: "pro" });
+    const any = await contactFlow({ type: "contact_updated" });
+    const first = await post(fullKey, "/contacts", { email: "trigger@example.com", properties: { plan: "free", active: false } });
+    expect(first.status).toBe(200);
+    expect(await flowRuns(created)).toHaveLength(1);
+    expect((await post(fullKey, "/contacts", { email: "trigger@example.com", properties: { plan: "free", active: false } })).status).toBe(200);
+    expect(await flowRuns(created)).toHaveLength(1);
+    expect(await flowRuns(any)).toHaveLength(0);
+    const patch = await call(fullKey, "PATCH", `/contacts/${first.json.id}`, {
+      first_name: "Ada", properties: { plan: "pro", active: true }
+    });
+    expect(patch.status).toBe(200);
+    expect(await flowRuns(updated)).toHaveLength(1);
+    expect(await flowRuns(any)).toHaveLength(1);
+    const events = await db.query("select data from custom_events where name = '@contact.updated'");
+    expect(events.rows).toHaveLength(1);
+    expect(events.rows[0].data.changes).toEqual(expect.arrayContaining([
+      { field: "first_name", from: null, to: "Ada" },
+      { field: "plan", from: "free", to: "pro" }, { field: "active", from: false, to: true }
+    ]));
+    expect(events.rows[0].data.changes).toHaveLength(3);
+    const history = await db.query("select field, from_value, to_value from contact_changes where contact_id = $1 and from_value is not null", [first.json.id]);
+    expect(history.rows).toEqual(expect.arrayContaining([
+      { field: "plan", from_value: "free", to_value: "pro" },
+      { field: "active", from_value: false, to_value: true }
+    ]));
+    expect((await call(fullKey, "GET", "/fired-events")).json.data).toHaveLength(0);
+    const wire = (await call(fullKey, "GET", `/automations/${created}`)).json;
+    expect(wire).toMatchObject({ trigger: null, trigger_config: { type: "contact_created" }, reentry: "every_time" });
+    await db.query(schema);
+    await db.query(schema);
+    expect((await db.query("select trigger_type, trigger from automations where id = $1", [created])).rows).toEqual([
+      { trigger_type: "contact_created", trigger: "@contact.created" }
+    ]);
+    expect((await post(fullKey, "/events/send", { event: "@contact.created", email: "trigger@example.com" })).status).toBe(422);
+    expect((await post(fullKey, "/events", { name: "@reserved" })).status).toBe(400);
+    expect((await post(fullKey, "/automations", { name: "Reserved", trigger: "@reserved", steps: [{ type: "delay", seconds: 1 }] })).status).toBe(400);
+    const other = await seedTenant();
+    expect((await call(other, "GET", `/automations/${created}`)).status).toBe(404);
+  });
+
+  it("contact triggers record history without matching flows, serialize same-value writes, and roll back failed fanout", async () => {
+    await post(fullKey, "/contact-properties", { key: "plan", type: "string" });
+    const first = await post(fullKey, "/contacts", { email: "race@example.com", properties: { plan: "free" } });
+    await call(fullKey, "PATCH", `/contacts/${first.json.id}`, { first_name: "Ada" });
+    expect((await db.query("select id from custom_events")).rows).toHaveLength(0);
+    expect((await db.query("select id from contact_changes where field = 'first_name' and to_value = '\"Ada\"'::jsonb")).rows).toHaveLength(1);
+    const flow = await contactFlow({ type: "contact_updated", field: "plan", to: "pro" });
+    const race = await Promise.all([1, 2].map(() => call(fullKey, "PATCH", `/contacts/${first.json.id}`, { properties: { plan: "pro" } })));
+    expect(race.map((row) => row.status)).toEqual([200, 200]);
+    expect(await flowRuns(flow)).toHaveLength(1);
+    expect((await db.query("select id from custom_events where name = '@contact.updated'")).rows).toHaveLength(1);
+    // Rollback covers contact state, transition history, internal event and run webhook fanout.
+    await db.query(`create or replace function reject_contact_history() returns trigger language plpgsql as $$
+      begin if new.field = 'last_name' then raise exception 'synthetic history failure'; end if; return new; end $$;
+      create trigger reject_contact_history before insert on contact_changes for each row execute function reject_contact_history()`);
+    try {
+      expect((await call(fullKey, "PATCH", `/contacts/${first.json.id}`, { last_name: "Rollback" })).status).toBe(500);
+      expect((await call(fullKey, "GET", `/contacts/${first.json.id}`)).json.last_name).toBe(null);
+    } finally {
+      await db.query("drop trigger reject_contact_history on contact_changes; drop function reject_contact_history()");
+    }
+    expect((await db.query("select id from contact_changes where field = 'last_name'")).rows).toHaveLength(0);
+    expect(await flowRuns(flow)).toHaveLength(1);
+  });
+
+  it("contact triggers retain their once default under concurrent real transitions and reset enrollments on deletion", async () => {
+    await post(fullKey, "/contact-properties", { key: "plan", type: "string" });
+    const flow = await post(fullKey, "/automations", { name: "Once", status: "enabled", steps: [
+      { key: "start", type: "trigger", config: { type: "contact_updated", field: "plan" } }
+    ] });
+    expect(flow.status).toBe(200);
+    expect(flow.json.reentry).toBe("once");
+    const first = await post(fullKey, "/contacts", { email: "once@example.com", properties: { plan: "free" } });
+    const race = await Promise.all(["pro", "business"].map((plan) => call(fullKey, "PATCH", `/contacts/${first.json.id}`, { properties: { plan } })));
+    expect(race.map((row) => row.status)).toEqual([200, 200]);
+    expect(await flowRuns(flow.json.id)).toHaveLength(1);
+    expect((await db.query("select id from contact_changes where contact_id = $1 and field = 'plan'", [first.json.id])).rows).toHaveLength(3);
+    expect((await db.query("select contact_id from automation_enrollments where automation_id = $1", [flow.json.id])).rows).toEqual([{ contact_id: first.json.id }]);
+    await call(fullKey, "DELETE", `/contacts/${first.json.id}`);
+    expect((await db.query("select contact_id from automation_enrollments where automation_id = $1", [flow.json.id])).rows).toHaveLength(0);
+    await post(fullKey, "/contacts", { email: "once@example.com" });
+    await call(fullKey, "PATCH", `/contacts/${first.json.id}`, { properties: { plan: "revived" } });
+    expect(await flowRuns(flow.json.id)).toHaveLength(2);
+  });
+
+  it("contact triggers cover topic and segment APIs, creation and revival, effective defaults, and deleted resources", async () => {
+    const topic = await post(fullKey, "/topics", { name: "Opt-in", default_subscription: "opt_out" });
+    const defaultTopic = await post(fullKey, "/topics", { name: "Default", default_subscription: "opt_in" });
+    const segment = await post(fullKey, "/segments", { name: "Static" });
+    const created = await contactFlow({ type: "contact_created" });
+    const subscribed = await contactFlow({ type: "topic_subscribed", topic_id: topic.json.id });
+    const defaults = await contactFlow({ type: "topic_subscribed", topic_id: defaultTopic.json.id });
+    const joined = await contactFlow({ type: "segment_added", segment_id: segment.json.id });
+    const contact = await post(fullKey, "/contacts", { email: "members@example.com",
+      topics: [{ id: topic.json.id, subscription: "opt_in" }, { id: defaultTopic.json.id, subscription: "opt_in" }],
+      segments: [{ id: segment.json.id }] });
+    expect(contact.status).toBe(200);
+    expect(await flowRuns(created)).toHaveLength(1);
+    expect(await flowRuns(subscribed)).toHaveLength(1);
+    expect(await flowRuns(defaults)).toHaveLength(0);
+    expect(await flowRuns(joined)).toHaveLength(1);
+    await call(fullKey, "PATCH", `/contacts/${contact.json.id}/topics`, { topics: [{ id: topic.json.id, subscription: "opt_in" }] });
+    await post(fullKey, `/contacts/${contact.json.id}/segments/${segment.json.id}`, {});
+    expect(await flowRuns(subscribed)).toHaveLength(1);
+    expect(await flowRuns(joined)).toHaveLength(1);
+    await call(fullKey, "PATCH", `/contacts/${contact.json.id}/topics`, { topics: [{ id: topic.json.id, subscription: "opt_out" }] });
+    await post(fullKey, `/topics/${topic.json.id}/subscriptions`, { email: "members@example.com", status: "opt_in" });
+    expect(await flowRuns(subscribed)).toHaveLength(2);
+    expect((await post(fullKey, `/topics/${topic.json.id}/subscriptions`, { email: "topic-new@example.com", status: "opt_in" })).status).toBe(200);
+    expect((await post(fullKey, `/segments/${segment.json.id}/contacts`, { email: "segment-new@example.com" })).status).toBe(200);
+    expect(await flowRuns(created)).toHaveLength(3);
+    expect(await flowRuns(subscribed)).toHaveLength(3);
+    expect(await flowRuns(joined)).toHaveLength(2);
+    await call(fullKey, "DELETE", `/contacts/${contact.json.id}`);
+    await post(fullKey, "/contacts", { email: "members@example.com" });
+    expect(await flowRuns(created)).toHaveLength(4);
+    await post(fullKey, `/automations/${subscribed}/stop`, {});
+    await call(fullKey, "DELETE", `/topics/${topic.json.id}`);
+    expect((await call(fullKey, "PATCH", `/automations/${subscribed}`, { status: "enabled" })).status).toBe(422);
+    await post(fullKey, `/automations/${joined}/stop`, {});
+    await call(fullKey, "DELETE", `/segments/${segment.json.id}`);
+    expect((await call(fullKey, "PATCH", `/automations/${joined}`, { status: "enabled" })).status).toBe(422);
+    expect((await db.query("select trigger_type from automations where id = $1", [joined])).rows[0].trigger_type).toBe("segment_added");
+  });
+
+  it("contact triggers cover event-created contacts, name filling, preferences, and one-click without reviving deleted contacts", async () => {
+    const created = await contactFlow({ type: "contact_created" });
+    const named = await contactFlow({ type: "contact_updated", field: "first_name", to: "Ada" });
+    const left = await contactFlow({ type: "contact_updated", field: "unsubscribed", from: false, to: true });
+    const topic = await post(fullKey, "/topics", { name: "Preferences", visibility: "public", default_subscription: "opt_out" });
+    const subscribed = await contactFlow({ type: "topic_subscribed", topic_id: topic.json.id });
+    await post(fullKey, "/events/send", { event: "profile", email: "profile@example.com" });
+    await post(fullKey, "/events/send", { event: "profile", email: "profile@example.com", payload: { first_name: "Ada" } });
+    await post(fullKey, "/events/send", { event: "profile", email: "profile@example.com", payload: { first_name: "Changed" } });
+    expect(await flowRuns(created)).toHaveLength(1);
+    expect(await flowRuns(named)).toHaveLength(1);
+    const contact = (await db.query("select id, tenant_id from contacts where email = 'profile@example.com'")).rows[0];
+    const token = unsubscribeToken({ tenant_id: contact.tenant_id, contact_id: contact.id }, process.env.APP_SECRET ?? "dev-secret-change-before-deploy");
+    expect((await app.inject({ method: "POST", url: `/unsubscribe/${token}`, payload: { topics: [{ id: topic.json.id, subscription: "opt_in" }] } })).statusCode).toBe(200);
+    expect(await flowRuns(subscribed)).toHaveLength(1);
+    for (let index = 0; index < 2; index++) expect((await app.inject({ method: "POST", url: `/unsubscribe/${token}`, headers: { "content-type": "application/x-www-form-urlencoded" }, payload: "List-Unsubscribe=One-Click" })).statusCode).toBe(200);
+    expect(await flowRuns(left)).toHaveLength(1);
+    await call(fullKey, "DELETE", `/contacts/${contact.id}`);
+    await post(fullKey, "/events/send", { event: "profile", email: "profile@example.com", payload: { first_name: "Ada" } });
+    expect((await db.query("select deleted_at from contacts where id = $1", [contact.id])).rows[0].deleted_at).not.toBe(null);
+    expect(await flowRuns(created)).toHaveLength(1);
+    const missing = unsubscribeToken({ tenant_id: contact.tenant_id, email: "unsub-created@example.com" }, process.env.APP_SECRET ?? "dev-secret-change-before-deploy");
+    expect((await app.inject({ method: "POST", url: `/unsubscribe/${missing}`, payload: { unsubscribe_all: true } })).statusCode).toBe(200);
+    expect(await flowRuns(created)).toHaveLength(1);
+  });
+
+  it("contact triggers prevent self-entry, stop cross-flow chains at recorded depth five, and never wake event waits", async () => {
+    await post(fullKey, "/contact-properties", { key: "state", type: "string" });
+    const a = await contactFlow({ type: "contact_updated", field: "state", to: "a" }, [{ key: "update", type: "contact_update", config: { properties: { state: "b" } } }]);
+    const b = await contactFlow({ type: "contact_updated", field: "state", to: "b" }, [{ key: "update", type: "contact_update", config: { properties: { state: "a" } } }]);
+    const self = await contactFlow({ type: "contact_updated", field: "first_name" }, [{ key: "name", type: "contact_update", config: { first_name: "Self" } }]);
+    const contact = await post(fullKey, "/contacts", { email: "chain@example.com", properties: { state: "none" } });
+    await call(fullKey, "PATCH", `/contacts/${contact.json.id}`, { first_name: "External" });
+    const own = await flowRuns(self);
+    expect(own).toHaveLength(1);
+    await executeAutomationRun(db, own[0].tenant_id, own[0].id);
+    expect(await flowRuns(self)).toHaveLength(1);
+    const waiting = await post(fullKey, "/automations", { name: "Wait", status: "enabled", trigger: "wait.start", steps: [{ type: "wait_for_event", event_name: "contact.updated", timeout: "1 day" }] });
+    await post(fullKey, "/events/send", { event: "wait.start", email: "chain@example.com" });
+    const wait = (await flowRuns(waiting.json.id))[0];
+    await executeAutomationRun(db, wait.tenant_id, wait.id);
+    await call(fullKey, "PATCH", `/contacts/${contact.json.id}`, { properties: { state: "a" } });
+    for (let i = 0; i < 8; i++) {
+      const ready = await db.query("select id, tenant_id from automation_runs where state = 'ready' and automation_id = any($1)", [[a, b]]);
+      for (const run of ready.rows) await executeAutomationRun(db, run.tenant_id, run.id);
+    }
+    expect([...(await flowRuns(a)), ...(await flowRuns(b))]).toHaveLength(5);
+    expect((await db.query("select data from custom_events where name = '@contact.updated' and data->>'depth' = '5'")).rows).toHaveLength(1);
+    expect((await db.query("select state from automation_runs where id = $1", [wait.id])).rows).toEqual([{ state: "waiting" }]);
+    // A legacy @-named event automation remains an event, never a contact subscriber.
+    await db.query("update automations set trigger = '@contact.updated', steps = $2::jsonb where id = $1", [waiting.json.id,
+      JSON.stringify([{ key: "trigger", type: "trigger", config: { event_name: "@contact.updated" } }])]);
+    await call(fullKey, "PATCH", `/contacts/${contact.json.id}`, { last_name: "Not an app event" });
+    expect(await flowRuns(waiting.json.id)).toHaveLength(1);
+    const legacy = await fireEvent(db, wait.tenant_id, "legacy-event-trigger", { name: "@contact.updated", email: "chain@example.com", data: {} });
+    expect(legacy.runs).toHaveLength(1);
+    expect(await flowRuns(waiting.json.id)).toHaveLength(2);
+    expect([...(await flowRuns(a)), ...(await flowRuns(b))]).toHaveLength(5);
+  });
+
+  it("contact triggers dispatch step-created contacts and static additions exactly once and preserve typed transitions", async () => {
+    await post(fullKey, "/contact-properties", { key: "active", type: "boolean" });
+    await post(fullKey, "/contact-properties", { key: "due_at", type: "date" });
+    const created = await contactFlow({ type: "contact_created" });
+    const segment = await post(fullKey, "/segments", { name: "Step members" });
+    const joined = await contactFlow({ type: "segment_added", segment_id: segment.json.id });
+    const flow = await post(fullKey, "/automations", { name: "Step creator", trigger: "create.other", status: "enabled", steps: [
+      { type: "add_to_segment", segment_id: segment.json.id, email: "step-created@example.com" },
+      { type: "add_to_segment", segment_id: segment.json.id, email: "step-created@example.com" }
+    ] });
+    await post(fullKey, "/events/send", { event: "create.other", payload: { depth: 100 } });
+    const run = (await flowRuns(flow.json.id))[0];
+    await executeAutomationRun(db, run.tenant_id, run.id);
+    expect(await flowRuns(created)).toHaveLength(1);
+    expect(await flowRuns(joined)).toHaveLength(1);
+    expect((await db.query("select data from custom_events where name = '@segment.added:' || $1", [segment.json.id])).rows[0].data).toMatchObject({ depth: 1, origin_run_id: run.id });
+    expect((await post(fullKey, "/automations", { name: "Wrong type", steps: [{ key: "start", type: "trigger", config: { type: "contact_updated", field: "active", to: "true" } }] })).status).toBe(422);
+    const active = await contactFlow({ type: "contact_updated", field: "active", from: false, to: true });
+    const contact = await post(fullKey, "/contacts", { email: "typed@example.com", properties: { active: false } });
+    await call(fullKey, "PATCH", `/contacts/${contact.json.id}`, { properties: { active: true } });
+    expect(await flowRuns(active)).toHaveLength(1);
+    const due = await contactFlow({ type: "contact_updated", field: "due_at", from: null, to: "2026-10-04T00:00:00Z" });
+    await call(fullKey, "PATCH", `/contacts/${contact.json.id}`, { properties: { due_at: "2026-10-04T00:00:00Z" } });
+    await call(fullKey, "PATCH", `/contacts/${contact.json.id}`, { properties: { due_at: "2026-10-04T00:00:00+00:00" } });
+    expect(await flowRuns(due)).toHaveLength(1);
+    // Exercise the later rule-backed dynamic schema without adding that product yet.
+    await db.query("alter table segments add column rule jsonb");
+    try {
+      await db.query("update segments set rule = $2::jsonb where id = $1", [segment.json.id, JSON.stringify({ type: "rule", field: "contact.active", operator: "eq", value: true })]);
+      expect((await call(fullKey, "PATCH", `/automations/${joined}`, { status: "enabled" })).status).toBe(422);
+      expect((await post(fullKey, `/contacts/${contact.json.id}/segments/${segment.json.id}`, {})).status).toBe(422);
+    } finally { await db.query("alter table segments drop column rule"); }
+  });
+
   it("renders reserved and configured sandbox recipients and exposes their stored flags in detail and list responses", async () => {
     expect((await call(fullKey, "PATCH", "/settings", {
       sandbox_domains: ["qa.dispatch-fixture.net"],
@@ -2804,6 +3029,20 @@ async function seedTenant() {
     );
   });
   return secret;
+}
+
+async function contactFlow(config: Record<string, unknown>, following: Array<Record<string, unknown>> = []) {
+  const steps = [{ key: "trigger", type: "trigger", config }, ...following];
+  const result = await post(fullKey, "/automations", { name: id("flow"), status: "enabled", reentry: "every_time", steps,
+    connections: steps.slice(1).map((step, index) => ({ from: steps[index].key, to: step.key, type: "default" })) });
+  expect(result.status, JSON.stringify(result.json)).toBe(200);
+  return result.json.id as string;
+}
+
+async function flowRuns(automationId: string) {
+  return (await db.query<{ id: string; tenant_id: string }>(
+    "select id, tenant_id from automation_runs where automation_id = $1 order by created_at, id", [automationId]
+  )).rows;
 }
 
 function letter(overrides: Record<string, unknown> = {}) {

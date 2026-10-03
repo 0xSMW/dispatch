@@ -292,15 +292,50 @@ type Broadcast struct {
 }
 
 type Automation struct {
-	Object      string `json:"object,omitempty"`
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Status      string `json:"status,omitempty"`
-	Steps       []any  `json:"steps,omitempty"`
-	Connections []any  `json:"connections,omitempty"`
-	CreatedAt   string `json:"created_at,omitempty"`
-	UpdatedAt   string `json:"updated_at,omitempty"`
+	Object        string                  `json:"object,omitempty"`
+	ID            string                  `json:"id"`
+	Name          string                  `json:"name"`
+	Status        string                  `json:"status,omitempty"`
+	Trigger       *string                 `json:"trigger"`
+	TriggerConfig AutomationTriggerConfig `json:"trigger_config"`
+	Reentry       AutomationReentry       `json:"reentry"`
+	Steps         []any                   `json:"steps,omitempty"`
+	Connections   []any                   `json:"connections,omitempty"`
+	CreatedAt     string                  `json:"created_at,omitempty"`
+	UpdatedAt     string                  `json:"updated_at,omitempty"`
 }
+
+type AutomationTriggerType string
+
+const (
+	TriggerEvent           AutomationTriggerType = "event"
+	TriggerContactCreated  AutomationTriggerType = "contact_created"
+	TriggerContactUpdated  AutomationTriggerType = "contact_updated"
+	TriggerTopicSubscribed AutomationTriggerType = "topic_subscribed"
+	TriggerSegmentAdded    AutomationTriggerType = "segment_added"
+)
+
+// AutomationTriggerConfig describes a trigger step's snake_case config.
+// EventName, TopicID, and SegmentID apply to their respective trigger types.
+// Field, From, and To apply to contact_updated. From and To are JSON primitives
+// (string, number, boolean, or null); dates are ISO strings. A nil RawMessage is
+// omitted, while json.RawMessage("null") preserves an explicit null transition.
+type AutomationTriggerConfig struct {
+	Type      AutomationTriggerType `json:"type"`
+	EventName string                `json:"event_name,omitempty"`
+	Field     string                `json:"field,omitempty"`
+	From      json.RawMessage       `json:"from,omitempty"`
+	To        json.RawMessage       `json:"to,omitempty"`
+	TopicID   string                `json:"topic_id,omitempty"`
+	SegmentID string                `json:"segment_id,omitempty"`
+}
+
+type AutomationReentry string
+
+const (
+	ReentryOnce      AutomationReentry = "once"
+	ReentryEveryTime AutomationReentry = "every_time"
+)
 
 type Webhook struct {
 	Object        string   `json:"object,omitempty"`
@@ -540,9 +575,9 @@ type BroadcastInput struct {
 }
 
 type AutomationStep struct {
-	Key    string         `json:"key"`
-	Type   string         `json:"type"`
-	Config map[string]any `json:"config,omitempty"`
+	Key    string `json:"key"`
+	Type   string `json:"type"`
+	Config any    `json:"config,omitempty"`
 }
 
 // SendEmailConfig uses literal Variables and optional dotted context mappings.
@@ -569,6 +604,8 @@ type AutomationInput struct {
 	Status      string                 `json:"status,omitempty"`
 	Steps       []AutomationStep       `json:"steps"`
 	Connections []AutomationConnection `json:"connections,omitempty"`
+	Trigger     string                 `json:"trigger,omitempty"`
+	Reentry     AutomationReentry      `json:"reentry,omitempty"`
 }
 
 type EventInput struct {
