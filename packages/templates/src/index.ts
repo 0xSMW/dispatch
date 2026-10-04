@@ -30,3 +30,5 @@ export { stages } from "./types";
 export type { Library, LibraryStage, LibraryTemplate, LibraryVariable } from "./types";
 export { checkLibrary, checkTemplateVariables } from "./check";
 export type { ThemePair } from "./check";
+export { installTopic, presetFreshness, presetIssues, presets } from "./presets";
+export type { Preset, PresetValidation } from "./presets";

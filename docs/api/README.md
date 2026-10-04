@@ -236,7 +236,7 @@ The OpenAPI document has every parameter and field. By area:
 - API keys: `POST /api-keys`, `GET /api-keys`, `GET /api-keys/{id}`, `PATCH /api-keys/{id}`, `DELETE /api-keys/{id}`
 - Webhooks: `POST /webhooks`, `GET /webhooks`, `GET /webhooks/{id}`, `PATCH /webhooks/{id}`, `DELETE /webhooks/{id}`, `POST /webhooks/{id}/signing-secret/rotate`, `POST /webhooks/test`, `GET /webhooks/{id}/events`, `GET /webhooks/{id}/events/{event_id}`, `GET /webhooks/{id}/events/{event_id}/attempts`, `POST /webhooks/{id}/events/{event_id}/replay`. See [webhooks.md](../webhooks.md).
 - Templates: `POST /templates`, `GET /templates`, `GET /templates/{id}`, `PATCH /templates/{id}`, `DELETE /templates/{id}`, `POST /templates/{id}/versions`, `GET /templates/{id}/versions`, `POST /templates/{id}/publish`, `POST /templates/{id}/render`, `POST /templates/{id}/duplicate`. `{id}` also accepts the alias.
-- Template library: `GET /template-library`, `GET /template-library/{slug}`, `POST /template-library/{slug}/install`
+- Template library: `GET /template-library`, `GET /template-library/{slug}`, `POST /template-library/{slug}/install`, `GET /template-library/automations`, `GET /template-library/automations/{slug}`
 - Brand: `GET /brand`, `PATCH /brand`
 - Contacts: `POST /contacts`, `GET /contacts`, `GET /contacts/stats`, `GET /contacts/{id}`, `PATCH /contacts/{id}`, `DELETE /contacts/{id}`, `GET /contacts/{id}/activity`, `GET /contacts/{id}/segments`, `POST` and `DELETE /contacts/{id}/segments/{segment_id}`, `GET` and `PATCH /contacts/{id}/topics`. `{id}` also accepts the email address.
 - Imports: `POST /contacts/imports` (multipart CSV), `GET /contacts/imports`, `GET /contacts/imports/{id}`

@@ -41,7 +41,7 @@
     },
     {
       "name": "Template library",
-      "description": "Built-in templates you can preview and install."
+      "description": "Built-in email templates and automation presets. Preview and install email templates; list and inspect preset graphs."
     },
     {
       "name": "Brand",
@@ -2305,6 +2305,159 @@
             "$ref": "#/components/responses/ServerError"
           }
         }
+      }
+    },
+    "/template-library/automations": {
+      "get": {
+        "operationId": "listLibraryAutomations",
+        "summary": "List built-in automation presets",
+        "tags": [
+          "Template library"
+        ],
+        "description": "Returns all six presets in one page with has_more false. Read-only dashboard roles may read them; no tenant resources are created.",
+        "x-scope": "full",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestIdHeader"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "ratelimit-limit": {
+                "$ref": "#/components/headers/RateLimitLimit"
+              },
+              "ratelimit-remaining": {
+                "$ref": "#/components/headers/RateLimitRemaining"
+              },
+              "ratelimit-reset": {
+                "$ref": "#/components/headers/RateLimitReset"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "object",
+                    "has_more",
+                    "data",
+                    "request_id"
+                  ],
+                  "properties": {
+                    "object": {
+                      "type": "string",
+                      "const": "list"
+                    },
+                    "has_more": {
+                      "type": "boolean",
+                      "const": false
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AutomationPreset"
+                      }
+                    },
+                    "request_id": {
+                      "type": "string",
+                      "description": "The request ID."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/template-library/automations/{slug}": {
+      "get": {
+        "operationId": "getLibraryAutomation",
+        "summary": "Get a built-in automation preset",
+        "tags": [
+          "Template library"
+        ],
+        "x-scope": "full",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "description": "Automation preset slug.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/RequestIdHeader"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "ratelimit-limit": {
+                "$ref": "#/components/headers/RateLimitLimit"
+              },
+              "ratelimit-remaining": {
+                "$ref": "#/components/headers/RateLimitRemaining"
+              },
+              "ratelimit-reset": {
+                "$ref": "#/components/headers/RateLimitReset"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/AutomationPresetDetail"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RequestId"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        },
+        "description": "Returns the published preset definition without resolving sender, topic or template IDs, and without creating tenant resources. Read-only dashboard roles may read it."
       }
     },
     "/template-library/{slug}": {
@@ -16405,7 +16558,9 @@
           "name",
           "category",
           "kind",
-          "subject"
+          "subject",
+          "stage",
+          "when"
         ],
         "properties": {
           "slug": {
@@ -16466,6 +16621,24 @@
           "preview": {
             "type": "string",
             "description": "Inbox preview text."
+          },
+          "stage": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "acquisition",
+              "onboarding",
+              "retention",
+              "reengagement",
+              "dunning",
+              "reactivation",
+              null
+            ]
+          },
+          "when": {
+            "type": "string"
           }
         }
       },
@@ -22900,6 +23073,136 @@
             "format": "date-time"
           }
         }
+      },
+      "AutomationPreset": {
+        "type": "object",
+        "required": [
+          "slug",
+          "name",
+          "stage",
+          "description",
+          "when",
+          "trigger_config",
+          "reentry",
+          "events",
+          "properties",
+          "steps",
+          "connections",
+          "templates"
+        ],
+        "properties": {
+          "slug": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string",
+            "enum": [
+              "acquisition",
+              "onboarding",
+              "retention",
+              "reengagement",
+              "dunning",
+              "reactivation"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "when": {
+            "type": "string"
+          },
+          "trigger_config": {
+            "$ref": "#/components/schemas/TriggerConfig"
+          },
+          "reentry": {
+            "type": "string",
+            "enum": [
+              "once",
+              "every_time"
+            ]
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/EventInput"
+                },
+                {
+                  "required": [
+                    "schema"
+                  ]
+                }
+              ]
+            }
+          },
+          "properties": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "key",
+                "type"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "string",
+                    "number",
+                    "boolean",
+                    "date"
+                  ]
+                }
+              }
+            }
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StoredAutomationStep"
+            }
+          },
+          "connections": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AutomationConnection"
+            }
+          },
+          "templates": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Referenced library slugs, not tenant template IDs."
+          }
+        },
+        "description": "Built-in graph with library-slug template references. Newsletter topic_id remains {{topic_id}} until installation. Event schemas type-check present fields, not required values; callers remain responsible for the actual runtime payload. No tenant resources are created by listing or reading a preset."
+      },
+      "AutomationPresetDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/AutomationPreset"
+          },
+          {
+            "type": "object",
+            "required": [
+              "object"
+            ],
+            "properties": {
+              "object": {
+                "type": "string",
+                "const": "automation_preset"
+              }
+            }
+          }
+        ]
       }
     }
   }

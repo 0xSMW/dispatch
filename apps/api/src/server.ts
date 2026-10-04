@@ -112,6 +112,7 @@ import {
   listLibrary,
   loadLibrary,
   previewLibrary,
+  registerLibraryAutomations,
 } from "./library.js";
 import { hideLinks, hostOnly, jsonbParams, logBodies, logWhere, presentLog, responseText, type LogQuery, type StoredLog } from "./logs.js";
 import { presentDomain, presentEmail, presentSend, presentWebhook, type DomainRow, type EmailRow, type WebhookRecord } from "./present.js";
@@ -861,6 +862,8 @@ app.post("/templates/:id/publish", async (request) => {
   ));
   return presentTemplate(row);
 });
+
+registerLibraryAutomations(app);
 
 app.get("/template-library", async () => {
   return listLibrary(await loadLibrary());

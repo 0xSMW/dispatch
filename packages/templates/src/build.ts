@@ -5,6 +5,8 @@ import type { ReactNode } from "react";
 import { reservedVariables } from "@dispatchmail/core";
 import { themePairs, type EmailVariable } from "../emails/_theme";
 import { checkLibrary, checkTemplateVariables } from "./check";
+import { paymentInput } from "./fixtures";
+import { presetIssues, presets } from "./presets";
 import type { Library, LibraryStage, LibraryTemplate } from "./types";
 
 process.env.NODE_ENV = "production";
@@ -65,8 +67,9 @@ const names: Record<string, string> = {
   "confirm-subscription": "Confirm subscription",
 };
 
-// Payment events supply these existing names; signup confirmation supplies CONFIRM_URL.
-// Other lifecycle templates must be safe with just the brand and their own fallbacks.
+// Per-template input contracts; preset bindings and actual finite payment values
+// are checked separately below. Runtime callers still supply required values.
+// Signup confirmation supplies CONFIRM_URL; other emails use their own fallbacks.
 const lifecycleInputs: Record<string, readonly string[]> = {
   welcome: [],
   "newsletter-welcome": [],
@@ -205,12 +208,15 @@ async function main() {
     });
   }
 
-  const library: Library = { version: "1.0.0", templates };
+  const library: Library = { version: "1.0.0", templates, automations: presets };
+  const payment = await paymentInput();
   const failures = [
     ...checkLibrary(library, themePairs),
     ...templates.flatMap((entry) => Object.hasOwn(lifecycleInputs, entry.slug)
       ? checkTemplateVariables(entry, lifecycleInputs[entry.slug])
       : []),
+    ...library.automations.flatMap((preset) => presetIssues(preset, templates,
+      preset.slug === "failed-payment" ? { triggerData: payment } : {})),
   ];
   if (failures.length > 0) throw new Error(`Template library checks failed:\n${failures.join("\n")}`);
   // LIBRARY_OUT lets the freshness test build to a temporary file and compare.

@@ -1230,5 +1230,808 @@
       "text": "{{{#if LOGO_URL}}}{{{PRODUCT_URL}}}{{{/if}}}\n\n{{{PRODUCT_NAME}}}\n\n\nCONFIRM YOUR SUBSCRIPTION\n\nConfirm that you want to receive emails from {{{PRODUCT_NAME}}}. You are not subscribed until you confirm.\n\nConfirm subscription {{{CONFIRM_URL}}}\n\n{{{CONFIRM_URL}}}\n\nThis link expires in {{{EXPIRES_IN}}}.\n\nIf you did not request this subscription, ignore this email. We will not subscribe you.\n\n{{{COMPANY_NAME}}}\n\n{{{#if PRODUCT_URL}}}\n\n{{{PRODUCT_NAME}}} {{{PRODUCT_URL}}}\n\n{{{PRODUCT_URL}}}\n\n{{{/if}}}{{{#if SUPPORT_URL}}}\n\nContact support {{{SUPPORT_URL}}}\n\n{{{SUPPORT_URL}}}\n\n{{{/if}}}{{{#if SUPPORT_EMAIL}}}\n\nSupport email {{{SUPPORT_EMAIL}}}\n\n{{{/if}}}{{{#if PRIVACY_URL}}}\n\nPrivacy policy {{{PRIVACY_URL}}}\n\n{{{PRIVACY_URL}}}\n\n{{{/if}}}\n\nYou received this email because this address was submitted on a signup form.\n\n© {{{CURRENT_YEAR}}} {{{COMPANY_NAME}}}",
       "preview_html": "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\"><html dir=\"ltr\" lang=\"en\"><head><meta content=\"text/html; charset=UTF-8\" http-equiv=\"Content-Type\"/><meta name=\"x-apple-disable-message-reformatting\"/><meta name=\"color-scheme\" content=\"light dark\"/><meta name=\"supported-color-schemes\" content=\"light dark\"/><title>Confirm your subscription</title><style>\n  .dm-canvas { background-color: #f4f4f5; }\n  .dm-card { background-color: #ffffff; }\n  @media (prefers-color-scheme: dark) {\n    .dm-canvas { background-color: #09090b !important; }\n    .dm-card { background-color: #18181b !important; }\n    .dm-text { color: #fafafa !important; }\n    .dm-muted { color: #e4e4e7 !important; }\n    a.dm-link { color: #93c5fd !important; }\n  }\n</style></head><body class=\"dm-canvas\" dir=\"ltr\" lang=\"en\"><!--$--><!--html--><!--head--><!--body--><table border=\"0\" width=\"100%\" cellPadding=\"0\" cellSpacing=\"0\" role=\"presentation\" align=\"center\"><tbody><tr><td dir=\"ltr\" lang=\"en\" style=\"font-family:-apple-system, BlinkMacSystemFont, &#x27;Segoe UI&#x27;, Roboto, Helvetica, Arial, sans-serif;font-size:16px;line-height:1.5;color:#18181b\"><div style=\"display:none;overflow:hidden;line-height:1px;opacity:0;max-height:0;max-width:0\" data-skip-in-text=\"true\">Confirm your subscription before we send you any product notes.<div> ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿ ‌​‍‎‏﻿</div></div><table align=\"center\" width=\"100%\" class=\"dm-card\" border=\"0\" cellPadding=\"0\" cellSpacing=\"0\" role=\"presentation\" style=\"max-width:600px;background-color:#ffffff\"><tbody><tr style=\"width:100%\"><td class=\"dm-card\" style=\"padding:32px 24px\"><table align=\"center\" width=\"100%\" border=\"0\" cellPadding=\"0\" cellSpacing=\"0\" role=\"presentation\"><tbody><tr><td>{{{#if LOGO_URL}}}<a class=\"dm-link\" href=\"{{{PRODUCT_URL}}}\" style=\"color:{{{BRAND_COLOR}}};text-decoration-line:none;text-decoration:underline\" target=\"_blank\"><img alt=\"{{{PRODUCT_NAME}}}\" src=\"{{{LOGO_URL}}}\" style=\"display:block;outline:none;border:none;text-decoration:none\" width=\"120\"/></a>{{{/if}}}<p class=\"dm-text\" style=\"font-size:16px;line-height:1.5;font-family:-apple-system, BlinkMacSystemFont, &#x27;Segoe UI&#x27;, Roboto, Helvetica, Arial, sans-serif;color:#18181b;margin-top:0;margin-bottom:16px;font-weight:600\">{{{PRODUCT_NAME}}}</p></td></tr></tbody></table><h1 class=\"dm-text\" style=\"font-family:-apple-system, BlinkMacSystemFont, &#x27;Segoe UI&#x27;, Roboto, Helvetica, Arial, sans-serif;font-size:24px;line-height:1.3;font-weight:600;color:#18181b;margin-top:0;margin-bottom:16px\">Confirm your subscription</h1><p class=\"dm-text\" style=\"font-size:16px;line-height:1.5;font-family:-apple-system, BlinkMacSystemFont, &#x27;Segoe UI&#x27;, Roboto, Helvetica, Arial, sans-serif;color:#18181b;margin-top:0;margin-bottom:16px\">Confirm that you want to receive emails from <!-- -->{{{PRODUCT_NAME}}}<!-- -->. You are not subscribed until you confirm.</p><table role=\"presentation\" cellPadding=\"0\" cellSpacing=\"0\" border=\"0\" style=\"margin:8px 0 16px\"><tbody><tr><td style=\"border-radius:6px;background-color:{{{BRAND_COLOR}}}\"><a href=\"https://example.com/confirm/token\" style=\"background-color:{{{BRAND_COLOR}}};border-radius:6px;color:{{{BRAND_TEXT_COLOR}}};display:inline-block;font-family:-apple-system, BlinkMacSystemFont, &#x27;Segoe UI&#x27;, Roboto, Helvetica, Arial, sans-serif;font-size:16px;line-height:20px;min-height:44px;padding:12px 20px;text-decoration:none\">Confirm subscription</a></td></tr></tbody></table><p class=\"dm-muted\" style=\"font-size:14px;line-height:1.5;font-family:-apple-system, BlinkMacSystemFont, &#x27;Segoe UI&#x27;, Roboto, Helvetica, Arial, sans-serif;color:#3f3f46;margin-top:0;margin-bottom:16px\">https://example.com/confirm/token</p><p class=\"dm-text\" style=\"font-size:16px;line-height:1.5;font-family:-apple-system, BlinkMacSystemFont, &#x27;Segoe UI&#x27;, Roboto, Helvetica, Arial, sans-serif;color:#18181b;margin-top:0;margin-bottom:16px\">This link expires in <!-- -->7 days<!-- -->.</p><p class=\"dm-muted\" style=\"font-size:14px;line-height:1.5;font-family:-apple-system, BlinkMacSystemFont, &#x27;Segoe UI&#x27;, Roboto, Helvetica, Arial, sans-serif;color:#3f3f46;margin-top:0;margin-bottom:16px\">If you did not request this subscription, ignore this email. We will not subscribe you.</p><table align=\"center\" width=\"100%\" border=\"0\" cellPadding=\"0\" cellSpacing=\"0\" role=\"presentation\"><tbody><tr><td><p class=\"dm-muted\" style=\"font-size:14px;line-height:1.5;font-family:-apple-system, BlinkMacSystemFont, &#x27;Segoe UI&#x27;, Roboto, Helvetica, Arial, sans-serif;color:#3f3f46;margin-top:0;margin-bottom:16px\">{{{COMPANY_NAME}}}</p>{{{#if PRODUCT_URL}}}<p class=\"dm-muted\" style=\"font-size:14px;line-height:1.5;font-family:-apple-system, BlinkMacSystemFont, &#x27;Segoe UI&#x27;, Roboto, Helvetica, Arial, sans-serif;color:#3f3f46;margin-top:0;margin-bottom:16px\"><a class=\"dm-link\" href=\"{{{PRODUCT_URL}}}\" style=\"color:{{{BRAND_COLOR}}};text-decoration-line:none;text-decoration:underline\" target=\"_blank\">{{{PRODUCT_NAME}}}</a></p><p class=\"dm-muted\" style=\"font-size:14px;line-height:1.5;font-family:-apple-system, BlinkMacSystemFont, &#x27;Segoe UI&#x27;, Roboto, Helvetica, Arial, sans-serif;color:#3f3f46;margin-top:0;margin-bottom:16px\">{{{PRODUCT_URL}}}</p>{{{/if}}}<!-- -->{{{#if SUPPORT_URL}}}<p class=\"dm-muted\" style=\"font-size:14px;line-height:1.5;font-family:-apple-system, BlinkMacSystemFont, &#x27;Segoe UI&#x27;, Roboto, Helvetica, Arial, sans-serif;color:#3f3f46;margin-top:0;margin-bottom:16px\"><a class=\"dm-link\" href=\"{{{SUPPORT_URL}}}\" style=\"color:{{{BRAND_COLOR}}};text-decoration-line:none;text-decoration:underline\" target=\"_blank\">Contact support</a></p><p class=\"dm-muted\" style=\"font-size:14px;line-height:1.5;font-family:-apple-system, BlinkMacSystemFont, &#x27;Segoe UI&#x27;, Roboto, Helvetica, Arial, sans-serif;color:#3f3f46;margin-top:0;margin-bottom:16px\">{{{SUPPORT_URL}}}</p>{{{/if}}}<!-- -->{{{#if SUPPORT_EMAIL}}}<p class=\"dm-muted\" style=\"font-size:14px;line-height:1.5;font-family:-apple-system, BlinkMacSystemFont, &#x27;Segoe UI&#x27;, Roboto, Helvetica, Arial, sans-serif;color:#3f3f46;margin-top:0;margin-bottom:16px\">Support email <!-- -->{{{SUPPORT_EMAIL}}}</p>{{{/if}}}<!-- -->{{{#if PRIVACY_URL}}}<p class=\"dm-muted\" style=\"font-size:14px;line-height:1.5;font-family:-apple-system, BlinkMacSystemFont, &#x27;Segoe UI&#x27;, Roboto, Helvetica, Arial, sans-serif;color:#3f3f46;margin-top:0;margin-bottom:16px\"><a class=\"dm-link\" href=\"{{{PRIVACY_URL}}}\" style=\"color:{{{BRAND_COLOR}}};text-decoration-line:none;text-decoration:underline\" target=\"_blank\">Privacy policy</a></p><p class=\"dm-muted\" style=\"font-size:14px;line-height:1.5;font-family:-apple-system, BlinkMacSystemFont, &#x27;Segoe UI&#x27;, Roboto, Helvetica, Arial, sans-serif;color:#3f3f46;margin-top:0;margin-bottom:16px\">{{{PRIVACY_URL}}}</p>{{{/if}}}<p class=\"dm-muted\" style=\"font-size:14px;line-height:1.5;font-family:-apple-system, BlinkMacSystemFont, &#x27;Segoe UI&#x27;, Roboto, Helvetica, Arial, sans-serif;color:#3f3f46;margin-top:0;margin-bottom:16px\">You received this email because this address was submitted on a signup form.</p><p class=\"dm-muted\" style=\"font-size:14px;line-height:1.5;font-family:-apple-system, BlinkMacSystemFont, &#x27;Segoe UI&#x27;, Roboto, Helvetica, Arial, sans-serif;color:#3f3f46;margin-top:0;margin-bottom:16px\">© <!-- -->{{{CURRENT_YEAR}}}<!-- --> <!-- -->{{{COMPANY_NAME}}}</p></td></tr></tbody></table></td></tr></tbody></table></td></tr></tbody></table><!--/$--></body></html>"
     }
+  ],
+  "automations": [
+    {
+      "slug": "newsletter-welcome",
+      "name": "Newsletter welcome",
+      "stage": "acquisition",
+      "description": "Welcome a topic subscriber, then suggest the next step based on activation.",
+      "when": "Start when a contact subscribes to the topic chosen at install. The app sets activated when setup is complete.",
+      "trigger_config": {
+        "type": "topic_subscribed",
+        "topic_id": "{{topic_id}}"
+      },
+      "reentry": "once",
+      "events": [],
+      "properties": [
+        {
+          "key": "activated",
+          "type": "boolean"
+        }
+      ],
+      "templates": [
+        "newsletter-welcome",
+        "feature-tips",
+        "setup-reminder"
+      ],
+      "steps": [
+        {
+          "key": "trigger",
+          "type": "trigger",
+          "config": {
+            "type": "topic_subscribed",
+            "topic_id": "{{topic_id}}"
+          }
+        },
+        {
+          "key": "freshness",
+          "type": "filter",
+          "config": {
+            "rule": {
+              "type": "rule",
+              "field": "event.received_at",
+              "operator": "within",
+              "value": "7 days"
+            },
+            "scope": "following"
+          }
+        },
+        {
+          "key": "welcome",
+          "type": "send_email",
+          "config": {
+            "template": "newsletter-welcome",
+            "kind": "marketing"
+          }
+        },
+        {
+          "key": "wait",
+          "type": "delay",
+          "config": {
+            "duration": "3 days"
+          }
+        },
+        {
+          "key": "activation",
+          "type": "condition",
+          "config": {
+            "type": "rule",
+            "field": "contact.activated",
+            "operator": "eq",
+            "value": true
+          }
+        },
+        {
+          "key": "tips",
+          "type": "send_email",
+          "config": {
+            "template": "feature-tips",
+            "kind": "marketing"
+          }
+        },
+        {
+          "key": "setup",
+          "type": "send_email",
+          "config": {
+            "template": "setup-reminder",
+            "kind": "marketing"
+          }
+        },
+        {
+          "key": "exit",
+          "type": "exit",
+          "config": {}
+        }
+      ],
+      "connections": [
+        {
+          "from": "trigger",
+          "to": "freshness",
+          "type": "default"
+        },
+        {
+          "from": "freshness",
+          "to": "welcome",
+          "type": "default"
+        },
+        {
+          "from": "welcome",
+          "to": "wait",
+          "type": "default"
+        },
+        {
+          "from": "wait",
+          "to": "activation",
+          "type": "default"
+        },
+        {
+          "from": "activation",
+          "to": "tips",
+          "type": "condition_met"
+        },
+        {
+          "from": "activation",
+          "to": "setup",
+          "type": "condition_not_met"
+        },
+        {
+          "from": "tips",
+          "to": "exit",
+          "type": "default"
+        },
+        {
+          "from": "setup",
+          "to": "exit",
+          "type": "default"
+        }
+      ]
+    },
+    {
+      "slug": "onboarding-drip",
+      "name": "Onboarding drip",
+      "stage": "onboarding",
+      "description": "Welcome a new contact and help them finish setup over five days.",
+      "when": "Start when a contact is added. The app sets activated to true to stop the reminders.",
+      "trigger_config": {
+        "type": "contact_created"
+      },
+      "reentry": "once",
+      "events": [],
+      "properties": [
+        {
+          "key": "activated",
+          "type": "boolean"
+        }
+      ],
+      "templates": [
+        "welcome",
+        "setup-reminder",
+        "feature-tips"
+      ],
+      "steps": [
+        {
+          "key": "trigger",
+          "type": "trigger",
+          "config": {
+            "type": "contact_created"
+          }
+        },
+        {
+          "key": "freshness",
+          "type": "filter",
+          "config": {
+            "rule": {
+              "type": "rule",
+              "field": "contact.created_at",
+              "operator": "within",
+              "value": "14 days"
+            },
+            "scope": "following"
+          }
+        },
+        {
+          "key": "welcome",
+          "type": "send_email",
+          "config": {
+            "template": "welcome",
+            "kind": "transactional"
+          }
+        },
+        {
+          "key": "not_activated",
+          "type": "filter",
+          "config": {
+            "rule": {
+              "type": "rule",
+              "field": "contact.activated",
+              "operator": "neq",
+              "value": true
+            },
+            "scope": "following"
+          }
+        },
+        {
+          "key": "setup_wait",
+          "type": "delay",
+          "config": {
+            "duration": "2 days"
+          }
+        },
+        {
+          "key": "setup",
+          "type": "send_email",
+          "config": {
+            "template": "setup-reminder",
+            "kind": "marketing"
+          }
+        },
+        {
+          "key": "tips_wait",
+          "type": "delay",
+          "config": {
+            "duration": "3 days"
+          }
+        },
+        {
+          "key": "tips",
+          "type": "send_email",
+          "config": {
+            "template": "feature-tips",
+            "kind": "marketing"
+          }
+        },
+        {
+          "key": "exit",
+          "type": "exit",
+          "config": {}
+        }
+      ],
+      "connections": [
+        {
+          "from": "trigger",
+          "to": "freshness",
+          "type": "default"
+        },
+        {
+          "from": "freshness",
+          "to": "welcome",
+          "type": "default"
+        },
+        {
+          "from": "welcome",
+          "to": "not_activated",
+          "type": "default"
+        },
+        {
+          "from": "not_activated",
+          "to": "setup_wait",
+          "type": "default"
+        },
+        {
+          "from": "setup_wait",
+          "to": "setup",
+          "type": "default"
+        },
+        {
+          "from": "setup",
+          "to": "tips_wait",
+          "type": "default"
+        },
+        {
+          "from": "tips_wait",
+          "to": "tips",
+          "type": "default"
+        },
+        {
+          "from": "tips",
+          "to": "exit",
+          "type": "default"
+        }
+      ]
+    },
+    {
+      "slug": "invite-to-upgrade",
+      "name": "Invite to upgrade",
+      "stage": "retention",
+      "description": "Offer an upgrade after a free-plan contact reaches a usage limit.",
+      "when": "Send usage.limit_reached from the app at the limit. Keep plan current so upgraded contacts leave the flow.",
+      "trigger_config": {
+        "type": "event",
+        "event_name": "usage.limit_reached"
+      },
+      "reentry": "every_time",
+      "events": [
+        {
+          "name": "usage.limit_reached",
+          "schema": {}
+        }
+      ],
+      "properties": [
+        {
+          "key": "plan",
+          "type": "string"
+        }
+      ],
+      "templates": [
+        "upgrade-invite"
+      ],
+      "steps": [
+        {
+          "key": "trigger",
+          "type": "trigger",
+          "config": {
+            "type": "event",
+            "event_name": "usage.limit_reached"
+          }
+        },
+        {
+          "key": "freshness",
+          "type": "filter",
+          "config": {
+            "rule": {
+              "type": "rule",
+              "field": "event.received_at",
+              "operator": "within",
+              "value": "10 days"
+            },
+            "scope": "following"
+          }
+        },
+        {
+          "key": "free_plan",
+          "type": "filter",
+          "config": {
+            "rule": {
+              "type": "rule",
+              "field": "contact.plan",
+              "operator": "eq",
+              "value": "free"
+            },
+            "scope": "next"
+          }
+        },
+        {
+          "key": "invite",
+          "type": "send_email",
+          "config": {
+            "template": "upgrade-invite",
+            "kind": "marketing"
+          }
+        },
+        {
+          "key": "wait",
+          "type": "delay",
+          "config": {
+            "duration": "4 days"
+          }
+        },
+        {
+          "key": "still_free",
+          "type": "filter",
+          "config": {
+            "rule": {
+              "type": "rule",
+              "field": "contact.plan",
+              "operator": "eq",
+              "value": "free"
+            },
+            "scope": "next"
+          }
+        },
+        {
+          "key": "reminder",
+          "type": "send_email",
+          "config": {
+            "template": "upgrade-invite",
+            "kind": "marketing",
+            "subject": "Still need more room in {{{PRODUCT_NAME}}}?"
+          }
+        },
+        {
+          "key": "exit",
+          "type": "exit",
+          "config": {}
+        }
+      ],
+      "connections": [
+        {
+          "from": "trigger",
+          "to": "freshness",
+          "type": "default"
+        },
+        {
+          "from": "freshness",
+          "to": "free_plan",
+          "type": "default"
+        },
+        {
+          "from": "free_plan",
+          "to": "invite",
+          "type": "default"
+        },
+        {
+          "from": "invite",
+          "to": "wait",
+          "type": "default"
+        },
+        {
+          "from": "wait",
+          "to": "still_free",
+          "type": "default"
+        },
+        {
+          "from": "still_free",
+          "to": "reminder",
+          "type": "default"
+        },
+        {
+          "from": "reminder",
+          "to": "exit",
+          "type": "default"
+        }
+      ]
+    },
+    {
+      "slug": "win-back",
+      "name": "Win back",
+      "stage": "reengagement",
+      "description": "Reach out to an inactive contact, then offer a reason to return.",
+      "when": "Send user.inactive from the app. Update last_active_at on activity; missing dates do not pass the second filter.",
+      "trigger_config": {
+        "type": "event",
+        "event_name": "user.inactive"
+      },
+      "reentry": "every_time",
+      "events": [
+        {
+          "name": "user.inactive",
+          "schema": {}
+        }
+      ],
+      "properties": [
+        {
+          "key": "last_active_at",
+          "type": "date"
+        }
+      ],
+      "templates": [
+        "we-miss-you",
+        "come-back-offer"
+      ],
+      "steps": [
+        {
+          "key": "trigger",
+          "type": "trigger",
+          "config": {
+            "type": "event",
+            "event_name": "user.inactive"
+          }
+        },
+        {
+          "key": "freshness",
+          "type": "filter",
+          "config": {
+            "rule": {
+              "type": "rule",
+              "field": "event.received_at",
+              "operator": "within",
+              "value": "14 days"
+            },
+            "scope": "following"
+          }
+        },
+        {
+          "key": "miss_you",
+          "type": "send_email",
+          "config": {
+            "template": "we-miss-you",
+            "kind": "marketing"
+          }
+        },
+        {
+          "key": "wait",
+          "type": "delay",
+          "config": {
+            "duration": "7 days"
+          }
+        },
+        {
+          "key": "still_inactive",
+          "type": "filter",
+          "config": {
+            "rule": {
+              "type": "rule",
+              "field": "contact.last_active_at",
+              "operator": "not_within",
+              "value": "7 days"
+            },
+            "scope": "next"
+          }
+        },
+        {
+          "key": "offer",
+          "type": "send_email",
+          "config": {
+            "template": "come-back-offer",
+            "kind": "marketing"
+          }
+        },
+        {
+          "key": "exit",
+          "type": "exit",
+          "config": {}
+        }
+      ],
+      "connections": [
+        {
+          "from": "trigger",
+          "to": "freshness",
+          "type": "default"
+        },
+        {
+          "from": "freshness",
+          "to": "miss_you",
+          "type": "default"
+        },
+        {
+          "from": "miss_you",
+          "to": "wait",
+          "type": "default"
+        },
+        {
+          "from": "wait",
+          "to": "still_inactive",
+          "type": "default"
+        },
+        {
+          "from": "still_inactive",
+          "to": "offer",
+          "type": "default"
+        },
+        {
+          "from": "offer",
+          "to": "exit",
+          "type": "default"
+        }
+      ]
+    },
+    {
+      "slug": "failed-payment",
+      "name": "Failed payment",
+      "stage": "dunning",
+      "description": "Follow up on an unpaid invoice and exit when a payment event arrives.",
+      "when": "Use Stripe invoice events. The billing system must cancel the subscription before the final cancellation notice; this flow does not cancel it.",
+      "trigger_config": {
+        "type": "event",
+        "event_name": "stripe.invoice.payment_failed"
+      },
+      "reentry": "every_time",
+      "events": [
+        {
+          "name": "stripe.invoice.payment_failed",
+          "schema": {
+            "AMOUNT": "string",
+            "UPDATE_PAYMENT_URL": "string",
+            "INVOICE_NUMBER": "string",
+            "invoice_id": "string"
+          }
+        },
+        {
+          "name": "stripe.invoice.paid",
+          "schema": {
+            "invoice_id": "string"
+          }
+        }
+      ],
+      "properties": [],
+      "templates": [
+        "payment-failed",
+        "card-update-reminder",
+        "subscription-canceled"
+      ],
+      "steps": [
+        {
+          "key": "trigger",
+          "type": "trigger",
+          "config": {
+            "type": "event",
+            "event_name": "stripe.invoice.payment_failed"
+          }
+        },
+        {
+          "key": "freshness",
+          "type": "filter",
+          "config": {
+            "rule": {
+              "type": "rule",
+              "field": "event.received_at",
+              "operator": "within",
+              "value": "10 days"
+            },
+            "scope": "following"
+          }
+        },
+        {
+          "key": "failed",
+          "type": "send_email",
+          "config": {
+            "template": "payment-failed",
+            "kind": "transactional"
+          }
+        },
+        {
+          "key": "first_wait",
+          "type": "wait_for_event",
+          "config": {
+            "event_name": "stripe.invoice.paid",
+            "timeout": "3 days"
+          }
+        },
+        {
+          "key": "reminder",
+          "type": "send_email",
+          "config": {
+            "template": "card-update-reminder",
+            "kind": "transactional"
+          }
+        },
+        {
+          "key": "second_wait",
+          "type": "wait_for_event",
+          "config": {
+            "event_name": "stripe.invoice.paid",
+            "timeout": "4 days"
+          }
+        },
+        {
+          "key": "canceled",
+          "type": "send_email",
+          "config": {
+            "template": "subscription-canceled",
+            "kind": "transactional"
+          }
+        },
+        {
+          "key": "exit",
+          "type": "exit",
+          "config": {}
+        }
+      ],
+      "connections": [
+        {
+          "from": "trigger",
+          "to": "freshness",
+          "type": "default"
+        },
+        {
+          "from": "freshness",
+          "to": "failed",
+          "type": "default"
+        },
+        {
+          "from": "failed",
+          "to": "first_wait",
+          "type": "default"
+        },
+        {
+          "from": "first_wait",
+          "to": "exit",
+          "type": "event_received"
+        },
+        {
+          "from": "first_wait",
+          "to": "reminder",
+          "type": "timeout"
+        },
+        {
+          "from": "reminder",
+          "to": "second_wait",
+          "type": "default"
+        },
+        {
+          "from": "second_wait",
+          "to": "exit",
+          "type": "event_received"
+        },
+        {
+          "from": "second_wait",
+          "to": "canceled",
+          "type": "timeout"
+        },
+        {
+          "from": "canceled",
+          "to": "exit",
+          "type": "default"
+        }
+      ]
+    },
+    {
+      "slug": "come-back",
+      "name": "Come back",
+      "stage": "reactivation",
+      "description": "Offer a return path two weeks after a contact's plan changes to canceled.",
+      "when": "The app changes plan to canceled after cancellation and keeps it current on reactivation.",
+      "trigger_config": {
+        "type": "contact_updated",
+        "field": "plan",
+        "to": "canceled"
+      },
+      "reentry": "once",
+      "events": [],
+      "properties": [
+        {
+          "key": "plan",
+          "type": "string"
+        }
+      ],
+      "templates": [
+        "come-back-offer"
+      ],
+      "steps": [
+        {
+          "key": "trigger",
+          "type": "trigger",
+          "config": {
+            "type": "contact_updated",
+            "field": "plan",
+            "to": "canceled"
+          }
+        },
+        {
+          "key": "freshness",
+          "type": "filter",
+          "config": {
+            "rule": {
+              "type": "rule",
+              "field": "event.received_at",
+              "operator": "within",
+              "value": "21 days"
+            },
+            "scope": "following"
+          }
+        },
+        {
+          "key": "wait",
+          "type": "delay",
+          "config": {
+            "duration": "14 days"
+          }
+        },
+        {
+          "key": "still_canceled",
+          "type": "filter",
+          "config": {
+            "rule": {
+              "type": "rule",
+              "field": "contact.plan",
+              "operator": "eq",
+              "value": "canceled"
+            },
+            "scope": "next"
+          }
+        },
+        {
+          "key": "offer",
+          "type": "send_email",
+          "config": {
+            "template": "come-back-offer",
+            "kind": "marketing"
+          }
+        },
+        {
+          "key": "exit",
+          "type": "exit",
+          "config": {}
+        }
+      ],
+      "connections": [
+        {
+          "from": "trigger",
+          "to": "freshness",
+          "type": "default"
+        },
+        {
+          "from": "freshness",
+          "to": "wait",
+          "type": "default"
+        },
+        {
+          "from": "wait",
+          "to": "still_canceled",
+          "type": "default"
+        },
+        {
+          "from": "still_canceled",
+          "to": "offer",
+          "type": "default"
+        },
+        {
+          "from": "offer",
+          "to": "exit",
+          "type": "default"
+        }
+      ]
+    }
   ]
 }

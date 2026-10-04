@@ -1,3 +1,5 @@
+import type { Preset } from "./presets";
+
 export const stages = ["acquisition", "onboarding", "retention", "reengagement", "dunning", "reactivation"] as const;
 
 export type LibraryStage = (typeof stages)[number];
@@ -30,4 +32,5 @@ export type LibraryTemplate = {
 export type Library = {
   version: string;
   templates: LibraryTemplate[];
+  automations: Preset[];
 };
