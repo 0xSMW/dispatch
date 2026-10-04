@@ -4872,6 +4872,153 @@ describe.skipIf(!live)("delivery", () => {
   });
 });
 
+describe.skipIf(!live)("phase 2 contract closeout", () => {
+  it("rejects missing-trigger create and replacement without any stored graph or run changes", async () => {
+    const graph = { steps: [{ key: "end", type: "exit", config: {} }], connections: [] };
+    const counts = async () => (await db.query(`select
+      (select count(*)::integer from automations) as automations,
+      (select count(*)::integer from automation_runs) as runs,
+      (select count(*)::integer from automation_steps) as steps`)).rows[0];
+    const before = await counts();
+    const invalid = await post(fullKey, "/automations", { name: "No trigger", ...graph });
+    expect(invalid).toMatchObject({ status: 400, json: { name: "validation_error" } });
+    expect(await counts()).toEqual(before);
+    const flow = await post(fullKey, "/automations", { name: "Kept graph", steps: [
+      { key: "start", type: "trigger", config: { event_name: "closeout.graph" } },
+      ...graph.steps,
+    ], connections: [{ from: "start", to: "end" }] });
+    expect(flow.status).toBe(200);
+    const stored = (await db.query("select * from automations where id=$1", [flow.json.id])).rows[0];
+    const afterCreate = await counts();
+    const replacement = await call(fullKey, "PATCH", `/automations/${flow.json.id}`, graph);
+    expect(replacement).toMatchObject({ status: 400, json: { name: "validation_error" } });
+    expect((await db.query("select * from automations where id=$1", [flow.json.id])).rows[0]).toEqual(stored);
+    expect(await counts()).toEqual(afterCreate);
+  });
+
+  it("saves declared hyphenated mapping and renders actual event values through execution", async () => {
+    expect((await post(fullKey, "/events", { name: "closeout.mapping", schema: { "plan-id": "string" } })).status).toBe(200);
+    const template = await post(fullKey, "/templates", { name: "Hyphenated", subject: "Plan", text: "Plan: {{{PLAN}}}", variables: ["PLAN"], publish: true });
+    const flow = await post(fullKey, "/automations", { name: "Hyphenated mapping", enabled: true, steps: [
+      { key: "start", type: "trigger", config: { event_name: "closeout.mapping" } },
+      { key: "send", type: "send_email", config: { kind: "transactional", from: "hello@dispatch-fixture.net",
+        template: template.json.id, variable_mapping: { PLAN: "event.plan-id" } } },
+    ], connections: [{ from: "start", to: "send" }] });
+    expect(flow.status, JSON.stringify(flow.json)).toBe(200);
+    expect((await call(fullKey, "GET", `/automations/${flow.json.id}`)).json.steps[1].config.variable_mapping).toEqual({ PLAN: "event.plan-id" });
+    expect((await db.query("select steps from automations where id=$1", [flow.json.id])).rows[0].steps[1].config.variable_mapping).toEqual({ PLAN: "event.plan-id" });
+    expect((await post(fullKey, "/events/send", { event: "closeout.mapping", email: "mapped@dispatch-fixture.net", payload: { "plan-id": "actual-pro" } })).status).toBe(202);
+    const run = (await flowRuns(flow.json.id))[0]!;
+    await executeAutomationRun(db, run.tenant_id, run.id);
+    expect((await db.query("select text from emails")).rows).toEqual([{ text: "Plan: actual-pro" }]);
+    expect((await db.query("select state from automation_runs where id=$1", [run.id])).rows[0].state).toBe("done");
+  });
+
+  it("classifies reserved inline defaults and blocks Transactional save activation and execution", async () => {
+    const start = { key: "start", type: "trigger", config: { event_name: "closeout.kind" } };
+    const steps = (template: string, kind = "transactional") => [start, { key: "send", type: "send_email", config: {
+      kind, from: "hello@dispatch-fixture.net", template,
+    } }];
+    const connections = [{ from: "start", to: "send" }];
+    for (const [index, key] of ["UNSUBSCRIBE_URL", "RESEND_UNSUBSCRIBE_URL", "DISPATCH_UNSUBSCRIBE_URL"].entries()) {
+      const content = `Leave {{{${key}|${index ? "" : "https://dispatch-fixture.net/leave"}}}}`;
+      const template = await post(fullKey, "/templates", { name: key, subject: key, ...(index === 1 ? { html: `<a href="${content}">Leave</a>` } : { text: content }), publish: true });
+      expect(template.json.kind).toBe("marketing");
+      expect((await post(fullKey, "/automations", { name: "Wrong kind", steps: steps(template.json.id), connections })).status).toBe(422);
+      const draft = await post(fullKey, "/automations", { name: `Topic needed ${index}`, steps: steps(template.json.id, "marketing"), connections });
+      expect(draft.status).toBe(200);
+      expect((await call(fullKey, "PATCH", `/automations/${draft.json.id}`, { status: "enabled" })).status).toBe(422);
+    }
+    const ordinary = await post(fullKey, "/templates", { name: "Ordinary", subject: "Receipt", text: "Receipt", publish: true });
+    const flow = await post(fullKey, "/automations", { name: "Later publication", enabled: true, steps: steps(ordinary.json.id), connections });
+    expect(flow.status).toBe(200);
+    expect((await call(fullKey, "PATCH", `/templates/${ordinary.json.id}`, { text: "Leave {{{UNSUBSCRIBE_URL|}}}" })).status).toBe(200);
+    expect((await post(fullKey, `/templates/${ordinary.json.id}/publish`, {})).json.kind).toBe("marketing");
+    expect((await post(fullKey, "/events/send", { event: "closeout.kind", email: "kind@dispatch-fixture.net" })).status).toBe(202);
+    const run = (await flowRuns(flow.json.id))[0]!;
+    await executeAutomationRun(db, run.tenant_id, run.id);
+    expect((await db.query("select state,error from automation_runs where id=$1", [run.id])).rows[0])
+      .toMatchObject({ state: "failed", error: expect.stringContaining("must be Marketing") });
+    expect((await db.query("select id from emails")).rows).toEqual([]);
+    expect((await db.query("select id from send_jobs")).rows).toEqual([]);
+  });
+
+  it("retains Marketing intent and replacement content across alternate publication and legacy PATCH", async () => {
+    const installed = await post(fullKey, "/template-library/newsletter/install", {});
+    expect(installed.status).toBe(200);
+    const replacement = { subject: "Tenant replacement", html: "<p>Exact tenant HTML &amp; text</p>", text: "Exact tenant plain text" };
+    const version = await post(fullKey, `/templates/${installed.json.id}/versions`, replacement);
+    expect(version.status).toBe(200);
+    expect(version.json).toMatchObject({ ...replacement, kind: "marketing", source: { kind: "custom", send_kind: "marketing" } });
+    expect(version.json.source).not.toHaveProperty("slug");
+    const published = await post(fullKey, `/templates/${installed.json.id}/publish`, {});
+    expect(published.json).toMatchObject({ ...replacement, kind: "marketing", source: { kind: "custom", send_kind: "marketing" } });
+    const legacy = await post(fullKey, "/templates", { name: "Legacy library copy", subject: "Legacy", text: "Leave {{{UNSUBSCRIBE_URL}}}",
+      source: { kind: "library", slug: "newsletter", version: "1.0.0" }, publish: true });
+    expect(legacy.status).toBe(200);
+    const patch = await call(fullKey, "PATCH", `/templates/${legacy.json.id}`, { ...replacement, source: { kind: "custom", path: "tenant/news.html" } });
+    expect(patch.status).toBe(200);
+    expect(patch.json).toMatchObject({ ...replacement, kind: "marketing", source: { kind: "custom", send_kind: "marketing", path: "tenant/news.html" } });
+    expect(patch.json.source).not.toHaveProperty("slug");
+    expect((await post(fullKey, `/templates/${legacy.json.id}/publish`, {})).json).toMatchObject({ ...replacement, kind: "marketing" });
+    const stored = (await db.query(`select v.html,v.text,v.source from templates t join template_versions v
+      on v.id=t.published_version_id where t.id=any($1::text[])`, [[installed.json.id, legacy.json.id]])).rows;
+    expect(stored).toHaveLength(2);
+    expect(stored.every((row) => row.html === replacement.html && row.text === replacement.text &&
+      row.source.kind === "custom" && row.source.send_kind === "marketing" && !("slug" in row.source))).toBe(true);
+    for (const [index, templateId] of [installed.json.id, legacy.json.id].entries()) {
+      const steps = [
+        { key: "start", type: "trigger", config: { event_name: `closeout.version.${index}` } },
+        { key: "send", type: "send_email", config: { kind: "transactional", from: "hello@dispatch-fixture.net", template: templateId } },
+      ];
+      const connections = [{ from: "start", to: "send" }];
+      expect((await post(fullKey, "/automations", { name: `Version wrong kind ${index}`, steps, connections })).status).toBe(422);
+      steps[1].config.kind = "marketing";
+      const draft = await post(fullKey, "/automations", { name: `Version draft ${index}`, steps, connections });
+      expect(draft.status).toBe(200);
+      expect((await call(fullKey, "PATCH", `/automations/${draft.json.id}`, { status: "enabled" })).status).toBe(422);
+      // A stored old/wrong kind must also fail at execution, not just API validation.
+      steps[1].config.kind = "transactional";
+      await db.query("update automations set enabled=true,steps=$2 where id=$1", [draft.json.id, JSON.stringify(steps)]);
+      await post(fullKey, "/events/send", { event: `closeout.version.${index}`, email: "version@dispatch-fixture.net" });
+      const run = (await flowRuns(draft.json.id))[0]!;
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect((await db.query("select state,error from automation_runs where id=$1", [run.id])).rows[0])
+        .toMatchObject({ state: "failed", error: expect.stringContaining("must be Marketing") });
+    }
+    expect((await db.query("select id from emails")).rows).toEqual([]);
+    expect((await db.query("select id from send_jobs")).rows).toEqual([]);
+  });
+
+  it("exposes executor-produced terminal reason and legacy null through tenant-scoped contact activity", async () => {
+    const contact = await post(fullKey, "/contacts", { email: "timeline@dispatch-fixture.net" });
+    const flow = await post(fullKey, "/automations", { name: "Timeline exit", enabled: true, steps: [
+      { key: "start", type: "trigger", config: { event_name: "closeout.timeline" } },
+      { key: "end", type: "exit", config: {} },
+    ], connections: [{ from: "start", to: "end" }] });
+    expect(flow.status).toBe(200);
+    await post(fullKey, "/events/send", { event: "closeout.timeline", email: "TIMELINE@dispatch-fixture.net" });
+    const run = (await flowRuns(flow.json.id))[0]!;
+    await executeAutomationRun(db, run.tenant_id, run.id);
+    expect((await db.query("select state,exit_reason from automation_runs where id=$1", [run.id])).rows[0]).toEqual({ state: "done", exit_reason: "exit" });
+    await post(fullKey, "/events/send", { event: "closeout.timeline", email: "timeline@dispatch-fixture.net" });
+    const legacy = (await flowRuns(flow.json.id)).find((row) => row.id !== run.id)!;
+    await db.query("update automation_runs set state='stopped',exit_reason=null where id=$1", [legacy.id]);
+    const page = await call(fullKey, "GET", `/contacts/${contact.json.id}/activity`);
+    expect(page.status).toBe(200);
+    expect(page.json.data).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: `${run.id}:completed`, label: "done", run_id: run.id, automation_id: flow.json.id, exit_reason: "exit" }),
+      expect.objectContaining({ id: `${legacy.id}:completed`, label: "stopped", exit_reason: null }),
+    ]));
+    expect(page.json.data.filter((row: any) => row.type !== "automation.run.completed").every((row: any) => row.exit_reason === null)).toBe(true);
+    const viewer = await teammate("Viewer");
+    const session = await signInAs(viewer.email, viewer.password);
+    expect((await call(session.token, "GET", `/contacts/${contact.json.id}/activity`)).json.data).toEqual(page.json.data);
+    const foreign = await seedTenant();
+    expect((await call(foreign, "GET", `/contacts/${contact.json.id}/activity`)).status).toBe(404);
+  });
+});
+
 describe.skipIf(!live)("typed properties and rules", () => {
   it("wakes a date-filtered event wait using the stored received time, not payload metadata", async () => {
     for (const name of ["typed.wait.start", "typed.wait.done"]) expect((await post(fullKey, "/events", { name })).status).toBe(200);
