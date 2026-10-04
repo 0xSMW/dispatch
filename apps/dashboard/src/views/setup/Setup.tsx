@@ -39,6 +39,23 @@ export function Setup() {
         ) : null}
       </Panel>
 
+      <details className="panel">
+        <summary>Lifecycle email (optional)</summary>
+        <div className="stack">
+          <p className="muted">Explore lifecycle email when you are ready. These optional steps do not affect setup completion.</p>
+          {can ? (
+            <ul>
+              <li><Link to="/settings/brand">Set your brand</Link></li>
+              <li><Link to="/automations/events">Send your first event</Link></li>
+              <li><Link to="/templates/library?tab=lifecycle">Browse lifecycle templates</Link></li>
+            </ul>
+          ) : (
+            <p className="muted">Ask a team member with full access to set the brand, send an event, or install a preset.</p>
+          )}
+          <p className="muted">Preset installation will be available here when it ships. You can browse lifecycle templates now.</p>
+        </div>
+      </details>
+
       <div className="grid">
         <Panel title="Tenant">
           <Status ok={Boolean(data?.tenant)} text={data?.tenant?.name ?? "Run pnpm db:seed"} />
