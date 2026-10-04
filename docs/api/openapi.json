@@ -18830,6 +18830,11 @@
             "type": ["string", "null"],
             "description": "The run behind a started or completed activity row."
           },
+          "exit_reason": {
+            "type": ["string", "null"],
+            "enum": ["completed", "exit", "filter", "stopped", "stranded", null],
+            "description": "The stored run exit reason on automation.run.completed activity only: completed (natural ending), exit (Exit step), filter (failed Filter or guard), stopped (cancellation), or stranded (waiting step removed or changed). Null on other activity and legacy terminal runs with no stored reason; never inferred from the state."
+          },
           "created_at": {
             "type": "string",
             "format": "date-time"

@@ -387,6 +387,14 @@ const activityLabels: Record<string, string> = {
 const activityTone = (type: string) =>
   type === "topic.opted_in" ? ("success" as const) : type === "topic.opted_out" ? ("danger" as const) : undefined;
 
+const exitReasons = {
+  completed: "Reached the end",
+  exit: "Exit step",
+  filter: "Filter did not match",
+  stopped: "Automation stopped",
+  stranded: "Waiting step removed or changed",
+};
+
 function Activity({ contactId }: { contactId: string }) {
   const list = useList<ContactActivity>(`/contacts/${contactId}/activity`, {}, { limit: 20 });
   return (
@@ -415,7 +423,12 @@ function Activity({ contactId }: { contactId: string }) {
               row.email_id ? (
                 <Link to={`/emails/${row.email_id}`}>{row.label || row.email_id}</Link>
               ) : row.automation_id && row.run_id ? (
-                <Link to={`/automations/${encodeURIComponent(row.automation_id)}/editor?tab=runs&run=${encodeURIComponent(row.run_id)}`}>{row.label || row.run_id}</Link>
+                <>
+                  <Link to={`/automations/${encodeURIComponent(row.automation_id)}/editor?tab=runs&run=${encodeURIComponent(row.run_id)}`}>{row.label || row.run_id}</Link>
+                  {row.type === "automation.run.completed" && row.exit_reason && exitReasons[row.exit_reason] && (
+                    <span className="muted"> · {exitReasons[row.exit_reason]}</span>
+                  )}
+                </>
               ) : row.type.startsWith("segment.") ? (
                 <Link to="/audience/segments">{row.label}</Link>
               ) : row.type.startsWith("topic.") ? (

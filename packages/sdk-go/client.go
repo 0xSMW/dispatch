@@ -142,15 +142,16 @@ type SplitEmail struct {
 }
 
 type ContactActivity struct {
-	Object       string  `json:"object"`
-	ID           string  `json:"id"`
-	Type         string  `json:"type"`
-	ResourceID   *string `json:"resource_id"`
-	Label        *string `json:"label"`
-	EmailID      *string `json:"email_id"`
-	AutomationID *string `json:"automation_id"`
-	RunID        *string `json:"run_id"`
-	CreatedAt    string  `json:"created_at"`
+	Object       string                `json:"object"`
+	ID           string                `json:"id"`
+	Type         string                `json:"type"`
+	ResourceID   *string               `json:"resource_id"`
+	Label        *string               `json:"label"`
+	EmailID      *string               `json:"email_id"`
+	AutomationID *string               `json:"automation_id"`
+	RunID        *string               `json:"run_id"`
+	ExitReason   *AutomationExitReason `json:"exit_reason"`
+	CreatedAt    string                `json:"created_at"`
 }
 
 const (

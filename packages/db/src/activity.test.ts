@@ -1,5 +1,6 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
-import { contactActivity, contactStats, presentActivity } from "./activity.js";
+import { contactActivity, contactActivitySource, contactStats, presentActivity } from "./activity.js";
 
 function client(rows: unknown[]) {
   const queries: Array<{ sql: string; params: unknown[] }> = [];
@@ -37,6 +38,53 @@ describe("contact activity", () => {
     await contactActivity(db, "tenant_1", { id: "contact_1", email: "ada@example.com" }, { after: "sub_1" });
     expect(db.queries[0].params).toEqual(["tenant_1", "contact_1", "ada@example.com", "sub_1", 21]);
     expect(db.queries[0].sql).toContain("id = $4");
+  });
+
+  it("projects only the stored terminal reason through every union branch and page", async () => {
+    const branches = contactActivitySource.split("union all");
+    expect(branches).toHaveLength(7);
+    expect(branches[0]).toContain("null::text as exit_reason");
+    for (const branch of branches.slice(0, -1)) {
+      expect(branch).not.toContain("r.exit_reason");
+      expect(branch.split("\n  from")[0]).toMatch(/null::text(?: as exit_reason)?\s*$/);
+    }
+    expect(branches.at(-1)).toContain("r.automation_id, r.id, r.exit_reason");
+    expect(branches.at(-1)).toContain("r.state in ('done', 'failed', 'stopped')");
+    const db = client([]);
+    await contactActivity(db, "tenant_1", { id: "contact_1", email: "ada@example.com" }, { before: "run_1:completed", limit: 5 });
+    expect(db.queries[0].sql).toContain("select id, type, resource_id, label, email_id, created_at, automation_id, run_id, exit_reason");
+    expect(db.queries[0].params).toEqual(["tenant_1", "contact_1", "ada@example.com", "run_1:completed", 6]);
+  });
+
+  it.each(["completed", "exit", "filter", "stopped", "stranded"] as const)("presents a stored %s reason without changing the state or run identifiers", (exit_reason) => {
+    const row = {
+      id: "run_1:completed", type: "automation.run.completed", resource_id: "run_1",
+      label: exit_reason === "stopped" || exit_reason === "stranded" ? "stopped" : "done",
+      email_id: null, automation_id: "automation_1", run_id: "run_1", created_at: "2026-10-04", exit_reason,
+    };
+    expect(presentActivity(row)).toEqual({ object: "contact_activity", ...row });
+  });
+
+  it.each(["done", "failed", "stopped"])("does not infer a legacy %s run reason", (label) => {
+    const row = { id: "run_1:completed", type: "automation.run.completed", resource_id: "run_1", label, email_id: null, created_at: "2026-10-04" };
+    expect(presentActivity(row).exit_reason).toBeNull();
+    expect(presentActivity({ ...row, exit_reason: null }).exit_reason).toBeNull();
+  });
+
+  it.each(["automation.run.started", "event.fired", "email.delivered", "contact.created"])("never exposes a terminal reason on %s", (type) => {
+    expect(presentActivity({
+      id: "activity_1", type, resource_id: "resource_1", label: "Label",
+      email_id: null, created_at: "2026-10-04", exit_reason: "exit",
+    }).exit_reason).toBeNull();
+  });
+
+  it("documents the optional nullable stored reason and preserves the activity route response", () => {
+    const spec = JSON.parse(readFileSync(new URL("../../../docs/api/openapi.json", import.meta.url), "utf8"));
+    const activity = spec.components.schemas.ContactActivity;
+    expect(activity.properties.exit_reason.type).toEqual(["string", "null"]);
+    expect(activity.properties.exit_reason.enum).toEqual(["completed", "exit", "filter", "stopped", "stranded", null]);
+    expect(activity.required).not.toContain("exit_reason");
+    expect(JSON.stringify(spec.paths["/contacts/{contact}/activity"] ?? spec.paths["/contacts/{id}/activity"])).toContain("#/components/schemas/ContactActivity");
   });
 
   it("counts all, subscribed, and unsubscribed contacts", async () => {

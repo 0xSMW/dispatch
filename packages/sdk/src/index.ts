@@ -26,6 +26,7 @@ export type ContactActivity = Row & {
   email_id: string | null;
   automation_id?: string | null;
   run_id?: string | null;
+  exit_reason?: AutomationExitReason | null;
   created_at: string;
 };
 export type Deleted = { object: string; id: string; deleted: true };

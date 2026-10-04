@@ -31,6 +31,60 @@ type canned struct {
 	body   any
 }
 
+func TestContactActivityExitReasons(t *testing.T) {
+	for _, reason := range []string{"completed", "exit", "filter", "stopped", "stranded", "null", "absent"} {
+		t.Run(reason, func(t *testing.T) {
+			row := Map{"object": "contact_activity", "id": "r1:completed", "type": "automation.run.completed",
+				"label": "done", "resource_id": "r1", "email_id": nil, "automation_id": "a1", "run_id": "r1",
+				"created_at": "2026-10-04T00:00:00Z"}
+			if reason == "null" {
+				row["exit_reason"] = nil
+			} else if reason != "absent" {
+				row["exit_reason"] = reason
+			}
+			payload, err := json.Marshal(row)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var typed ContactActivity
+			if err := json.Unmarshal(payload, &typed); err != nil {
+				t.Fatal(err)
+			}
+			if reason == "null" || reason == "absent" {
+				if typed.ExitReason != nil {
+					t.Fatalf("invented reason: %v", typed.ExitReason)
+				}
+			} else if typed.ExitReason == nil || string(*typed.ExitReason) != reason {
+				t.Fatalf("lost reason: %v", typed.ExitReason)
+			}
+			encoded, err := json.Marshal(typed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded Map
+			if err := json.Unmarshal(encoded, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			if decoded["exit_reason"] != row["exit_reason"] {
+				t.Fatalf("reason changed: %s", encoded)
+			}
+			page := Map{"object": "list", "has_more": true, "data": []Map{row}}
+			path := "/contacts/c1/activity?after=r0%3Acompleted&limit=5"
+			client, calls := recorder(t, map[string]canned{"GET " + path: {status: 200, body: page}})
+			result, err := client.ContactActivity("c1", url.Values{"after": {"r0:completed"}, "limit": {"5"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Data) != 1 || result.Data[0]["exit_reason"] != row["exit_reason"] || !result.HasMore {
+				t.Fatalf("activity response changed: %#v", result)
+			}
+			if len(*calls) != 1 || (*calls)[0].Path != path {
+				t.Fatalf("unexpected request: %#v", *calls)
+			}
+		})
+	}
+}
+
 func recorder(t *testing.T, responses map[string]canned) (*Client, *[]recorded) {
 	t.Helper()
 	calls := &[]recorded{}

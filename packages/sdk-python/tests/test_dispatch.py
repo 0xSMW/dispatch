@@ -11,12 +11,12 @@ from email.parser import BytesParser
 from email.policy import default
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
-from typing import get_args, get_type_hints
+from typing import NotRequired, get_args, get_type_hints
 
 from dispatch import (
     Automation, AutomationConnectionInput, AutomationDryRun, AutomationExitReason, AutomationGuard,
     AutomationInput, AutomationRun, AutomationRunEvent, AutomationRunList, AutomationStepInput,
-    AutomationTriggerConfig, AutomationUpdateInput, BranchConfig, BranchPath, ContactPropertyInput,
+    AutomationTriggerConfig, AutomationUpdateInput, BranchConfig, BranchPath, ContactActivity, ContactPropertyInput,
     Dispatch, DispatchError, ExitConfig, FilterConfig, ImportColumnMap, PredicateRule, RuleGroup,
     SendEmailConfig,
 )
@@ -165,6 +165,27 @@ class TestDispatch(unittest.TestCase):
                 self.assertNotIn("/v1/", sent["path"])
                 if body is not None:
                     self.assertEqual(sent["body"], body)
+
+    def test_contact_activity_exit_reasons(self):
+        self.assertEqual(get_type_hints(ContactActivity)["exit_reason"], AutomationExitReason | None)
+        self.assertEqual(get_type_hints(ContactActivity, include_extras=True)["exit_reason"], NotRequired[AutomationExitReason | None])
+        for reason in (*get_args(AutomationExitReason), None, "absent"):
+            with self.subTest(reason=reason):
+                activity: ContactActivity = {
+                    "object": "contact_activity", "id": "r1:completed",
+                    "type": "automation.run.completed", "label": "done", "resource_id": "r1",
+                    "automation_id": "a1", "run_id": "r1", "email_id": None,
+                    "created_at": "2026-10-04T00:00:00Z",
+                }
+                if reason != "absent":
+                    activity["exit_reason"] = reason
+                page = {"object": "list", "has_more": True, "data": [activity]}
+                path = "/contacts/c%2F1/activity?after=r0%3Acompleted&limit=5"
+                Recorder.responses = {("GET", path): (200, page)}
+                result = self.client.contact_activity("c/1", after="r0:completed", limit=5)
+                self.assertEqual(result, page)
+                self.assertEqual(json.loads(json.dumps(result)), page)
+                self.assertEqual(Recorder.calls[-1]["path"], path)
 
     def test_flow_config_contracts(self):
         self.assertEqual(get_args(get_type_hints(FilterConfig)["scope"]), ("next", "following"))

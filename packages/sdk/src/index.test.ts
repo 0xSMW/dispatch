@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { signWebhook } from "@dispatchmail/core";
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
-import { Dispatch, WebhookVerificationError, type Automation, type AutomationCreate, type AutomationDryRun, type AutomationUpdate, type AutomationStatus, type AutomationReentry, type AutomationTriggerConfig, type ImportColumnMap, type Operator, type PropertyType, type PropertyValue, type Result, type Rule, type SendEmailConfig } from "./index.js";
+import { Dispatch, WebhookVerificationError, type Automation, type AutomationCreate, type AutomationDryRun, type AutomationUpdate, type AutomationStatus, type AutomationReentry, type AutomationTriggerConfig, type AutomationExitReason, type ContactActivity, type ImportColumnMap, type Operator, type PropertyType, type PropertyValue, type Result, type Rule, type SendEmailConfig } from "./index.js";
 
 const base = "http://localhost:3100";
 
@@ -58,6 +58,22 @@ describe("constructor", () => {
 });
 
 describe("transport", () => {
+  it.each(["completed", "exit", "filter", "stopped", "stranded", null, undefined] as const)("preserves nullable/legacy contact activity exit_reason %s", async (exit_reason) => {
+    const activity: ContactActivity = {
+      object: "contact_activity", id: "run_1:completed", type: "automation.run.completed",
+      resource_id: "run_1", label: "done", email_id: null, automation_id: "a/1",
+      run_id: "run_1", created_at: "2026-10-04T00:00:00Z",
+      ...(exit_reason === undefined ? {} : { exit_reason }),
+    };
+    const page = { object: "list", has_more: true, data: [activity] };
+    const fetch = stub(page);
+    const result = await new Dispatch({ apiKey: "sk_test" }).contacts.activity("c/1", { after: "run_0:completed", limit: 5 });
+    expectTypeOf(result.data!.data[0]!.exit_reason).toEqualTypeOf<AutomationExitReason | null | undefined>();
+    expect(result.data).toEqual(page);
+    expect(JSON.parse(JSON.stringify(result.data))).toEqual(page);
+    expect(request(fetch).url).toBe(`${base}/contacts/c%2F1/activity?after=run_0%3Acompleted&limit=5`);
+  });
+
   it.each([
     { stranded_runs: 3, by_step: { removed: 2, "send/email": 1 } },
     { stranded_runs: 0, by_step: {} },

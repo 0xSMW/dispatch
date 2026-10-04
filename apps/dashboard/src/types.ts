@@ -638,6 +638,7 @@ export type ContactActivity = {
   email_id: string | null;
   automation_id?: string | null;
   run_id?: string | null;
+  exit_reason?: AutomationRun["exit_reason"];
   created_at: string;
 };
 

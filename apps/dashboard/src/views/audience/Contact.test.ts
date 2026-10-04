@@ -18,7 +18,7 @@ const ada: ContactRow = {
   updated_at: "2026-09-01T00:00:00.000Z",
 };
 
-function api() {
+function api(activity?: unknown[]) {
   return stubApi({
     "GET /contacts/contact_ada": ada,
     "PATCH /contacts/contact_ada": (_url: URL, init: RequestInit) => ({ ...ada, ...JSON.parse(String(init.body)), properties: ada.properties }),
@@ -39,7 +39,7 @@ function api() {
       { object: "topic", id: "topic_news", name: "News", key: "news", description: null, visibility: "public", default_subscription: "opt_in" },
       { object: "topic", id: "topic_tips", name: "Tips", key: "tips", description: null, visibility: "private", default_subscription: "opt_out" },
     ]),
-    "GET /contacts/contact_ada/activity": list([
+    "GET /contacts/contact_ada/activity": list(activity ?? [
       { object: "contact_activity", id: "ev_1", type: "email.delivered", resource_id: "email_1", label: "Welcome", email_id: "email_1", created_at: "2026-09-02T00:00:00.000Z" },
       { object: "contact_activity", id: "sc_1", type: "segment.added", resource_id: "seg_vip", label: "VIP", email_id: null, created_at: "2026-09-01T00:00:00.000Z" },
       { object: "contact_activity", id: "run_1:started", type: "automation.run.started", resource_id: "run_1", label: "Onboarding", email_id: null, automation_id: "automation_1", run_id: "run_1", created_at: "2026-09-01T00:00:00.000Z" },
@@ -101,6 +101,44 @@ describe("Contact", () => {
     const link = await screen.findByRole("link", { name: state });
     expect(link.getAttribute("href")).toBe(`/automations/automation_1/editor?tab=runs&run=run_${state}`);
     expect(within(link.closest("tr")!).getByText("Automation run ended")).toBeTruthy();
+  });
+
+  it.each([
+    ["completed", "done", "Reached the end"],
+    ["exit", "done", "Exit step"],
+    ["filter", "done", "Filter did not match"],
+    ["stopped", "stopped", "Automation stopped"],
+    ["stranded", "stopped", "Waiting step removed or changed"],
+  ])("explains stored %s beside the unchanged %s state and run link", async (exit_reason, state, explanation) => {
+    api([{
+      object: "contact_activity", id: "run_1:completed", type: "automation.run.completed",
+      resource_id: "run_1", label: state, email_id: null, automation_id: "automation_1",
+      run_id: "run_1", exit_reason, created_at: "2026-09-02T00:00:00.000Z",
+    }]);
+    open();
+    const link = await screen.findByRole("link", { name: state });
+    expect(link.getAttribute("href")).toBe("/automations/automation_1/editor?tab=runs&run=run_1");
+    expect(within(link.closest("tr")!).getByText(`· ${explanation}`)).toBeTruthy();
+    expect(link.textContent).toBe(state);
+  });
+
+  it.each([
+    ["automation.run.completed", "done", undefined],
+    ["automation.run.completed", "failed", null],
+    ["automation.run.completed", "stopped", null],
+    ["automation.run.started", "Onboarding", "exit"],
+    ["event.fired", "user.joined", "exit"],
+  ])("adds no explanation for legacy/null/nonterminal %s (%s, %s)", async (type, label, exit_reason) => {
+    api([{
+      object: "contact_activity", id: "run_1", type, resource_id: "run_1", label,
+      email_id: null, automation_id: "automation_1", run_id: "run_1",
+      ...(exit_reason === undefined ? {} : { exit_reason }), created_at: "2026-09-02T00:00:00.000Z",
+    }]);
+    open();
+    const link = await screen.findByRole("link", { name: label! });
+    const cells = within(link.closest("tr")!).getAllByRole("cell");
+    expect(cells[1].textContent).toBe(label);
+    expect(link.getAttribute("href")).toBe("/automations/automation_1/editor?tab=runs&run=run_1");
   });
 
   it("saves properties, sending cleared values as null", async () => {

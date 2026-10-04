@@ -60,6 +60,7 @@ class ContactActivity(TypedDict):
     email_id: NotRequired[str | None]
     automation_id: NotRequired[str | None]
     run_id: NotRequired[str | None]
+    exit_reason: NotRequired[AutomationExitReason | None]
 
 
 class AttachmentInput(TypedDict, total=False):
