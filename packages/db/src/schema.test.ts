@@ -2,6 +2,13 @@ import { describe, expect, it } from "vitest";
 import { schema } from "./schema.js";
 
 describe("schema", () => {
+  it("backfills only the locked event-only cohort in bounded batches and skips scans on replay", () => {
+    const block = schema.slice(schema.indexOf("-- The migration entry point captures"));
+    expect(block).toContain("current_setting('dispatch.legacy_event_roots', true) = 'true'");
+    expect(block).toContain("where depth is null limit 1000");
+    expect(block).toContain("exit when changed = 0");
+    expect(block.slice(block.indexOf("do $$"))).not.toMatch(/trigger_type|data->|name\s*=/);
+  });
   it("adds password hashes and gives every tenant an Admin and a Viewer role, idempotently", () => {
     expect(schema).toContain("alter table users add column if not exists password_hash text;");
     // The full-access role tenants were made with becomes Admin, unless the tenant has one.

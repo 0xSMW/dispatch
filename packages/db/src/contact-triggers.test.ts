@@ -133,6 +133,38 @@ describe("contact transitions", () => {
       triggerType: "contact_created", key: "@contact.created", contact, originRunId: "run_parent",
     })).rejects.toThrow("Original enrollment depth is unavailable");
     expect(query.mock.calls.some(([sql]) => sql.includes("insert into automation_runs"))).toBe(false);
+    expect(query.mock.calls.some(([sql]) => sql.includes("insert into custom_events") || sql.includes("insert into automation_enrollments"))).toBe(false);
+    expect(query.mock.calls.findIndex(([sql]) => sql.includes("from automations"))).toBeGreaterThan(-1);
+  });
+
+  it("allows an unknown-depth mutation's history when field filters leave no eligible candidate", async () => {
+    const { client, query } = triggerClient();
+    const original = query.getMockImplementation()!;
+    query.mockImplementation(async (sql, params) => {
+      if (sql.includes("select r.automation_id, r.depth")) return { rows: [{ automation_id: "parent", depth: null }] };
+      if (sql.includes("from automations")) return { rows: [{
+        id: "child", trigger: "@contact.updated", trigger_type: "contact_updated", reentry: "once",
+        steps: [{ key: "start", type: "trigger", config: { type: "contact_updated", field: "last_name" } }], connections: [],
+      }] };
+      return original(sql, params);
+    });
+    await dispatchContactWrite(client, "tenant_1", "req_1", contact, { ...contact, first_name: "Grace" }, { originRunId: "unknown" });
+    expect(query.mock.calls.filter(([sql]) => sql.includes("insert into contact_changes"))).toHaveLength(1);
+    expect(query.mock.calls.some(([sql]) => sql.includes("insert into custom_events") || sql.includes("insert into automation_runs"))).toBe(false);
+    expect(query.mock.calls.find(([sql]) => sql.includes("from automations"))![1]![3]).toBe("parent");
+  });
+
+  it("does not require unknown depth when selected runs are empty or only the origin", async () => {
+    const { client, query } = triggerClient();
+    const original = query.getMockImplementation()!;
+    query.mockImplementation(async (sql, params) => sql.includes("select r.automation_id, r.depth")
+      ? { rows: [{ automation_id: "parent", depth: null }] } : original(sql, params));
+    const options: TriggerOptions = { triggerType: "contact_updated", key: "@contact.updated", contact, originRunId: "unknown" };
+    expect(await startRuns(client, "tenant_1", event, options, [])).toEqual([]);
+    expect(await startRuns(client, "tenant_1", event, options, [{
+      id: "parent", trigger: "@contact.updated", trigger_type: "contact_updated", reentry: "once", steps: [], connections: [],
+    }])).toEqual([]);
+    expect(query.mock.calls.some(([sql]) => sql.includes("insert into automation_runs"))).toBe(false);
   });
 
   it("keeps a real legacy @ event with forged payload depth at root zero", async () => {

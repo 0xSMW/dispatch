@@ -70,7 +70,9 @@ A step cannot trigger its own automation. Cross-automation trigger chains stop a
 
 Depth belongs to the original run enrollment, not its current trigger configuration or an event payload. Real events, contact writes, imports, and explicit enrollments start at zero; step-origin children increment their parent's stored depth. Paused trigger edits cannot reset that depth or make caller-supplied `depth` trusted. A depth-five contact event is recorded without enrolling another run.
 
-On upgrades, runs created before stored enrollment depth existed have unknown provenance. Their contact-triggering steps fail with `Original enrollment depth is unavailable for this legacy run` rather than trusting an event name, payload, or edited graph. Stop those runs and explicitly enroll the contacts again where appropriate. Existing non-contact-triggering steps and newly enrolled legacy real-event flows remain supported.
+Upgrades from the event-only schema preserve existing runs as depth-zero roots, including legacy real `@` events with caller-supplied depth. Kept contact-update and segment-addition steps continue without replacing the runs. Use the migration command so this schema state is captured before the upgrade.
+
+Runs from a mixed contact-trigger installation that already lacks original enrollment depth remain unknown; event names, payloads, and edited triggers cannot recover it. Their mutations and change history can continue when no internal trigger matches. If an eligible internal trigger matches, the step fails explicitly with `Original enrollment depth is unavailable for this legacy run` and rolls back that mutation and dispatch together. This does not affect known old event-only roots or new enrollments.
 
 Contact dispatch, steps, graph edits, and Stop retry complete transactions only when PostgreSQL confirms a deadlock aborted them. Each attempt rereads current state and keeps history, enrollment, and webhook fanout atomic. Exhausted step attempts remain ready for worker retry, not failed; a concurrent Stop remains final. This internal recovery does not reset once-per-contact enrollment.
 

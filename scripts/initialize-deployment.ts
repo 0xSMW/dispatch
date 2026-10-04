@@ -1,7 +1,7 @@
 import { closeSync, constants, fchmodSync, fstatSync, ftruncateSync, lstatSync, openSync, readFileSync, writeSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { connect } from '../packages/db/src/index.ts';
-import { schema } from '../packages/db/src/schema.ts';
+import { migrate } from '../packages/db/src/migration.ts';
 import { createTenant } from '../packages/db/src/tenants.ts';
 import { id } from '../packages/core/src/index.ts';
 import { dnsRecords } from '../packages/provider-ses/src/records.ts';
@@ -36,7 +36,7 @@ try { closeSync(privateFile('credentials.json')); } catch (error) {
 Object.assign(process.env,env);
 const db=connect(env.DATABASE_DIRECT_URL);
 try{
- await db.query(schema);
+ await migrate(db);
  const result=await db.query('select id from tenants');
  if(!result.rowCount && process.env.DISPATCH_ADMIN_EMAIL){
   const {randomBytes}=await import('node:crypto');const password=randomBytes(24).toString('base64url');

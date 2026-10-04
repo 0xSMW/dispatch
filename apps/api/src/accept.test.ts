@@ -24,9 +24,8 @@ import {
   type Provider,
   type ProviderEmail,
 } from "@dispatchmail/core";
-import { appendEvent, connect, contactColumns, dispatchContactWrite, emit, executeAutomationRun, fireEvent, reconcileBroadcastSent, retryTx, tx, unsubscribeToken, updateContact, type ContactRow, type Db } from "@dispatchmail/db";
+import { appendEvent, connect, contactColumns, dispatchContactWrite, emit, executeAutomationRun, fireEvent, migrate, reconcileBroadcastSent, retryTx, tx, unsubscribeToken, updateContact, type ContactRow, type Db } from "@dispatchmail/db";
 import type { Storage } from "@dispatchmail/storage";
-import { schema } from "../../../packages/db/src/schema.js";
 import { contactContext } from "../../../packages/db/src/automations.js";
 import { createImport, claimImports, importBatch } from "../../../packages/db/src/imports.js";
 import { runImport } from "../../worker/src/imports.js";
@@ -91,7 +90,7 @@ beforeAll(async () => {
   process.env.FAKE_PROVIDER_DELAYED_DELAY_MS = "0";
   await ensureDatabase();
   db = connect(databaseUrl);
-  await db.query(schema);
+  await migrate(db);
   const api = await import("./server.js");
   const worker = await import("../../worker/src/worker.js");
   app = api.app;
@@ -227,15 +226,15 @@ describe.skipIf(!live)("accept", () => {
       ]);
     });
 
-    it("migrates twice without guessing historical depth and roots real legacy @ events at zero", async () => {
+    it("migrates twice without guessing mixed-era depth and roots new real legacy @ events at zero", async () => {
       const flow = await contactFlow({ event_name: "repair.legacy" });
       const tenantId = (await db.query("select tenant_id from automations where id=$1", [flow])).rows[0].tenant_id as string;
       expect((await post(fullKey, "/events/send", { event: "repair.legacy", email: "legacy@dispatch-fixture.net", payload: { depth: 4 } })).status).toBe(202);
       const old = (await flowRuns(flow))[0]!;
-      // A real pre-column installation has no trustworthy enrollment depth to backfill.
+      // A mixed-era schema with trigger_type already present cannot recover depth.
       await db.query("alter table automation_runs drop column depth");
-      await db.query(schema);
-      await db.query(schema);
+      await migrate(db);
+      await migrate(db);
       expect(await runRow(old.id)).toMatchObject({ depth: null });
       await db.query("update automations set trigger='@contact.updated',steps=$2 where id=$1", [
         flow, JSON.stringify([{ key: "trigger", type: "trigger", config: { event_name: "@contact.updated" } }]),
@@ -256,8 +255,8 @@ describe.skipIf(!live)("accept", () => {
       expect(forged.runs).toHaveLength(1);
       expect((await flowRuns(ordinary)).map((run) => run.id)).toEqual(forged.runs);
       expect(await runRow(forged.runs[0]!)).toMatchObject({ depth: 0 });
-      await db.query(schema);
-      await db.query(schema);
+      await migrate(db);
+      await migrate(db);
       expect(await runRow(old.id)).toMatchObject({ depth: null });
       expect(await runRow(fired.runs[0]!)).toMatchObject({ depth: 0 });
       const contact = (await db.query<ContactRow>(`select ${contactColumns} from contacts where email='legacy@dispatch-fixture.net'`)).rows[0]!;
@@ -275,6 +274,39 @@ describe.skipIf(!live)("accept", () => {
       })).rejects.toMatchObject({ statusCode: 409, message: expect.stringContaining("depth is unavailable") });
       expect(await snapshot()).toEqual(before);
       expect((await db.query("select first_name from contacts where id=$1", [contact.id])).rows[0].first_name).toBe("External");
+    });
+
+    it("continues unknown-depth contact and segment mutations when no eligible internal candidate matches", async () => {
+      const contact = await post(fullKey, "/contacts", { email: "unknown-no-match@dispatch-fixture.net", first_name: "Original" });
+      const segment = await post(fullKey, "/segments", { name: "Unknown origin membership" });
+      const ignored = await contactFlow({ type: "contact_updated", field: "first_name", to: "Does not match" });
+      const parent = await contactFlow({ event_name: "repair.no-match" }, [
+        { key: "update", type: "contact_update", config: { first_name: "Kept" } },
+        { key: "segment", type: "add_to_segment", config: { segment_id: segment.json.id } },
+        { key: "after", type: "contact_update", config: { last_name: "Continued" } },
+      ]);
+      expect((await post(fullKey, "/events/send", { event: "repair.no-match", email: contact.json.email })).status).toBe(202);
+      const root = (await flowRuns(parent))[0]!;
+      await db.query("update automation_runs set depth=null where id=$1", [root.id]);
+      // A matching self-trigger is excluded by identity even with unknown depth.
+      await editTrigger(parent, { type: "contact_updated", field: "first_name", to: "Kept" });
+      await executeAutomationRun(db, root.tenant_id, root.id);
+      expect(await runRow(root.id)).toMatchObject({ state: "done", depth: null, error: null });
+      expect((await db.query("select first_name,last_name from contacts where id=$1", [contact.json.id])).rows[0])
+        .toEqual({ first_name: "Kept", last_name: "Continued" });
+      expect((await history(contact.json.id)).filter((change) => change.from_value !== null || change.field === "last_name")).toEqual([
+        { field: "first_name", from_value: "Original", to_value: "Kept" },
+        { field: "last_name", from_value: null, to_value: "Continued" },
+      ]);
+      expect((await db.query("select field,from_value,to_value from contact_changes where contact_id=$1 and field=$2",
+        [contact.json.id, `segments.${segment.json.id}`])).rows).toEqual([
+        { field: `segments.${segment.json.id}`, from_value: false, to_value: true },
+      ]);
+      expect((await db.query("select step_key,state from automation_steps where run_id=$1 order by step_index", [root.id])).rows)
+        .toEqual([{ step_key: "update", state: "done" }, { step_key: "segment", state: "done" }, { step_key: "after", state: "done" }]);
+      expect(await flowRuns(parent)).toHaveLength(1);
+      expect(await flowRuns(ignored)).toHaveLength(0);
+      expect((await db.query("select id from custom_events where name like '@%'")).rows).toHaveLength(0);
     });
 
     it("rolls back and retries complete dispatcher transactions after an actual SQL deadlock", async () => {
@@ -615,8 +647,8 @@ describe.skipIf(!live)("accept", () => {
       const flow = await post(fullKey, "/automations", { name: "Legacy kind", ...graph });
       const linear = [{ type: "send_email", template: graph.template.id }, { type: "send_email", template: graph.template.id, topic_id: "news" }, { type: "send_email", template: graph.template.id, kind: "marketing" }];
       await db.query("update automations set steps=$2,connections='[]' where id=$1", [flow.json.id, JSON.stringify(linear)]);
-      await db.query(schema);
-      await db.query(schema);
+      await migrate(db);
+      await migrate(db);
       const stored = (await db.query("select steps from automations where id=$1", [flow.json.id])).rows[0].steps;
       expect(stored.map((step: any) => step.kind)).toEqual(["transactional", "marketing", "marketing"]);
       // Use new keys because permanent type reservations apply to the old flat keys.
@@ -624,8 +656,8 @@ describe.skipIf(!live)("accept", () => {
         { key: "new_trigger", type: "trigger", config: { event_name: "kind.start" } },
         { key: "new_send", type: "send_email", config: { template: graph.template.id, topic_id: "news" } },
       ])]);
-      await db.query(schema);
-      await db.query(schema);
+      await migrate(db);
+      await migrate(db);
       expect((await db.query("select steps from automations where id=$1", [flow.json.id])).rows[0].steps[1].config.kind).toBe("marketing");
     });
   });
@@ -736,14 +768,14 @@ describe.skipIf(!live)("accept", () => {
       await call(fullKey, "PATCH", `/automations/${flow.id}`, { steps: [start, exit], connections: [{ from: "start", to: "end" }] });
       expect((await row(run.id)).exit_reason).toBe("stranded");
       await db.query("update automation_runs set exit_reason=null where id=$1", [run.id]);
-      await db.query(schema);
-      await db.query(schema);
+      await migrate(db);
+      await migrate(db);
       expect(await row(run.id)).toMatchObject({ state: "stopped", exit_reason: "stranded", guards: [{ filter: "eligible", rule: activated }] });
       await db.query("update automation_runs set state='done',error=null,exit_reason=null where id=$1", [run.id]);
-      await db.query(schema);
+      await migrate(db);
       expect((await row(run.id)).exit_reason).toBe("completed");
       await db.query("update automation_runs set state='stopped',exit_reason=null where id=$1", [run.id]);
-      await db.query(schema);
+      await migrate(db);
       expect((await row(run.id)).exit_reason).toBe("stopped");
     });
   });
@@ -849,8 +881,8 @@ describe.skipIf(!live)("accept", () => {
         connections: [{ from: "start", to: "wait" }, { from: "wait", to: "after" }] };
       for (const preview of [true, false]) expect((await patch(flow.id, changed, preview)).status).toBe(409);
       await patch(flow.id, removed);
-      await db.query(schema);
-      await db.query(schema);
+      await migrate(db);
+      await migrate(db);
       expect((await patch(flow.id, changed)).json.message).toContain("Step key wait was already used for wait_for_event");
       await expect(db.query("update automations set steps=$2,used_keys='{}' where id=$1", [flow.id, JSON.stringify(changed.steps)]))
         .rejects.toMatchObject({ code: "23514" });
@@ -968,8 +1000,8 @@ describe.skipIf(!live)("accept", () => {
       const run = (await db.query("select id,tenant_id from automation_runs")).rows[0];
       await executeAutomationRun(db, run.tenant_id, run.id);
       await db.query("update automation_steps set data=data-'wait_config' where run_id=$1", [run.id]);
-      await db.query(schema);
-      await db.query(schema);
+      await migrate(db);
+      await migrate(db);
       expect((await db.query("select data->'wait_config' as config from automation_steps where run_id=$1", [run.id])).rows[0].config)
         .toMatchObject({ filter_rule: wait.config.filter_rule });
       await patch(flow.json.id, { status: "paused" });
@@ -1027,8 +1059,8 @@ describe.skipIf(!live)("accept", () => {
       const saved = await patch(item.id, { connections: [] });
       expect(saved.json.version).toBe(1);
       expect((await patch(item.id, { name: "Renamed pause" })).json.version).toBe(1);
-      await db.query(schema);
-      await db.query(schema);
+      await migrate(db);
+      await migrate(db);
       expect((await call(fullKey, "GET", `/automations/${item.id}`)).json).toMatchObject({ status: "disabled", version: 1 });
       await patch(item.id, { status: "enabled" });
       await patch(item.id, { status: "paused" });
@@ -1418,8 +1450,8 @@ describe.skipIf(!live)("accept", () => {
       await process(db, tenant, flow, untouched.id);
       expect((await enrollmentJob(flow, untouched.id)).counts.processed).toBe(0);
       expect(await flowRuns(flow)).toHaveLength(500);
-      await db.query(schema);
-      await db.query(schema);
+      await migrate(db);
+      await migrate(db);
       expect((await enrollmentJob(flow, job.id)).status).toBe("cancelled");
     }, 30_000);
 
@@ -1793,8 +1825,8 @@ describe.skipIf(!live)("accept", () => {
     expect(jobs.map((row) => [row.id, row.trigger_automations])).toEqual([
       [off!.id, false], [on!.id, true], [override!.id, false], [explicit!.id, true]
     ]);
-    await db.query(schema);
-    await db.query(schema);
+    await migrate(db);
+    await migrate(db);
     expect((await call(fullKey, "GET", `/contacts/imports/${on!.id}`)).json.trigger_automations).toBe(true);
     const other = await seedTenant();
     expect((await call(other, "GET", `/contacts/imports/${on!.id}`)).status).toBe(404);
@@ -2151,8 +2183,8 @@ describe.skipIf(!live)("accept", () => {
     expect((await call(fullKey, "GET", "/fired-events")).json.data).toHaveLength(0);
     const wire = (await call(fullKey, "GET", `/automations/${created}`)).json;
     expect(wire).toMatchObject({ trigger: null, trigger_config: { type: "contact_created" }, reentry: "every_time" });
-    await db.query(schema);
-    await db.query(schema);
+    await migrate(db);
+    await migrate(db);
     expect((await db.query("select trigger_type, trigger from automations where id = $1", [created])).rows).toEqual([
       { trigger_type: "contact_created", trigger: "@contact.created" }
     ]);
@@ -2439,12 +2471,12 @@ describe.skipIf(!live)("accept", () => {
        from emails e join email_recipients r on r.email_id = e.id order by e.id, r.id`,
     );
     const before = (await snapshot()).rows;
-    await db.query(schema);
-    await db.query(schema);
+    await migrate(db);
+    await migrate(db);
     expect((await snapshot()).rows).toEqual(before);
     expect((await call(fullKey, "PATCH", "/settings", { sandbox_domains: [] })).status).toBe(200);
-    await db.query(schema);
-    await db.query(schema);
+    await migrate(db);
+    await migrate(db);
     expect((await snapshot()).rows).toEqual(before);
 
     const current = await post(fullKey, "/emails", letter({ to: "ada@qa.dispatch-fixture.net" }));
@@ -2817,8 +2849,8 @@ describe.skipIf(!live)("accept", () => {
           await count(0);
         }
         expect((await call(fullKey, "PATCH", "/settings", { sandbox_domains: [] })).status).toBe(200);
-        await db.query(schema);
-        await db.query(schema);
+        await migrate(db);
+        await migrate(db);
         await productionDelivery(job, ses.provider);
         await count(0);
         expect((await db.query("select id, type, data from email_events where email_id = $1 order by id", [broadcast.emailId])).rows).toEqual(events);
@@ -2962,8 +2994,8 @@ describe.skipIf(!live)("accept", () => {
         await productionDelivery(retryJob, blocked.provider);
         await productionDelivery(job, blocked.provider);
         expect((await call(fullKey, "PATCH", "/settings", { sandbox_domains: [] })).status).toBe(200);
-        await db.query(schema);
-        await db.query(schema);
+        await migrate(db);
+        await migrate(db);
         await productionDelivery(retryJob, blocked.provider);
         await reports();
         expect((await db.query("select id, type, data from email_events where email_id = $1 order by id", [broadcast.emailId])).rows).toEqual(snapshot);
@@ -3153,8 +3185,8 @@ describe.skipIf(!live)("accept", () => {
         expect(attempts.every((attempt) => attempt.attempt === 1)).toBe(true);
         await productionDelivery(retryJob, retrySes.provider);
         expect((await call(fullKey, "PATCH", "/settings", { sandbox_domains: [] })).status).toBe(200);
-        await db.query(schema);
-        await db.query(schema);
+        await migrate(db);
+        await migrate(db);
         await productionDelivery(retryJob, retrySes.provider);
         await reports(after);
         expect((await db.query("select id, type, data from email_events where email_id = $1 order by id", [accepted.json.id])).rows).toEqual(snapshot);
@@ -3279,8 +3311,8 @@ describe.skipIf(!live)("accept", () => {
     });
     expect(changed.status).toBe(200);
     await call(fullKey, "PATCH", "/settings", { sandbox_domains: ["qa.test"] });
-    await db.query(schema);
-    await db.query(schema);
+    await migrate(db);
+    await migrate(db);
     expect((await call(fullKey, "GET", "/settings")).json).toMatchObject({
       import_trigger_automations: true,
       sandbox_domains: ["qa.test"],
@@ -3368,7 +3400,7 @@ describe.skipIf(!live)("accept", () => {
   });
 
   it("applies the schema again after an admin renamed the Viewer role", async () => {
-    await db.query(schema);
+    await migrate(db);
     const tenant = (
       await db.query<{ id: string }>("select id from tenants limit 1")
     ).rows[0]!.id;
@@ -3382,7 +3414,7 @@ describe.skipIf(!live)("accept", () => {
       (await call(fullKey, "PATCH", `/roles/${viewer.id}`, { name: "Support" }))
         .status,
     ).toBe(200);
-    await db.query(schema);
+    await migrate(db);
     const roles = await db.query<{ name: string }>(
       "select name from roles where tenant_id = $1 and permissions = '[\"read\"]'::jsonb",
       [tenant],
@@ -4142,7 +4174,7 @@ describe.skipIf(!live)("marketing", () => {
       "update emails set created_at = '2026-10-01' where id = $1",
       [tagged.json.id],
     );
-    await db.query(schema);
+    await migrate(db);
     expect(
       (
         await db.query(
@@ -4165,7 +4197,7 @@ describe.skipIf(!live)("marketing", () => {
       "select xmin::text as version from emails where id = $1",
       [messages.rows[0]!.id],
     );
-    await db.query(schema);
+    await migrate(db);
     const after = await db.query<{ version: string }>(
       "select xmin::text as version from emails where id = $1",
       [messages.rows[0]!.id],
@@ -4823,8 +4855,8 @@ describe.skipIf(!live)("typed properties and rules", () => {
     for (const [key, type, fallback_value] of fixtures) {
       expect((await post(fullKey, "/contact-properties", { key, type, fallback_value })).status).toBe(200);
     }
-    await db.query(schema);
-    await db.query(schema);
+    await migrate(db);
+    await migrate(db);
     expect((await call(fullKey, "GET", "/contact-properties")).json.data).toEqual(expect.arrayContaining(
       fixtures.map(([key, type, fallback_value]) => expect.objectContaining({ key, type, fallback_value })),
     ));

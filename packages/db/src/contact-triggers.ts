@@ -113,16 +113,24 @@ async function origin(client: Queryable, tenantId: string, runId?: string) {
   );
   if (!row.rows[0]) throw new ApiError("not_found", 404, "Origin run not found");
   const depth = row.rows[0].depth;
-  if (depth === null) throw new ApiError("conflict", 409, "Original enrollment depth is unavailable for this legacy run");
-  return { automationId: row.rows[0].automation_id, depth: Math.min(5, depth + 1) };
+  return { automationId: row.rows[0].automation_id, depth: depth === null ? null : Math.min(5, depth + 1) };
+}
+
+function enrollmentDepth(parent: { depth: number | null }) {
+  if (parent.depth === null) throw new ApiError("conflict", 409, "Original enrollment depth is unavailable for this legacy run");
+  return parent.depth;
 }
 
 export async function startRuns(client: Queryable, tenantId: string, event: FiredEvent, options: TriggerOptions, selected?: Candidate[]) {
+  const matching = selected ?? await candidates(client, tenantId, options);
+  if (!matching.length) return [];
   const parent = await origin(client, tenantId, options.originRunId);
-  if (parent.depth >= 5) return [];
+  const eligible = matching.filter((automation) => automation.id !== parent.automationId);
+  if (!eligible.length) return [];
+  const depth = enrollmentDepth(parent);
+  if (depth >= 5) return [];
   const runs: string[] = [];
-  for (const automation of selected ?? await candidates(client, tenantId, options)) {
-    if (automation.id === parent.automationId) continue;
+  for (const automation of eligible) {
     if (automation.reentry === "once" && options.contact) {
       const enrolled = await client.query(
         `insert into automation_enrollments (tenant_id, automation_id, contact_id)
@@ -134,7 +142,7 @@ export async function startRuns(client: Queryable, tenantId: string, event: Fire
     const run = await client.query<{ id: string }>(
       `insert into automation_runs (id, tenant_id, automation_id, event_id, state, priority, contact_id, depth)
        values ($1, $2, $3, $4, 'ready', $5, $6, $7) returning id`,
-      [id("run"), tenantId, automation.id, event.id, options.priority ?? "normal", options.contact?.id ?? null, parent.depth]
+      [id("run"), tenantId, automation.id, event.id, options.priority ?? "normal", options.contact?.id ?? null, depth]
     );
     runs.push(run.rows[0]!.id);
     await emitRunEvent(client, tenantId, run.rows[0]!.id, "automation.run.started");
@@ -147,12 +155,13 @@ export async function fireContactTrigger(client: Queryable, tenantId: string, re
   const selected = await candidates(client, tenantId, options);
   if (!selected.length) return { event: null, runs: [] };
   const parent = await origin(client, tenantId, options.originRunId);
+  const depth = enrollmentDepth(parent);
   const contact = options.contact!;
   const event = await recordEvent(client, tenantId, requestId, {
     name: options.key, email: contact.email,
     data: { contact: { ...contact.properties, id: contact.id, email: contact.email, first_name: contact.first_name,
       last_name: contact.last_name, unsubscribed: Boolean(contact.unsubscribed_at), created_at: contact.created_at },
-      changes: options.changes ?? [], depth: parent.depth, ...(options.originRunId ? { origin_run_id: options.originRunId } : {}) }
+      changes: options.changes ?? [], depth, ...(options.originRunId ? { origin_run_id: options.originRunId } : {}) }
   });
   return { event, runs: await startRuns(client, tenantId, event, options, selected) };
 }

@@ -1032,4 +1032,21 @@ do $$ begin
     alter table automation_runs add constraint automation_runs_depth_check check (depth between 0 and 4);
   end if;
 end $$;
+-- The migration entry point captures the supported pre-contact-trigger schema
+-- under locks, before trigger_type is introduced above. Its only run writer was
+-- fireEvent, so these roots are known zero regardless of event names/payloads.
+-- Mixed-era unknown rows stay NULL. The transaction-local flag is false on replay,
+-- avoiding even a scan; the one-time update uses bounded batches.
+do $$
+declare changed integer;
+begin
+  if current_setting('dispatch.legacy_event_roots', true) = 'true' then
+    loop
+      update automation_runs set depth = 0
+      where ctid in (select ctid from automation_runs where depth is null limit 1000);
+      get diagnostics changed = row_count;
+      exit when changed = 0;
+    end loop;
+  end if;
+end $$;
 `;
