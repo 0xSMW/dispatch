@@ -1022,4 +1022,14 @@ begin
     exit when changed = 0;
   end loop;
 end $$;
+-- Immutable enrollment depth. Old rows have no reliable original provenance:
+-- caller payloads and edited trigger kinds cannot safely supply a backfill.
+-- Leave those rows explicitly unknown rather than trusting a legacy @ name.
+alter table automation_runs add column if not exists depth integer;
+do $$ begin
+  if not exists (select 1 from pg_constraint where conrelid = 'automation_runs'::regclass
+    and conname = 'automation_runs_depth_check') then
+    alter table automation_runs add constraint automation_runs_depth_check check (depth between 0 and 4);
+  end if;
+end $$;
 `;

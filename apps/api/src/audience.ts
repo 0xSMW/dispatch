@@ -46,6 +46,7 @@ import {
   propertyDefinitions,
   removeContactSegment,
   removeSuppressions,
+  retryTx,
   setContactTopics,
   softDelete,
   subscriptionWire,
@@ -90,9 +91,9 @@ export function registerAudience(
   app.post("/contacts", async (request) => {
     const input = contactSchema.parse(request.body);
     const tenantId = request.auth!.tenant_id;
-    const definitions = await propertyDefinitions(db, tenantId);
-    assertPropertyValues(input.properties, definitions);
-    return tx(db, async (client) => {
+    return retryTx(db, async (client) => {
+      const definitions = await propertyDefinitions(client, tenantId);
+      assertPropertyValues(input.properties, definitions);
       const contact = await upsertContact(client, tenantId, input);
       await dispatchContactWrite(client, tenantId, request.request_id, contact.before, contact, { created: contact.created || contact.revived });
       for (const segment of input.segments ?? []) {
@@ -170,7 +171,7 @@ export function registerAudience(
 
   app.post("/contacts/:id/segments/:segment_id", async (request) => {
     const params = request.params as { id: string; segment_id: string };
-    return tx(db, async (client) => {
+    return retryTx(db, async (client) => {
       const tenantId = request.auth!.tenant_id;
       const contact = await findContact(client, tenantId, params.id, true);
       const member = await addContactSegment(client, tenantId, contact.id, params.segment_id);
@@ -194,7 +195,7 @@ export function registerAudience(
 
   app.patch("/contacts/:id/topics", async (request) => {
     const input = contactTopicsSchema.parse(request.body);
-    return tx(db, async (client) => {
+    return retryTx(db, async (client) => {
       const tenantId = request.auth!.tenant_id;
       const contact = await findContact(client, tenantId, (request.params as { id: string }).id, true);
       const topics = await setContactTopics(client, tenantId, contact.id, input.topics);
@@ -213,9 +214,9 @@ export function registerAudience(
   app.patch("/contacts/:id", async (request) => {
     const tenantId = request.auth!.tenant_id;
     const input = contactUpdateSchema.parse(request.body);
-    const definitions = await propertyDefinitions(db, tenantId);
-    assertPropertyValues(input.properties, definitions);
-    return tx(db, async (client) => {
+    return retryTx(db, async (client) => {
+      const definitions = await propertyDefinitions(client, tenantId);
+      assertPropertyValues(input.properties, definitions);
       const contact = await findContact(client, tenantId, (request.params as { id: string }).id, true);
       const properties = input.properties === undefined ? undefined : mergeProperties(contact.properties, input.properties);
       const updated = await updateContact(client, tenantId, contact.id, { ...input, properties });
@@ -333,7 +334,7 @@ export function registerAudience(
 
   app.post("/topics/:id/subscriptions", async (request) => {
     const input = subscriptionSchema.parse(request.body);
-    return tx(db, async (client) => {
+    return retryTx(db, async (client) => {
       const tenantId = request.auth!.tenant_id;
       const topic = await findBy<{ id: string }>(client, "topics", tenantId, (request.params as { id: string }).id, { deletedCol: "deleted_at", errorMessage: "Topic not found" });
       const contact = await upsertContact(client, tenantId, input.email);
@@ -448,7 +449,7 @@ export function registerAudience(
 
   app.post("/segments/:id/contacts", async (request) => {
     const input = segmentContactSchema.parse(request.body);
-    return tx(db, async (client) => {
+    return retryTx(db, async (client) => {
       const tenantId = request.auth!.tenant_id;
       const segment = await findBy<{ id: string }>(client, "segments", tenantId, (request.params as { id: string }).id, { deletedCol: "deleted_at", errorMessage: "Segment not found" });
       const contact = await upsertContact(client, tenantId, input.email);

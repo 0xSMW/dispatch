@@ -6,7 +6,9 @@ import {
   emptyCounts,
   finishImport,
   importBatch,
+  isDeadlock,
   propertyDefinitions,
+  retryTx,
   saveImportCounts,
   tx,
   type Db,
@@ -155,6 +157,9 @@ export async function runImport(
     });
   } catch (error) {
     if (error instanceof ImportInterrupted) return counts;
+    // An exhausted aborted batch leaves only prior committed progress. Keep it reclaimable;
+    // do not fail or requeue a job that may have been cancelled or taken over meanwhile.
+    if (isDeadlock(error)) return counts;
     await tx(db, async (client) => {
       try { await ownImport(client, job); }
       catch (ownership) { if (ownership instanceof ImportInterrupted) return; throw ownership; }
@@ -170,7 +175,7 @@ export async function runImport(
 // Upserts one batch and writes progress in the same transaction. Mutates counts once the batch commits.
 export async function flush(db: Db, job: ImportRow, batch: ImportContact[], counts: ImportCounts, offset = 0) {
   const { rows, dropped } = dedupeByEmail(batch);
-  const result = await tx(db, async (client) => {
+  const result = await retryTx(db, async (client) => {
     const current = await ownImport(client, job);
     if (offset > 0 && (current.row_offset ?? 0) >= offset) throw new ImportInterrupted();
     const done = await importBatch(client, job, rows);

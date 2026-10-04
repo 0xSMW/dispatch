@@ -41,7 +41,9 @@ const run = {
 
 function harness(handler: (sql: string, params: unknown[]) => { rows: unknown[] }) {
   const query = vi.fn(async (sql: string, params: unknown[] = []) => handler(sql.replace(/\s+/g, " "), params));
-  const db = { query, connect: async () => ({ query, release: () => undefined }) } as unknown as Db;
+  const release = vi.fn();
+  const connect = vi.fn(async () => ({ query, release }));
+  const db = { query, connect } as unknown as Db;
   const app = Fastify();
   app.addHook("preHandler", async (request) => {
     (request as unknown as { auth: { tenant_id: string } }).auth = { tenant_id: "tenant_1" };
@@ -50,7 +52,7 @@ function harness(handler: (sql: string, params: unknown[]) => { rows: unknown[] 
     reply.status(error.name === "ZodError" ? 400 : (error.statusCode ?? 500)).send({ name: error.name, message: error.message });
   });
   registerAutomations(app, { db, paging: () => ({}) });
-  return { app, query };
+  return { app, query, connect, release };
 }
 
 describe("automation presenters", () => {
@@ -153,6 +155,134 @@ describe("automation presenters", () => {
 
 describe("automation routes", () => {
   const stored = (row: Partial<AutomationRow> = {}) => ({ ...legacy, ...row });
+  function contended(deadlocks: number) {
+    const state = { automation: stored(), deleted: false, run: "waiting", step: "waiting", receipt: true, events: [] as string[] };
+    let snapshot: typeof state;
+    const result = harness((sql, params) => {
+      const text = sql.trim();
+      if (text === "begin") snapshot = structuredClone(state);
+      if (text === "rollback") Object.assign(state, snapshot);
+      if (text.includes("from automations")) return { rows: state.deleted ? [] : [structuredClone(state.automation)] };
+      if (text.startsWith("update automations")) {
+        if (text.includes("set deleted_at")) state.deleted = true;
+        else state.automation.enabled = false;
+        return { rows: [structuredClone(state.automation)] };
+      }
+      if (text.startsWith("update automation_runs")) {
+        if (!(params[2] as string[]).includes(state.run)) return { rows: [] };
+        state.run = "stopped";
+        return { rows: [{ id: "run_1" }] };
+      }
+      if (text.startsWith("delete from automation_enrollments")) state.receipt = false;
+      if (text.startsWith("update automation_steps")) state.step = "failed";
+      if (text.includes("from automation_runs r")) return { rows: [{
+        ...run, state: state.run, request_id: "req_1", contact_id: "contact_1", exit_reason: "stopped",
+      }] };
+      if (text.startsWith("insert into email_events")) {
+        if (deadlocks-- > 0) throw Object.assign(new Error("deadlock detected"), { code: "40P01" });
+        state.events.push(String(params[5]));
+      }
+      return { rows: [] };
+    });
+    return { ...result, state };
+  }
+
+  it.each([
+    ["PATCH", "/automations/automation_1", { status: "disabled" }],
+    ["POST", "/automations/automation_1/stop", { reset_reentry: true }],
+    ["DELETE", "/automations/automation_1", undefined],
+  ] as const)("retries the whole aborted %s %s operation including cancellation and fanout", async (method, url, payload) => {
+    const { app, state, query, connect, release } = contended(1);
+    const response = await app.inject({ method, url, ...(payload === undefined ? {} : { payload }) });
+    expect(response.statusCode).toBe(200);
+    expect(state).toMatchObject({
+      run: "stopped", step: "failed", receipt: method !== "POST", events: ["automation.run.completed"],
+    });
+    expect(state.deleted).toBe(method === "DELETE");
+    if (method !== "DELETE") expect(state.automation.enabled).toBe(false);
+    expect(query.mock.calls.filter(([sql]) => ["begin", "rollback", "commit"].includes(sql)).map(([sql]) => sql)).toEqual(["begin", "rollback", "begin", "commit"]);
+    expect(connect).toHaveBeenCalledTimes(2);
+    expect(release).toHaveBeenCalledTimes(2);
+    await app.close();
+  });
+
+  it.each([
+    ["PATCH", "/automations/automation_1", { status: "disabled" }],
+    ["POST", "/automations/automation_1/stop", { reset_reentry: true }],
+    ["DELETE", "/automations/automation_1", undefined],
+  ] as const)("keeps %s %s nonterminal when all four transaction attempts abort", async (method, url, payload) => {
+    const { app, state, query, connect, release } = contended(4);
+    const response = await app.inject({ method, url, ...(payload === undefined ? {} : { payload }) });
+    expect(response.statusCode).toBe(500);
+    expect(state).toMatchObject({ deleted: false, automation: { enabled: true }, run: "waiting", step: "waiting", receipt: true, events: [] });
+    expect(query.mock.calls.filter(([sql]) => sql === "rollback")).toHaveLength(4);
+    expect(query.mock.calls.some(([sql]) => sql === "commit")).toBe(false);
+    expect(connect).toHaveBeenCalledTimes(4);
+    expect(release).toHaveBeenCalledTimes(4);
+    await app.close();
+  });
+
+  it("recomputes graph edits from the current status, name and version on retry", async () => {
+    let current = stored({ paused_at: "2026-10-04T00:00:00Z", version: 1 });
+    let deadlocks = 1;
+    const { app, query, release } = harness((sql, params) => {
+      if (sql === "rollback") current = stored({ enabled: false, name: "Concurrent", version: 7 });
+      if (sql.includes("from automations")) return { rows: [structuredClone(current)] };
+      if (sql.startsWith("update automations")) {
+        if (deadlocks-- > 0) throw Object.assign(new Error("deadlock detected"), { code: "40P01" });
+        current = stored({
+          name: String(params[2]), trigger: String(params[3]), steps: JSON.parse(params[4] as string),
+          enabled: params[6] as boolean, version: current.version! + Number(params[10]),
+        });
+        return { rows: [current] };
+      }
+      return { rows: [] };
+    });
+    const response = await app.inject({ method: "PATCH", url: "/automations/automation_1", payload: {
+      steps: [{ key: "start", type: "trigger", config: { event_name: "user.invited" } }], connections: [],
+    } });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ name: "Concurrent", status: "disabled", version: 8, trigger: "user.invited" });
+    expect(query.mock.calls.filter(([sql]) => sql.includes("order by id for update"))).toHaveLength(2);
+    expect(query.mock.calls.filter(([sql]) => sql.includes("from automations"))).toHaveLength(2);
+    expect(release).toHaveBeenCalledTimes(2);
+    await app.close();
+  });
+
+  it("does not apply a paused graph edit after a concurrent Start wins during rollback", async () => {
+    let paused = true;
+    const { app, query } = harness((sql) => {
+      if (sql === "rollback") paused = false;
+      if (sql.includes("from automations")) return { rows: [stored({ paused_at: paused ? "2026-10-04T00:00:00Z" : null })] };
+      if (sql.startsWith("update automations")) throw Object.assign(new Error("deadlock detected"), { code: "40P01" });
+      return { rows: [] };
+    });
+    const response = await app.inject({ method: "PATCH", url: "/automations/automation_1", payload: {
+      steps: [{ key: "start", type: "trigger", config: { event_name: "user.invited" } }], connections: [],
+    } });
+    expect(response.statusCode).toBe(409);
+    expect(query.mock.calls.filter(([sql]) => sql.startsWith("update automations"))).toHaveLength(1);
+    expect(query.mock.calls.some(([sql]) => sql === "commit")).toBe(false);
+    await app.close();
+  });
+
+  it("rechecks deletion before a retried Stop and does not cancel runs for a missing automation", async () => {
+    let deleted = false;
+    const { app, query } = harness((sql) => {
+      if (sql === "rollback") deleted = true;
+      if (sql.startsWith("update automations")) {
+        expect(sql).toContain("and deleted_at is null");
+        if (!deleted) throw Object.assign(new Error("deadlock detected"), { code: "40P01" });
+      }
+      return { rows: [] };
+    });
+    const response = await app.inject({ method: "POST", url: "/automations/automation_1/stop" });
+    expect(response.statusCode).toBe(404);
+    expect(query.mock.calls.filter(([sql]) => sql.startsWith("update automations"))).toHaveLength(2);
+    expect(query.mock.calls.some(([sql]) => sql.startsWith("update automation_runs"))).toBe(false);
+    await app.close();
+  });
+
   it.each([
     [true, null, "paused", 200], [true, "2026-10-04T00:00:00Z", "enabled", 200],
     [true, "2026-10-04T00:00:00Z", "disabled", 200], [false, null, "enabled", 200],

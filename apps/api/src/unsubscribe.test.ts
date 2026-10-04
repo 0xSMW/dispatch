@@ -22,16 +22,25 @@ describe("unsubscribeAction", () => {
   });
 });
 
-function fakeDb(topicId: string | null) {
+function fakeDb(topicId: string | null, options: { deadlocks?: number; topicStatus?: string } = {}) {
   const queries: Array<{ sql: string; params: unknown[] }> = [];
   let contact = {
     id: "contact_1", email: "ada@example.com", first_name: "Ada", last_name: null, properties: {},
     unsubscribed_at: null as string | null, deleted_at: null,
     created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
   };
-  let topicStatus = "subscribed";
+  let topicStatus = options.topicStatus ?? "subscribed";
+  const committed = { history: [] as unknown[][], events: [] as string[] };
+  let snapshot: { contact: typeof contact; topicStatus: string; committed: typeof committed };
+  let deadlocks = options.deadlocks ?? 0;
   const query = vi.fn(async (sql: string, params: unknown[] = []) => {
     queries.push({ sql, params });
+    if (sql === "begin") snapshot = structuredClone({ contact, topicStatus, committed });
+    if (sql === "rollback") {
+      contact = snapshot.contact;
+      topicStatus = snapshot.topicStatus;
+      Object.assign(committed, snapshot.committed);
+    }
     if (sql.includes("from contacts")) return { rows: [{ ...contact }] };
     if (sql.includes("update contacts")) {
       contact = { ...contact, unsubscribed_at: "2026-10-03T00:00:00Z" };
@@ -48,13 +57,18 @@ function fakeDb(topicId: string | null) {
       return { rows: [{ topic_id: "topic_news", status: topicStatus }] };
     }
     if (sql.includes("insert into email_events")) {
+      if (deadlocks-- > 0) throw Object.assign(new Error("deadlock detected"), { code: "40P01" });
+      committed.events.push(String(params[5]));
       return { rows: [{ id: "event_1", tenant_id: "tenant_1", request_id: params[2], email_id: null, type: params[5], data: {} }] };
     }
+    if (sql.includes("insert into contact_changes")) committed.history.push(params.slice(3, 6));
     if (sql.includes("from tenants")) return { rows: [{ name: "Acme", brand: { color: "#ffffff" } }] };
     return { rows: [] };
   });
-  const db = { query, connect: async () => ({ query, release: () => {} }) } as unknown as Db;
-  return { db, queries };
+  const release = vi.fn();
+  const connect = vi.fn(async () => ({ query, release }));
+  const db = { query, connect } as unknown as Db;
+  return { db, queries, committed, connect, release };
 }
 
 async function app(db: Db) {
@@ -69,6 +83,38 @@ async function app(db: Db) {
 
 describe("unsubscribe routes", () => {
   const token = unsubscribeToken({ tenant_id: "tenant_1", contact_id: "contact_1", broadcast_id: "broadcast_1" }, secret);
+
+  it.each([
+    [{ unsubscribe_all: true }, "subscribed", ["unsubscribed", "false", "true"], "contact.updated"],
+    [{ topics: [{ id: "topic_news", subscription: "opt_in" }] }, "unsubscribed", ["topics.topic_news", "false", "true"], "contact.topics.updated"],
+  ])("retries a complete public preference transaction for %j", async (payload, topicStatus, history, event) => {
+    const { db, queries, committed, connect, release } = fakeDb("topic_news", { deadlocks: 1, topicStatus });
+    const server = await app(db);
+    const response = await server.inject({ method: "POST", url: `/unsubscribe/${token}`, payload });
+    expect(response.statusCode).toBe(200);
+    expect(committed.history).toEqual([history]);
+    expect(committed.events).toEqual([event]);
+    expect(queries.filter((query) => ["begin", "rollback", "commit"].includes(query.sql)).map((query) => query.sql)).toEqual(["begin", "rollback", "begin", "commit"]);
+    expect(connect).toHaveBeenCalledTimes(2);
+    expect(release).toHaveBeenCalledTimes(2);
+    await server.close();
+  });
+
+  it("returns 500 on exhausted deadlocks without committing unsubscribe or history", async () => {
+    const { db, queries, committed, connect, release } = fakeDb(null, { deadlocks: 4 });
+    const server = await app(db);
+    const response = await server.inject({ method: "POST", url: `/unsubscribe/${token}`, payload: { unsubscribe_all: true } });
+    expect(response.statusCode).toBe(500);
+    expect(committed.history).toEqual([]);
+    expect(committed.events).toEqual([]);
+    expect(queries.filter((query) => query.sql === "rollback")).toHaveLength(4);
+    expect(queries.some((query) => query.sql === "commit")).toBe(false);
+    expect(connect).toHaveBeenCalledTimes(4);
+    expect(release).toHaveBeenCalledTimes(4);
+    const page = await server.inject({ method: "GET", url: `/unsubscribe/${token}` });
+    expect(page.json().unsubscribed).toBe(false);
+    await server.close();
+  });
 
   it("returns the contact's visible topics and the tenant brand", async () => {
     const { db } = fakeDb(null);

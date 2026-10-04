@@ -1,5 +1,6 @@
 import type { Db, Queryable } from "./index.js";
 import { findBy, tx } from "./index.js";
+import { isDeadlock, retryTx } from "./retry.js";
 import { addContactSegment, assertPropertyValues, contactColumns, deleteContact, mergeProperties, propertyDefinitions, updateContact, type ContactRow } from "./audience.js";
 import { dispatchContactWrite, dispatchSegmentAdded, recordEvent, startRuns } from "./contact-triggers.js";
 export type { FiredEvent } from "./contact-triggers.js";
@@ -242,18 +243,22 @@ export async function executeAutomationRun(db: Db, tenantId: string, runId: stri
       const startedAt = new Date();
       let next: string | null | typeof stopped | typeof held;
       try {
-        next = await tx(db, async (client) => {
+        const committed = await retryTx(db, async (client): Promise<{
+          next: string | null | typeof stopped | typeof held;
+          guards: NonNullable<AutomationRun["guards"]>;
+        }> => {
+          const attemptRun = { ...run, guards: [...(run.guards ?? [])] };
           // The lock also makes a concurrent stop wait until this step has committed.
           const blocked = await guard(client, tenantId, runId, run.version);
-          if (blocked) return blocked;
-          if (await checkGuards(client, run, step, index)) return null;
-          const output = await executeStep(client, run, step, options);
+          if (blocked) return { next: blocked, guards: attemptRun.guards };
+          if (await checkGuards(client, attemptRun, step, index)) return { next: null, guards: attemptRun.guards };
+          const output = await executeStep(client, attemptRun, step, options);
           const following = walk.next(step.key, stepOutcome(step, output));
           if (step.type === "filter" && output.result && (step.config as StepConfig<"filter">).scope === "following") {
             const saved = { filter: step.key, rule: (step.config as StepConfig<"filter">).rule };
             await client.query("update automation_runs set guards = guards || $3::jsonb where tenant_id = $1 and id = $2 and state = 'running'",
               [tenantId, runId, JSON.stringify([saved])]);
-            run.guards = [...(run.guards ?? []), saved];
+            attemptRun.guards.push(saved);
           }
           await client.query(
             `insert into automation_steps (id, tenant_id, run_id, step_index, step_key, type, state, data, started_at, completed_at)
@@ -261,9 +266,12 @@ export async function executeAutomationRun(db: Db, tenantId: string, runId: stri
             [id("step"), tenantId, runId, index, step.key, step.type, JSON.stringify(output), startedAt]
           );
           await advance(client, tenantId, runId, following, step.type === "exit" ? "exit" : output.exited === "filter" ? "filter" : "completed");
-          return following;
+          return { next: following, guards: attemptRun.guards };
         });
+        next = committed.next;
+        run.guards = committed.guards;
       } catch (error) {
+        if (isDeadlock(error)) throw error;
         // The step's transaction rolled back. Its failure is recorded on its own.
         await db.query(
           `insert into automation_steps (id, tenant_id, run_id, step_index, step_key, type, state, data, error, started_at, completed_at)
@@ -282,6 +290,15 @@ export async function executeAutomationRun(db: Db, tenantId: string, runId: stri
       await advance(client, tenantId, runId, null);
     });
   } catch (error) {
+    if (isDeadlock(error)) {
+      // Exhausted aborted attempts leave the same position retryable. Never
+      // overwrite a concurrent Stop, pause/edit release, or completed run.
+      await db.query(
+        "update automation_runs set state = 'ready', updated_at = now() where tenant_id = $1 and id = $2 and state = 'running'",
+        [tenantId, runId]
+      );
+      return;
+    }
     await tx(db, async (client) => {
       const failed = await client.query(
         `update automation_runs set state = 'failed', error = $3, resume_at = null, wait_event = null, updated_at = now()
@@ -700,7 +717,7 @@ export async function fireEvent(
   input: { name: string; email?: string | null; data: Record<string, unknown> }
 ) {
   const email = input.email ? input.email.toLowerCase() : null;
-  return tx(db, async (client) => {
+  return retryTx(db, async (client) => {
     const fired = await recordEvent(client, tenantId, requestId, { ...input, email });
     if (email) await eventContact(client, tenantId, requestId, fired.id, email, input.data);
     const contact = await contactContext(client, tenantId, email);

@@ -77,7 +77,7 @@ describe("contact transitions", () => {
     expect(enrollment[1]).toEqual(["tenant_1", "automation_1", contact.id]);
     const run = query.mock.calls.find(([sql]) => sql.includes("insert into automation_runs"))!;
     expect(run[0]).toContain("state, priority");
-    expect(run[1]?.slice(1)).toEqual(["tenant_1", "automation_1", fired.event!.id, priority ?? "normal", contact.id]);
+    expect(run[1]?.slice(1)).toEqual(["tenant_1", "automation_1", fired.event!.id, priority ?? "normal", contact.id, 0]);
     expect(query.mock.calls.indexOf(candidates)).toBeLessThan(query.mock.calls.indexOf(enrollment));
     expect(query.mock.calls.indexOf(enrollment)).toBeLessThan(query.mock.calls.indexOf(run));
   });
@@ -106,6 +106,40 @@ describe("contact transitions", () => {
       { triggerType: "event", key: "user.created", contact });
     expect(runs).toHaveLength(1);
     expect(query.mock.calls.find(([sql]) => sql.includes("insert into automation_runs"))![1]![4]).toBe("normal");
+  });
+
+  it.each([0, 2, 4])("uses immutable parent depth %s without reading its event or edited trigger", async (depth) => {
+    const { client, query } = triggerClient({ reentry: "every_time" });
+    const original = query.getMockImplementation()!;
+    query.mockImplementation(async (sql, params) => sql.includes("select r.automation_id, r.depth")
+      ? { rows: [{ automation_id: "parent", depth }] } : original(sql, params));
+    const fired = await fireContactTrigger(client, "tenant_1", "req_1", {
+      triggerType: "contact_created", key: "@contact.created", contact, originRunId: "run_parent",
+    });
+    expect(fired.event?.data.depth).toBe(depth + 1);
+    expect(fired.runs).toHaveLength(depth === 4 ? 0 : 1);
+    const inserts = query.mock.calls.filter(([sql]) => sql.includes("insert into automation_runs"));
+    if (inserts.length) expect(inserts[0]![1]![6]).toBe(depth + 1);
+    expect(query.mock.calls.filter(([sql]) => sql.includes("select r.automation_id")).every(([sql]) =>
+      !sql.includes("custom_events") && !sql.includes("automations a"))).toBe(true);
+  });
+
+  it("never guesses missing legacy provenance from current configuration or payload", async () => {
+    const { client, query } = triggerClient();
+    const original = query.getMockImplementation()!;
+    query.mockImplementation(async (sql, params) => sql.includes("select r.automation_id, r.depth")
+      ? { rows: [{ automation_id: "parent", depth: null }] } : original(sql, params));
+    await expect(fireContactTrigger(client, "tenant_1", "req_1", {
+      triggerType: "contact_created", key: "@contact.created", contact, originRunId: "run_parent",
+    })).rejects.toThrow("Original enrollment depth is unavailable");
+    expect(query.mock.calls.some(([sql]) => sql.includes("insert into automation_runs"))).toBe(false);
+  });
+
+  it("keeps a real legacy @ event with forged payload depth at root zero", async () => {
+    const { client, query } = triggerClient({ reentry: "every_time" });
+    await startRuns(client, "tenant_1", { ...event, name: "@contact.created", data: { depth: 100, origin_run_id: "forged" } },
+      { triggerType: "event", key: "@contact.created", contact });
+    expect(query.mock.calls.find(([sql]) => sql.includes("insert into automation_runs"))![1]![6]).toBe(0);
   });
 
   it("keeps normal contact writes at normal priority and ignores a no-op write", async () => {

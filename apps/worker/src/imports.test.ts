@@ -4,17 +4,39 @@ import type { ContactRow, Db, ImportRow } from "@dispatchmail/db";
 import { mapRecord, resolveColumns, runImport, startImports } from "./imports.js";
 
 type Query = { sql: string; params: unknown[] };
+type ImportState = Pick<ImportRow, "status" | "counts"> & {
+  row_offset: number;
+  claim_version: number;
+  events: string[];
+  runs: string[];
+  history: number;
+};
 
 // Full contact state is returned at each phase: inserts, locked conflict reads, and updates.
-function fakeDb(existing: Array<string | (ContactRow & { deleted_at?: string | null })> = [], options: { definitions?: Array<{ key: string; type: string }> } = {}) {
+function fakeDb(existing: Array<string | (ContactRow & { deleted_at?: string | null })> = [], options: {
+  definitions?: Array<{ key: string; type: string }>;
+  deadlocks?: number;
+  deadlockOffset?: number;
+  afterRollback?: (current: ImportState) => void;
+} = {}) {
   const queries: Query[] = [];
   const row = (email: string, overrides: Partial<ContactRow> = {}): ContactRow & { deleted_at?: string | null } => ({
     id: `contact_${email}`, email, first_name: null, last_name: null, properties: {},
     unsubscribed_at: null, created_at: "2026-10-01", updated_at: "2026-10-01", ...overrides,
   });
   const known = new Map(existing.map((value) => typeof value === "string" ? [value, row(value)] : [value.email, value]));
+  const current: ImportState = { status: "in_progress", row_offset: 0, claim_version: 0, counts: job().counts, events: [], runs: [], history: 0 };
+  let snapshot: { known: typeof known; current: ImportState };
+  let deadlocks = options.deadlocks ?? 0;
   const query = vi.fn(async (sql: string, params: unknown[] = []) => {
     queries.push({ sql, params });
+    if (sql === "begin") snapshot = structuredClone({ known, current });
+    if (sql === "rollback") {
+      known.clear();
+      for (const [email, contact] of snapshot.known) known.set(email, contact);
+      Object.assign(current, snapshot.current);
+      options.afterRollback?.(current);
+    }
     if (sql.includes("from contact_properties")) return { rows: options.definitions ?? [{ key: "seats", type: "number" }], rowCount: 1 };
     if (sql.includes("insert into contacts")) {
       const emails = params[2] as string[];
@@ -55,25 +77,41 @@ function fakeDb(existing: Array<string | (ContactRow & { deleted_at?: string | n
       return { rows: [{ id: "automation_1", trigger: "@contact.created", trigger_type: "contact_created", reentry: "once",
         steps: [{ key: "start", type: "trigger", config: { type: "contact_created" } }], connections: [] }] };
     }
-    if (sql.includes("insert into custom_events")) return { rows: [{
-      id: params[0], request_id: params[2], name: params[3], email: params[4], data: JSON.parse(params[5] as string), created_at: "2026-10-01",
-    }] };
+    if (sql.includes("insert into contact_changes")) current.history += 1;
+    if (sql.includes("insert into custom_events")) {
+      current.events.push(String(params[4]));
+      return { rows: [{
+        id: params[0], request_id: params[2], name: params[3], email: params[4], data: JSON.parse(params[5] as string), created_at: "2026-10-01",
+      }] };
+    }
     if (sql.includes("insert into automation_enrollments")) return { rows: [{ contact_id: params[2] }] };
-    if (sql.includes("insert into automation_runs")) return { rows: [{ id: params[0] }] };
+    if (sql.includes("insert into automation_runs")) {
+      current.runs.push(String(params[0]));
+      return { rows: [{ id: params[0] }] };
+    }
     if (sql.includes("from contact_imports") && sql.includes("skip locked")) {
       return { rows: [job()], rowCount: 1 };
     }
     if (sql.startsWith("select status, row_offset, claim_version from contact_imports")) {
-      return { rows: [{ status: "in_progress", row_offset: 0, claim_version: 0 }], rowCount: 1 };
+      return { rows: [{ ...current }], rowCount: 1 };
     }
     if (sql.includes("update contact_imports set status = 'in_progress'")) {
       return { rows: [job()], rowCount: 1 };
     }
+    if (sql.startsWith("update contact_imports set counts")) {
+      if ((options.deadlockOffset === undefined || options.deadlockOffset === params[2]) && deadlocks-- > 0) {
+        throw Object.assign(new Error("deadlock detected"), { code: "40P01" });
+      }
+      current.counts = JSON.parse(params[1] as string);
+      current.row_offset = Number(params[2]);
+    }
+    if (sql.includes("set status = $2")) current.status = params[1] as ImportRow["status"];
+    if (sql.includes("set status = 'queued'")) current.status = "queued";
     return { rows: [], rowCount: 0 };
   });
   const client = { query, release: vi.fn() };
   const db = { query, connect: vi.fn(async () => client) } as unknown as Db;
-  return { db, queries, known };
+  return { db, queries, known, current, query, release: client.release };
 }
 
 function job(overrides: Partial<ImportRow> = {}): ImportRow {
@@ -103,6 +141,122 @@ const savedCounts = (queries: Query[]) =>
   queries.filter((query) => query.sql.startsWith("update contact_imports set counts")).map((query) => JSON.parse(query.params[1] as string));
 
 describe("contact import", () => {
+  it("retries only the aborted batch, committing counts, history and enrollment once without reopening the stream", async () => {
+    const { db, queries, current, known, release } = fakeDb([], { deadlocks: 1, deadlockOffset: 2 });
+    const source = storage("email\na@example.com\nb@example.com");
+    const counts = await runImport(db, source, job({ trigger_automations: true }), { batchSize: 1 });
+    expect(counts).toEqual({ total: 2, created: 2, updated: 0, skipped: 0, failed: 0 });
+    expect(current).toMatchObject({ status: "completed", row_offset: 2, counts, events: ["a@example.com", "b@example.com"] });
+    expect(current.runs).toHaveLength(2);
+    expect(current.history).toBe(4);
+    expect([...known.keys()]).toEqual(["a@example.com", "b@example.com"]);
+    expect(source.stream).toHaveBeenCalledTimes(1);
+    expect(queries.filter((query) => query.sql.includes("from contact_properties"))).toHaveLength(1);
+    expect(queries.filter((query) => query.sql.includes("insert into contacts")).map((query) => query.params[2])).toEqual([
+      ["a@example.com"], ["b@example.com"], ["b@example.com"],
+    ]);
+    expect(queries.filter((query) => ["begin", "rollback", "commit"].includes(query.sql)).map((query) => query.sql)).toEqual([
+      "begin", "commit", "begin", "rollback", "begin", "commit", "begin", "commit",
+    ]);
+    expect(release).toHaveBeenCalledTimes(4);
+  });
+
+  it("leaves exhausted deadlocks in progress with only prior committed progress, then resumes without duplicate entry", async () => {
+    const { db, queries, current, known, release } = fakeDb([], { deadlocks: 4, deadlockOffset: 2 });
+    const source = storage("email\na@example.com\nb@example.com");
+    const counts = await runImport(db, source, job({ trigger_automations: true }), { batchSize: 1 });
+    expect(counts).toMatchObject({ created: 1, updated: 0, skipped: 0 });
+    expect(current).toMatchObject({
+      status: "in_progress", row_offset: 1, counts: { total: 1, created: 1, updated: 0, skipped: 0, failed: 0 },
+      events: ["a@example.com"],
+    });
+    expect(current.runs).toHaveLength(1);
+    expect(current.history).toBe(2);
+    expect([...known.keys()]).toEqual(["a@example.com"]);
+    expect(source.stream).toHaveBeenCalledTimes(1);
+    expect(queries.filter((query) => query.sql === "rollback")).toHaveLength(4);
+    expect(queries.some((query) => query.sql.includes("set status = $2") || query.sql.includes("set status = 'queued'"))).toBe(false);
+    expect(release).toHaveBeenCalledTimes(5);
+
+    const resumed = await runImport(db, source, job({ trigger_automations: true, row_offset: current.row_offset, counts: current.counts }), { batchSize: 1 });
+    expect(resumed).toEqual({ total: 2, created: 2, updated: 0, skipped: 0, failed: 0 });
+    expect(current.status).toBe("completed");
+    expect(current.events).toEqual(["a@example.com", "b@example.com"]);
+    expect(current.runs).toHaveLength(2);
+  });
+
+  it.each([
+    ["cancelled", 1], ["cancelled", 4], ["failed", 1], ["completed", 1], ["queued", 1],
+  ] as const)("does not revive or fail a concurrently %s import after %s deadlocks", async (status, deadlocks) => {
+    let rolledBack = 0;
+    const { db, queries, current, known } = fakeDb([], {
+      deadlocks,
+      afterRollback: (current) => {
+        if (++rolledBack === deadlocks) current.status = status;
+      },
+    });
+    await runImport(db, storage("email\na@example.com"), job({ trigger_automations: true }), { batchSize: 1, maxRows: 1 });
+    expect(current.status).toBe(status);
+    expect(known.size).toBe(0);
+    expect(current.events).toEqual([]);
+    expect(current.runs).toEqual([]);
+    expect(queries.some((query) => query.sql.includes("set status = $2") || query.sql.includes("set status = 'queued'"))).toBe(false);
+  });
+
+  it("rechecks claim ownership before retrying an aborted batch", async () => {
+    const { db, queries, current, known } = fakeDb([], {
+      deadlocks: 1, afterRollback: (current) => { current.claim_version = 1; },
+    });
+    await runImport(db, storage("email\na@example.com"), job({ claim_version: 0, trigger_automations: true }));
+    expect(current).toMatchObject({ status: "in_progress", claim_version: 1, row_offset: 0 });
+    expect(known.size).toBe(0);
+    expect(queries.filter((query) => query.sql.includes("insert into contacts"))).toHaveLength(1);
+    expect(queries.some((query) => query.sql.includes("set status = $2"))).toBe(false);
+  });
+
+  it("does not replay a batch whose offset was committed by another worker during rollback", async () => {
+    const { db, queries, current, known } = fakeDb([], {
+      deadlocks: 1, afterRollback: (current) => { current.row_offset = 1; },
+    });
+    await runImport(db, storage("email\na@example.com"), job({ trigger_automations: true }), { batchSize: 1 });
+    expect(current).toMatchObject({ status: "in_progress", row_offset: 1 });
+    expect(known.size).toBe(0);
+    expect(queries.filter((query) => query.sql.includes("insert into contacts"))).toHaveLength(1);
+    expect(queries.some((query) => query.sql.includes("set status = $2"))).toBe(false);
+  });
+
+  it("does not retry completion or mark a committed batch failed when completion deadlocks", async () => {
+    const { db, query, queries, current, known } = fakeDb();
+    const execute = query.getMockImplementation()!;
+    query.mockImplementation(async (sql, params = []) => {
+      if (sql.includes("set status = $2")) throw Object.assign(new Error("deadlock detected"), { code: "40P01" });
+      return execute(sql, params);
+    });
+    const source = storage("email\na@example.com");
+    await runImport(db, source, job());
+    expect(query.mock.calls.filter(([sql]) => sql.includes("set status = $2"))).toHaveLength(1);
+    expect(current).toMatchObject({ status: "in_progress", row_offset: 1, counts: { created: 1 } });
+    expect([...known.keys()]).toEqual(["a@example.com"]);
+    expect(queries.filter((query) => query.sql.includes("insert into contacts"))).toHaveLength(1);
+    expect(source.stream).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps genuine database errors terminal without replaying the batch", async () => {
+    const { db, query, queries, current, known } = fakeDb();
+    const execute = query.getMockImplementation()!;
+    query.mockImplementation(async (sql, params = []) => {
+      if (sql.startsWith("update contact_imports set counts")) throw Object.assign(new Error("constraint failed"), { code: "23514" });
+      return execute(sql, params);
+    });
+    await runImport(db, storage("email\na@example.com"), job());
+    expect(current.status).toBe("failed");
+    expect(known.size).toBe(0);
+    expect(queries.filter((query) => query.sql.includes("insert into contacts"))).toHaveLength(1);
+    expect(queries.find((query) => query.sql.includes("set status = $2"))?.params.slice(1, 4)).toEqual([
+      "failed", JSON.stringify({ total: 1, created: 0, updated: 0, skipped: 0, failed: 0 }), "constraint failed",
+    ]);
+  });
+
   it("imports typed booleans and dates and counts invalid nonempty cells as row errors", async () => {
     const { db, queries } = fakeDb([], { definitions: [{ key: "activated", type: "boolean" }, { key: "last_active_at", type: "date" }] });
     const csv = [

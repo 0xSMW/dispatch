@@ -15,6 +15,7 @@ import {
   editRuns,
   usedKeys,
   paginate,
+  retryTx,
   softDelete,
   tx,
   type AutomationRow,
@@ -294,7 +295,7 @@ export function registerAutomations(
     const dryRun = rawDryRun === "true";
     // Read and write under one row lock. Two requests at once (an editor saving steps while
     // the user presses Start) would otherwise each write back what the other had just changed.
-    const row = await tx(db, async (client) => {
+    const row = await retryTx(db, async (client) => {
       const locked = await client.query<AutomationRow>(
         `select ${automationColumns} from automations
          where tenant_id = $1 and id = $2 and deleted_at is null
@@ -352,12 +353,13 @@ export function registerAutomations(
 
   app.delete("/automations/:id", async (request) => {
     const tenantId = request.auth!.tenant_id;
-    const automation = await findAutomation(db, tenantId, (request.params as { id: string }).id);
-    await tx(db, async (client) => {
+    const automationId = (request.params as { id: string }).id;
+    await retryTx(db, async (client) => {
+      const automation = await findAutomation(client, tenantId, automationId);
       await softDelete(client, "automations", tenantId, automation.id);
       await stopRuns(client, tenantId, automation.id);
     });
-    return { object: "automation", id: automation.id, deleted: true };
+    return { object: "automation", id: automationId, deleted: true };
   });
 
   app.post("/automations/:id/duplicate", async (request) => {
@@ -379,14 +381,16 @@ export function registerAutomations(
   app.post("/automations/:id/stop", async (request) => {
     const input = automationStopSchema.parse(request.body ?? {});
     const tenantId = request.auth!.tenant_id;
-    const automation = await findAutomation(db, tenantId, (request.params as { id: string }).id);
-    const row = await tx(db, async (client) => {
+    const automationId = (request.params as { id: string }).id;
+    const row = await retryTx(db, async (client) => {
       const updated = await client.query<AutomationRow>(
-        `update automations set enabled = false, paused_at = null, updated_at = now() where tenant_id = $1 and id = $2
+        `update automations set enabled = false, paused_at = null, updated_at = now()
+         where tenant_id = $1 and id = $2 and deleted_at is null
          returning ${automationColumns}`,
-        [tenantId, automation.id],
+        [tenantId, automationId],
       );
-      await stopRuns(client, tenantId, automation.id, input.reset_reentry);
+      if (!updated.rows[0]) throw new ApiError("not_found", 404, "Automation not found");
+      await stopRuns(client, tenantId, automationId, input.reset_reentry);
       return updated.rows[0]!;
     });
     return presentAutomation(row);

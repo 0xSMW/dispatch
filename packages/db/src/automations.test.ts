@@ -101,7 +101,7 @@ function fake(run: {
       snapshot = null;
       return { rows: [] };
     }
-    if (text.startsWith("select r.automation_id, e.data")) return { rows: [{ automation_id: state.run.automation_id, trigger_type: "event", data: state.run.data }] };
+    if (text.startsWith("select r.automation_id, r.depth")) return { rows: [{ automation_id: state.run.automation_id, depth: 0 }] };
     if (text.startsWith("select enabled, paused_at, version")) return { rows: [{ ...state.run, deleted: state.run.automation_deleted }] };
     if (text.startsWith("select r.id, r.automation_id from automation_runs")) return { rows: running() ? [{ ...state.run }] : [] };
     if (text.includes("from automation_runs r join automations a")) return { rows: [{ ...state.run }] };

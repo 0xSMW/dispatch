@@ -68,6 +68,12 @@ A contact created only to record an unsubscribe does not fire Contact added. [Im
 
 A step cannot trigger its own automation. Cross-automation trigger chains stop at depth five. If the trigger's topic or segment is deleted, it stops matching and enabling the automation is refused until you change its trigger.
 
+Depth belongs to the original run enrollment, not its current trigger configuration or an event payload. Real events, contact writes, imports, and explicit enrollments start at zero; step-origin children increment their parent's stored depth. Paused trigger edits cannot reset that depth or make caller-supplied `depth` trusted. A depth-five contact event is recorded without enrolling another run.
+
+On upgrades, runs created before stored enrollment depth existed have unknown provenance. Their contact-triggering steps fail with `Original enrollment depth is unavailable for this legacy run` rather than trusting an event name, payload, or edited graph. Stop those runs and explicitly enroll the contacts again where appropriate. Existing non-contact-triggering steps and newly enrolled legacy real-event flows remain supported.
+
+Contact dispatch, steps, graph edits, and Stop retry complete transactions only when PostgreSQL confirms a deadlock aborted them. Each attempt rereads current state and keeps history, enrollment, and webhook fanout atomic. Exhausted step attempts remain ready for worker retry, not failed; a concurrent Stop remains final. This internal recovery does not reset once-per-contact enrollment.
+
 ### CLI definitions
 
 Existing event commands still work. Choose a contact source with `--trigger-type`, using `--topic` or `--segment` for its resource:

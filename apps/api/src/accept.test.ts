@@ -24,7 +24,7 @@ import {
   type Provider,
   type ProviderEmail,
 } from "@dispatchmail/core";
-import { appendEvent, connect, executeAutomationRun, fireEvent, reconcileBroadcastSent, tx, unsubscribeToken, type Db } from "@dispatchmail/db";
+import { appendEvent, connect, contactColumns, dispatchContactWrite, emit, executeAutomationRun, fireEvent, reconcileBroadcastSent, retryTx, tx, unsubscribeToken, updateContact, type ContactRow, type Db } from "@dispatchmail/db";
 import type { Storage } from "@dispatchmail/storage";
 import { schema } from "../../../packages/db/src/schema.js";
 import { contactContext } from "../../../packages/db/src/automations.js";
@@ -123,6 +123,398 @@ afterAll(async () => {
 });
 
 describe.skipIf(!live)("accept", () => {
+  describe("trigger depth and contention repair", () => {
+    const runRow = async (runId: string) => (await db.query(
+      "select state,error,depth,guards,next_step_key from automation_runs where id=$1", [runId],
+    )).rows[0];
+    const history = async (contactId: string) => (await db.query(
+      "select field,from_value,to_value from contact_changes where contact_id=$1 and field in ('first_name','last_name') order by created_at,id",
+      [contactId],
+    )).rows;
+    async function webhook() {
+      const response = await post(fullKey, "/webhooks", {
+        url: "http://127.0.0.1:9/repair",
+        events: ["automation.run.started", "automation.run.completed", "automation.run.failed", "contact.updated"],
+      });
+      expect(response.status).toBe(200);
+      return response.json.id as string;
+    }
+    async function assertFanout(webhookId: string) {
+      const events = (await db.query(`select e.id,count(w.id)::integer as attempts
+        from email_events e left join webhook_attempts w on w.event_id=e.id and w.webhook_id=$1
+        where e.type in ('automation.run.started','automation.run.completed','automation.run.failed','contact.updated')
+        group by e.id`, [webhookId])).rows;
+      expect(events.length).toBeGreaterThan(0);
+      expect(events.every((event) => event.attempts === 1)).toBe(true);
+    }
+    async function editTrigger(automationId: string, config: Record<string, unknown>) {
+      expect((await call(fullKey, "PATCH", `/automations/${automationId}`, { status: "paused" })).status).toBe(200);
+      const flow = (await call(fullKey, "GET", `/automations/${automationId}`)).json;
+      const saved = await call(fullKey, "PATCH", `/automations/${automationId}`, {
+        steps: flow.steps.map((step: Record<string, unknown>) => step.type === "trigger" ? { ...step, config } : step),
+        connections: flow.connections,
+      });
+      expect(saved.status, JSON.stringify(saved.json)).toBe(200);
+      expect(saved.json).toMatchObject({ status: "paused", version: 1 });
+      expect((await call(fullKey, "PATCH", `/automations/${automationId}`, { status: "enabled" })).status).toBe(200);
+    }
+    async function waitFor<T>(read: () => Promise<T | undefined>, label: string): Promise<T> {
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline) {
+        const value = await read();
+        if (value !== undefined) return value;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error(`Timed out waiting for ${label}`);
+    }
+
+    it("keeps an event root at zero after a paused contact-trigger edit and ignores forged payload depth", async () => {
+      const contact = await post(fullKey, "/contacts", { email: "forward@dispatch-fixture.net", first_name: "Original" });
+      const child = await contactFlow({ type: "contact_updated", field: "first_name", to: "Step" });
+      const parent = await contactFlow({ event_name: "repair.forward" }, [
+        { key: "update", type: "contact_update", config: { first_name: "Step" } },
+      ]);
+      expect((await post(fullKey, "/events/send", {
+        event: "repair.forward", email: contact.json.email, payload: { depth: 100, origin_run_id: "forged" },
+      })).status).toBe(202);
+      const root = (await flowRuns(parent))[0]!;
+      expect(await runRow(root.id)).toMatchObject({ depth: 0, state: "ready" });
+      await editTrigger(parent, { type: "contact_updated", field: "first_name" });
+      await executeAutomationRun(db, root.tenant_id, root.id);
+      await executeAutomationRun(db, root.tenant_id, root.id);
+      expect(await runRow(root.id)).toMatchObject({ depth: 0, state: "done", error: null });
+      expect(await flowRuns(parent)).toHaveLength(1); // Its new contact trigger still excludes itself.
+      const children = await flowRuns(child);
+      expect(children).toHaveLength(1);
+      expect(await runRow(children[0]!.id)).toMatchObject({ depth: 1, state: "ready" });
+      expect((await db.query("select data from custom_events where name='@contact.updated'")).rows).toEqual([{
+        data: expect.objectContaining({ depth: 1, origin_run_id: root.id, changes: [{ field: "first_name", from: "Original", to: "Step" }] }),
+      }]);
+      expect((await history(contact.json.id)).filter((change) => change.from_value !== null)).toEqual([
+        { field: "first_name", from_value: "Original", to_value: "Step" },
+      ]);
+      expect((await db.query("select state from automation_steps where run_id=$1", [root.id])).rows).toEqual([{ state: "done" }]);
+    });
+
+    it("keeps a nonzero contact enrollment after a paused event-trigger edit and increments its child", async () => {
+      const contact = await post(fullKey, "/contacts", { email: "inverse@dispatch-fixture.net", first_name: "Original" });
+      const child = await contactFlow({ type: "contact_updated", field: "last_name", to: "Child" });
+      const middle = await contactFlow({ type: "contact_updated", field: "first_name", to: "Middle" }, [
+        { key: "update", type: "contact_update", config: { last_name: "Child" } },
+      ]);
+      const source = await contactFlow({ event_name: "repair.inverse" }, [
+        { key: "update", type: "contact_update", config: { first_name: "Middle" } },
+      ]);
+      expect((await post(fullKey, "/events/send", { event: "repair.inverse", email: contact.json.email })).status).toBe(202);
+      const root = (await flowRuns(source))[0]!;
+      await executeAutomationRun(db, root.tenant_id, root.id);
+      const parent = (await flowRuns(middle))[0]!;
+      expect(await runRow(parent.id)).toMatchObject({ depth: 1 });
+      // Neither the edited trigger kind nor mutable historical event data is provenance.
+      await db.query("update custom_events set data=jsonb_set(data,'{depth}','100') where id=(select event_id from automation_runs where id=$1)", [parent.id]);
+      await editTrigger(middle, { event_name: "repair.edited" });
+      await executeAutomationRun(db, parent.tenant_id, parent.id);
+      expect(await runRow(parent.id)).toMatchObject({ depth: 1, state: "done", error: null });
+      const children = await flowRuns(child);
+      expect(children).toHaveLength(1);
+      expect(await runRow(children[0]!.id)).toMatchObject({ depth: 2 });
+      expect((await db.query("select data from custom_events where data->>'origin_run_id'=$1", [parent.id])).rows).toEqual([{
+        data: expect.objectContaining({ depth: 2, changes: [{ field: "last_name", from: null, to: "Child" }] }),
+      }]);
+      expect((await history(contact.json.id)).filter((change) => change.to_value === "Middle" || change.to_value === "Child")).toEqual([
+        { field: "first_name", from_value: "Original", to_value: "Middle" },
+        { field: "last_name", from_value: null, to_value: "Child" },
+      ]);
+    });
+
+    it("migrates twice without guessing historical depth and roots real legacy @ events at zero", async () => {
+      const flow = await contactFlow({ event_name: "repair.legacy" });
+      const tenantId = (await db.query("select tenant_id from automations where id=$1", [flow])).rows[0].tenant_id as string;
+      expect((await post(fullKey, "/events/send", { event: "repair.legacy", email: "legacy@dispatch-fixture.net", payload: { depth: 4 } })).status).toBe(202);
+      const old = (await flowRuns(flow))[0]!;
+      // A real pre-column installation has no trustworthy enrollment depth to backfill.
+      await db.query("alter table automation_runs drop column depth");
+      await db.query(schema);
+      await db.query(schema);
+      expect(await runRow(old.id)).toMatchObject({ depth: null });
+      await db.query("update automations set trigger='@contact.updated',steps=$2 where id=$1", [
+        flow, JSON.stringify([{ key: "trigger", type: "trigger", config: { event_name: "@contact.updated" } }]),
+      ]);
+      const subscriber = await contactFlow({ type: "contact_updated", field: "first_name" });
+      expect((await call(fullKey, "PATCH", `/contacts/${(await db.query("select id from contacts where email='legacy@dispatch-fixture.net'")).rows[0].id}`, { first_name: "External" })).status).toBe(200);
+      expect(await flowRuns(flow)).toHaveLength(1); // Internal dispatch cannot enter a real event flow.
+      expect(await flowRuns(subscriber)).toHaveLength(1);
+      const fired = await fireEvent(db, tenantId, "legacy-real-at-event", {
+        name: "@contact.updated", email: "legacy@dispatch-fixture.net", data: { depth: 100, origin_run_id: old.id },
+      });
+      expect(fired.runs).toHaveLength(1);
+      expect(await runRow(fired.runs[0]!)).toMatchObject({ depth: 0 });
+      const ordinary = await contactFlow({ event_name: "repair.forged" });
+      const forged = await fireEvent(db, tenantId, "ordinary-forged-depth", {
+        name: "repair.forged", email: "legacy@dispatch-fixture.net", data: { depth: 4, origin_run_id: old.id },
+      });
+      expect(forged.runs).toHaveLength(1);
+      expect((await flowRuns(ordinary)).map((run) => run.id)).toEqual(forged.runs);
+      expect(await runRow(forged.runs[0]!)).toMatchObject({ depth: 0 });
+      await db.query(schema);
+      await db.query(schema);
+      expect(await runRow(old.id)).toMatchObject({ depth: null });
+      expect(await runRow(fired.runs[0]!)).toMatchObject({ depth: 0 });
+      const contact = (await db.query<ContactRow>(`select ${contactColumns} from contacts where email='legacy@dispatch-fixture.net'`)).rows[0]!;
+      const snapshot = async () => (await db.query(`select
+        (select count(*) from custom_events) as events,
+        (select count(*) from automation_runs) as runs,
+        (select count(*) from automation_enrollments) as enrollments,
+        (select count(*) from contact_changes) as history,
+        (select count(*) from webhook_attempts) as attempts,
+        (select count(*) from email_events) as fanout`)).rows[0];
+      const before = await snapshot();
+      await expect(retryTx(db, async (client) => {
+        const updated = await updateContact(client, tenantId, contact.id, { first_name: "Untrusted" });
+        await dispatchContactWrite(client, tenantId, "unknown-origin", contact, updated, { originRunId: old.id });
+      })).rejects.toMatchObject({ statusCode: 409, message: expect.stringContaining("depth is unavailable") });
+      expect(await snapshot()).toEqual(before);
+      expect((await db.query("select first_name from contacts where id=$1", [contact.id])).rows[0].first_name).toBe("External");
+    });
+
+    it("rolls back and retries complete dispatcher transactions after an actual SQL deadlock", async () => {
+      const endpoint = await webhook();
+      const flow = await contactFlow({ type: "contact_updated", field: "first_name" });
+      expect((await call(fullKey, "PATCH", `/automations/${flow}`, { reentry: "once" })).status).toBe(200);
+      const every = await contactFlow({ type: "contact_updated", field: "first_name" });
+      const contacts = await Promise.all(["left", "right"].map((name) => post(fullKey, "/contacts", {
+        email: `${name}@dispatch-fixture.net`, first_name: "Original",
+      })));
+      expect(contacts.map((contact) => contact.status)).toEqual([200, 200]);
+      const tenantId = (await db.query("select tenant_id from automations where id=$1", [flow])).rows[0].tenant_id as string;
+      const attempts = [0, 0];
+      let arrived = 0;
+      let release = () => {};
+      const barrier = new Promise<void>((resolve) => { release = resolve; });
+      const work = (index: number) => retryTx(db, async (client) => {
+        attempts[index]! += 1;
+        const contactId = contacts[index]!.json.id;
+        const before = (await client.query<ContactRow>(`select ${contactColumns} from contacts where id=$1 for update`, [contactId])).rows[0]!;
+        const after = await updateContact(client, tenantId, contactId, { first_name: index === 0 ? "Left" : "Right" });
+        await dispatchContactWrite(client, tenantId, `repair-${index}`, before, after);
+        await emit(client, { tenantId, requestId: `repair-${index}`, type: "contact.updated", resourceId: contactId, data: { id: contactId } });
+        // Only the first attempt participates. A victim replays all writes, not this barrier.
+        if (attempts[index] === 1) {
+          arrived += 1;
+          if (arrived === 2) release();
+          await barrier;
+        }
+        await client.query("select id from contacts where id=$1 for update", [contacts[1 - index]!.json.id]);
+      });
+      const pending = [work(0), work(1)].map((operation) => operation.catch((error) => {
+        release();
+        throw error;
+      }));
+      const settled = await Promise.allSettled(pending);
+      for (const result of settled) if (result.status === "rejected") throw result.reason;
+      expect(attempts.slice().sort()).toEqual([1, 2]);
+      expect((await db.query("select first_name from contacts order by email")).rows).toEqual([{ first_name: "Left" }, { first_name: "Right" }]);
+      for (const [index, contact] of contacts.entries()) {
+        expect((await history(contact.json.id)).filter((change) => change.from_value !== null)).toEqual([
+          { field: "first_name", from_value: "Original", to_value: index === 0 ? "Left" : "Right" },
+        ]);
+      }
+      expect((await db.query("select data from custom_events where name='@contact.updated'")).rows).toHaveLength(2);
+      expect(await flowRuns(flow)).toHaveLength(2);
+      expect(await flowRuns(every)).toHaveLength(2);
+      expect((await db.query("select contact_id from automation_enrollments where automation_id=$1 order by contact_id", [flow])).rows)
+        .toEqual(contacts.map((contact) => ({ contact_id: contact.json.id })).sort((a, b) => a.contact_id.localeCompare(b.contact_id)));
+      expect((await db.query("select state,error,depth from automation_runs")).rows).toEqual(Array.from({ length: 4 }, () => ({ state: "ready", error: null, depth: 0 })));
+      expect((await db.query("select id from email_events where type='automation.run.started'")).rows).toHaveLength(4);
+      expect((await db.query("select id from email_events where type='contact.updated'")).rows).toHaveLength(2);
+      expect((await db.query("select id from webhook_attempts where webhook_id=$1", [endpoint])).rows).toHaveLength(6);
+      await assertFanout(endpoint);
+    }, 30_000);
+
+    it.each([2, 4])("keeps executor guards attempt-local with %i PostgreSQL-aborted step attempts", async (failures) => {
+      const endpoint = await webhook();
+      const contact = await post(fullKey, "/contacts", { email: "guards@dispatch-fixture.net", first_name: "Original" });
+      const rule = { type: "rule", field: "contact.first_name", operator: "eq", value: "Original" };
+      const flow = await contactFlow({ event_name: "repair.guards" }, [
+        { key: "filter", type: "filter", config: { rule, scope: "following" } },
+        { key: "update", type: "contact_update", config: { first_name: "Step" } },
+      ]);
+      expect((await post(fullKey, "/events/send", { event: "repair.guards", email: contact.json.email })).status).toBe(202);
+      const run = (await flowRuns(flow))[0]!;
+      // A real PostgreSQL abort after guard persistence also rolls back the step and fanout.
+      // The sequence intentionally survives rollback so subsequent attempts can recover.
+      await db.query(`create sequence repair_step_attempts;
+        create function abort_repair_step() returns trigger language plpgsql as $$
+          begin
+            if new.step_key='filter' then
+              if nextval('repair_step_attempts') <= ${failures} then
+                raise exception 'synthetic PostgreSQL transaction abort' using errcode='40P01';
+              end if;
+            end if;
+            return new;
+          end $$;
+        create trigger abort_repair_step before insert on automation_steps for each row execute function abort_repair_step()`);
+      try {
+        await executeAutomationRun(db, run.tenant_id, run.id);
+        expect(Number((await db.query("select last_value from repair_step_attempts")).rows[0].last_value)).toBe(failures === 2 ? 3 : 4);
+        if (failures === 4) {
+          expect(await runRow(run.id)).toMatchObject({ state: "ready", error: null, guards: [], next_step_key: null });
+          expect((await db.query("select id from automation_steps where run_id=$1", [run.id])).rows).toHaveLength(0);
+          expect((await db.query("select first_name from contacts where id=$1", [contact.json.id])).rows[0].first_name).toBe("Original");
+          expect((await db.query("select id from email_events where type in ('automation.run.completed','automation.run.failed','contact.updated')")).rows).toHaveLength(0);
+        }
+      } finally {
+        await db.query("drop trigger abort_repair_step on automation_steps; drop function abort_repair_step(); drop sequence repair_step_attempts");
+      }
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect(await runRow(run.id)).toMatchObject({ state: "done", error: null, guards: [{ filter: "filter", rule }] });
+      expect((await db.query("select step_key,state from automation_steps where run_id=$1 order by step_index", [run.id])).rows)
+        .toEqual([{ step_key: "filter", state: "done" }, { step_key: "update", state: "done" }]);
+      expect((await history(contact.json.id)).filter((change) => change.from_value !== null)).toEqual([
+        { field: "first_name", from_value: "Original", to_value: "Step" },
+      ]);
+      expect((await db.query("select id from email_events where type='automation.run.completed'")).rows).toHaveLength(1);
+      expect((await db.query("select id from email_events where type='automation.run.failed'")).rows).toHaveLength(0);
+      expect((await db.query("select id from email_events where type='contact.updated'")).rows).toHaveLength(1);
+      expect((await db.query("select id from webhook_attempts where webhook_id=$1", [endpoint])).rows).toHaveLength(3);
+      await assertFanout(endpoint);
+    });
+
+    it("recovers the actual PATCH, executor and Stop lock cycle regardless of the PostgreSQL victim", async () => {
+      const endpoint = await webhook();
+      const contact = await post(fullKey, "/contacts", { email: "barrier@dispatch-fixture.net", first_name: "Initial" });
+      const observer = await contactFlow({ type: "contact_updated", field: "first_name" });
+      const flow = await contactFlow({ type: "contact_updated", field: "first_name" }, [
+        { key: "update", type: "contact_update", config: { first_name: "Step" } },
+        { key: "after", type: "contact_update", config: { last_name: "Must not run" } },
+      ]);
+      expect((await call(fullKey, "PATCH", `/automations/${flow}`, { reentry: "once" })).status).toBe(200);
+      expect((await call(fullKey, "PATCH", `/contacts/${contact.json.id}`, { first_name: "Root" })).status).toBe(200);
+      const run = (await flowRuns(flow))[0]!;
+      const deadlocks = async () => Number((await db.query("select deadlocks from pg_stat_database where datname=current_database()")).rows[0].deadlocks);
+      const beforeDeadlocks = await deadlocks();
+      const locker = await db.connect();
+      const lockKey = 847_231;
+      const lockerPid = Number((await locker.query("select pg_backend_pid() as pid")).rows[0].pid);
+      const executorPids = new Set<number>();
+      const wrapped = {
+        query: db.query.bind(db),
+        connect: async () => {
+          const client = await db.connect();
+          executorPids.add(Number((await client.query("select pg_backend_pid() as pid")).rows[0].pid));
+          return client;
+        },
+      } as unknown as Db;
+      let external: ReturnType<typeof call> | undefined;
+      let executor: Promise<void> | undefined;
+      let stop: ReturnType<typeof post> | undefined;
+      let holdAfterStep = () => {};
+      const afterStep = new Promise<void>((resolve) => { holdAfterStep = resolve; });
+      let stopFinished = false;
+      // Keep a successfully committed step from advancing before the real Stop commits.
+      const guarded = {
+        query: wrapped.query,
+        connect: async () => {
+          const client = await wrapped.connect();
+          return {
+            release: () => client.release(),
+            query: async (sql: string, params?: unknown[]) => {
+              const result = await client.query(sql, params);
+              if (sql === "commit" && !stopFinished && (await db.query(
+                "select id from automation_steps where run_id=$1 and step_key='update'", [run.id],
+              )).rows.length) await afterStep;
+              return result;
+            },
+          };
+        },
+      } as unknown as Db;
+      try {
+        await locker.query("select pg_advisory_lock($1)", [lockKey]);
+        await db.query(`create sequence repair_external_attempts;
+          create function hold_repair_external() returns trigger language plpgsql as $$
+            begin
+              if new.field='first_name' and new.to_value='"External"'::jsonb then
+                if nextval('repair_external_attempts')=1 then
+                  perform pg_advisory_xact_lock(${lockKey});
+                end if;
+              end if;
+              return new;
+            end $$;
+          create trigger hold_repair_external before insert on contact_changes for each row execute function hold_repair_external()`);
+        external = call(fullKey, "PATCH", `/contacts/${contact.json.id}`, { first_name: "External" });
+        const externalPid = await waitFor(async () => {
+          const rows = (await db.query(`select pid from pg_stat_activity where datname=current_database()
+            and wait_event_type='Lock' and $1::integer=any(pg_blocking_pids(pid)) and query like '%insert into contact_changes%'`, [lockerPid])).rows;
+          return rows[0] ? Number(rows[0].pid) : undefined;
+        }, "PATCH holding the contact at the first-attempt barrier");
+        executor = executeAutomationRun(guarded, run.tenant_id, run.id);
+        const executorPid = await waitFor(async () => {
+          const rows = (await db.query(`select pid from pg_stat_activity where datname=current_database()
+            and wait_event_type='Lock' and $1::integer=any(pg_blocking_pids(pid))`, [externalPid])).rows;
+          return rows.map((row) => Number(row.pid)).find((pid) => executorPids.has(pid));
+        }, "executor holding the run while PATCH holds the contact");
+        stop = post(fullKey, `/automations/${flow}/stop`, {}).finally(() => {
+          stopFinished = true;
+          holdAfterStep();
+        });
+        await waitFor(async () => {
+          const rows = (await db.query(`select pid from pg_stat_activity where datname=current_database()
+            and wait_event_type='Lock' and $1::integer=any(pg_blocking_pids(pid))
+            and query like '%update automation_runs%'`, [executorPid])).rows;
+          return rows[0] ? Number(rows[0].pid) : undefined;
+        }, "Stop holding the automation while the executor holds the run");
+        // PATCH now dispatches, waiting for Stop's automation lock: a real three-way cycle.
+        await locker.query("select pg_advisory_unlock($1)", [lockKey]);
+        expect((await external).status).toBe(200);
+        expect((await stop).json).toMatchObject({ status: "disabled" });
+        await executor;
+        await waitFor(async () => await deadlocks() > beforeDeadlocks ? true : undefined, "PostgreSQL's deadlock detection");
+        expect(await runRow(run.id)).toMatchObject({ state: "stopped", error: null, depth: 0 });
+        expect(await flowRuns(flow)).toHaveLength(1);
+        expect((await db.query("select contact_id from automation_enrollments where automation_id=$1", [flow])).rows)
+          .toEqual([{ contact_id: contact.json.id }]);
+        const steps = (await db.query("select step_key,state,error from automation_steps where run_id=$1", [run.id])).rows;
+        expect(steps).toEqual(steps.length ? [{ step_key: "update", state: "done", error: null }] : []);
+        const changes = (await history(contact.json.id)).filter((change) => change.from_value !== null);
+        expect(changes[0]).toEqual({ field: "first_name", from_value: "Initial", to_value: "Root" });
+        const transitions = changes.slice(1);
+        expect(transitions.filter((change) => change.to_value === "External")).toHaveLength(1);
+        expect(transitions.filter((change) => change.to_value === "Step")).toHaveLength(steps.length);
+        expect(transitions.map((change) => change.field)).toEqual(Array(1 + steps.length).fill("first_name"));
+        let previous = "Root";
+        for (const change of transitions) {
+          expect(change.from_value).toBe(previous);
+          previous = change.to_value;
+        }
+        expect((await db.query("select first_name,last_name from contacts where id=$1", [contact.json.id])).rows)
+          .toEqual([{ first_name: previous, last_name: null }]);
+        expect(await flowRuns(observer)).toHaveLength(2 + steps.length);
+        const internal = (await db.query("select data from custom_events where name='@contact.updated' order by created_at,id")).rows;
+        expect(internal).toHaveLength(2 + steps.length);
+        expect(internal.flatMap((event) => event.data.changes)).toEqual(changes.map((change) => ({
+          field: change.field, from: change.from_value, to: change.to_value,
+        })));
+        expect(internal.filter((event) => event.data.origin_run_id === run.id).map((event) => event.data.depth)).toEqual(Array(steps.length).fill(1));
+        expect((await db.query("select id from automation_runs where state='failed'")).rows).toHaveLength(0);
+        expect((await db.query("select id from automation_steps where state='failed'")).rows).toHaveLength(0);
+        expect((await db.query("select id from email_events where type='automation.run.failed'")).rows).toHaveLength(0);
+        expect((await db.query("select id from email_events where type='automation.run.completed' and data->>'run_id'=$1", [run.id])).rows).toHaveLength(1);
+        expect((await db.query("select id from email_events where type='automation.run.started'")).rows).toHaveLength(3 + steps.length);
+        expect((await db.query("select id from email_events where type='contact.updated'")).rows).toHaveLength(2 + steps.length);
+        expect((await db.query("select id from webhook_attempts where webhook_id=$1", [endpoint])).rows).toHaveLength(6 + 2 * steps.length);
+        await assertFanout(endpoint);
+        await executeAutomationRun(db, run.tenant_id, run.id);
+        expect(await runRow(run.id)).toMatchObject({ state: "stopped", error: null });
+      } finally {
+        holdAfterStep();
+        await locker.query("select pg_advisory_unlock($1)", [lockKey]);
+        locker.release();
+        await Promise.allSettled([external, executor, stop].filter((pending) => pending !== undefined));
+        await db.query("drop trigger if exists hold_repair_external on contact_changes; drop function if exists hold_repair_external(); drop sequence if exists repair_external_attempts");
+      }
+    }, 45_000);
+  });
   describe("send kinds", () => {
     const start = { key: "start", type: "trigger", config: { event_name: "kind.start" } };
     const connections = [{ from: "start", to: "send" }];
@@ -1903,7 +2295,11 @@ describe.skipIf(!live)("accept", () => {
       for (const run of ready.rows) await executeAutomationRun(db, run.tenant_id, run.id);
     }
     expect([...(await flowRuns(a)), ...(await flowRuns(b))]).toHaveLength(5);
+    expect((await db.query("select depth from automation_runs where automation_id=any($1) order by depth", [[a, b]])).rows)
+      .toEqual([0, 1, 2, 3, 4].map((depth) => ({ depth })));
     expect((await db.query("select data from custom_events where name = '@contact.updated' and data->>'depth' = '5'")).rows).toHaveLength(1);
+    expect((await db.query(`select r.id from automation_runs r join custom_events e on e.id=r.event_id
+      where e.name='@contact.updated' and e.data->>'depth'='5'`)).rows).toHaveLength(0);
     expect((await db.query("select state from automation_runs where id = $1", [wait.id])).rows).toEqual([{ state: "waiting" }]);
     // A legacy @-named event automation remains an event, never a contact subscriber.
     await db.query("update automations set trigger = '@contact.updated', steps = $2::jsonb where id = $1", [waiting.json.id,
@@ -4401,7 +4797,22 @@ describe.skipIf(!live)("typed properties and rules", () => {
     const run = (await db.query<{ id: string; tenant_id: string }>("select id,tenant_id from automation_runs")).rows[0]!;
     await executeAutomationRun(db, run.tenant_id, run.id);
     expect((await db.query("select state from automation_runs")).rows).toEqual([{ state: "waiting" }]);
-    expect((await post(fullKey, "/events/send", { event: "typed.wait.done", email: "WAIT@example.com", payload: { received_at: "invalid" } })).status).toBe(202);
+    // Give this date fixture a controlled SQL receipt time. The disposable VM's
+    // clock can be milliseconds ahead of Node, which correctly fails "within".
+    const receivedAt = new Date(Date.now() - 60_000).toISOString();
+    await db.query(`create function typed_wait_receipt() returns trigger language plpgsql as $$
+      begin
+        if new.name='typed.wait.done' then new.created_at='${receivedAt}'::timestamptz; end if;
+        return new;
+      end $$;
+      create trigger typed_wait_receipt before insert on custom_events for each row execute function typed_wait_receipt()`);
+    try {
+      expect((await post(fullKey, "/events/send", { event: "typed.wait.done", email: "WAIT@example.com", payload: { received_at: "invalid" } })).status).toBe(202);
+      expect((await db.query("select created_at,data from custom_events where name='typed.wait.done'")).rows[0])
+        .toMatchObject({ created_at: new Date(receivedAt), data: { received_at: "invalid" } });
+    } finally {
+      await db.query("drop trigger typed_wait_receipt on custom_events; drop function typed_wait_receipt()");
+    }
     expect((await db.query("select state from automation_runs")).rows).toEqual([{ state: "ready" }]);
     await executeAutomationRun(db, run.tenant_id, run.id);
     expect((await db.query("select state from automation_runs")).rows).toEqual([{ state: "done" }]);

@@ -75,7 +75,14 @@ describe("typed audience routes", () => {
 
 // Exercise the real dispatchers at the route boundary. Pool reads and transaction queries are
 // separate so a write accidentally moved out of the transaction cannot hide in this fixture.
-function contactRoutes(input: { contact?: Partial<ContactRow> & { deleted_at?: string | null }; member?: boolean; failRun?: boolean } = {}) {
+function contactRoutes(input: {
+  contact?: Partial<ContactRow> & { deleted_at?: string | null };
+  member?: boolean;
+  failRun?: boolean;
+  deadlocks?: number;
+  propertyType?: () => string;
+  afterRollback?: (state: { contact: ContactRow | null }) => void;
+} = {}) {
   const timestamp = "2026-10-03T00:00:00Z";
   const row = (values: Partial<ContactRow> = {}): ContactRow & { deleted_at: string | null } => ({
     id: "contact_1", email: "ada@example.com", first_name: null, last_name: null, properties: {},
@@ -94,6 +101,7 @@ function contactRoutes(input: { contact?: Partial<ContactRow> & { deleted_at?: s
     { type: "topic_subscribed", topic_id: "topic_1" }, { type: "segment_added", segment_id: "segment_1" },
   ];
   let snapshot: typeof state | null = null;
+  let deadlocks = input.deadlocks ?? 0;
   const query = vi.fn(async (sql: string, params: unknown[] = []) => {
     const text = sql.replace(/\s+/g, " ").trim();
     if (text === "begin") {
@@ -102,10 +110,11 @@ function contactRoutes(input: { contact?: Partial<ContactRow> & { deleted_at?: s
     }
     if (text === "rollback") {
       Object.assign(state, snapshot);
+      input.afterRollback?.(state);
       return { rows: [] };
     }
     if (text === "commit") return { rows: [] };
-    if (text.includes("from contact_properties")) return { rows: [{ key: "activated", type: "boolean" }] };
+    if (text.includes("from contact_properties")) return { rows: [{ key: "activated", type: input.propertyType?.() ?? "boolean" }] };
     if (text.startsWith("insert into contacts")) {
       if (state.contact) return { rows: [] };
       state.contact = row({
@@ -167,6 +176,7 @@ function contactRoutes(input: { contact?: Partial<ContactRow> & { deleted_at?: s
     }
     if (text.startsWith("insert into automation_runs")) {
       if (input.failRun) throw new Error("run insert failed");
+      if (deadlocks-- > 0) throw Object.assign(new Error("deadlock detected"), { code: "40P01" });
       const run = { id: String(params[0]), automation_id: String(params[2]), event_id: String(params[3]) };
       state.runs.push(run);
       return { rows: [run] };
@@ -197,6 +207,76 @@ function contactRoutes(input: { contact?: Partial<ContactRow> & { deleted_at?: s
 }
 
 describe("contact route trigger dispatch", () => {
+  it.each([
+    ["POST", "/contacts", { email: "ada@example.com" }, ["@contact.created"]],
+    ["PATCH", "/contacts/contact_1", { first_name: "Ada" }, ["@contact.updated"]],
+    ["PATCH", "/contacts/contact_1/topics", { topics: [{ id: "topic_1", subscription: "opt_in" }] }, ["@topic.subscribed:topic_1"]],
+    ["POST", "/contacts/contact_1/segments/segment_1", undefined, ["@segment.added:segment_1"]],
+    ["POST", "/segments/segment_1/contacts", { email: "ada@example.com" }, ["@contact.created", "@segment.added:segment_1"]],
+    ["POST", "/topics/topic_1/subscriptions", { email: "ada@example.com", status: "opt_in" }, ["@contact.created", "@topic.subscribed:topic_1"]],
+  ] as const)("retries the entire aborted %s %s transaction without duplicate dispatch", async (method, url, payload, names) => {
+    const { app, state, query, connect, release } = contactRoutes({ deadlocks: 1, ...(method === "PATCH" || payload === undefined ? { contact: {} } : {}) });
+    const response = await app.inject({ method, url, ...(payload === undefined ? {} : { payload }) });
+    expect(response.statusCode).toBe(200);
+    expect(state.events.map((event) => event.name)).toEqual(names);
+    expect(state.runs).toHaveLength(names.length);
+    expect(new Set(state.history.map((change) => change.field)).size).toBe(state.history.length);
+    expect(query.mock.calls.filter(([sql]) => ["begin", "rollback", "commit"].includes(sql)).map(([sql]) => sql)).toEqual(["begin", "rollback", "begin", "commit"]);
+    expect(connect).toHaveBeenCalledTimes(2);
+    expect(release).toHaveBeenCalledTimes(2);
+  });
+
+  it("recomputes PATCH diffs and property merges after another writer commits during rollback", async () => {
+    const { app, state, query } = contactRoutes({
+      contact: { first_name: "Grace", properties: { activated: false } }, deadlocks: 1,
+      afterRollback: ({ contact }) => {
+        contact!.first_name = "Ada";
+        contact!.properties = { activated: true, concurrent: "keep" };
+      },
+    });
+    const response = await app.inject({ method: "PATCH", url: "/contacts/contact_1", payload: { first_name: "Ada", properties: { activated: true } } });
+    expect(response.statusCode).toBe(200);
+    expect(state.contact!.properties).toEqual({ activated: true, concurrent: "keep" });
+    expect(state.history).toEqual([]);
+    expect(state.events).toEqual([]);
+    expect(state.runs).toEqual([]);
+    expect(query.mock.calls.filter(([sql]) => sql.includes("from contacts"))).toHaveLength(2);
+  });
+
+  it("returns the existing 500 after four aborted attempts, leaving no contact or dispatch", async () => {
+    const { app, state, query, connect, release } = contactRoutes({ deadlocks: 4 });
+    const response = await app.inject({ method: "POST", url: "/contacts", payload: { email: "ada@example.com" } });
+    expect(response.statusCode).toBe(500);
+    expect(response.json()).toEqual({ message: "deadlock detected" });
+    expect(state.contact).toBeNull();
+    expect(state.history).toEqual([]);
+    expect(state.events).toEqual([]);
+    expect(state.runs).toEqual([]);
+    expect(query.mock.calls.filter(([sql]) => sql === "rollback")).toHaveLength(4);
+    expect(query.mock.calls.some(([sql]) => sql === "commit")).toBe(false);
+    expect(connect).toHaveBeenCalledTimes(4);
+    expect(release).toHaveBeenCalledTimes(4);
+  });
+
+  it.each(["POST", "PATCH"] as const)("rereads property validation inside every %s transaction attempt", async (method) => {
+    let type = "boolean";
+    const { app, state, query } = contactRoutes({
+      ...(method === "PATCH" ? { contact: {} } : {}), deadlocks: 1,
+      propertyType: () => type,
+      afterRollback: () => { type = "number"; },
+    });
+    const response = await app.inject({
+      method, url: method === "POST" ? "/contacts" : "/contacts/contact_1",
+      payload: { ...(method === "POST" ? { email: "ada@example.com" } : {}), properties: { activated: true } },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(state.history).toEqual([]);
+    expect(state.events).toEqual([]);
+    expect(state.runs).toEqual([]);
+    expect(query.mock.calls.filter(([sql]) => sql.includes("from contact_properties"))).toHaveLength(2);
+    expect(query.mock.calls.filter(([sql]) => sql === "rollback")).toHaveLength(2);
+  });
+
   it("creates a contact, records its actual fields, and enrolls it on the write transaction", async () => {
     const { app, state, query, connect, release } = contactRoutes();
     const response = await app.inject({

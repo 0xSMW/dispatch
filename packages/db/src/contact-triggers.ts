@@ -107,14 +107,14 @@ async function candidates(client: Queryable, tenantId: string, options: TriggerO
 
 async function origin(client: Queryable, tenantId: string, runId?: string) {
   if (!runId) return { automationId: null, depth: 0 };
-  const row = await client.query<{ automation_id: string; trigger_type: string; data: Record<string, unknown> }>(
-    `select r.automation_id, e.data, a.trigger_type from automation_runs r join custom_events e on e.id = r.event_id
-     join automations a on a.id = r.automation_id
+  const row = await client.query<{ automation_id: string; depth: number | null }>(
+    `select r.automation_id, r.depth from automation_runs r
      where r.tenant_id = $1 and r.id = $2`, [tenantId, runId]
   );
   if (!row.rows[0]) throw new ApiError("not_found", 404, "Origin run not found");
-  const depth = row.rows[0].trigger_type === "event" ? 0 : row.rows[0].data.depth;
-  return { automationId: row.rows[0].automation_id, depth: Math.min(5, (typeof depth === "number" ? depth : 0) + 1) };
+  const depth = row.rows[0].depth;
+  if (depth === null) throw new ApiError("conflict", 409, "Original enrollment depth is unavailable for this legacy run");
+  return { automationId: row.rows[0].automation_id, depth: Math.min(5, depth + 1) };
 }
 
 export async function startRuns(client: Queryable, tenantId: string, event: FiredEvent, options: TriggerOptions, selected?: Candidate[]) {
@@ -132,9 +132,9 @@ export async function startRuns(client: Queryable, tenantId: string, event: Fire
       if (!enrolled.rows[0]) continue;
     }
     const run = await client.query<{ id: string }>(
-      `insert into automation_runs (id, tenant_id, automation_id, event_id, state, priority, contact_id)
-       values ($1, $2, $3, $4, 'ready', $5, $6) returning id`,
-      [id("run"), tenantId, automation.id, event.id, options.priority ?? "normal", options.contact?.id ?? null]
+      `insert into automation_runs (id, tenant_id, automation_id, event_id, state, priority, contact_id, depth)
+       values ($1, $2, $3, $4, 'ready', $5, $6, $7) returning id`,
+      [id("run"), tenantId, automation.id, event.id, options.priority ?? "normal", options.contact?.id ?? null, parent.depth]
     );
     runs.push(run.rows[0]!.id);
     await emitRunEvent(client, tenantId, run.rows[0]!.id, "automation.run.started");
