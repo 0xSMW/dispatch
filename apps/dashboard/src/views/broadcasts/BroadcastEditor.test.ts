@@ -9,7 +9,7 @@ import { BroadcastEditor, patchBody, reviewChecks, toForm } from "./BroadcastEdi
 
 const audience = { object: "broadcast_audience", total: 120, recipients: 112, unsubscribed: 5, suppressed: 3, opted_out: 0, no_first_name: 0, no_last_name: 0 };
 
-function setup(row = broadcast()) {
+function setup(row = broadcast(), extra: Record<string, unknown> = {}) {
   const fetch = api({
     "GET /broadcasts/broadcast_1": row,
     "GET /segments": list([segment]),
@@ -20,6 +20,8 @@ function setup(row = broadcast()) {
     "POST /links/check": { object: "list", has_more: false, data: [{ object: "link", url: "https://acme.test/new", ok: false, status: 404, message: "404 not found" }] },
     "POST /broadcasts/broadcast_1/send": { id: "broadcast_1" },
     "GET /broadcasts/broadcast_1/audience": audience,
+    "GET /contact-properties": list([]),
+    ...extra,
   });
   const router = renderAt("/broadcasts/broadcast_1/editor", [
     { path: "/broadcasts/:id/editor", element: h(BroadcastEditor) },
@@ -71,6 +73,10 @@ describe("BroadcastEditor", () => {
     expect(calls(fetch, "GET /broadcasts/broadcast_1/audience")).toHaveLength(1);
     expect(dialog.getByText("No unsubscribe link.")).toBeTruthy();
     expect(dialog.getByText("No topic selected.")).toBeTruthy();
+    expect(dialog.getByRole("heading", { name: "Checks" })).toBeTruthy();
+    const checks = dialog.getByRole("list", { name: "Checks" });
+    expect(within(checks).getAllByRole("listitem")).toHaveLength(4);
+    expect(dialog.getByText("Link 404 not found.").closest("li")?.getAttribute("data-check-id")).toBe("link:https://acme.test/new");
 
     const send = dialog.getByRole("button", { name: /Send now/ });
     expect(send).toHaveProperty("disabled", true);
@@ -149,6 +155,85 @@ describe("BroadcastEditor", () => {
     // The form is filled one render after the notice shows, so wait for the field.
     expect(((await screen.findByLabelText("HTML")) as HTMLTextAreaElement).disabled).toBe(true);
   });
+
+  it("preserves counting and link-check loading rows before displaying their results", async () => {
+    const { fetch } = setup();
+    await screen.findByRole("option", { name: "Customers" });
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const reply = fetch.getMockImplementation()!;
+    fetch.mockImplementation(async (input, init) => {
+      if (["/links/check", "/broadcasts/broadcast_1/audience"].includes(new URL(String(input)).pathname)) await pending;
+      return reply(input, init);
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    const dialog = within(screen.getByRole("dialog"));
+    const counting = (await dialog.findByText("Counting the contacts in Customers…")).closest("li");
+    expect(dialog.getByText("Checking 1 link…")).toBeTruthy();
+    expect(dialog.queryByText(/links work/)).toBeNull();
+    release();
+    expect((await dialog.findByText("Sending to 112 contacts in Customers.")).closest("li")).toBe(counting);
+    expect(await dialog.findByText("Link 404 not found.")).toBeTruthy();
+  });
+
+  it("keeps failed audience and link requests as warnings, not blockers or successful checks", async () => {
+    const failed = () => ({ status: 500, body: { name: "internal_error", message: "Unavailable" } });
+    const { fetch } = setup(broadcast(), {
+      "GET /broadcasts/broadcast_1/audience": failed,
+      "POST /links/check": failed,
+    });
+    await screen.findByRole("option", { name: "Customers" });
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    const dialog = within(screen.getByRole("dialog"));
+    expect(await dialog.findByText("Could not count the contacts in Customers.")).toBeTruthy();
+    expect(await dialog.findByText("Could not check the link.")).toBeTruthy();
+    expect(dialog.getByText("Open them yourself before sending.")).toBeTruthy();
+    expect(dialog.queryByText(/links work/)).toBeNull();
+    fireEvent.change(dialog.getByLabelText("Confirmation phrase"), { target: { value: "SEND" } });
+    expect(dialog.getByRole("button", { name: /Send now/ })).toHaveProperty("disabled", false);
+    expect(calls(fetch, "POST /broadcasts/broadcast_1/send")).toHaveLength(0);
+  });
+
+  it("keeps missing content blocking after the confirmation phrase is entered", async () => {
+    const { fetch } = setup(broadcast({ html: null, text: null }));
+    await screen.findByRole("option", { name: "Customers" });
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    const dialog = within(screen.getByRole("dialog"));
+    const failure = await dialog.findByText("Add HTML or plain text content.");
+    expect(failure.closest("li")?.className).toBe("fail");
+    fireEvent.change(dialog.getByLabelText("Confirmation phrase"), { target: { value: "SEND" } });
+    expect(dialog.getByRole("button", { name: /Send now/ })).toHaveProperty("disabled", true);
+    expect(calls(fetch, "POST /broadcasts/broadcast_1/send")).toHaveLength(0);
+  });
+
+  it("keeps save errors in Checks and blocks sending", async () => {
+    const { fetch } = setup(broadcast(), {
+      "PATCH /broadcasts/broadcast_1": () => ({ status: 500, body: { name: "internal_error", message: "Save unavailable" } }),
+    });
+    await screen.findByRole("option", { name: "Customers" });
+    fireEvent.change(await screen.findByLabelText("Subject"), { target: { value: "Updated" } });
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    const dialog = within(screen.getByRole("dialog"));
+    const failure = await dialog.findByText("Not saved: Save unavailable");
+    expect(failure.closest("li")?.getAttribute("data-check-id")).toBe("save");
+    expect(failure.closest("li")?.className).toBe("fail");
+    fireEvent.change(dialog.getByLabelText("Confirmation phrase"), { target: { value: "SEND" } });
+    expect(dialog.getByRole("button", { name: /Send now/ })).toHaveProperty("disabled", true);
+    expect(calls(fetch, "GET /broadcasts/broadcast_1/audience")).toHaveLength(0);
+    expect(calls(fetch, "POST /broadcasts/broadcast_1/send")).toHaveLength(0);
+  });
+
+  it("does not expose review or test-send writes to a viewer", async () => {
+    signIn("sess_test", ["read"]);
+    const { fetch } = setup();
+    expect(await screen.findByText("You have read access. An admin can change this broadcast.")).toBeTruthy();
+    expect((await screen.findByLabelText("HTML"))).toHaveProperty("disabled", true);
+    expect(screen.getByRole("button", { name: "Review" })).toHaveProperty("disabled", true);
+    expect(screen.queryByRole("button", { name: "Test email" })).toBeNull();
+    expect(calls(fetch, "POST /links/check")).toHaveLength(0);
+    expect(calls(fetch, "GET /broadcasts/broadcast_1/audience")).toHaveLength(0);
+    expect(calls(fetch, "PATCH /broadcasts/broadcast_1")).toHaveLength(0);
+  });
 });
 
 describe("BroadcastEditor helpers", () => {
@@ -179,7 +264,7 @@ describe("BroadcastEditor helpers", () => {
   it("warns when nobody would receive it or the count failed", () => {
     const form = toForm(broadcast());
     expect(reviewChecks(form, segment as Segment, null, { ...audience, recipients: 0 } as never, [], 0)[0]!.tone).toBe("warn");
-    expect(reviewChecks(form, segment as Segment, null, "failed", [], 0)[0]).toEqual({ tone: "warn", text: "Could not count the contacts in Customers." });
+    expect(reviewChecks(form, segment as Segment, null, "failed", [], 0)[0]).toEqual({ id: "audience", tone: "warn", text: "Could not count the contacts in Customers." });
   });
 
   it("warns about a contact field that no property defines, once the properties load", () => {
@@ -187,7 +272,7 @@ describe("BroadcastEditor helpers", () => {
     expect(reviewChecks(form, segment as Segment, null, audience as never, [], 0, null).some((item) => item.text.includes("not a contact field"))).toBe(false);
     const warnings = reviewChecks(form, segment as Segment, null, audience as never, [], 0, ["plan"]).filter((item) => item.text.includes("contact field"));
     expect(warnings).toEqual([
-      { tone: "warn", text: "contact.frist_name is not a contact field, so every recipient will see a blank there.", detail: "Check the spelling, or add the property under Audience, Properties." },
+      { id: "unknown-fields", tone: "warn", text: "contact.frist_name is not a contact field, so every recipient will see a blank there.", detail: "Check the spelling, or add the property under Audience, Properties." },
     ]);
   });
 
@@ -196,8 +281,8 @@ describe("BroadcastEditor helpers", () => {
     const form = { ...toForm(broadcast()), subject: "Hi {{{contact.first_name}}}", html: "<p>{{{contact.last_name}}}</p>" };
     const warnings = reviewChecks(form, segment as Segment, null, named as never, [], 0).filter((item) => item.text.includes("will see a blank"));
     expect(warnings).toEqual([
-      { tone: "warn", text: "12 of 112 recipients have no first name. They will see a blank where it goes.", detail: "Add a fallback, such as {{{contact.first_name|there}}}." },
-      { tone: "warn", text: "1 of 112 recipients has no last name. They will see a blank where it goes.", detail: "Add a fallback, or wrap it in {{{#if contact.last_name}}}…{{{/if}}}." },
+      { id: "blank-name:contact.first_name", tone: "warn", text: "12 of 112 recipients have no first name. They will see a blank where it goes.", detail: "Add a fallback, such as {{{contact.first_name|there}}}." },
+      { id: "blank-name:contact.last_name", tone: "warn", text: "1 of 112 recipients has no last name. They will see a blank where it goes.", detail: "Add a fallback, or wrap it in {{{#if contact.last_name}}}…{{{/if}}}." },
     ]);
     // A placeholder guarded by an #if on the same field never prints a blank.
     const guarded = { ...form, subject: "Hi{{{#if contact.first_name}}} {{{FIRST_NAME}}}{{{/if}}}", html: "<p>Hi{{{#if contact.last_name}}} {{{contact.last_name}}}{{{/if}}}</p>" };
@@ -213,5 +298,18 @@ describe("BroadcastEditor helpers", () => {
     const checks = reviewChecks(form, segment as Segment, null, audience as never, "failed", 3);
     expect(checks.some((item) => item.text.includes("links work"))).toBe(false);
     expect(checks.find((item) => item.text === "Could not check the 3 links.")?.tone).toBe("warn");
+  });
+
+  it("assigns stable rule and URL identities independent of warning text or position", () => {
+    const form = toForm(broadcast());
+    const loading = reviewChecks(form, segment as Segment, null, "loading", null, 2);
+    const complete = reviewChecks({ ...form, subject: "" }, segment as Segment, null, audience as never, [
+      { object: "link", url: "https://acme.test/one", ok: false, status: 404, message: "404 not found" },
+      { object: "link", url: "https://acme.test/two", ok: false, status: 500, message: "500 error" },
+    ], 2);
+    expect(loading[0]?.id).toBe(complete[0]?.id);
+    expect(complete.find((item) => item.text === "No topic selected.")?.id).toBe(loading.find((item) => item.text === "No topic selected.")?.id);
+    expect(complete.filter((item) => item.id.startsWith("link:")).map((item) => item.id)).toEqual(["link:https://acme.test/one", "link:https://acme.test/two"]);
+    expect(new Set(complete.map((item) => item.id)).size).toBe(complete.length);
   });
 });

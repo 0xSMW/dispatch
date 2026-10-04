@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Mail, Paperclip } from "lucide-react";
 import { Badge, statusToVariant } from "../../components/Badge";
+import { Checks, type CheckRow } from "../../components/Checks";
 import { Code } from "../../components/Code";
 import { ConfirmPhrase } from "../../components/ConfirmPhrase";
 import { Empty, Failed } from "../../components/Empty";
@@ -21,7 +22,7 @@ import { useMutation } from "../../hooks/useMutation";
 import { useAll, useResource } from "../../hooks/useResource";
 import { usable, useWhen, whenHint } from "../../lib/when";
 import { useCan, useClient } from "../../shell/session";
-import type { Attachment, Email as EmailRow, EmailEvent, EmailInsights, Insight, List } from "../../types";
+import type { Attachment, Email as EmailRow, EmailEvent, EmailInsights, List } from "../../types";
 import { cancelable, retryable } from "./Emails";
 import { Preview } from "./Preview";
 import { problemOf, ProblemBanner } from "./Problem";
@@ -271,37 +272,26 @@ function Reschedule({ email, onClose, onDone }: { email: EmailRow; onClose: () =
   );
 }
 
-const groups: Array<{ key: keyof Omit<EmailInsights, "object" | "email_id">; title: string; tone: "danger" | "warning" | "success" }> = [
-  { key: "needs_attention", title: "Needs attention", tone: "danger" },
-  { key: "possible_improvements", title: "Possible improvements", tone: "warning" },
-  { key: "doing_great", title: "Doing great", tone: "success" },
+const groups: Array<{ key: keyof Omit<EmailInsights, "object" | "email_id">; title: string; tone: CheckRow["tone"] }> = [
+  { key: "needs_attention", title: "Needs attention", tone: "fail" },
+  { key: "possible_improvements", title: "Possible improvements", tone: "warn" },
+  { key: "doing_great", title: "Doing great", tone: "ok" },
 ];
 
 function Insights({ state }: { state: { data: EmailInsights | null; loading: boolean; error: string | null; reload: () => Promise<void> } }) {
-  if (state.error) return <Failed message={state.error} onRetry={state.reload} />;
-  if (!state.data) return <Skeleton lines={4} />;
-  const data = state.data;
   return (
-    <div className="insights">
-      {groups.map((group) => (
-        <section key={group.key} className="stack">
-          <h3 className="inline">
-            {group.title} <Badge value={data[group.key].length} variant={data[group.key].length ? group.tone : "neutral"} />
-          </h3>
-          {data[group.key].length === 0 ? (
-            <p className="dim">Nothing here.</p>
-          ) : (
-            <ul className="insightList">
-              {data[group.key].map((item: Insight) => (
-                <li key={item.id} className={`insight ${group.tone}`}>
-                  <strong>{item.title}</strong>
-                  <span className="muted">{item.detail}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-      ))}
-    </div>
+    <Checks
+      rows={groups.flatMap((group) => (state.data?.[group.key] ?? []).map((item): CheckRow => ({
+        id: item.id,
+        group: group.key,
+        tone: group.tone,
+        text: item.title,
+        detail: item.detail,
+      })))}
+      groups={groups.map((group) => ({ id: group.key, title: group.title, tone: group.tone }))}
+      loading={!state.data}
+      error={state.error}
+      onRetry={state.reload}
+    />
   );
 }
