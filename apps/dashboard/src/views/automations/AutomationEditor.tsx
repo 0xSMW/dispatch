@@ -19,6 +19,7 @@ import { useList } from "../../hooks/useList";
 import { useMutation } from "../../hooks/useMutation";
 import { useResource } from "../../hooks/useResource";
 import { ApiError } from "../../lib/client";
+import { kindLabels, templateKind } from "../../lib/emailKind";
 import { useCan, useClient } from "../../shell/session";
 import type { Automation, AutomationPreview, ContactProperty, EventDefinition, Segment, Template, Topic } from "../../types";
 import {
@@ -97,7 +98,7 @@ export function AutomationEditor() {
   // Issues from the last failed save, placed on the step cards their paths name.
   const [apiIssues, setApiIssues] = useState<Record<string, Record<string, string>>>({});
   const loaded = useRef<string | null>(null);
-  const [checked, setChecked] = useState(false);
+  const [checked, setChecked] = useState<false | "draft" | "enabled">(false);
   const [removing, setRemoving] = useState<{ path: ListPath; index: number; node: Node } | null>(null);
   const [stopping, setStopping] = useState(false);
   const [enrolling, setEnrolling] = useState(false);
@@ -127,7 +128,10 @@ export function AutomationEditor() {
   const properties = useList<ContactProperty>("/contact-properties", {}, { all: true });
   const options: StepOptions = useMemo(
     () => ({
-      templates: templates.rows.map((item) => ({ value: item.id, label: item.alias ? `${item.name} (${item.alias})` : item.name })),
+      templates: templates.rows.map((item) => {
+        const kind = item.kind ?? (item.html !== undefined || item.text !== undefined ? templateKind(item) : undefined);
+        return { value: item.id, label: `${item.alias ? `${item.name} (${item.alias})` : item.name}${kind ? ` · ${kindLabels[kind]}` : ""}`, kind };
+      }),
       segments: segments.rows.map((item) => ({ value: item.id, label: item.name })),
       events: events.rows.map((item) => item.name),
       topics: topics.rows.map((item) => ({ value: item.id, label: item.name })),
@@ -154,14 +158,17 @@ export function AutomationEditor() {
   // A viewer sees the builder read-only, the same way as an enabled automation.
   const locked = !can || enabled || Boolean(problem);
   const dirty = Boolean(draft) && snapshot(draft!) !== saved;
+  const templateKinds = useMemo(() => Object.fromEntries(templates.rows.flatMap((item) => {
+    const kind = item.kind ?? (item.html !== undefined || item.text !== undefined ? templateKind(item) : undefined);
+    return kind ? [[item.id, kind], ...(item.alias ? [[item.alias, kind]] : [])] : [];
+  })), [templates.rows]);
   const issues = useMemo(() => (draft ? treeIssues(draft.tree, {
     events: events.rows, ...triggerSources(options),
-  }) : {}), [draft, events.rows, options]);
+  }, { enabled: checked === "enabled", templateKinds }) : {}), [draft, events.rows, options, checked, templateKinds]);
   const trigger = draft ? treeTrigger(draft.tree) : null;
   const resourceWarning = trigger ? triggerWarning(trigger, triggerSources(options)) : null;
   const triggerPending = trigger ? triggerLoading(trigger, options) : false;
   const nameIssue = draft && !draft.name.trim() ? "Enter a name." : null;
-  const valid = !nameIssue && Object.keys(issues).length === 0;
   const current = useRef({ draft, id: row?.id, paused, can });
   current.current = { draft, id: row?.id, paused, can };
 
@@ -229,16 +236,21 @@ export function AutomationEditor() {
 
   function submit(start: boolean) {
     if (!can || !row || !draft || busy || confirmation || enabled || triggerPending || (start && resourceWarning)) return;
+    const nextIssues = treeIssues(draft.tree, { events: events.rows, ...triggerSources(options) }, { enabled: start, templateKinds });
+    // A clean paused graph still resumes with a status-only request. Do not newly apply
+    // unrelated editor validation to its stored steps; only enforce the send-kind contract.
+    const cleanResume = start && paused && !dirty;
+    const sendIssues = Object.values(nextIssues).some((fields) => fields.kind || fields.topic_id);
+    if (!problem && (cleanResume ? sendIssues : nameIssue || Object.keys(nextIssues).length)) {
+      setChecked(start ? "enabled" : "draft");
+      toast.error("Fix the highlighted fields first.");
+      return;
+    }
     if (start && (problem || (paused && !dirty))) {
       void save.mutate({ id: row.id, body: { status: "enabled" }, draft: null });
       return;
     }
     if (problem || (!start && !dirty)) return;
-    if (!valid) {
-      setChecked(true);
-      toast.error("Fix the highlighted fields first.");
-      return;
-    }
     const graph = toGraph(draft.tree);
     const request: SaveRequest = {
       id: row.id,

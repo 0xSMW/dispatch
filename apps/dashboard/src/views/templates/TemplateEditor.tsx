@@ -14,6 +14,7 @@ import { shortcuts } from "../../lib/shortcuts";
 import { useMutation } from "../../hooks/useMutation";
 import { useResource } from "../../hooks/useResource";
 import { addresses } from "../../lib/utils";
+import { templateKind, kindLabels } from "../../lib/emailKind";
 import { useCan, useClient } from "../../shell/session";
 import type { Rendered, Template } from "../../types";
 import { EditorScreen, LeaveGuard, Preview, Source, TestSend, useDraft, type Flush } from "./editor";
@@ -242,11 +243,12 @@ export function TemplateEditor() {
   const row = template.data;
   const notice = sourceNotice(row?.source);
 
+  const kind = templateKind(form ? { ...form, source: row?.source } : row ?? {});
   return (
     <EditorScreen
       crumb={{ to: row ? `/templates/${row.id}` : "/templates", label: "Templates" }}
       title={row?.name ?? "Loading"}
-      status={row ? <Badge value={row.status} /> : null}
+      status={row ? <><Badge value={row.status} /><Badge value={kind} label={kindLabels[kind]} /></> : null}
       save={can ? draft.state : undefined}
       actions={
         <>
@@ -290,6 +292,8 @@ export function TemplateEditor() {
       ) : (
         <>
           <div className="editorHead">
+            <Field label="Template kind" value={kindLabels[kind]} onChange={() => undefined} disabled className="wide"
+              hint="Library kind and HTML or plain text determine this value. Marketing templates cannot send as Transactional." />
             <Field label="Subject" value={form.subject} onChange={(value) => draft.set("subject", value)} placeholder="Welcome to {{{PRODUCT_NAME}}}" className="wide" disabled={!can} />
             <Field label="From" value={form.from} onChange={(value) => draft.set("from", value)} placeholder="Acme <hello@acme.com>" disabled={!can} />
             <Field label="Reply-To" value={form.reply_to} onChange={(value) => draft.set("reply_to", value)} placeholder="support@acme.com" disabled={!can} />

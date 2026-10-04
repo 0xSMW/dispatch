@@ -20,6 +20,7 @@ import { describe as summary, stepLabels, triggerLabels, triggerSummary, type Tr
 import type { RuleSources } from "../../lib/rules";
 import { slotId, type CanvasEdge, type CanvasNode, type EndNode, type Slot, type StepNode, type TriggerNode } from "./layout";
 import { stepIcons, stepTones } from "./Steps";
+import { kindLabels, sendKind } from "../../lib/emailKind";
 import { EmailCountLine, type EmailCounts } from "./EmailMetrics";
 
 // The React Flow half of the canvas. `Canvas.tsx` loads this file with a dynamic import, so
@@ -72,6 +73,7 @@ function StepBox({ data }: NodeProps<StepNode>) {
         <span className="canvasNodeHead">
           <Tile tone={stepTones[node.type]}>{stepIcons[node.type]}</Tile>
           <strong>{stepLabels[node.type]}</strong>
+          {node.type === "send_email" ? <Badge value={sendKind(node.config)} label={kindLabels[sendKind(node.config)]} /> : null}
           {status ? <Badge value={status} /> : null}
           {issues ? (
             <span className="canvasIssues" title={`${issues} ${issues === 1 ? "issue" : "issues"}`}>

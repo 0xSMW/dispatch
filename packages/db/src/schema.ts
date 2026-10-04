@@ -994,4 +994,32 @@ update automation_runs set exit_reason = case
   when error = 'Its next step was removed or changed while the automation was paused' then 'stranded'
   else 'stopped' end
 where exit_reason is null and state in ('done', 'stopped');
+
+-- Persist legacy send intent in bounded batches. Explicit Marketing without a topic stays so.
+do $$
+declare changed integer;
+begin
+  loop
+    with batch as (
+      select id from automations a where exists (
+        select 1 from jsonb_array_elements(a.steps) s
+        where s->>'type' = 'send_email'
+          and not (case when s ? 'key' then coalesce(s->'config', '{}') else s end ? 'kind')
+      ) order by id limit 500
+    )
+    update automations a set steps = (
+      select jsonb_agg(case
+        when s->>'type' <> 'send_email' then s
+        when s ? 'key' then jsonb_set(s, '{config}', coalesce(s->'config', '{}') ||
+          jsonb_build_object('kind', coalesce(s->'config'->>'kind',
+            case when nullif(s->'config'->>'topic_id', '') is null then 'transactional' else 'marketing' end)))
+        else s || jsonb_build_object('kind', coalesce(s->>'kind',
+          case when nullif(s->>'topic_id', '') is null then 'transactional' else 'marketing' end))
+        end order by ordinal)
+      from jsonb_array_elements(a.steps) with ordinality e(s, ordinal)
+    ) from batch where a.id = batch.id;
+    get diagnostics changed = row_count;
+    exit when changed = 0;
+  end loop;
+end $$;
 `;

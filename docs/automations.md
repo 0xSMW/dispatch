@@ -245,12 +245,32 @@ The run ends naturally when its chosen path has no next step. An Exit step is an
 
 A send step can inherit From from its template and override the subject and reply-to. Trigger payload fields are available as template variables, and explicit step variables override them. Recipient fields are available under `contact.*`, plus `FIRST_NAME`, `LAST_NAME`, and `EMAIL`. See [template variables](templates.md#variables).
 
+### Transactional or Marketing
+
+Choose a kind in each Send email step:
+
+| Kind | Config | Behavior |
+|:---|:---|:---|
+| Transactional | `{ "kind": "transactional", "template": "receipt" }` | No topic. Does not enforce Marketing opt-outs or add unsubscribe links and headers. Delivery, suppression, and sandbox rules still apply. |
+| Marketing | `{ "kind": "marketing", "template": "newsletter", "topic_id": "topic_123" }` | Respects global and topic opt-outs, supplies recipient-specific unsubscribe links, and adds one-click headers. Opt-outs are checked again at delivery. |
+
+Transactional cannot have `topic_id`. Marketing skips deleted contacts, global unsubscribes, and topic opt-outs while the run continues. A Transactional step can still send to a deleted contact's address, as an ordinary send without a topic would.
+
+You can save `{ "kind": "marketing", "template": "newsletter" }` while the automation is disabled or paused and choose its topic later. Creating enabled, enabling, or resuming returns `422` until every Marketing step has a live topic. Execution also refuses a Marketing step whose topic is missing or has been deleted. It never silently sends that step as Transactional.
+
+The editor disables Transactional when the selected [template's kind](templates.md#transactional-or-marketing) is Marketing and shows why. The API rejects the same combination. A Transactional template can be used for Marketing; add a footer link if it does not already have one. Missing body links show a warning, not an error: the one-click header is still added.
+
+Legacy send configs without `kind` remain accepted: `topic_id` means Marketing, and no topic means Transactional. Stored configs and automation responses always carry explicit `kind`. TypeScript, Go, and Python export `SendEmailConfig` with optional kind for compatible input. Nested config keys stay snake_case in all three SDKs.
+
+This choice belongs to automation steps. Ordinary `POST /emails`, batches, and SDK `emails.send` still use only `topic_id`, with no new field or setup required. [Broadcasts](api/README.md#sending-from-flows) are always Marketing.
+
 ### Variable mappings
 
 Use a send step's field picker, or its optional `variable_mapping` config, to map template variable names to dotted context fields:
 
 ```json
 {
+  "kind": "transactional",
   "template": {
     "id": "template_...",
     "variables": { "PLAN": "starter" }
@@ -265,8 +285,6 @@ Use a send step's field picker, or its optional `variable_mapping` config, to ma
 Mappings override literal variables when the source exists. They read only own properties, and missing source values are omitted. Existing `template.variables` values stay literal: `"contact.plan"` is text unless supplied through `variable_mapping`. Automatic event payload variables still work. The server builds fresh contact context for the actual recipient, and reserved recipient and unsubscribe variables cannot be replaced by mappings or event data.
 
 Mapped values retain their JSON type and must match the template variable's declared type. Contact properties and event fields can be boolean or date, but template variable declarations remain string, number, or list. Use boolean contact fields in template conditionals rather than mapping them to a declared string variable.
-
-Set a Topic on the send step for Marketing email. It skips deleted contacts, global unsubscribes, and topic opt-outs, adds recipient-specific unsubscribe links and one-click headers, and checks opt-outs again at delivery. With no topic, the step is Transactional and does not enforce marketing subscriptions, including for a deleted contact's address. A template that prints an unsubscribe link needs a topic.
 
 Update contact and Add to segment skip deleted contacts rather than reviving them. Changing steps on an enabled automation is refused with `409`; [pause it before editing](#editing-while-paused) to keep existing runs, or stop it to cancel them.
 
@@ -311,7 +329,7 @@ Here is a keyed graph using all three steps. Replace `welcome` with a published 
         ]
       }
     },
-    { "key": "welcome", "type": "send_email", "config": { "template": "welcome" } },
+    { "key": "welcome", "type": "send_email", "config": { "kind": "transactional", "template": "welcome" } },
     { "key": "end", "type": "exit", "config": {} }
   ],
   "connections": [

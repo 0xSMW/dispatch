@@ -800,7 +800,10 @@ app.patch("/templates/:id", async (request) => {
           html: input.html !== undefined ? input.html : current.html,
           text: input.text !== undefined ? input.text : current.text,
           variables: input.variables !== undefined ? input.variables : (current.variables ?? []),
-          source: input.source,
+          // Editing clears library provenance, but must not clear its Marketing intent.
+          source: current.source?.send_kind === "marketing"
+            ? { ...(input.source ?? { kind: "custom" }), send_kind: "marketing" }
+            : input.source,
           publish: input.publish,
         };
         // An edit to a template whose latest version was never published changes that version.

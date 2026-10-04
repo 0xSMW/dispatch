@@ -203,10 +203,18 @@ type TemplateVariable struct {
 	FallbackValue any    `json:"fallback_value,omitempty"`
 }
 
+type SendKind string
+
+const (
+	Transactional SendKind = "transactional"
+	Marketing     SendKind = "marketing"
+)
+
 type Template struct {
 	Object                 string             `json:"object,omitempty"`
 	ID                     string             `json:"id"`
 	Name                   string             `json:"name"`
+	Kind                   SendKind           `json:"kind"`
 	Alias                  *string            `json:"alias,omitempty"`
 	From                   *string            `json:"from,omitempty"`
 	ReplyTo                []string           `json:"reply_to,omitempty"`
@@ -696,8 +704,11 @@ type BranchConfig struct {
 
 // SendEmailConfig uses literal Variables and optional dotted context mappings.
 // Mappings override literals; recipient and unsubscribe context stays protected.
+// Omitted Kind is inferred from TopicID. Marketing drafts may omit TopicID,
+// but enabling or resuming requires a live topic. Transactional cannot have a topic.
 type SendEmailConfig struct {
 	Template        any               `json:"template"`
+	Kind            SendKind          `json:"kind,omitempty"`
 	From            string            `json:"from,omitempty"`
 	To              string            `json:"to,omitempty"`
 	Subject         string            `json:"subject,omitempty"`

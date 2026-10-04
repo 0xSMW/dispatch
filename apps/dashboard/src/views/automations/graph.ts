@@ -4,7 +4,8 @@
 // builder shows the same thing as a tree: one ordered list after the trigger, where a condition
 // (and a wait_for_event that branches) ends its list and holds one nested list per outgoing edge.
 import { contextFields, isIsoDate, operatorsForType, type ContextField, type RuleSources } from "../../lib/rules";
-import type { PropertyType } from "../../types";
+import type { PropertyType, SendKind } from "../../types";
+import { kindLabels, sendKind } from "../../lib/emailKind";
 
 export const stepTypes = [
   "send_email",
@@ -223,7 +224,7 @@ export const blankRule = (): Rule => ({ type: "rule", field: "", operator: "eq",
 export function defaultConfig(type: StepType): Record<string, unknown> {
   switch (type) {
     case "send_email":
-      return { from: "", template: { id: "", variables: {} } };
+      return { kind: "transactional", from: "", template: { id: "", variables: {} } };
     case "delay":
       return { duration: "1 hour" };
     case "wait_for_event":
@@ -270,6 +271,7 @@ export function toTree(steps: GraphStep[], connections: Connection[] = []): { tr
       }
       seen.add(key);
       const node: Node = { key, type: step.type as StepType, config: { ...(step.config ?? {}) } };
+      if (node.type === "send_email" && node.config.kind === undefined) node.config.kind = sendKind(node.config);
       if (node.type === "branch") {
         const paths = branchesOf(node);
         const edges = connections.filter((edge) => edge.from === node.key);
@@ -366,6 +368,7 @@ export function cleanConfig(node: Node): Record<string, unknown> {
   if (node.type === "exit") return {};
   if (node.type === "branch") return { paths: configuredPaths(node).map(({ key, label, rule }) => ({ key, label, rule })) };
   const config = { ...node.config };
+  if (node.type === "send_email" && config.kind === undefined) config.kind = sendKind(config);
   for (const field of optional[node.type] ?? []) {
     const value = config[field];
     if (value === undefined || value === null || (typeof value === "string" && !value.trim())) delete config[field];
@@ -607,7 +610,9 @@ export function ruleIssue(rule: unknown, fields: ContextField[] = [], manualType
 }
 
 /** Field errors for one step, keyed by field name. */
-export function stepIssues(node: Node, fields: ContextField[] = []): Record<string, string> {
+export type SendValidation = { enabled?: boolean; templateKinds?: Record<string, SendKind> };
+
+export function stepIssues(node: Node, fields: ContextField[] = [], sending: SendValidation = {}): Record<string, string> {
   const issues: Record<string, string | null> = {};
   const config = node.config;
   for (const [field, text] of Object.entries(node.drafts ?? {})) {
@@ -627,6 +632,13 @@ export function stepIssues(node: Node, fields: ContextField[] = []): Record<stri
       const template = config.template as { id?: string } | string | undefined;
       const id = typeof template === "string" ? template : template?.id;
       if (!id) issues.template = "Choose a template.";
+      if (config.kind !== undefined && config.kind !== "transactional" && config.kind !== "marketing") issues.kind = "Choose Transactional or Marketing.";
+      if (sendKind(config) === "transactional") {
+        if (config.topic_id) issues.topic_id = "Transactional emails cannot have a topic. Choose Marketing or remove the topic.";
+        if (id && sending.templateKinds?.[id] === "marketing") issues.kind = "Marketing templates cannot send as Transactional.";
+      } else if (sending.enabled && !String(config.topic_id ?? "").trim()) {
+        issues.topic_id = "Choose a topic before starting a Marketing email.";
+      }
       if (config.variable_mapping !== undefined) {
         const mapping = config.variable_mapping;
         if (!mapping || typeof mapping !== "object" || Array.isArray(mapping)) issues.variable_mapping = "Mappings must be an object.";
@@ -680,14 +692,14 @@ export function stepIssues(node: Node, fields: ContextField[] = []): Record<stri
 }
 
 /** Every step's field errors, keyed by step key, plus a trigger error under `trigger`. */
-export function treeIssues(tree: Tree, sources?: RuleSources): Record<string, Record<string, string>> {
+export function treeIssues(tree: Tree, sources?: RuleSources, sending: SendValidation = {}): Record<string, Record<string, string>> {
   const all: Record<string, Record<string, string>> = {};
   const trigger = triggerIssues(treeTrigger(tree), sources);
   if (Object.keys(trigger).length) all[tree.trigger] = trigger;
   const walk = (list: Node[]) => {
     for (const node of list) {
       const fields = sources ? contextFields(sources, node.type === "wait_for_event" ? String(node.config.event_name ?? "") : tree.event) : [];
-      const issues = stepIssues(node, fields);
+      const issues = stepIssues(node, fields, sending);
       if (Object.keys(issues).length) all[node.key] = issues;
       for (const branch of branchesOf(node)) walk(branchSteps(node, branch));
     }
@@ -699,7 +711,7 @@ export function treeIssues(tree: Tree, sources?: RuleSources): Record<string, Re
 /** The config fields each card shows an error under. Anything else goes on the card as a whole. */
 const cardFields: Record<string, string[]> = {
   trigger: ["type", "event_name", "field", "from", "to", "topic_id", "segment_id"],
-  send_email: ["template", "from", "to", "variables", "variable_mapping"],
+  send_email: ["template", "kind", "topic_id", "from", "to", "variables", "variable_mapping"],
   delay: ["duration"],
   wait_for_event: ["event_name", "timeout", "filter_rule"],
   condition: ["rule"],
@@ -761,7 +773,7 @@ export function describe(node: Node): string {
     case "send_email": {
       const template = config.template as { id?: string } | string | undefined;
       const id = typeof template === "string" ? template : template?.id;
-      return `Template ${id || "not set"}${config.to ? ` to ${String(config.to)}` : ""}`;
+      return `${kindLabels[sendKind(config)]} · Template ${id || "not set"}${config.to ? ` to ${String(config.to)}` : ""}`;
     }
     case "delay":
       return String(config.duration ?? "");

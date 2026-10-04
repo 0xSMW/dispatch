@@ -28,6 +28,10 @@ import {
   type TriggerConfig,
 } from "./graph";
 import { contextFields } from "../../lib/rules";
+import { sendKind } from "../../lib/emailKind";
+
+const normalized = (steps: Graph["steps"]) => steps.map((step) => step.type === "send_email"
+  ? { ...step, config: { ...step.config, kind: sendKind(step.config) } } : step);
 
 // New steps get a random key suffix. Tests count instead, so keys can be named.
 beforeEach(() => {
@@ -61,7 +65,7 @@ describe("toTree and toGraph", () => {
     expect(tree.steps[1]!.branches?.condition_met?.map((node) => node.key)).toEqual(["upsell"]);
     expect(tree.steps[1]!.branches?.condition_not_met?.map((node) => node.key)).toEqual(["tag"]);
     expect(toGraph(tree)).toEqual({
-      ...graph, steps: [{ ...graph.steps[0], config: { type: "event", event_name: "user.created" } }, ...graph.steps.slice(1)],
+      ...graph, steps: normalized([{ ...graph.steps[0]!, config: { type: "event", event_name: "user.created" } }, ...graph.steps.slice(1)]),
     });
   });
 
@@ -125,7 +129,7 @@ describe("contact triggers", () => {
     const { tree, problem } = toTree(input.steps, input.connections);
     expect(problem).toBeNull();
     expect(treeTrigger(tree)).toEqual(config);
-    expect(toGraph(tree)).toEqual(input);
+    expect(toGraph(tree)).toEqual({ ...input, steps: normalized(input.steps) });
     const edited = insertStep(tree, [], 0, "delay");
     expect(toGraph(edited).steps[0]!.config).toEqual(config);
     expect(treeIssues(edited, sources)[tree.trigger]).toBeUndefined();
@@ -235,20 +239,49 @@ describe("editing", () => {
 
   it("drops blank optional fields when writing", () => {
     const tree = updateNode(base, "welcome", (node) => ({ ...node, config: { ...node.config, to: "", subject: " " } }));
-    expect(toGraph(tree).steps[1]!.config).toEqual({ from: "a@b.co", template: { id: "tpl_1", variables: {} } });
+    expect(toGraph(tree).steps[1]!.config).toEqual({ kind: "transactional", from: "a@b.co", template: { id: "tpl_1", variables: {} } });
   });
 
   it("lets a send step leave out its sender and name a topic", () => {
-    // A blank sender means the template's own. A blank topic means the email always sends.
+    // A blank sender means the template's own. Marketing drafts can omit a topic.
     const blank = updateNode(base, "welcome", (node) => ({ ...node, config: { ...node.config, from: "", topic_id: "" } }));
-    expect(toGraph(blank).steps[1]!.config).toEqual({ template: { id: "tpl_1", variables: {} } });
+    expect(toGraph(blank).steps[1]!.config).toEqual({ kind: "transactional", template: { id: "tpl_1", variables: {} } });
     expect(stepIssues({ key: "s", type: "send_email", config: { template: { id: "tpl_1" } } })).toEqual({});
-    const topic = updateNode(base, "welcome", (node) => ({ ...node, config: { ...node.config, topic_id: "topic_news" } }));
-    expect(toGraph(topic).steps[1]!.config).toMatchObject({ topic_id: "topic_news" });
+    const topic = updateNode(base, "welcome", (node) => ({ ...node, config: { ...node.config, kind: "marketing", topic_id: "topic_news" } }));
+    expect(toGraph(topic).steps[1]!.config).toMatchObject({ kind: "marketing", topic_id: "topic_news" });
   });
 });
 
 describe("validation", () => {
+  it("allows Marketing drafts without topics but blocks enabling, and rejects contradictory Transactional settings", () => {
+    const send = { key: "send", type: "send_email" as const, config: { kind: "marketing", template: "news" } };
+    expect(stepIssues(send)).toEqual({});
+    expect(stepIssues(send, [], { enabled: true }).topic_id).toMatch(/Choose a topic/);
+    expect(stepIssues({ ...send, config: { ...send.config, topic_id: "topic_1" } }, [], { enabled: true })).toEqual({});
+    expect(stepIssues({ ...send, config: { kind: "transactional", template: "receipt", topic_id: "topic_1" } }).topic_id).toMatch(/cannot have a topic/);
+    expect(stepIssues({ ...send, config: { kind: "transactional", template: "news" } }, [], { templateKinds: { news: "marketing" } }).kind).toMatch(/cannot send as Transactional/);
+    expect(stepIssues({ ...send, config: { kind: "invalid", template: "receipt" } }).kind).toMatch(/Choose Transactional or Marketing/);
+  });
+
+  it("normalizes omitted legacy kind from topics, preserves explicit kind, and defaults new sends to Transactional", () => {
+    const steps = [
+      { key: "trigger", type: "trigger", config: { event_name: "signup" } },
+      { key: "one", type: "send_email", config: { template: "receipt" } },
+      { key: "two", type: "send_email", config: { template: "news", topic_id: "topic_1" } },
+      { key: "three", type: "send_email", config: { template: "receipt", kind: "marketing" } },
+    ];
+    const tree = toTree(steps, [{ from: "trigger", to: "one" }, { from: "one", to: "two" }, { from: "two", to: "three" }]).tree;
+    expect(tree.steps.map((node) => node.config.kind)).toEqual(["transactional", "marketing", "marketing"]);
+    expect(toGraph(tree).steps.slice(1).map((step) => step.config.kind)).toEqual(["transactional", "marketing", "marketing"]);
+    expect(insertStep(tree, [], 0, "send_email").steps[0]!.config.kind).toBe("transactional");
+  });
+
+  it("places kind and topic errors directly on their send controls", () => {
+    expect(placeIssues(graph.steps, [
+      { path: "steps.1.config.kind", message: "Invalid kind" },
+      { path: "steps.1.config.topic_id", message: "Choose a topic" },
+    ]).cards.welcome).toEqual({ kind: "Invalid kind", topic_id: "Choose a topic" });
+  });
   it("checks typed values and positive finite windows without the delay's 30-day cap", () => {
     const fields = contextFields({ properties: [{ key: "renewed", type: "date" }, { key: "paid", type: "boolean" }, { key: "seats", type: "number" }] });
     const rule = (field: string, operator: string, value?: unknown) => ({ type: "rule", field, operator, value });
@@ -273,7 +306,7 @@ describe("validation", () => {
       { key: "send", type: "send_email", config: { template: { id: "tpl_1", variables: literal }, variable_mapping: { plan: "event.plan" } } },
     ], [{ from: "trigger", to: "wait" }, { from: "wait", to: "send" }]).tree;
     expect(treeIssues(tree, { events: [{ name: "signup", schema: { total: "string" } }, { name: "purchase", schema: { total: "number" } }] })).toEqual({ wait: { filter_rule: "Enter a number to compare with." } });
-    expect(toGraph(tree).steps[2]!.config).toEqual({ template: { id: "tpl_1", variables: literal }, variable_mapping: { plan: "event.plan" } });
+    expect(toGraph(tree).steps[2]!.config).toEqual({ kind: "transactional", template: { id: "tpl_1", variables: literal }, variable_mapping: { plan: "event.plan" } });
     expect(stepIssues({ key: "s", type: "send_email", config: { template: "tpl_1", variable_mapping: { "": "event." } } }).variable_mapping).toMatch(/variable name/);
     expect(placeIssues(toGraph(tree).steps, [{ path: "steps.2.config.variable_mapping.plan", message: "Invalid path" }]).cards).toEqual({ send: { variable_mapping: "Invalid path" } });
   });

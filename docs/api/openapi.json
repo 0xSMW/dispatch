@@ -11299,6 +11299,7 @@
       "post": {
         "operationId": "createAutomation",
         "summary": "Create an automation",
+        "description": "Disabled Marketing drafts may omit a send step topic. Creating enabled returns 422 until every Marketing step has a live topic. Send configs always return explicit kind, inferred from topic_id for legacy input.",
         "tags": [
           "Automations"
         ],
@@ -11361,6 +11362,9 @@
           },
           "409": {
             "$ref": "#/components/responses/Conflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/UnprocessableEntity"
           },
           "429": {
             "$ref": "#/components/responses/RateLimited"
@@ -11551,7 +11555,7 @@
       "patch": {
         "operationId": "updateAutomation",
         "summary": "Update an automation",
-        "description": "Graph edits are allowed while paused or disabled. Saving commits the graph, version and stranded-run cancellations together. Step keys permanently reserve their type. Set dry_run=true to preview affected counts without changing any state.",
+        "description": "Graph edits are allowed while paused or disabled. Saving commits the graph, version and stranded-run cancellations together. Step keys permanently reserve their type. Set dry_run=true to preview affected counts without changing any state. Disabled or paused Marketing drafts may omit a send step topic. Enabling or resuming returns 422 until every Marketing step has a live topic.",
         "tags": [
           "Automations"
         ],
@@ -11639,6 +11643,9 @@
           },
           "409": {
             "$ref": "#/components/responses/Conflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/UnprocessableEntity"
           },
           "429": {
             "$ref": "#/components/responses/RateLimited"
@@ -15927,7 +15934,8 @@
         "properties": {
           "kind": {
             "type": "string",
-            "maxLength": 40
+            "maxLength": 40,
+            "description": "Source provenance, such as library or react-email. This is not the email's Transactional or Marketing kind."
           },
           "path": {
             "type": "string"
@@ -15937,6 +15945,14 @@
           },
           "version": {
             "type": "string"
+          },
+          "send_kind": {
+            "type": "string",
+            "enum": [
+              "transactional",
+              "marketing"
+            ],
+            "description": "The library template's sending kind, preserved on installation."
           }
         },
         "additionalProperties": false
@@ -16180,7 +16196,8 @@
           "object",
           "id",
           "name",
-          "status"
+          "status",
+          "kind"
         ],
         "properties": {
           "object": {
@@ -16192,6 +16209,15 @@
           },
           "name": {
             "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "transactional",
+              "marketing"
+            ],
+            "readOnly": true,
+            "description": "Derived from library source.send_kind or unsubscribe placeholders in the template content. Marketing templates cannot be used by Transactional automation steps. This field does not change ordinary /emails sending, which is controlled by topic_id."
           },
           "alias": {
             "type": [
@@ -19958,6 +19984,7 @@
       },
       "Broadcast": {
         "type": "object",
+        "description": "Broadcasts are always Marketing. They respect opt-outs and carry recipient-specific unsubscribe links and one-click headers, with or without a topic.",
         "required": [
           "object",
           "id",
@@ -20383,12 +20410,21 @@
       },
       "SendEmailConfig": {
         "type": "object",
+        "description": "Automation Send email config. Transactional has no topic and does not enforce Marketing opt-outs. Marketing respects opt-outs and adds recipient-specific unsubscribe links and one-click headers. Omitted kind is accepted for legacy input and inferred as marketing when topic_id is present, otherwise transactional. Stored configs and responses always include kind. Disabled or paused drafts may keep Marketing steps without a topic, but create enabled, enable, or resume returns 422 until every Marketing step has a live topic. A Marketing template cannot be used transactionally. Runtime refuses a Marketing send if its topic is missing or deleted; it never falls back to Transactional.",
         "required": [
           "template"
         ],
         "properties": {
           "template": {
             "$ref": "#/components/schemas/TemplateRef"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "transactional",
+              "marketing"
+            ],
+            "description": "Optional for legacy input only. Marketing drafts may omit topic_id; Transactional cannot have topic_id."
           },
           "from": {
             "type": "string"
@@ -20419,7 +20455,8 @@
           },
           "topic_id": {
             "type": "string",
-            "minLength": 1
+            "minLength": 1,
+            "description": "Allowed only for Marketing. A live topic is required before enabling or resuming, but may be omitted in a disabled or paused draft."
           },
           "variables": {
             "type": "object",
@@ -20432,7 +20469,39 @@
             },
             "description": "Maps template variable names to dotted event.* or contact.* fields. Mappings override literal variables, read own properties only, and omit missing values. Fresh recipient and unsubscribe context stays protected."
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "transactional"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            },
+            "then": {
+              "not": {
+                "required": [
+                  "topic_id"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "StoredSendEmailConfig": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/SendEmailConfig"
+          }
+        ],
+        "required": [
+          "kind"
+        ],
+        "description": "Normalized automation Send email config. Responses always include the explicit kind, including for legacy input and incomplete Marketing drafts."
       },
       "TriggerConfig": {
         "description": "Contact triggers use their internal namespace and never wake event waits. Legacy {event_name} inputs normalize to type:event. New event and wait names cannot start with @; old stored event names remain unchanged in responses.",
@@ -20631,7 +20700,7 @@
           "config": {
             "type": "object",
             "additionalProperties": true,
-            "description": "Depends on `type`. For `send_email`: `template` (required), `from` (optional when the template stores a sender), `to`, `subject`, `reply_to`, `variables`, `variable_mapping`, and `topic_id`. With a `topic_id` the email is subscription mail, and a contact who unsubscribed from everything or opted out of that topic is skipped. Without one the email always sends, as a receipt or a password reset must. Literal variables are not interpreted as field paths. Condition config uses Rule; send_email config uses SendEmailConfig. Filter config uses FilterConfig; Branch config uses BranchConfig; Exit config is empty and uses ExitConfig. Filters continue only on a matching rule, Branch paths use first-match routing, and Exit has no outgoing connections."
+            "description": "Depends on `type`. For `send_email`: `template` (required), `kind` (Transactional or Marketing, optional for legacy input), `from` (optional when the template stores a sender), `to`, `subject`, `reply_to`, `variables`, `variable_mapping`, and `topic_id`. Transactional cannot have a topic. Marketing requires a live topic before enabling or resuming; a Marketing draft without a topic never runs as Transactional. Omitted kind is inferred from topic_id and normalized in stored configs and responses. Marketing templates cannot be used transactionally. Literal variables are not interpreted as field paths. Condition config uses Rule; send_email config uses SendEmailConfig. Filter config uses FilterConfig; Branch config uses BranchConfig; Exit config is empty and uses ExitConfig. Filters continue only on a matching rule, Branch paths use first-match routing, and Exit has no outgoing connections."
           }
         },
         "allOf": [
@@ -20914,7 +20983,7 @@
             "maxItems": 200
           }
         },
-        "description": "Branch steps require exactly one outgoing branch connection per configured path key and one for otherwise. Only Branch steps can use branch connections or path fields. Each target is a real step; Exit has no outgoing connections. Filters can use only a default connection and never follow it on failure. The API validates unique step/path keys, connection sources and targets, and an acyclic graph.",
+        "description": "Branch steps require exactly one outgoing branch connection per configured path key and one for otherwise. Only Branch steps can use branch connections or path fields. Each target is a real step; Exit has no outgoing connections. Filters can use only a default connection and never follow it on failure. The API validates unique step/path keys, connection sources and targets, and an acyclic graph. Disabled Marketing drafts may omit a send step's topic_id. Creating enabled returns 422 until each Marketing step has a live topic. Send configs normalize legacy omitted kind from topic_id, and Marketing templates cannot be used transactionally.",
         "examples": [
           {
             "name": "Onboarding",
@@ -20979,7 +21048,8 @@
                 "key": "welcome",
                 "type": "send_email",
                 "config": {
-                  "template": "welcome"
+                  "template": "welcome",
+                  "kind": "transactional"
                 }
               },
               {
@@ -21091,7 +21161,34 @@
             "maxItems": 200
           }
         },
-        "description": "Changing steps, connections, or trigger requires an already paused or disabled automation, or disabling in the same request. Previously used keys cannot change type. Branch steps require exactly one outgoing branch connection per configured path key and one for otherwise. Only Branch steps can use branch connections or path fields. Each target is a real step; Exit has no outgoing connections. Filters can use only a default connection and never follow it on failure. The API validates unique step/path keys, connection sources and targets, and an acyclic graph."
+        "description": "Changing steps, connections, or trigger requires an already paused or disabled automation, or disabling in the same request. Previously used keys cannot change type. Branch steps require exactly one outgoing branch connection per configured path key and one for otherwise. Only Branch steps can use branch connections or path fields. Each target is a real step; Exit has no outgoing connections. Filters can use only a default connection and never follow it on failure. The API validates unique step/path keys, connection sources and targets, and an acyclic graph. Disabled or paused Marketing drafts may omit a send step's topic_id. Enabling or resuming returns 422 until each Marketing step has a live topic. Marketing templates cannot be used transactionally."
+      },
+      "StoredAutomationStep": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/AutomationStep"
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "send_email"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "config": {
+                  "$ref": "#/components/schemas/StoredSendEmailConfig"
+                }
+              }
+            }
+          }
+        ],
+        "description": "Response step. Send email configs always carry an explicit Transactional or Marketing kind."
       },
       "DryRun": {
         "type": "object",
@@ -21154,7 +21251,7 @@
           "steps": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/AutomationStep"
+              "$ref": "#/components/schemas/StoredAutomationStep"
             }
           },
           "connections": {

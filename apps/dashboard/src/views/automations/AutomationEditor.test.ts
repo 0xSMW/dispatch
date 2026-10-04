@@ -91,6 +91,34 @@ describe("AutomationEditor", () => {
     expect(JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "PATCH")![1]!.body))).toEqual({ status: "enabled" });
   });
 
+  it("preserves clean paused status-only resume without revalidating unrelated legacy fields", async () => {
+    const fetch = api((url, init) => url.pathname === "/automations/automation_1" ? { body: {
+      ...automation, status: init.method === "PATCH" ? "enabled" : "paused",
+      steps: [automation.steps[0], { key: "delay", type: "delay", config: { duration: "31 days" } }],
+      connections: [{ from: "trigger", to: "delay" }],
+    } } : undefined);
+    open();
+    const resume = await screen.findByRole("button", { name: "Resume" }) as HTMLButtonElement;
+    await waitFor(() => expect(resume.disabled).toBe(false));
+    fireEvent.click(resume);
+    await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
+    expect(JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "PATCH")![1]!.body))).toEqual({ status: "enabled" });
+  });
+
+  it("requires a Marketing topic even on a clean paused status-only resume", async () => {
+    const fetch = api((url) => url.pathname === "/automations/automation_1" ? { body: {
+      ...automation, status: "paused",
+      steps: [automation.steps[0], { ...automation.steps[1], config: { kind: "marketing", template: "tpl_1" } }],
+      connections: [{ from: "trigger", to: "welcome" }],
+    } } : undefined);
+    open();
+    const resume = await screen.findByRole("button", { name: "Resume" }) as HTMLButtonElement;
+    await waitFor(() => expect(resume.disabled).toBe(false));
+    fireEvent.click(resume);
+    expect(await screen.findByText("Choose a topic before starting a Marketing email.")).toBeTruthy();
+    expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
+  });
+
   it.each(["", "?view=canvas"])("offers enrollment for an enabled native flow in the %s builder", async (query) => {
     const config = { type: "contact_created" };
     api((url) => url.pathname === "/automations/automation_1" ? { body: {
@@ -310,10 +338,11 @@ describe("AutomationEditor", () => {
     });
     open();
     const card = await screen.findByRole("article", { name: "Step welcome" });
+    fireEvent.click(within(card).getByRole("radio", { name: "Marketing" }));
     const topic = within(card).getByLabelText("Topic");
     fireEvent.change(topic, { target: { value: "topic_1" } });
     expect(await within(card).findByText(/This email has no unsubscribe link/)).toBeTruthy();
-    fireEvent.change(topic, { target: { value: "" } });
+    fireEvent.click(within(card).getByRole("radio", { name: "Transactional" }));
     await waitFor(() => expect(within(card).queryByText(/This email has no unsubscribe link/)).toBeNull());
   });
 
@@ -328,6 +357,7 @@ describe("AutomationEditor", () => {
     });
     open();
     const card = await screen.findByRole("article", { name: "Step welcome" });
+    fireEvent.click(within(card).getByRole("radio", { name: "Marketing" }));
     fireEvent.change(within(card).getByLabelText("Topic"), { target: { value: "topic_1" } });
     expect(await within(card).findByText(/This email has no unsubscribe link/)).toBeTruthy();
   });
@@ -459,6 +489,35 @@ describe("AutomationEditor", () => {
     expect(screen.getByRole("button", { name: "Stop and cancel runs" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
     expect(screen.getByLabelText("Event")).toHaveProperty("disabled", true);
+  });
+
+  it.each(["", "?view=canvas"])("saves a Marketing draft without a topic but requires one before starting in %s", async (query) => {
+    const fetch = api((url, init) => {
+      if (url.pathname === "/templates") return list([{ id: "tpl_1", name: "Welcome", kind: "transactional" }]);
+      if (url.pathname === "/topics") return list([{ id: "topic_1", name: "News" }]);
+      if (url.pathname === "/templates/tpl_1") return { body: { id: "tpl_1", kind: "transactional", html: "<p>Hello</p>" } };
+      if (url.pathname === "/automations/automation_1" && init.method === "PATCH") return { body: { ...automation, ...JSON.parse(String(init.body)) } };
+      return undefined;
+    });
+    open(`/automations/automation_1/editor${query}`);
+    if (query) fireEvent.click(await screen.findByRole("button", { name: "Step welcome" }));
+    const panel = within(await screen.findByRole(query ? "region" : "article", { name: query ? "Step welcome settings" : "Step welcome" }));
+    fireEvent.click(panel.getByRole("radio", { name: "Marketing" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    expect(await panel.findByText("Choose a topic before starting a Marketing email.")).toBeTruthy();
+    expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText("Saved");
+    const patches = () => fetch.mock.calls.filter(([, init]) => init?.method === "PATCH").map(([, init]) => JSON.parse(String(init!.body)));
+    expect(patches()).toHaveLength(1);
+    expect(patches()[0].steps[1].config.kind).toBe("marketing");
+    expect(patches()[0].steps[1].config).not.toHaveProperty("topic_id");
+    expect(patches()[0]).not.toHaveProperty("status");
+    fireEvent.change(panel.getByLabelText("Topic"), { target: { value: "topic_1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Start" }));
+    await waitFor(() => expect(patches()).toHaveLength(2));
+    expect(patches()[1].status).toBe("enabled");
+    expect(patches()[1].steps[1].config).toMatchObject({ kind: "marketing", topic_id: "topic_1" });
   });
 
   it("lists runs with a status filter and opens a run with each step's status and output", async () => {

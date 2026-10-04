@@ -14,6 +14,28 @@
   font-size: 13px;
 }
 
+.sendKind {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.sendKind legend {
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.sendKind label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sendKind label:has(input:disabled) {
+  color: var(--text-muted);
+}
+
 .notice {
   display: flex;
   align-items: center;

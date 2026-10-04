@@ -51,6 +51,7 @@ describe("Library", () => {
     setup();
     const auth = await screen.findByRole("region", { name: "Authentication" });
     expect(within(auth).getByRole("article", { name: "Password reset" })).toBeTruthy();
+    expect(within(auth).getByText("Transactional")).toBeTruthy();
     const billing = screen.getByRole("region", { name: "Billing" });
     const card = within(billing).getByRole("article", { name: "Receipt" });
     await waitFor(() => expect(card.querySelector("iframe")?.getAttribute("srcdoc")).toBe(framed("<p>Receipt body</p>")));
@@ -60,6 +61,7 @@ describe("Library", () => {
     const fetch = setup();
     fireEvent.click(await screen.findByRole("button", { name: "Password reset" }));
     const drawer = await screen.findByRole("dialog");
+    expect(within(drawer).getByText("Transactional")).toBeTruthy();
     expect(await within(drawer).findByText("Reset your Acme password")).toBeTruthy();
     expect(drawer.querySelector("iframe")?.getAttribute("srcdoc")).toBe(framed("<p>Reset it here</p>"));
     expect(within(drawer).getByText("ACTION_URL")).toBeTruthy();

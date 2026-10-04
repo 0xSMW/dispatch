@@ -36,6 +36,7 @@ describe("Template", () => {
     setup();
     expect(await screen.findByRole("heading", { name: "Welcome" })).toBeTruthy();
     expect(screen.getByText("tpl_1")).toBeTruthy();
+    expect(screen.getByText("Transactional")).toBeTruthy();
     const frame = await waitFor(() => {
       const element = document.querySelector("iframe");
       if (!element) throw new Error("no preview");
@@ -56,6 +57,12 @@ describe("Template", () => {
     expect(within(live).getByText("Live")).toBeTruthy();
     const draft = within(panel).getByText("version_2").closest("tr")!;
     expect(within(draft).getByText("Draft")).toBeTruthy();
+  });
+
+  it("shows the computed Marketing kind from older detail content", async () => {
+    setup(template({ text: "{{RESEND_UNSUBSCRIBE_URL}}" }));
+    expect(await screen.findByText("Marketing")).toBeTruthy();
+    expect(screen.getByText(/Template kind is computed/)).toBeTruthy();
   });
 
   it("marks the live version by published_version_id, not by time", async () => {

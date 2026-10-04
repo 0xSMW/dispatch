@@ -13,6 +13,7 @@ from typing import Any, Literal, NotRequired, TypedDict, cast
 Json = dict[str, Any]
 PropertyType = Literal["string", "number", "boolean", "date"]
 PropertyValue = str | int | float | bool | None
+SendKind = Literal["transactional", "marketing"]
 
 
 class ImportColumn(TypedDict, total=False):
@@ -241,6 +242,8 @@ SendEmailConfig = TypedDict(
     "SendEmailConfig",
     {
         "template": str | dict[str, Any],
+        # Omission infers kind from topic_id. Marketing drafts can omit topic_id.
+        "kind": NotRequired[SendKind],
         "from": NotRequired[str],
         "to": NotRequired[str],
         "subject": NotRequired[str],
@@ -1270,6 +1273,7 @@ __all__ = [
     "BranchConfig",
     "EmailUpdateInput",
     "TemplateInput",
+    "SendKind",
     "TemplateUpdateInput",
     "TemplateVariableInput",
     "ContactInput",

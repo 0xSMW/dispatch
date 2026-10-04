@@ -233,6 +233,71 @@ describe("docs/api/openapi.json", () => {
     }
   });
 
+  it("accepts legacy send kinds in input but requires explicit kinds in automation responses", () => {
+    const schemas = spec.components.schemas as unknown as Record<string, {
+      required?: string[]; properties?: Record<string, unknown>; allOf?: unknown[]; description?: string;
+    }>;
+    expect(schemas.SendEmailConfig.properties?.kind).toMatchObject({ enum: ["transactional", "marketing"] });
+    expect(schemas.SendEmailConfig.required).toEqual(["template"]);
+    expect(schemas.SendEmailConfig.allOf).toEqual([{
+      if: { properties: { kind: { const: "transactional" } }, required: ["kind"] },
+      then: { not: { required: ["topic_id"] } },
+    }]);
+    expect(schemas.StoredSendEmailConfig).toMatchObject({
+      allOf: [{ $ref: "#/components/schemas/SendEmailConfig" }], required: ["kind"],
+    });
+    expect(schemas.StoredAutomationStep.allOf).toEqual([
+      { $ref: "#/components/schemas/AutomationStep" },
+      {
+        if: { properties: { type: { const: "send_email" } }, required: ["type"] },
+        then: { properties: { config: { $ref: "#/components/schemas/StoredSendEmailConfig" } } },
+      },
+    ]);
+    expect(schemas.Automation.properties?.steps).toMatchObject({
+      items: { $ref: "#/components/schemas/StoredAutomationStep" },
+    });
+    expect(schemas.SendEmailConfig.description).toMatch(/inferred.*topic_id/i);
+    expect(schemas.SendEmailConfig.description).toMatch(/runtime.*missing or deleted/i);
+    for (const name of ["SendEmail", "BatchEmail"]) {
+      expect(schemas[name].properties?.kind).toBeUndefined();
+      expect(schemas[name].properties?.topic_id).toBeDefined();
+      expect(schemas[name].required).not.toContain("topic_id");
+    }
+  });
+
+  it("documents Marketing drafts, enable/resume readiness and template kind restrictions", () => {
+    const schemas = spec.components.schemas as unknown as Record<string, { description: string }>;
+    for (const name of ["SendEmailConfig", "AutomationInput", "AutomationUpdate"]) {
+      expect(schemas[name].description).toMatch(/drafts.*omit|drafts.*without a topic/i);
+      expect(schemas[name].description).toMatch(/422.*live topic/i);
+      expect(schemas[name].description).toMatch(/marketing template.*transactionally/i);
+    }
+    for (const operation of [spec.paths["/automations"].post, spec.paths["/automations/{id}"].patch]) {
+      expect(operation).toMatchObject({ responses: {
+        "422": { $ref: "#/components/responses/UnprocessableEntity" },
+      } });
+    }
+    expect(schemas.AutomationUpdate.description).toMatch(/enabling or resuming/i);
+    expect(schemas.Broadcast.description).toMatch(/always Marketing/);
+  });
+
+  it("publishes read-only template kinds without confusing source provenance with send kind", () => {
+    const schemas = spec.components.schemas as unknown as Record<string, { required?: string[]; properties: Record<string, unknown> }>;
+    expect(schemas.Template.required).toContain("kind");
+    expect(schemas.Template.properties.kind).toMatchObject({
+      enum: ["transactional", "marketing"], readOnly: true,
+    });
+    const kind = JSON.stringify(schemas.Template.properties.kind);
+    expect(kind).toContain("source.send_kind");
+    expect(kind).toMatch(/unsubscribe placeholders/i);
+    expect(schemas.TemplateSource.properties.send_kind).toMatchObject({ enum: ["transactional", "marketing"] });
+    expect(schemas.TemplateSource.properties.kind).toMatchObject({ type: "string" });
+    expect(schemas.LibraryTemplate.properties.kind).toMatchObject({ enum: ["transactional", "marketing"] });
+    for (const name of ["TemplateInput", "TemplateUpdate"]) {
+      expect(schemas[name].properties.kind).toBeUndefined();
+    }
+  });
+
   it("documents Exit, Filter and ordered Branch configs using the shared Rule schema", () => {
     const schemas = spec.components.schemas as unknown as Record<string, {
       properties: Record<string, unknown>;

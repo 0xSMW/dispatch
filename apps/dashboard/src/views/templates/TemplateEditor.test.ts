@@ -53,6 +53,28 @@ describe("TemplateEditor", () => {
     expect(preview()).toBe("<p>Hello [NAME] from Acme</p>");
   });
 
+  it("shows read-only template kind and updates it from unsaved HTML without sending a kind field", async () => {
+    const { fetch } = setup();
+    await screen.findByLabelText("HTML");
+    expect(screen.getByLabelText("Template kind")).toHaveProperty("disabled", true);
+    expect(screen.getByLabelText("Template kind")).toHaveProperty("value", "Transactional");
+    await editHtml('<a href="{{UNSUBSCRIBE_URL}}">Leave</a>');
+    expect(screen.getByLabelText("Template kind")).toHaveProperty("value", "Marketing");
+    fireEvent.keyDown(document, { key: "s", ctrlKey: true });
+    await waitFor(() => expect(calls(fetch, "PATCH /templates/tpl_1")).toHaveLength(1));
+    expect(calls(fetch, "PATCH /templates/tpl_1")[0]!.body).not.toHaveProperty("kind");
+  });
+  it("keeps a Marketing library template Marketing after its unsubscribe body is edited", async () => {
+    api({
+      "GET /templates/tpl_1": template({ kind: "marketing", html: "<p>{{{UNSUBSCRIBE_URL}}}</p>", source: { kind: "library", send_kind: "marketing" } }),
+      "GET /brand": { object: "brand", product_name: "Acme" },
+      "GET /templates/tpl_1/versions": list([]),
+    });
+    renderAt("/templates/tpl_1/editor", [{ path: "/templates/:id/editor", element: h(TemplateEditor) }]);
+    await editHtml("<p>Edited body</p>");
+    expect(screen.getByLabelText("Template kind")).toHaveProperty("value", "Marketing");
+  });
+
   it("saves changed fields and the declared variables on Cmd+S", async () => {
     const { fetch } = setup();
     await editHtml("<p>{{{NAME}}} {{{CITY}}}</p>");

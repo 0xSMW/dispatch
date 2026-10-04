@@ -139,6 +139,7 @@ export function Broadcast() {
         <Facts
           items={[
             { label: "Status", value: <Badge value={row.paused ? "paused" : row.status} /> },
+            { label: "Kind", value: <Badge value="marketing" label="Marketing" /> },
             { label: "From", value: row.from },
             { label: "Subject", value: row.subject },
             { label: "ID", value: row.id, copy: true },

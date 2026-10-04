@@ -81,6 +81,8 @@ function fake(run: {
   const query = vi.fn(async (sql: string, params: unknown[] = []) => {
     const text = sql.replace(/\s+/g, " ").trim();
     run.onStep?.(text, state);
+    if (text.startsWith("select v.source, v.html, v.text from templates")) return { rows: [] };
+    if (text.startsWith("select id from topics")) return { rows: [{ id: params[1] }] };
     if (text === "begin") {
       snapshot = JSON.stringify({ run: state.run, steps: state.steps, contacts: state.contacts });
       return { rows: [] };

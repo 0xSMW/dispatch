@@ -1,4 +1,4 @@
-import { useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import { ArrowDown, ArrowUp, Clock, Funnel, Hourglass, LogOut, Mail, Plus, Split, Trash2, UserCog, UserX, UsersRound, Zap } from "lucide-react";
 import { Badge, statusToVariant, type BadgeVariant } from "../../components/Badge";
 import { Code } from "../../components/Code";
@@ -11,7 +11,8 @@ import { ContextField } from "../../components/ContextField";
 import { TypedValue } from "../../components/TypedValue";
 import { useResource } from "../../hooks/useResource";
 import { contextFields, isIsoDate, operatorsForType, propertyTypes, typedValue, valueIssue, valueKind, type ContextField as ContextFieldRow } from "../../lib/rules";
-import type { ContactProperty, EventDefinition, PropertyType } from "../../types";
+import type { ContactProperty, EventDefinition, PropertyType, SendKind, Template } from "../../types";
+import { contentKind, kindLabels, sendKind, sendSemantics, templateKind } from "../../lib/emailKind";
 import { EmailCountLine, type EmailCounts } from "./EmailMetrics";
 import {
   blankRule as emptyRule,
@@ -37,7 +38,7 @@ import "../../styles/automations.css";
 // The structured list for the automation builder and its run view.
 
 export type StepOptions = {
-  templates: Option[]; segments: Option[]; events: string[]; topics?: Option[];
+  templates: Array<Option & { kind?: SendKind }>; segments: Option[]; events: string[]; topics?: Option[];
   eventDefinitions?: EventDefinition[];
   contactProperties?: ContactProperty[];
   topicsReady?: boolean;
@@ -223,6 +224,7 @@ function StepCard({
         <Tile tone={stepTones[node.type]}>{stepIcons[node.type]}</Tile>
         <div className="stepTitle">
           <strong>{stepLabels[node.type]}</strong>
+          {node.type === "send_email" ? <Badge value={sendKind(node.config)} label={kindLabels[sendKind(node.config)]} /> : null}
           <span className="mono dim">{node.key}</span>
         </div>
         {status ? <Badge value={status} /> : null}
@@ -272,6 +274,7 @@ export function RunResult({ node, result }: { node: Node; result?: RunStep }) {
   return (
     <div className="stack">
       <p className="muted">{describe(node)}</p>
+      {node.type === "send_email" ? <p className="fieldHint">{sendSemantics[sendKind(node.config)]}</p> : null}
       {result ? (
         <dl className="stepTimes">
           <div>
@@ -366,12 +369,26 @@ export function StepForm({ node, path, index, actions, disabled, errors, options
           <Select
             label="Template"
             value={template.id ?? ""}
-            onChange={(id) => set("template", { ...template, id })}
+            onChange={(id) => actions?.change(node.key, (current) => ({
+              ...current, config: {
+                ...current.config, template: { ...template, id },
+                ...(templates.find((item) => item.value === id)?.kind === "marketing" ? { kind: "marketing" } : {}),
+              },
+            }))}
             options={choices}
             placeholder="Choose a template"
             error={errors.template}
             disabled={disabled}
             required
+          />
+          <SendKindControl
+            key={template.id ?? ""}
+            node={node}
+            templateId={template.id}
+            templateKind={templates.find((item) => item.value === template.id)?.kind}
+            actions={actions}
+            disabled={disabled}
+            error={errors.kind}
           />
           <Field
             label="From"
@@ -382,15 +399,16 @@ export function StepForm({ node, path, index, actions, disabled, errors, options
             error={errors.from}
             disabled={disabled}
           />
-          <Select
+          {sendKind(config) === "marketing" || config.topic_id ? <Select
             label="Topic"
             value={text("topic_id")}
             onChange={(value) => set("topic_id", value)}
-            placeholder="None: always send"
+            placeholder="Choose a topic"
             options={options?.topics ?? []}
-            hint="With a topic, contacts who unsubscribed or opted out of it are skipped. With none, the email always sends, as a receipt or a password reset should."
-            disabled={disabled}
-          />
+            hint="Required before starting Marketing emails. You can save a draft without a topic."
+            error={errors.topic_id}
+            disabled={disabled || sendKind(config) === "transactional"}
+          /> : null}
           {config.topic_id && template.id ? <UnsubscribeWarning templateId={template.id} /> : null}
           <Field
             label="To"
@@ -670,6 +688,60 @@ function BranchEditor({ node, actions, disabled, fields, errors }: {
   );
 }
 
+type KindControlProps = {
+  node: Node; templateId?: string; templateKind?: SendKind;
+  actions?: StepActions; disabled: boolean; error?: string;
+};
+
+/** Only older list responses need the detail-content fallback. */
+function SendKindControl(props: KindControlProps) {
+  if (props.templateId && !props.templateKind) return <LoadedSendKind {...props} />;
+  return <KindChoices {...props} />;
+}
+
+function LoadedSendKind(props: KindControlProps) {
+  const detail = useResource<Template>(`/templates/${encodeURIComponent(props.templateId!)}`);
+  return <KindChoices {...props} templateKind={detail.data ? templateKind(detail.data) : undefined} />;
+}
+
+function KindChoices({ node, templateKind: template, actions, disabled, error }: KindControlProps) {
+  const reasonId = useId();
+  const kind = sendKind(node.config);
+  const marketing = template === "marketing";
+  useEffect(() => {
+    // Also covers a selection whose older list entry needed a detail request.
+    if (marketing && !disabled && actions && kind !== "marketing") {
+      actions.change(node.key, (current) => ({ ...current, config: { ...current.config, kind: "marketing" } }));
+    }
+  }, [marketing, disabled, actions, node.key, kind]);
+  const choose = (next: SendKind) => {
+    if (disabled || (next === "transactional" && marketing)) return;
+    actions?.change(node.key, (current) => {
+      const config: Record<string, unknown> = { ...current.config, kind: next };
+      if (next === "transactional") delete config.topic_id;
+      return { ...current, config };
+    });
+  };
+  return (
+    <fieldset className="field sendKind">
+      <legend>Email kind</legend>
+      <div className="toolbar">
+        {(["transactional", "marketing"] as const).map((value) => (
+          <label key={value}>
+            <input type="radio" name={`kind-${reasonId}`} value={value} checked={kind === value}
+              onChange={() => choose(value)} disabled={disabled || (value === "transactional" && marketing)}
+              aria-describedby={value === "transactional" && marketing ? reasonId : undefined} />
+            {kindLabels[value]}
+          </label>
+        ))}
+      </div>
+      {marketing ? <span id={reasonId} className="fieldHint">Transactional is unavailable: this is a Marketing template (library kind or unsubscribe placeholder).</span> : null}
+      <span className="fieldHint">{sendSemantics[kind]}</span>
+      {error ? <span className="fieldError" role="alert">{error}</span> : null}
+    </fieldset>
+  );
+}
+
 function UnsubscribeWarning({ templateId }: { templateId: string }) {
   type Content = { html?: string | null; text?: string | null };
   const template = useResource<Content & { published_version_id?: string; current_version_id?: string }>(`/templates/${encodeURIComponent(templateId)}`);
@@ -677,7 +749,7 @@ function UnsubscribeWarning({ templateId }: { templateId: string }) {
   const needsPublished = Boolean(publishedId && template.data?.current_version_id !== publishedId);
   const published = useResource<{ data: Array<Content & { id: string }> }>(needsPublished ? `/templates/${encodeURIComponent(templateId)}/versions` : null);
   const version = needsPublished ? published.data?.data.find((row) => row.id === publishedId) : template.data;
-  if (!version || /\{\{\{?\s*(?:UNSUBSCRIBE_URL|RESEND_UNSUBSCRIBE_URL|DISPATCH_UNSUBSCRIBE_URL)\s*\}\}\}?/.test(`${version.html ?? ""} ${version.text ?? ""}`)) return null;
+  if (!version || contentKind(version) === "marketing") return null;
   return <p className="fieldHint wide" role="status">This email has no unsubscribe link. The header is added, but most mail apps also expect a link in the body.</p>;
 }
 

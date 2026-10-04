@@ -43,10 +43,12 @@ function spies(): StepActions & { [K in keyof StepActions]: ReturnType<typeof vi
 }
 
 function show(props: Partial<CanvasProps> = {}) {
-  return render(h(Canvas, { tree, ...props }));
+  return render(h(SessionProvider, null, h(Canvas, { tree, ...props })));
 }
 
 beforeEach(() => {
+  signIn();
+  mockFetch(() => ({ body: { object: "list", has_more: false, data: [] } }));
   // New steps get a random key suffix. Tests count instead, so keys can be named.
   let next = 0;
   vi.spyOn(keys, "suffix").mockImplementation(() => String(++next));
@@ -66,7 +68,7 @@ describe("Canvas", () => {
     const view = show({ actions: spies(), options });
     const node = await screen.findByRole("button", { name: "Step welcome" });
     expect(within(node).getByText("4 sent · 2 opened · 1 clicked")).toBeTruthy();
-    view.rerender(h(Canvas, { tree, options, run: new Map([["welcome", { key: "welcome", type: "send_email", status: "completed" }]]) }));
+    view.rerender(h(SessionProvider, null, h(Canvas, { tree, options, run: new Map([["welcome", { key: "welcome", type: "send_email", status: "completed" }]]) })));
     expect(within(screen.getByRole("button", { name: "Step welcome" })).getByText("4 sent · 2 opened · 1 clicked")).toBeTruthy();
   });
 
@@ -110,7 +112,7 @@ describe("Canvas", () => {
     expect(actions.insert).toHaveBeenCalledWith([], 1, "delay", "delay_1");
 
     // The parent applies the insert; the panel opens on the new step.
-    view.rerender(h(Canvas, { tree: insertStep(tree, [], 1, "delay", "delay_1"), actions }));
+    view.rerender(h(SessionProvider, null, h(Canvas, { tree: insertStep(tree, [], 1, "delay", "delay_1"), actions })));
     const panel = await screen.findByRole("region", { name: "Step delay_1 settings" });
     expect(within(panel).getByText('Examples: "2 days", "1 hour". Up to 30 days.')).toBeTruthy();
     expect(within(panel).getByLabelText(/Duration/)).toHaveProperty("value", "1 hour");

@@ -5,6 +5,7 @@ import {
   automationGraph,
   automationStatus,
   assertTriggerConfig,
+  assertSendKinds,
   createEnrollmentJob,
   findEnrollmentJob,
   cancelEnrollmentJob,
@@ -233,6 +234,7 @@ export function registerAutomations(
     return tx(db, async (client) => {
       const config = (input.steps as Array<{ type: string; config: TriggerConfig }>).find((step) => step.type === "trigger")!.config;
       await assertTriggerConfig(client, tenantId, config);
+      await assertSendKinds(client, tenantId, automationGraph({ steps: input.steps as Array<Record<string, unknown>>, trigger: input.trigger, connections: input.connections }).steps, input.enabled);
       const row = await client.query<AutomationRow>(
         `insert into automations (id, tenant_id, name, trigger, steps, connections, enabled, trigger_type, reentry, used_keys)
        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
@@ -310,6 +312,7 @@ export function registerAutomations(
       if (graph || status === "enabled") {
         const config = (graph ?? automationGraph(current)).steps.find((step) => step.type === "trigger")!.config as TriggerConfig;
         await assertTriggerConfig(client, tenantId, config);
+        await assertSendKinds(client, tenantId, (graph ?? automationGraph(current)).steps, status === "enabled");
       }
       if (graph && automationStatus(current) === "enabled" && enabled) {
         throw new ApiError("conflict", 409, "Pause or stop the automation before changing its steps");

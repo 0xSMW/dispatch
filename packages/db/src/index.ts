@@ -2,6 +2,7 @@ import pg from "pg";
 import { ApiError, id, list, type TemplateVariable } from "@dispatchmail/core";
 import { contactColumns, type ContactRow } from "./audience.js";
 export { settings, updateSettings } from "./settings.js";
+export { assertSendKinds } from "./send-kinds.js";
 
 const { Pool } = pg;
 

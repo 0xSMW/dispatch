@@ -4,6 +4,21 @@ Store reusable HTML and plain text with a subject, sender, and variables. Send b
 
 Use the dashboard to edit and preview, or write components locally with [React Email](react-email.md). Authentication and billing integration examples are in [the template guides](templates/README.md).
 
+## Transactional or Marketing
+
+The library, template list, and template detail show each template's kind:
+
+- **Transactional** is suitable for receipts, password resets, and other product email that does not depend on Marketing subscriptions.
+- **Marketing** is intended for newsletters and lifecycle email that respects opt-outs and carries unsubscribe links and one-click headers.
+
+`GET /templates` and `GET /templates/{id}` return `kind: "transactional" | "marketing"`. It is derived from the library's saved `source.send_kind` or unsubscribe placeholders in the content, not a new field you must set when creating a template. `source.kind` describes provenance, such as `library` or `react-email`; it is not the sending kind.
+
+Editing a Marketing library template keeps its Marketing kind even when its body changes. The edited copy has custom provenance, so preserving its kind does not mark it as an untouched library template.
+
+A Marketing template cannot be used in a Transactional automation step. Choose Marketing and a topic before enabling or resuming the automation. A Marketing draft can wait for its topic while disabled or paused. A Transactional template can be used for Marketing, but include an unsubscribe link in its body; the automation editor warns when it is missing.
+
+Template kind does not add a field to ordinary sends. `POST /emails` and batches still use `topic_id` to select Marketing behavior. Without a topic they remain Transactional, and a template that needs an unsubscribe link cannot render. Broadcasts are always Marketing. See [sending](api/README.md#sending) and [automation send kinds](automations.md#transactional-or-marketing).
+
 ## Variables
 
 Placeholders work in the subject, HTML, and plain text:

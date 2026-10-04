@@ -78,7 +78,7 @@ export function Broadcasts() {
       list={list}
       noun="broadcasts"
       rowHref={broadcastHref}
-      empty={<Empty title="No broadcasts" body="Create a broadcast to send one email to a segment of your contacts." />}
+      empty={<Empty title="No broadcasts" body="Broadcasts are always Marketing. Send one email to a segment, respecting contact and topic opt-outs with an unsubscribe link and header." />}
       columns={[
         {
           header: "Name",
@@ -92,6 +92,7 @@ export function Broadcasts() {
           ),
         },
         { header: "Status", cell: (row) => <Badge value={row.status} /> },
+        { header: "Kind", cell: () => <Badge value="marketing" label="Marketing" /> },
         { header: "Segment", cell: (row) => segmentName(row.segment_id) },
         {
           header: "When",
@@ -163,6 +164,7 @@ function CreateBroadcast({ segments, onClose }: { segments: Segment[]; onClose: 
       submitDisabled={!form.from.trim() || !form.segment_id || !form.subject.trim()}
     >
       <div className="form">
+        <p className="fieldHint">Broadcasts are always Marketing: they respect contact and topic opt-outs and add an unsubscribe header.</p>
         <Field label="Name" value={form.name} onChange={set("name")} placeholder="October update" autoFocus hint="Defaults to the subject." />
         <Field label="From" value={form.from} onChange={set("from")} placeholder="Acme <news@acme.com>" required />
         <Select

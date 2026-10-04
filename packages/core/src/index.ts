@@ -479,7 +479,8 @@ const templateSourceSchema = z
     kind: z.string().min(1).max(40),
     path: z.string().min(1).max(300).optional(),
     slug: z.string().min(1).max(120).optional(),
-    version: z.string().min(1).max(40).optional()
+    version: z.string().min(1).max(40).optional(),
+    send_kind: z.enum(["transactional", "marketing"]).optional()
   })
   .strict();
 
@@ -1012,12 +1013,14 @@ export function triggerKey(config: TriggerConfig): string {
   }
 }
 
+export { templateKind, type SendKind } from "./email-kind.js";
+
 export const stepConfigs = {
   trigger: triggerSchema,
-  // `from` may be left out when the template stores a sender. `topic_id` marks the email as
-  // subscription mail: without it the step sends to everyone, like a receipt or a password reset.
+  // Ordinary sends still use topic_id alone. Steps store intent even before a topic is chosen.
   send_email: z
     .object({
+      kind: z.enum(["transactional", "marketing"]).optional(),
       from: address.optional(),
       to: stepEmail,
       topic_id: z.string().min(1).optional(),
@@ -1027,7 +1030,15 @@ export const stepConfigs = {
       variables: z.record(z.unknown()).optional(),
       variable_mapping: z.record(z.string().regex(/^(event|contact)\.[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*$/, "Use an event or contact field")).optional()
     })
-    .transform(({ template, variables, ...rest }) => ({ ...rest, template: { id: template.id, variables: { ...variables, ...template.variables } } })),
+    .superRefine((value, ctx) => {
+      if (value.kind === "transactional" && value.topic_id) {
+        ctx.addIssue({ code: "custom", message: "Transactional steps cannot have a topic", path: ["topic_id"] });
+      }
+    })
+    .transform(({ template, variables, kind, ...rest }) => ({
+      ...rest, kind: kind ?? (rest.topic_id ? "marketing" : "transactional"),
+      template: { id: template.id, variables: { ...variables, ...template.variables } }
+    })),
   delay: z
     .object({ duration: z.string().min(1).max(60).optional(), seconds: z.number().int().optional() })
     .transform((value, ctx) => {

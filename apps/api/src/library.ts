@@ -100,6 +100,7 @@ export async function installLibraryTemplate(db: Queryable, tenantId: string, li
     text: entry.text,
     track: entry.track,
     variables: entry.variables,
+    kind: entry.kind,
   };
   await installLibrary(db, tenantId, [write], library.version);
   const row = await db.query<{ id: string }>(

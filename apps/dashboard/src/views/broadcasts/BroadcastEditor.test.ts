@@ -43,6 +43,8 @@ describe("BroadcastEditor", () => {
   it("previews for a sample contact and inserts personalization", async () => {
     const { fetch } = setup();
     await screen.findByLabelText("HTML");
+    expect(screen.getByLabelText("Email kind")).toHaveProperty("value", "Marketing");
+    expect(screen.getByLabelText("Email kind")).toHaveProperty("disabled", true);
     expect(preview()).toContain("<p>Hi Ada</p>");
     const area = screen.getByLabelText("HTML") as HTMLTextAreaElement;
     area.setSelectionRange(0, 0);

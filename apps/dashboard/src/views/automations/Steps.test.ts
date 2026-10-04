@@ -8,7 +8,7 @@ import { RuleEditor, StepForm, type StepActions, type StepOptions } from "./Step
 import { toGraph, stepIssues, type Node, type Rule } from "./graph";
 
 const options: StepOptions = {
-  templates: [{ value: "tpl_1", label: "Welcome" }], events: ["signup", "purchase"], topics: [{ value: "topic_news", label: "News" }],
+  templates: [{ value: "tpl_1", label: "Welcome", kind: "transactional" }], events: ["signup", "purchase"], topics: [{ value: "topic_news", label: "News" }],
   segments: [{ value: "seg_vip", label: "VIP" }], eventName: "signup",
   eventDefinitions: [
     { id: "e1", name: "signup", schema: { plan: "string", seats: "number", paid: "boolean", expires: "date" }, created_at: "" },

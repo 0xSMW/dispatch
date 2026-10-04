@@ -123,6 +123,120 @@ afterAll(async () => {
 });
 
 describe.skipIf(!live)("accept", () => {
+  describe("send kinds", () => {
+    const start = { key: "start", type: "trigger", config: { event_name: "kind.start" } };
+    const connections = [{ from: "start", to: "send" }];
+    async function fixture(kind = "transactional", topic_id?: string) {
+      const template = await post(fullKey, "/templates", { name: "Kind", subject: "Kind", text: "Hello", publish: true });
+      const steps = [start, { key: "send", type: "send_email", config: {
+        kind, from: "hello@dispatch-fixture.net", template: template.json.id, ...(topic_id ? { topic_id } : {}),
+      } }];
+      return { template: template.json, steps, connections };
+    }
+    async function run(flow: any, email = "kind@dispatch-fixture.net") {
+      expect((await post(fullKey, "/events/send", { event: "kind.start", email })).status).toBe(202);
+      const row = (await db.query(`select r.id,r.tenant_id from automation_runs r join custom_events e on e.id=r.event_id
+        where r.automation_id=$1 and e.email=$2 order by r.created_at desc,r.id desc limit 1`, [flow.id, email])).rows[0];
+      await executeAutomationRun(db, row.tenant_id, row.id, { publicUrl: "https://dispatch.example", appUrl: "https://app.dispatch.example", secret: "synthetic-kind-secret" });
+      return (await db.query("select state,error from automation_runs where id=$1", [row.id])).rows[0];
+    }
+    it("stores Marketing drafts without a topic, rejects activation/resume, and prevents runtime fallback", async () => {
+      const graph = await fixture("marketing");
+      const draft = await post(fullKey, "/automations", { name: "Kind draft", ...graph });
+      expect(draft.status).toBe(200);
+      expect(draft.json.steps[1].config.kind).toBe("marketing");
+      expect((await post(fullKey, "/automations", { name: "Kind enabled", enabled: true, ...graph })).status).toBe(422);
+      expect((await call(fullKey, "PATCH", `/automations/${draft.json.id}`, { status: "enabled" })).status).toBe(422);
+      await db.query("update automations set enabled=true,paused_at=now() where id=$1", [draft.json.id]);
+      expect((await call(fullKey, "PATCH", `/automations/${draft.json.id}`, { steps: draft.json.steps, connections: draft.json.connections })).status).toBe(200);
+      expect((await call(fullKey, "PATCH", `/automations/${draft.json.id}`, { status: "enabled" })).status).toBe(422);
+      await db.query("update automations set paused_at=null where id=$1", [draft.json.id]);
+      expect(await run(draft.json)).toMatchObject({ state: "failed", error: expect.stringContaining("needs a topic") });
+      expect((await db.query("select id from emails")).rows).toHaveLength(0);
+      expect((await db.query("select id from send_jobs")).rows).toHaveLength(0);
+    });
+    it("refuses a Marketing library template or unsubscribe content as Transactional, including later publishing", async () => {
+      const installed = await post(fullKey, "/template-library/newsletter/install", {});
+      expect(installed.status).toBe(200);
+      const template = await call(fullKey, "GET", `/templates/${installed.json.id}`);
+      expect(template.json).toMatchObject({ kind: "marketing", source: { kind: "library", send_kind: "marketing" } });
+      const edited = await call(fullKey, "PATCH", `/templates/${installed.json.id}`, { html: "<p>Edited news</p>", text: "Edited news" });
+      expect(edited.json).toMatchObject({ kind: "marketing", source: { kind: "custom", send_kind: "marketing" } });
+      expect((await post(fullKey, `/templates/${installed.json.id}/publish`, {})).json.kind).toBe("marketing");
+      const graph = await fixture();
+      graph.steps[1].config.template = installed.json.id;
+      expect((await post(fullKey, "/automations", { name: "Wrong kind", ...graph })).status).toBe(422);
+      graph.steps[1].config.template = graph.template.id;
+      const flow = await post(fullKey, "/automations", { name: "Kind publish", enabled: true, ...graph });
+      expect(flow.status).toBe(200);
+      expect((await call(fullKey, "PATCH", `/templates/${graph.template.id}`, { text: "Leave: {{{UNSUBSCRIBE_URL}}}" })).status).toBe(200);
+      expect((await post(fullKey, `/templates/${graph.template.id}/publish`, {})).status).toBe(200);
+      expect(await run(flow.json)).toMatchObject({ state: "failed", error: expect.stringContaining("must be Marketing") });
+      expect((await db.query("select id from emails")).rows).toHaveLength(0);
+    });
+    it("requires tenant-owned live topics on activation and execution", async () => {
+      const topic = await post(fullKey, "/topics", { name: "Kind topic" });
+      const graph = await fixture("marketing", topic.json.id);
+      const foreign = await seedTenant();
+      expect((await post(foreign, "/automations", { name: "Foreign topic", enabled: true, ...graph })).status).toBe(422);
+      const flow = await post(fullKey, "/automations", { name: "Deleted topic", enabled: true, ...graph });
+      expect(flow.status).toBe(200);
+      expect((await call(fullKey, "DELETE", `/topics/${topic.json.id}`)).status).toBe(200);
+      expect(await run(flow.json)).toMatchObject({ state: "failed", error: expect.stringContaining("existing topic") });
+      expect((await db.query("select id from emails")).rows).toHaveLength(0);
+    });
+    it("keeps Transactional sends to opted-out contacts and enforces viewers without requiring lifecycle setup", async () => {
+      const graph = await fixture();
+      await post(fullKey, "/contacts", { email: "kind@dispatch-fixture.net", unsubscribed: true });
+      const flow = await post(fullKey, "/automations", { name: "Receipt", enabled: true, ...graph });
+      expect(flow.status).toBe(200);
+      expect(await run(flow.json)).toMatchObject({ state: "done", error: null });
+      const email = (await db.query("select topic_id,headers from emails")).rows[0];
+      expect(email.topic_id).toBeNull();
+      expect(email.headers).not.toHaveProperty("List-Unsubscribe");
+      const viewer = await teammate("Viewer");
+      const session = await signInAs(viewer.email, viewer.password);
+      expect((await call(session.token, "PATCH", `/automations/${flow.json.id}`, { status: "paused" })).status).toBe(403);
+      expect((await call(session.token, "GET", `/automations/${flow.json.id}`)).json.steps[1].config.kind).toBe("transactional");
+      expect((await post(fullKey, "/emails", { from: "hello@dispatch-fixture.net", to: "ordinary@dispatch-fixture.net", subject: "Plain", text: "Receipt" })).status).toBe(200);
+    });
+    it("preserves Marketing topic opt-outs, recipient links and headers", async () => {
+      const topic = await post(fullKey, "/topics", { name: "News", default_subscription: "opt_in" });
+      const graph = await fixture("marketing", topic.json.id);
+      await call(fullKey, "PATCH", `/templates/${graph.template.id}`, { text: "Hello {{{UNSUBSCRIBE_URL}}}" });
+      await post(fullKey, `/templates/${graph.template.id}/publish`, {});
+      const flow = await post(fullKey, "/automations", { name: "News", enabled: true, ...graph });
+      expect(flow.status).toBe(200);
+      expect(await run(flow.json)).toMatchObject({ state: "done", error: null });
+      const email = (await db.query("select topic_id,headers,text from emails")).rows[0];
+      expect(email.topic_id).toBe(topic.json.id);
+      expect(email.headers["List-Unsubscribe"]).toContain("unsubscribe");
+      expect(email.headers["List-Unsubscribe-Post"]).toBe("List-Unsubscribe=One-Click");
+      expect(email.text).toContain("https://app.dispatch.example/unsubscribe?token=");
+      const contact = await post(fullKey, "/contacts", { email: "out@dispatch-fixture.net", unsubscribed: true });
+      expect(contact.status).toBe(200);
+      await run(flow.json, "out@dispatch-fixture.net");
+      expect((await db.query("select id from emails")).rows).toHaveLength(1);
+    });
+    it("backfills flat and keyed legacy send kinds twice without changing explicit Marketing intent", async () => {
+      const graph = await fixture();
+      const flow = await post(fullKey, "/automations", { name: "Legacy kind", ...graph });
+      const linear = [{ type: "send_email", template: graph.template.id }, { type: "send_email", template: graph.template.id, topic_id: "news" }, { type: "send_email", template: graph.template.id, kind: "marketing" }];
+      await db.query("update automations set steps=$2,connections='[]' where id=$1", [flow.json.id, JSON.stringify(linear)]);
+      await db.query(schema);
+      await db.query(schema);
+      const stored = (await db.query("select steps from automations where id=$1", [flow.json.id])).rows[0].steps;
+      expect(stored.map((step: any) => step.kind)).toEqual(["transactional", "marketing", "marketing"]);
+      // Use new keys because permanent type reservations apply to the old flat keys.
+      await db.query("update automations set steps=$2 where id=$1", [flow.json.id, JSON.stringify([
+        { key: "new_trigger", type: "trigger", config: { event_name: "kind.start" } },
+        { key: "new_send", type: "send_email", config: { template: graph.template.id, topic_id: "news" } },
+      ])]);
+      await db.query(schema);
+      await db.query(schema);
+      expect((await db.query("select steps from automations where id=$1", [flow.json.id])).rows[0].steps[1].config.kind).toBe("marketing");
+    });
+  });
   describe("flow control", () => {
     const start = { key: "start", type: "trigger", config: { event_name: "flow.start" } };
     const activated = { type: "rule", field: "contact.activated", operator: "eq", value: false };

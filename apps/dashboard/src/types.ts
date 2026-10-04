@@ -206,11 +206,14 @@ export type WebhookAttempt = {
 // Templates
 
 export type TemplateVariable = string | { key: string; type?: string; fallback_value?: string | number | null };
+export type SendKind = "transactional" | "marketing";
 
 export type Template = {
   object: "template";
   id: string;
   name: string;
+  /** Computed from content. Optional for older API responses. */
+  kind?: SendKind;
   alias: string | null;
   from: string | null;
   reply_to: string[];
@@ -232,7 +235,7 @@ export type Template = {
   source?: TemplateSource | null;
 };
 
-export type TemplateSource = { kind?: string; path?: string; slug?: string; version?: string };
+export type TemplateSource = { kind?: string; path?: string; slug?: string; version?: string; send_kind?: SendKind };
 
 export type TemplateVersion = {
   id: string;

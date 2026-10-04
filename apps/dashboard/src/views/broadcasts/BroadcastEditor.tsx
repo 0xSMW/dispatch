@@ -159,7 +159,7 @@ export function BroadcastEditor() {
     <EditorScreen
       crumb={{ to: "/broadcasts", label: "Broadcasts" }}
       title={row?.name ?? "Loading"}
-      status={row ? <Badge value={row.status} /> : null}
+      status={row ? <><Badge value={row.status} /><Badge value="marketing" label="Marketing" /></> : null}
       save={editable ? draft.state : undefined}
       actions={
         <>
@@ -195,6 +195,8 @@ export function BroadcastEditor() {
       ) : (
         <>
           <div className="editorHead">
+            <Field label="Email kind" value="Marketing" onChange={() => undefined} disabled className="wide"
+              hint="Broadcasts are always Marketing. They respect contact and topic opt-outs and add an unsubscribe header." />
             <Field label="Name" value={form.name} onChange={set("name")} disabled={!editable} />
             <Field label="From" value={form.from} onChange={set("from")} placeholder="Acme <news@acme.com>" disabled={!editable} />
             <Field label="Reply-To" value={form.reply_to} onChange={set("reply_to")} placeholder="support@acme.com" disabled={!editable} />

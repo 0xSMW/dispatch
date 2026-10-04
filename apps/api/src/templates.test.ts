@@ -24,6 +24,7 @@ describe("presentTemplate", () => {
   it("flattens the latest version onto the template", () => {
     expect(presentTemplate(row)).toEqual({
       object: "template",
+      kind: "transactional",
       id: "template_1",
       name: "Welcome",
       alias: "welcome",

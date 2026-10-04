@@ -8,6 +8,7 @@ import { emit } from "./events.js";
 import { recipientContext } from "./broadcasts.js";
 import { subscriptionLinks, unsubscribeVariables } from "./unsubscribe.js";
 import { emitRunEvent } from "./run-events.js";
+import { assertSendKinds } from "./send-kinds.js";
 import {
   ApiError,
   durationSeconds,
@@ -499,14 +500,12 @@ async function executeStep(db: Queryable, run: AutomationRun, step: Step, option
   }
 
   if (step.type === "send_email") {
+    await assertSendKinds(db, run.tenant_id, [step], true);
     const config = step.config as StepConfig<"send_email">;
     const to = config.to ?? run.email;
     if (!to) throw new ApiError("validation_error", 422, "send_email step needs a recipient");
     const recipient = await contactContext(db, run.tenant_id, to);
-    // An automation can send anything: a receipt, a password reset, a newsletter. Only the step
-    // knows which. A step with a topic is subscription mail, so it skips a contact who
-    // unsubscribed from everything or opted out of that topic. A step without one always sends,
-    // as POST /emails does.
+    // Readiness was checked above, so Marketing can never fall back to Transactional.
     if (config.topic_id) {
       if (recipient?.unsubscribed) return { skipped: "unsubscribed", email: to };
       // A deleted contact is subscribed to nothing.

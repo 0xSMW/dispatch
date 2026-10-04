@@ -145,6 +145,7 @@ export type LibraryInstallEntry = {
   text?: string | null;
   track?: boolean;
   variables?: unknown[];
+  kind?: "transactional" | "marketing";
 };
 
 export async function installLibrary(db: Queryable, tenantId: string, entries: LibraryInstallEntry[], version = "1.0.0") {
@@ -175,7 +176,7 @@ export async function installLibrary(db: Queryable, tenantId: string, entries: L
       variables: entry.variables ?? [],
       track: entry.track ?? true,
       publish: true,
-      source: { kind: "library", slug: entry.slug, version },
+      source: { kind: "library", slug: entry.slug, version, ...(entry.kind ? { send_kind: entry.kind } : {}) },
     };
     if (!row) await createTemplate(db, tenantId, write);
     else await addTemplateVersion(db, tenantId, row.id, write);

@@ -12,6 +12,7 @@ import { Tabs } from "../../components/Tabs";
 import { useMutation } from "../../hooks/useMutation";
 import { useResource } from "../../hooks/useResource";
 import { useCan, useClient } from "../../shell/session";
+import { kindLabels } from "../../lib/emailKind";
 import type { LibraryDetail, LibraryTemplate, List, Rendered } from "../../types";
 import { templateTabs } from "../tabs";
 import { Preview, Thumb } from "./editor";
@@ -79,7 +80,7 @@ function LibraryCard({ entry, onOpen }: { entry: LibraryTemplate; onOpen: () => 
           <button type="button" className="cardLink" onClick={onOpen}>
             {entry.name}
           </button>
-          <Badge value={entry.kind} variant={entry.kind === "marketing" ? "accent" : "neutral"} />
+          <Badge value={entry.kind} label={kindLabels[entry.kind]} variant={entry.kind === "marketing" ? "accent" : "neutral"} />
         </div>
         <p className="cardText">{entry.description}</p>
         <div className="cardMeta">
@@ -123,6 +124,7 @@ function LibraryPreview({ entry, onClose }: { entry: LibraryTemplate; onClose: (
       }
     >
       <div className="stack">
+        <Badge value={entry.kind} label={kindLabels[entry.kind]} />
         <p className="muted">{entry.description}</p>
         {installed ? (
           <p className="notice" role="status">

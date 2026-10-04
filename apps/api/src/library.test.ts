@@ -82,7 +82,7 @@ describe("template library", () => {
     const installed = await installLibraryTemplate(db, "tenant_1", library, "password-reset");
     expect(installed).toEqual({ object: "template", id: "template_reset" });
     const version = calls.find((call) => call.sql.includes("insert into template_versions"));
-    expect(version?.params?.[9]).toBe(JSON.stringify({ kind: "library", slug: "password-reset", version: "1.0.0" }));
+    expect(version?.params?.[9]).toBe(JSON.stringify({ kind: "library", slug: "password-reset", version: "1.0.0", send_kind: "transactional" }));
     expect(calls.some((call) => call.sql.includes("set published_version_id"))).toBe(true);
 
     const taken = {

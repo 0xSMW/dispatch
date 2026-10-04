@@ -144,6 +144,12 @@ export type WebhookCreate = {
 
 export type TemplateVariable = { key: string; type?: "string" | "number" | "list"; fallbackValue?: string | number | null };
 
+export type SendKind = "transactional" | "marketing";
+export type Template = Row & {
+  /** Derived from library source.send_kind or unsubscribe placeholders in the content. */
+  kind: SendKind;
+};
+
 export type TemplateCreate = {
   name: string;
   alias?: string;
@@ -155,7 +161,7 @@ export type TemplateCreate = {
   react?: unknown;
   variables?: Array<string | TemplateVariable>;
   publish?: boolean;
-  source?: { kind: string; path?: string; slug?: string; version?: string };
+  source?: { kind: string; path?: string; slug?: string; version?: string; send_kind?: SendKind };
 };
 
 export type TemplateUpdate = Partial<Omit<TemplateCreate, "alias" | "html" | "text">> & {
@@ -296,6 +302,8 @@ export type AutomationRunDetail = AutomationRun & {
 /** Step config keys are sent as given, using snake_case. Variables stay literal. */
 export type SendEmailConfig = {
   template: string | { id: string; variables?: Record<string, unknown> };
+  /** Omit for legacy topic_id inference. Marketing drafts may omit topic_id, but cannot run. */
+  kind?: SendKind;
   from?: string;
   to?: string;
   subject?: string;
@@ -866,11 +874,11 @@ class Templates extends Resource {
   }
 
   get(idOrAlias: string) {
-    return this.client.call<Row>("GET", `/templates/${seg(idOrAlias)}`);
+    return this.client.call<Template>("GET", `/templates/${seg(idOrAlias)}`);
   }
 
   list(page: Page & { q?: string; status?: "draft" | "published" } = {}) {
-    return this.client.call<List>("GET", `/templates${query(page)}`);
+    return this.client.call<List<Template>>("GET", `/templates${query(page)}`);
   }
 
   async update(idOrAlias: string, payload: TemplateUpdate) {

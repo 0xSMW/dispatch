@@ -1,10 +1,12 @@
 import type { TemplateRecord } from "@dispatchmail/db";
+import { templateKind } from "@dispatchmail/core";
 
 export function presentTemplate(row: TemplateRecord) {
   return {
     object: "template" as const,
     id: row.id,
     name: row.name,
+    kind: templateKind(row),
     alias: row.alias ?? null,
     from: row.from_address ?? null,
     reply_to: row.reply_to ?? [],
@@ -38,6 +40,7 @@ export function presentVersion(row: {
 }) {
   return {
     id: row.id,
+    kind: templateKind(row),
     from: row.from_address ?? null,
     reply_to: row.reply_to ?? [],
     subject: row.subject ?? null,
