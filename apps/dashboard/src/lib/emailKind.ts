@@ -1,4 +1,5 @@
 import type { SendKind } from "../types";
+import { contentKind as classifyContent } from "../../../../packages/core/src/email-kind";
 
 export const kindLabels: Record<SendKind, string> = { transactional: "Transactional", marketing: "Marketing" };
 
@@ -6,8 +7,7 @@ export type TemplateContent = { kind?: SendKind; source?: Record<string, unknown
 
 /** Match the API's reserved unsubscribe placeholders, in HTML or plain text. */
 export function contentKind(content: TemplateContent): SendKind {
-  return /\{\{\{?\s*(?:UNSUBSCRIBE_URL|RESEND_UNSUBSCRIBE_URL|DISPATCH_UNSUBSCRIBE_URL)\s*\}\}\}?/.test(`${content.html ?? ""} ${content.text ?? ""}`)
-    ? "marketing" : "transactional";
+  return classifyContent(content);
 }
 
 export function templateKind(template: TemplateContent): SendKind {
