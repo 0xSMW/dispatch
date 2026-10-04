@@ -11,12 +11,13 @@ from email.parser import BytesParser
 from email.policy import default
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
-from typing import NotRequired, get_args, get_type_hints
+from typing import Literal, NotRequired, get_args, get_type_hints
 
 from dispatch import (
     Automation, AutomationConnectionInput, AutomationDryRun, AutomationExitReason, AutomationGuard,
     AutomationInput, AutomationRun, AutomationRunEvent, AutomationRunList, AutomationStepInput,
     AutomationTriggerConfig, AutomationUpdateInput, BranchConfig, BranchPath, ContactActivity, ContactPropertyInput,
+    AutomationPreset, AutomationPresetDetail, AutomationPresetEvent, AutomationPresetList, AutomationPresetProperty, LibraryStage,
     Dispatch, DispatchError, ExitConfig, FilterConfig, ImportColumnMap, PredicateRule, RuleGroup,
     SendEmailConfig,
 )
@@ -186,6 +187,57 @@ class TestDispatch(unittest.TestCase):
                 self.assertEqual(result, page)
                 self.assertEqual(json.loads(json.dumps(result)), page)
                 self.assertEqual(Recorder.calls[-1]["path"], path)
+
+    def test_template_library_automations(self):
+        preset: AutomationPreset = {
+            "slug": "newsletter-welcome", "name": "Newsletter welcome", "stage": "acquisition",
+            "description": "Welcome a subscriber.", "when": "Start on subscription.",
+            "trigger_config": {"type": "topic_subscribed", "topic_id": "{{topic_id}}"}, "reentry": "once",
+            "events": [{"name": "stripe.invoice.payment_failed", "schema": {"AMOUNT": "string", "UPDATE_PAYMENT_URL": "string"}}],
+            "properties": [{"key": "activated", "type": "boolean"}],
+            "steps": [
+                {"key": "start", "type": "trigger", "config": {"type": "topic_subscribed", "topic_id": "{{topic_id}}"}},
+                {"key": "active", "type": "condition", "config": {"type": "rule", "field": "contact.activated", "operator": "eq", "value": False}},
+                {"key": "send", "type": "send_email", "config": {"template": "newsletter-welcome", "kind": "marketing", "variable_mapping": {"camelKey": "event.AMOUNT"}}},
+            ],
+            "connections": [{"from": "active", "to": "send", "type": "condition_not_met"}],
+            "templates": ["newsletter-welcome"],
+        }
+        for data in ([], [preset]):
+            with self.subTest(data=data):
+                page = {"object": "list", "has_more": False, "data": data}
+                Recorder.responses[("GET", "/template-library/automations")] = (200, page)
+                listed = self.client.template_library_automations()
+                self.assertEqual(listed, page)
+                self.assertEqual(json.loads(json.dumps(listed)), page)
+                self.assertEqual(Recorder.calls[-1]["method"], "GET")
+                self.assertEqual(Recorder.calls[-1]["path"], "/template-library/automations")
+                self.assertEqual(Recorder.calls[-1]["body"], b"")
+        path = "/template-library/automations/newsletter%2Fwelcome%20%3F%23%25"
+        detail = {"object": "automation_preset", **preset}
+        Recorder.responses[("GET", path)] = (200, detail)
+        got = self.client.template_library_automation("newsletter/welcome ?#%")
+        self.assertEqual(got, detail)
+        self.assertEqual(json.loads(json.dumps(got)), detail)
+        self.assertEqual(Recorder.calls[-1]["method"], "GET")
+        self.assertEqual(Recorder.calls[-1]["path"], path)
+        self.assertEqual(Recorder.calls[-1]["body"], b"")
+        self.assertEqual(get_type_hints(Dispatch.template_library_automations)["return"], AutomationPresetList)
+        self.assertEqual(get_type_hints(Dispatch.template_library_automation)["return"], AutomationPresetDetail)
+        self.assertEqual(get_type_hints(AutomationPresetList)["data"], list[AutomationPreset])
+        self.assertEqual(get_type_hints(AutomationPresetDetail)["object"], Literal["automation_preset"])
+        self.assertEqual(get_type_hints(AutomationPreset)["trigger_config"], AutomationTriggerConfig)
+        self.assertEqual(get_type_hints(AutomationPreset)["events"], list[AutomationPresetEvent])
+        self.assertEqual(get_type_hints(AutomationPreset)["properties"], list[AutomationPresetProperty])
+        self.assertEqual(get_args(LibraryStage), ("acquisition", "onboarding", "retention", "reengagement", "dunning", "reactivation"))
+
+    def test_template_library_automation_not_found(self):
+        path = "/template-library/automations/missing"
+        Recorder.responses[("GET", path)] = (404, {"name": "not_found", "message": "Preset not found"})
+        with self.assertRaises(DispatchError) as caught:
+            self.client.template_library_automation("missing")
+        self.assertEqual(caught.exception.status, 404)
+        self.assertEqual(caught.exception.body["name"], "not_found")
 
     def test_flow_config_contracts(self):
         self.assertEqual(get_args(get_type_hints(FilterConfig)["scope"]), ("next", "following"))

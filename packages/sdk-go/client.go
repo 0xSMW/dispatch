@@ -762,6 +762,49 @@ type EventDefinitionInput struct {
 	Schema map[string]string `json:"schema,omitempty"`
 }
 
+type LibraryStage string
+
+const (
+	StageAcquisition  LibraryStage = "acquisition"
+	StageOnboarding   LibraryStage = "onboarding"
+	StageRetention    LibraryStage = "retention"
+	StageReengagement LibraryStage = "reengagement"
+	StageDunning      LibraryStage = "dunning"
+	StageReactivation LibraryStage = "reactivation"
+)
+
+type AutomationPresetEvent struct {
+	Name   string            `json:"name"`
+	Schema map[string]string `json:"schema"`
+}
+
+type AutomationPresetProperty struct {
+	Key  string `json:"key"`
+	Type string `json:"type"`
+}
+
+// AutomationPreset is a read-only library definition. Templates are library
+// slugs, not tenant IDs; newsletter TopicID is the {{topic_id}} install placeholder.
+type AutomationPreset struct {
+	Slug          string                     `json:"slug"`
+	Name          string                     `json:"name"`
+	Stage         LibraryStage               `json:"stage"`
+	Description   string                     `json:"description"`
+	When          string                     `json:"when"`
+	TriggerConfig AutomationTriggerConfig    `json:"trigger_config"`
+	Reentry       AutomationReentry          `json:"reentry"`
+	Events        []AutomationPresetEvent    `json:"events"`
+	Properties    []AutomationPresetProperty `json:"properties"`
+	Steps         []AutomationStep           `json:"steps"`
+	Connections   []AutomationConnection     `json:"connections"`
+	Templates     []string                   `json:"templates"`
+}
+
+type AutomationPresetDetail struct {
+	Object string `json:"object"`
+	AutomationPreset
+}
+
 type WebhookInput struct {
 	Endpoint string   `json:"endpoint"`
 	Events   []string `json:"events,omitempty"`
@@ -1132,6 +1175,14 @@ func (c *Client) TemplateLibrary() (*ListResponse[Map], error) {
 
 func (c *Client) TemplateLibraryEntry(slug string) (Map, error) {
 	return object(get[Map](c, at("template-library", slug)))
+}
+
+func (c *Client) TemplateLibraryAutomations() (*ListResponse[AutomationPreset], error) {
+	return get[ListResponse[AutomationPreset]](c, "/template-library/automations")
+}
+
+func (c *Client) TemplateLibraryAutomation(slug string) (*AutomationPresetDetail, error) {
+	return get[AutomationPresetDetail](c, at("template-library", "automations", slug))
 }
 
 func (c *Client) InstallTemplate(slug string) (*Template, error) {

@@ -41,7 +41,7 @@ export type Api = {
     duplicate: Call;
     render: Call;
     versions: { list: Call; create: Call };
-    library: { list: Call; get: Call; install: Call };
+    library: { list: Call; get: Call; install: Call; automations: Call; automation: Call };
   };
   contacts: Crud & {
     activity: Call;

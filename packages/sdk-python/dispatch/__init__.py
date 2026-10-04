@@ -470,6 +470,49 @@ class EventDefinitionInput(TypedDict, total=False):
     schema: dict[str, Literal["string", "number", "boolean", "date"]]
 
 
+LibraryStage = Literal["acquisition", "onboarding", "retention", "reengagement", "dunning", "reactivation"]
+
+
+class AutomationPresetEvent(TypedDict):
+    name: str
+    schema: dict[str, PropertyType]
+
+
+class AutomationPresetProperty(TypedDict):
+    key: str
+    type: PropertyType
+
+
+class AutomationPreset(TypedDict):
+    """Read-only definition. Templates are library slugs, not tenant IDs.
+
+    Newsletter topic_id is the {{topic_id}} install placeholder.
+    """
+    slug: str
+    name: str
+    stage: LibraryStage
+    description: str
+    when: str
+    trigger_config: AutomationTriggerConfig
+    reentry: AutomationReentry
+    events: list[AutomationPresetEvent]
+    properties: list[AutomationPresetProperty]
+    steps: list[AutomationStepInput]
+    connections: list[AutomationConnectionInput]
+    templates: list[str]
+
+
+class AutomationPresetDetail(AutomationPreset):
+    object: Literal["automation_preset"]
+
+
+class AutomationPresetList(TypedDict):
+    object: Literal["list"]
+    has_more: bool
+    data: list[AutomationPreset]
+    request_id: NotRequired[str]
+
+
 class WebhookInput(TypedDict, total=False):
     endpoint: str
     events: list[str]
@@ -789,6 +832,12 @@ class Dispatch:
 
     def template_library_entry(self, slug: str) -> Json:
         return self._request("GET", _path("template-library", slug))
+
+    def template_library_automations(self) -> AutomationPresetList:
+        return cast(AutomationPresetList, self._request("GET", "/template-library/automations"))
+
+    def template_library_automation(self, slug: str) -> AutomationPresetDetail:
+        return cast(AutomationPresetDetail, self._request("GET", _path("template-library", "automations", slug)))
 
     def install_template(self, slug: str, options: Json | None = None) -> Json:
         return self._request("POST", _path("template-library", slug, "install"), options or {})

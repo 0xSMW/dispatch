@@ -384,6 +384,27 @@ export type EventSend = ({ contactId: string; email?: never } | { email: string;
 
 export type EventSchema = Record<string, "string" | "number" | "boolean" | "date">;
 
+export type LibraryStage = "acquisition" | "onboarding" | "retention" | "reengagement" | "dunning" | "reactivation";
+
+/** Read-only library definition. Template references are library slugs, not tenant IDs. */
+export type AutomationPreset = {
+  slug: string;
+  name: string;
+  stage: LibraryStage;
+  description: string;
+  when: string;
+  /** Newsletter topic_id is the {{topic_id}} install placeholder. */
+  trigger_config: AutomationTriggerConfig;
+  reentry: AutomationReentry;
+  events: Array<{ name: string; schema: EventSchema }>;
+  properties: Array<{ key: string; type: PropertyType }>;
+  steps: Array<{ key: string; type: StepType; config: Record<string, unknown> }>;
+  connections: Array<{ from: string; to: string; type: ConnectionType; path?: string }>;
+  templates: string[];
+};
+
+export type AutomationPresetDetail = AutomationPreset & { object: "automation_preset" };
+
 const seg = encodeURIComponent;
 
 function snake(key: string) {
@@ -846,6 +867,14 @@ class TemplateVersions extends Resource {
 class TemplateLibrary extends Resource {
   list() {
     return this.client.call<List>("GET", "/template-library");
+  }
+
+  automations() {
+    return this.client.call<List<AutomationPreset>>("GET", "/template-library/automations");
+  }
+
+  automation(slug: string) {
+    return this.client.call<AutomationPresetDetail>("GET", `/template-library/automations/${seg(slug)}`);
   }
 
   get(slug: string) {

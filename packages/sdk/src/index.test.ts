@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { signWebhook } from "@dispatchmail/core";
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
-import { Dispatch, WebhookVerificationError, type Automation, type AutomationCreate, type AutomationDryRun, type AutomationUpdate, type AutomationStatus, type AutomationReentry, type AutomationTriggerConfig, type AutomationExitReason, type ContactActivity, type ImportColumnMap, type Operator, type PropertyType, type PropertyValue, type Result, type Rule, type SendEmailConfig } from "./index.js";
+import { Dispatch, WebhookVerificationError, type Automation, type AutomationCreate, type AutomationDryRun, type AutomationUpdate, type AutomationStatus, type AutomationReentry, type AutomationTriggerConfig, type AutomationExitReason, type AutomationPreset, type AutomationPresetDetail, type ContactActivity, type ImportColumnMap, type List, type Operator, type PropertyType, type PropertyValue, type Result, type Rule, type SendEmailConfig } from "./index.js";
 
 const base = "http://localhost:3100";
 
@@ -37,6 +37,54 @@ beforeEach(() => {
 afterEach(() => {
   globalThis.fetch = originalFetch;
   vi.unstubAllEnvs();
+});
+
+describe("automation preset library", () => {
+  const preset: AutomationPreset = {
+    slug: "newsletter-welcome", name: "Newsletter welcome", stage: "acquisition",
+    description: "Welcome a subscriber.", when: "Start on subscription.",
+    trigger_config: { type: "topic_subscribed", topic_id: "{{topic_id}}" }, reentry: "once",
+    events: [{ name: "stripe.invoice.payment_failed", schema: { AMOUNT: "string", UPDATE_PAYMENT_URL: "string", invoice_id: "string" } }],
+    properties: [{ key: "activated", type: "boolean" }],
+    steps: [
+      { key: "start", type: "trigger", config: { type: "topic_subscribed", topic_id: "{{topic_id}}" } },
+      { key: "guard", type: "filter", config: { scope: "following", rule: { type: "rule", field: "event.received_at", operator: "within", value: "7 days" } } },
+      { key: "send", type: "send_email", config: { template: "newsletter-welcome", kind: "marketing", variable_mapping: { camelKey: "event.AMOUNT" } } },
+      { key: "active", type: "condition", config: { type: "rule", field: "contact.activated", operator: "eq", value: false } },
+    ],
+    connections: [{ from: "start", to: "guard", type: "default" }, { from: "active", to: "send", type: "condition_not_met" }],
+    templates: ["newsletter-welcome"],
+  };
+
+  it.each([{ data: [] }, { data: [preset] }])("lists typed wire definitions without a paging query: %j", async ({ data }) => {
+    const page = { object: "list", has_more: false, data };
+    const fetch = stub(page);
+    const result = await new Dispatch({ apiKey: "sk_test" }).templates.library.automations();
+    expectTypeOf(result).toEqualTypeOf<Result<List<AutomationPreset>>>();
+    expectTypeOf<NonNullable<typeof result.data>["data"][number]["trigger_config"]>().toEqualTypeOf<AutomationTriggerConfig>();
+    expect(result.data).toEqual(page);
+    expect(request(fetch)).toMatchObject({ method: "GET", url: `${base}/template-library/automations`, body: undefined });
+  });
+
+  it("gets a typed object envelope and encodes the entire slug as one segment", async () => {
+    const detail: AutomationPresetDetail = { object: "automation_preset", ...preset };
+    const fetch = stub(detail);
+    const result = await new Dispatch({ apiKey: "sk_test" }).templates.library.automation("newsletter/welcome ?#%");
+    expectTypeOf(result).toEqualTypeOf<Result<AutomationPresetDetail>>();
+    expectTypeOf(result.data!.object).toEqualTypeOf<"automation_preset">();
+    expect(result.data).toEqual(detail);
+    expect(JSON.parse(JSON.stringify(result.data))).toEqual(detail);
+    expect(request(fetch)).toMatchObject({
+      method: "GET", url: `${base}/template-library/automations/newsletter%2Fwelcome%20%3F%23%25`, body: undefined,
+    });
+  });
+
+  it("returns the existing not_found error for an unknown preset", async () => {
+    globalThis.fetch = vi.fn(async () => reply({ name: "not_found", message: "Preset not found" }, { status: 404 }));
+    const result = await new Dispatch({ apiKey: "sk_test" }).templates.library.automation("missing");
+    expect(result.data).toBeNull();
+    expect(result.error).toMatchObject({ name: "not_found", statusCode: 404, message: "Preset not found" });
+  });
 });
 
 describe("constructor", () => {
