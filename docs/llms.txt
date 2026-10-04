@@ -1,0 +1,37 @@
+# Dispatch
+
+> Dispatch is a self-hosted, AWS-native email API and control plane built on Amazon SES.
+
+This index lists the tracked public guides selected by `scripts/llms.ts`.
+Links are relative to this file in `docs/`.
+
+## Documentation
+
+- [Dispatch](../README.md): Product overview, local quickstart, sending from code, and production setup.
+- [API](api/README.md): Authentication, permissions, response shapes, sending, and REST routes.
+- [Audience](audience.md): Contacts, typed properties, CSV imports, topics, and static segments.
+- [Automations](automations.md): Triggers, re-entry, email kinds, conditions, waits, and run controls.
+- [AWS](aws.md): AWS resources and permissions for SES, S3, and delivery queues.
+- [CLI](cli.md): CLI credentials, commands, flags, output, and errors.
+- [Deliverability](deliverability/README.md): Sender authentication, reputation, suppression, and delivery tracking.
+- [Domains](domains.md): Sending domain setup, DNS records, verification, and diagnostics.
+- [Local development](local.md): Local services, development fixtures, and the fake sending provider.
+- [Migration](migration/README.md): Moving an existing Resend integration to a self-hosted Dispatch instance.
+- [Operations](operations/README.md): Environment settings, background workers, storage, and service operations.
+- [React Email](react-email.md): Authoring, rendering, and publishing React Email templates.
+- [Self-hosting](self-hosting/README.md): Local and production deployment, required resources, and SES configuration.
+- [Settings](settings.md): Tenant defaults for imports and sandbox email domains.
+- [SMTP relay](smtp.md): SMTP authentication, transport configuration, and supported sending behavior.
+- [Templates](templates.md): Template publishing, variables, branding, and Transactional or Marketing kinds.
+- [Template recipes](templates/README.md): Email template integration recipes organized by provider.
+- [Auth.js](templates/authjs.md): Sending Auth.js authentication email through Dispatch.
+- [Better Auth](templates/better-auth.md): Sending Better Auth email with Dispatch templates.
+- [Clerk](templates/clerk.md): Using the SMTP relay for Clerk-rendered authentication email.
+- [Stripe](templates/stripe.md): Sending invoice and trial email from Stripe webhooks.
+- [Supabase](templates/supabase.md): Mapping Supabase Auth send-email hooks to Dispatch templates.
+- [Troubleshooting](troubleshooting.md): Diagnosing common setup, delivery, storage, and webhook failures.
+- [Webhooks](webhooks.md): Email and automation events, signature verification, retries, and replay.
+
+## Full text
+
+- [Full documentation](llms-full.txt): The same public guides, including the API guide, in one file.

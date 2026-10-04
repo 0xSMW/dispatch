@@ -26,6 +26,8 @@
     "audit:prod": "node scripts/audit-production.mjs",
     "test": "vitest run",
     "test:unit": "vitest run --exclude apps/api/src/accept.test.ts",
+    "llms": "tsx scripts/llms.ts",
+    "test:llms": "tsx --test scripts/llms.test.ts",
     "typecheck": "pnpm -r typecheck",
     "build:vercel": "node scripts/build-vercel.mjs"
   },
