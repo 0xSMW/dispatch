@@ -207,6 +207,12 @@ export async function importBatch(
      order by email for update`, [job.tenant_id, remaining.map((row) => row.email)]
   ) : { rows: [] };
   const before = new Map(prior.rows.map((row) => [row.email, row]));
+  // Capture selected-topic receiving while the original contacts are locked, before
+  // the contact update can change global eligibility. Skip untouched live conflicts.
+  const topicBefore = await readImportTopics(client, job, [
+    ...inserted.rows.map((row) => row.id),
+    ...prior.rows.filter((row) => job.on_conflict === "upsert" || row.deleted_at).map((row) => row.id),
+  ]);
   const updatedRows = remaining.length ? await client.query<ContactRow>(
     `update contacts c set
        first_name = case when c.deleted_at is not null then t.first_name else coalesce(t.first_name, c.first_name) end,
@@ -225,7 +231,7 @@ export async function importBatch(
   const all = [...inserted.rows, ...updatedRows.rows];
   const ids = all.map((row) => row.id);
   const segments = await joinSegments(client, job, ids);
-  const topics = await joinTopics(client, job, ids);
+  const topics = await joinTopics(client, job, all, topicBefore);
   const rows: ImportChange[] = all.map((contact) => ({
     id: contact.id, contact,
     created: insertedEmails.has(contact.email) || Boolean(before.get(contact.email)?.deleted_at),
@@ -268,9 +274,23 @@ async function joinSegments(client: Queryable, job: Pick<ImportRow, "tenant_id" 
   return result.rows;
 }
 
-async function joinTopics(client: Queryable, job: Pick<ImportRow, "tenant_id" | "topics">, contactIds: string[]) {
+async function readImportTopics(client: Queryable, job: Pick<ImportRow, "tenant_id" | "topics">, contactIds: string[]) {
+  const topicIds = [...new Set((job.topics ?? []).map((topic) => topic.id))];
+  if (!contactIds.length || !topicIds.length) return new Map<string, boolean>();
+  const prior = await client.query<{ contact_id: string; topic_id: string; receiving: boolean }>(
+    `select c.id as contact_id, t.id as topic_id,
+       (c.unsubscribed_at is null and coalesce(s.status, t.default_status) = 'subscribed') as receiving
+     from contacts c cross join topics t
+     left join topic_subscriptions s on s.tenant_id = $1 and s.contact_id = c.id and s.topic_id = t.id
+     where c.tenant_id = $1 and c.id = any($2::text[]) and t.tenant_id = $1 and t.id = any($3::text[])`,
+    [job.tenant_id, contactIds, topicIds]
+  );
+  return new Map(prior.rows.map((row) => [`${row.contact_id}:${row.topic_id}`, row.receiving]));
+}
+
+async function joinTopics(client: Queryable, job: Pick<ImportRow, "tenant_id" | "topics">, contacts: ContactRow[], receiving: Map<string, boolean>) {
   const choices = [...new Map((job.topics ?? []).map((topic) => [topic.id, topic])).values()];
-  const rows = contactIds.flatMap((contactId) =>
+  const rows = contacts.flatMap(({ id: contactId }) =>
     choices.map((topic) => ({
       topic: topic.id,
       contact: contactId,
@@ -278,17 +298,7 @@ async function joinTopics(client: Queryable, job: Pick<ImportRow, "tenant_id" | 
     })),
   );
   if (rows.length === 0) return [] as Array<{ contact_id: string; topic_id: string; before: boolean; after: boolean }>;
-  const prior = await client.query<{ contact_id: string; topic_id: string; receiving: boolean; eligible: boolean }>(
-    `select c.id as contact_id, t.id as topic_id,
-       (c.unsubscribed_at is null and coalesce(s.status, t.default_status) = 'subscribed') as receiving,
-       c.unsubscribed_at is null as eligible
-     from contacts c cross join topics t
-     left join topic_subscriptions s on s.tenant_id = $1 and s.contact_id = c.id and s.topic_id = t.id
-     where c.tenant_id = $1 and c.id = any($2::text[]) and t.tenant_id = $1 and t.id = any($3::text[])`,
-    [job.tenant_id, contactIds, choices.map((topic) => topic.id)]
-  );
-  const receiving = new Map(prior.rows.map((row) => [`${row.contact_id}:${row.topic_id}`, row.receiving]));
-  const eligible = new Set(prior.rows.filter((row) => row.eligible).map((row) => row.contact_id));
+  const eligible = new Set(contacts.filter((row) => row.unsubscribed_at === null).map((row) => row.id));
   const result = await client.query<{ contact_id: string; topic_id: string; status: string }>(
     `insert into topic_subscriptions (id, tenant_id, topic_id, contact_id, status)
      select t.id, $2, t.topic_id, t.contact_id, t.status

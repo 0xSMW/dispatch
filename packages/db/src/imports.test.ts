@@ -234,6 +234,54 @@ describe("contact import queries", () => {
     expect(db.queries.some((query) => query.sql.includes("insert into automation_runs"))).toBe(false);
   });
 
+  it.each([false, true])("captures original receiving before a combined global and selected-topic optout with entry %s", async (trigger_automations) => {
+    const before = stored("a@x.com");
+    const after = { ...before, unsubscribed_at: "2026-10-02" };
+    let globallyUpdated = false;
+    const db = client((sql) => {
+      if (sql.includes("deleted_at from contacts")) return [before];
+      if (sql.includes("c.id as contact_id, t.id as topic_id")) {
+        return [{ contact_id: before.id, topic_id: "topic_1", receiving: !globallyUpdated }];
+      }
+      if (sql.includes("update contacts c set")) {
+        globallyUpdated = true;
+        return [after];
+      }
+      if (sql.includes("insert into topic_subscriptions")) {
+        return [{ contact_id: before.id, topic_id: "topic_1", status: "unsubscribed" }];
+      }
+      return [];
+    });
+    const result = await importBatch(db, { ...job, trigger_automations,
+      topics: [{ id: "topic_1", subscription: "opt_out" }] }, [{ ...contact(before.email), unsubscribed: true }]);
+    expect(result).toEqual({ created: 0, updated: 1, skipped: 0, ids: [before.id], rows: [{
+      id: before.id, contact: after, created: false, segments_added: [], topics_subscribed: [],
+    }] });
+    expect(db.queries.filter((query) => query.sql.includes("insert into contact_changes"))
+      .map((query) => query.params.slice(2))).toEqual([
+      [before.id, "unsubscribed", "false", "true", job.id],
+      [before.id, "topics.topic_1", "true", "false", job.id],
+    ]);
+    expect(db.queries.some((query) => query.sql.includes("from automations"))).toBe(false);
+  });
+
+  it.each([false, true])("does not invent combined transitions for prior effective optouts with entry %s", async (trigger_automations) => {
+    for (const globallyOut of [false, true]) {
+      const before = stored("a@x.com", { unsubscribed_at: globallyOut ? "2026-09-01" : null });
+      const after = { ...before, unsubscribed_at: before.unsubscribed_at ?? "2026-10-02" };
+      const db = batchClient({
+        prior: [before], updated: [after], automations: true,
+        receiving: [{ contact_id: before.id, topic_id: "topic_1", receiving: false, eligible: !globallyOut }],
+        topics: [{ contact_id: before.id, topic_id: "topic_1", status: "unsubscribed" }],
+      });
+      await importBatch(db, { ...job, trigger_automations, topics: [{ id: "topic_1", subscription: "opt_out" }] },
+        [{ ...contact(before.email), unsubscribed: true }]);
+      expect(db.queries.filter((query) => query.sql.includes("insert into contact_changes"))
+        .map((query) => query.params[3])).toEqual(globallyOut ? [] : ["unsubscribed"]);
+      expect(db.queries.some((query) => query.sql.includes("from automations"))).toBe(false);
+    }
+  });
+
   it.each([false, true])("uses returned effective preferences, not requested status, for history with entry %s", async (trigger_automations) => {
     const before = stored("a@x.com");
     const db = batchClient({

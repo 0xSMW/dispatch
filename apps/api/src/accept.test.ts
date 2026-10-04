@@ -1954,7 +1954,59 @@ describe.skipIf(!live)("accept", () => {
     expect((await db.query("select distinct priority from automation_runs")).rows).toEqual(trigger ? [{ priority: "bulk" }] : []);
   });
 
-  it.each([false, true])("import topic history serializes identical existing-contact optouts with stored trigger=%s", async (trigger) => {
+  it.each([false, true])("import topic history retains original selected receiving during combined optouts with stored trigger=%s", async (trigger) => {
+    const on = await post(fullKey, "/topics", { name: "Combined default on", key: "combined_on", default_subscription: "opt_in" });
+    const off = await post(fullKey, "/topics", { name: "Combined default off", key: "combined_off", default_subscription: "opt_out" });
+    const unselected = await post(fullKey, "/topics", { name: "Unselected receiving", key: "combined_unselected", default_subscription: "opt_in" });
+    const cases = [
+      { email: "combined-default@example.com", topic: on, receiving: true, payload: {} },
+      { email: "combined-explicit@example.com", topic: off, receiving: true, payload: { topics: [{ id: off.json.id, subscription: "opt_in" }] } },
+      { email: "combined-topic-out@example.com", topic: on, receiving: false, payload: { topics: [{ id: on.json.id, subscription: "opt_out" }] } },
+      { email: "combined-global-out@example.com", topic: on, receiving: false, payload: { unsubscribed: true } },
+      { email: "combined-default-off@example.com", topic: off, receiving: false, payload: {} },
+      { email: "combined-global-only@example.com", topic: null, receiving: false, payload: {} },
+    ];
+    // Create flows only after fixtures so no setup activity can hide an import run.
+    const contacts = [];
+    for (const entry of cases) contacts.push(await post(fullKey, "/contacts", { email: entry.email, ...entry.payload }));
+    const flows = [
+      await contactFlow({ type: "topic_subscribed", topic_id: on.json.id }),
+      await contactFlow({ type: "topic_subscribed", topic_id: off.json.id }),
+      await contactFlow({ type: "contact_updated" }),
+    ];
+    const tenant = (await db.query("select tenant_id from contacts where id=$1", [contacts[0]!.json.id])).rows[0].tenant_id;
+    for (const [index, entry] of cases.entries()) {
+      const contact = contacts[index]!;
+      await createImport(db, { id: id("import"), tenantId: tenant, storageKey: id("file"), columnMap: {}, onConflict: "upsert",
+        segments: [], topics: entry.topic ? [{ id: entry.topic.json.id, subscription: "opt_out" }] : [], triggerAutomations: trigger });
+      const job = (await claimImports(db, 1))[0]!;
+      expect(job.trigger_automations).toBe(trigger);
+      const rows = [{ email: entry.email, first_name: null, last_name: null, properties: {}, unsubscribed: true }];
+      const result = await tx(db, (client) => importBatch(client, job, rows));
+      expect(result).toMatchObject({ created: 0, updated: 1, skipped: 0, ids: [contact.json.id],
+        rows: [{ created: false, segments_added: [], topics_subscribed: [] }] });
+      expect(result.rows[0]!.contact.unsubscribed_at).not.toBeNull();
+      const expected = [
+        ...(entry.receiving ? [{ field: `topics.${entry.topic!.json.id}`, from_value: true, to_value: false, request_id: job.id }] : []),
+        ...(entry.payload.unsubscribed ? [] : [{ field: "unsubscribed", from_value: false, to_value: true, request_id: job.id }]),
+      ].sort((a, b) => a.field.localeCompare(b.field));
+      const history = () => db.query("select field,from_value,to_value,request_id from contact_changes where request_id=$1 order by field", [job.id]);
+      expect((await history()).rows).toEqual(expected);
+      if (entry.topic) expect((await db.query("select status from topic_subscriptions where contact_id=$1 and topic_id=$2",
+        [contact.json.id, entry.topic.json.id])).rows).toEqual([{ status: "unsubscribed" }]);
+      expect((await db.query("select id from topic_subscriptions where contact_id=$1 and topic_id=$2",
+        [contact.json.id, unselected.json.id])).rows).toEqual([]);
+      await tx(db, (client) => importBatch(client, job, rows));
+      expect((await history()).rows).toEqual(expected);
+      expect((await db.query("select id from custom_events where request_id=$1", [job.id])).rows).toEqual([]);
+    }
+    for (const flow of flows) expect(await flowRuns(flow)).toHaveLength(0);
+  });
+
+  it.each([
+    { trigger: false, combined: false }, { trigger: true, combined: false },
+    { trigger: false, combined: true }, { trigger: true, combined: true },
+  ])("import topic history serializes identical existing-contact optouts with stored trigger=$trigger combined=$combined", async ({ trigger, combined }) => {
     const topic = await post(fullKey, "/topics", { name: "Concurrent history", key: "concurrent_history", default_subscription: "opt_in" });
     const contact = await post(fullKey, "/contacts", { email: "history-race@example.com" });
     const tenant = (await db.query("select tenant_id from contacts where id=$1", [contact.json.id])).rows[0].tenant_id;
@@ -1964,7 +2016,7 @@ describe.skipIf(!live)("accept", () => {
     const jobs = await claimImports(db, 2);
     expect(jobs).toHaveLength(2);
     expect(jobs.every((job) => job.trigger_automations === trigger)).toBe(true);
-    const rows = [{ email: contact.json.email, first_name: null, last_name: null, properties: {}, unsubscribed: false }];
+    const rows = [{ email: contact.json.email, first_name: null, last_name: null, properties: {}, unsubscribed: combined }];
     // Hold the first transaction's contact lock until Postgres observes the second waiting.
     let release = () => {};
     const held = new Promise<void>((resolve) => { release = resolve; });
@@ -2004,6 +2056,11 @@ describe.skipIf(!live)("accept", () => {
       "select from_value,to_value,request_id from contact_changes where contact_id=$1 and field=$2",
       [contact.json.id, `topics.${topic.json.id}`],
     )).rows).toEqual([{ from_value: true, to_value: false, request_id: jobs[0]!.id }]);
+    expect((await db.query(
+      "select from_value,to_value,request_id from contact_changes where contact_id=$1 and field='unsubscribed' and request_id=any($2::text[])",
+      [contact.json.id, jobs.map((job) => job.id)],
+    )).rows).toEqual(combined ? [{ from_value: false, to_value: true, request_id: jobs[0]!.id }] : []);
+    expect((await db.query("select id from custom_events where request_id=any($1::text[])", [jobs.map((job) => job.id)])).rows).toEqual([]);
     expect((await db.query("select status from topic_subscriptions where contact_id=$1 and topic_id=$2", [contact.json.id, topic.json.id])).rows).toEqual([{ status: "unsubscribed" }]);
     expect(await flowRuns(flow)).toHaveLength(0);
   });
