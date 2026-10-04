@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { BookOpen, ChevronLeft } from "lucide-react";
+import { BookOpen, ChevronLeft, Code2 } from "lucide-react";
+import { dialogOpen, shortcuts } from "../lib/shortcuts";
 import type { BadgeVariant } from "./Badge";
 
 export interface PageHeaderProps {
@@ -37,7 +38,21 @@ export function PageHeader({ title, label, icon, tone = "neutral", actions, back
           <h1>{title}</h1>
           {description ? <p className="muted">{description}</p> : null}
         </div>
-        {actions ? <div className="toolbar pageActions">{actions}</div> : null}
+        <div className="toolbar pageActions">
+          {actions}
+          <button
+            type="button"
+            className="ghost small"
+            title={`API reference (${shortcuts.api.keys[0]})`}
+            onClick={() => {
+              // Use the shell's existing shortcut handler, including its session and dialog guards.
+              if (!dialogOpen()) document.dispatchEvent(new KeyboardEvent("keydown", { key: shortcuts.api.combo, bubbles: true }));
+            }}
+          >
+            <Code2 size={14} aria-hidden />
+            API
+          </button>
+        </div>
       </div>
       {learn?.length ? (
         <nav className="learnLinks" aria-label="Learn more">

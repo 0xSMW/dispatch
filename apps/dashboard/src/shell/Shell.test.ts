@@ -84,7 +84,7 @@ describe("Shell keys", () => {
     expect(call.textContent).toContain('curl -X POST "http://localhost:3100/domains/domain_1/verify"');
     expect(call.textContent).toContain("$DISPATCH_API_KEY");
 
-    fireEvent.click(within(drawer).getByRole("tab", { name: "Node.js" }));
+    fireEvent.click(within(drawer).getByRole("tab", { name: "TypeScript" }));
     expect(within(drawer).getByRole("region", { name: "POST /domains/domain_1/verify" }).textContent).toContain('dispatch.domains.verify("domain_1")');
   });
 
