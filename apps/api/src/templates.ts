@@ -1,5 +1,15 @@
-import type { TemplateRecord } from "@dispatchmail/db";
+import type { TemplateRecord, TemplateWrite } from "@dispatchmail/db";
 import { templateKind } from "@dispatchmail/core";
+
+export function templateVersionSource(
+  current: Pick<TemplateRecord, "source" | "html" | "text">,
+  source: TemplateWrite["source"],
+): TemplateWrite["source"] {
+  const marketing = current.source?.send_kind === "marketing" ||
+    (current.source?.kind === "library" && templateKind(current) === "marketing");
+  // Keep intent, not the old library provenance or content, when a tenant edits a copy.
+  return marketing ? { ...(source ?? { kind: "custom" }), send_kind: "marketing" } : source;
+}
 
 export function presentTemplate(row: TemplateRecord) {
   return {

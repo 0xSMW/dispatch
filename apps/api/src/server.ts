@@ -123,7 +123,7 @@ import {
   webhookEventAttempts,
   webhookEventDetail,
 } from "./webhooks.js";
-import { presentTemplate, presentVersion, templateContentChanged } from "./templates.js";
+import { presentTemplate, presentVersion, templateContentChanged, templateVersionSource } from "./templates.js";
 import { scheduleAt, withSchedule } from "./schedule.js";
 import { loadSharedEmail, readShareToken, shareExpiry, shareToken } from "./share.js";
 
@@ -800,10 +800,7 @@ app.patch("/templates/:id", async (request) => {
           html: input.html !== undefined ? input.html : current.html,
           text: input.text !== undefined ? input.text : current.text,
           variables: input.variables !== undefined ? input.variables : (current.variables ?? []),
-          // Editing clears library provenance, but must not clear its Marketing intent.
-          source: current.source?.send_kind === "marketing"
-            ? { ...(input.source ?? { kind: "custom" }), send_kind: "marketing" }
-            : input.source,
+          source: templateVersionSource(current, input.source),
           publish: input.publish,
         };
         // An edit to a template whose latest version was never published changes that version.
@@ -842,7 +839,7 @@ app.post("/templates/:id/versions", async (request) => {
     html: input.html,
     text: input.text,
     variables: input.variables,
-    source: input.source,
+    source: templateVersionSource(template, input.source),
     track: input.track,
   }));
   return presentTemplate(row);
