@@ -230,13 +230,16 @@ export async function importBatch(
     id: contact.id, contact,
     created: insertedEmails.has(contact.email) || Boolean(before.get(contact.email)?.deleted_at),
     segments_added: segments.filter((row) => row.contact_id === contact.id).map((row) => row.segment_id),
-    topics_subscribed: topics.filter((row) => row.contact_id === contact.id).map((row) => row.topic_id),
+    topics_subscribed: topics.filter((row) => row.contact_id === contact.id && !row.before && row.after).map((row) => row.topic_id),
   }));
   for (const row of rows) {
     const requestId = job.id ?? id("req");
     await recordContactChanges(client, job.tenant_id, requestId, row.id, contactDiff(before.get(row.contact.email) ?? null, row.contact));
     for (const segmentId of row.segments_added) await recordContactChanges(client, job.tenant_id, requestId, row.id, [{ field: `segments.${segmentId}`, from: false, to: true }]);
-    for (const topicId of row.topics_subscribed) await recordContactChanges(client, job.tenant_id, requestId, row.id, [{ field: `topics.${topicId}`, from: false, to: true }]);
+    await recordContactChanges(client, job.tenant_id, requestId, row.id,
+      topics.filter((topic) => topic.contact_id === row.id).map((topic) => ({
+        field: `topics.${topic.topic_id}`, from: topic.before, to: topic.after,
+      })));
     if (!job.trigger_automations) continue;
     const options = { contact: row.contact, priority: "bulk" as const };
     if (row.created) await fireContactTrigger(client, job.tenant_id, requestId, { ...options, triggerType: "contact_created", key: "@contact.created" });
@@ -274,7 +277,7 @@ async function joinTopics(client: Queryable, job: Pick<ImportRow, "tenant_id" | 
       status: topic.subscription === "opt_out" || topic.subscription === "unsubscribed" ? "unsubscribed" : "subscribed",
     })),
   );
-  if (rows.length === 0) return [] as Array<{ contact_id: string; topic_id: string }>;
+  if (rows.length === 0) return [] as Array<{ contact_id: string; topic_id: string; before: boolean; after: boolean }>;
   const prior = await client.query<{ contact_id: string; topic_id: string; receiving: boolean; eligible: boolean }>(
     `select c.id as contact_id, t.id as topic_id,
        (c.unsubscribed_at is null and coalesce(s.status, t.default_status) = 'subscribed') as receiving,
@@ -303,8 +306,13 @@ async function joinTopics(client: Queryable, job: Pick<ImportRow, "tenant_id" | 
       rows.map((row) => row.status),
     ],
   );
-  return result.rows.filter((row) => row.status === "subscribed" && receiving.get(`${row.contact_id}:${row.topic_id}`) === false)
-    .filter((row) => eligible.has(row.contact_id));
+  return result.rows.flatMap((row) => {
+    const before = receiving.get(`${row.contact_id}:${row.topic_id}`);
+    const after = eligible.has(row.contact_id) && row.status === "subscribed";
+    return before === undefined || before === after ? [] : [{
+      contact_id: row.contact_id, topic_id: row.topic_id, before, after,
+    }];
+  });
 }
 
 // `offset` is how many data rows are committed, written with the batch that committed them.

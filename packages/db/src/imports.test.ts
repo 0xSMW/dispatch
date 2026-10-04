@@ -205,6 +205,63 @@ describe("contact import queries", () => {
     expect(db.queries.find((query) => query.sql.includes("insert into topic_subscriptions"))?.sql).toContain(
       "where not (topic_subscriptions.status = 'unsubscribed' and excluded.status = 'subscribed')",
     );
+    expect(db.queries.some((query) => query.sql.includes("insert into contact_changes"))).toBe(false);
+  });
+
+  it.each([
+    { trigger_automations: false, automations: false },
+    { trigger_automations: false, automations: true },
+    { trigger_automations: true, automations: false },
+    { trigger_automations: true, automations: true },
+  ])("records effective opt-outs without subscription entry with %j", async ({ trigger_automations, automations }) => {
+    const before = stored("a@x.com");
+    const db = batchClient({
+      prior: [before], updated: [before], automations,
+      receiving: [{ contact_id: before.id, topic_id: "topic_1", receiving: true, eligible: true }],
+      topics: [{ contact_id: before.id, topic_id: "topic_1", status: "unsubscribed" }],
+    });
+    const result = await importBatch(db, { ...job, trigger_automations,
+      topics: [{ id: "topic_1", subscription: "opt_out" }] }, [contact(before.email)]);
+    expect(result).toEqual({ created: 0, updated: 1, skipped: 0, ids: [before.id], rows: [{
+      id: before.id, contact: before, created: false, segments_added: [], topics_subscribed: [],
+    }] });
+    expect(db.queries.filter((query) => query.sql.includes("insert into contact_changes"))
+      .map((query) => query.params.slice(1))).toEqual([
+      [job.tenant_id, before.id, "topics.topic_1", "true", "false", job.id],
+    ]);
+    expect(db.queries.some((query) => query.sql.includes("from automations"))).toBe(false);
+    expect(db.queries.some((query) => query.sql.includes("insert into custom_events"))).toBe(false);
+    expect(db.queries.some((query) => query.sql.includes("insert into automation_runs"))).toBe(false);
+  });
+
+  it.each([false, true])("uses returned effective preferences, not requested status, for history with entry %s", async (trigger_automations) => {
+    const before = stored("a@x.com");
+    const db = batchClient({
+      prior: [before], updated: [before], automations: true,
+      receiving: [{ contact_id: before.id, topic_id: "topic_1", receiving: true, eligible: true }],
+      topics: [{ contact_id: before.id, topic_id: "topic_1", status: "subscribed" }],
+    });
+    const result = await importBatch(db, { ...job, trigger_automations,
+      topics: [{ id: "topic_1", subscription: "opt_out" }] }, [contact(before.email)]);
+    expect(result.rows[0].topics_subscribed).toEqual([]);
+    expect(db.queries.some((query) => query.sql.includes("insert into contact_changes"))).toBe(false);
+    expect(db.queries.some((query) => query.sql.includes("from automations"))).toBe(false);
+  });
+
+  it("keeps the last duplicate topic choice and omits unchanged returned opt-outs", async () => {
+    const before = stored("a@x.com");
+    const db = batchClient({
+      prior: [before], updated: [before], automations: true,
+      receiving: [{ contact_id: before.id, topic_id: "topic_1", receiving: false, eligible: true }],
+      topics: [{ contact_id: before.id, topic_id: "topic_1", status: "unsubscribed" }],
+    });
+    const result = await importBatch(db, { ...job, trigger_automations: true,
+      topics: [{ id: "topic_1", subscription: "opt_in" }, { id: "topic_1", subscription: "opt_out" }] }, [contact(before.email)]);
+    expect(result.rows[0].topics_subscribed).toEqual([]);
+    const preference = db.queries.find((query) => query.sql.includes("insert into topic_subscriptions"))!;
+    expect(preference.params.slice(2)).toEqual([["topic_1"], [before.id], ["unsubscribed"]]);
+    expect(db.queries.some((query) => query.sql.includes("insert into contact_changes"))).toBe(false);
+    expect(db.queries.some((query) => query.sql.includes("from automations"))).toBe(false);
   });
 
   it.each([

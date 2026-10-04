@@ -1449,6 +1449,220 @@ describe.skipIf(!live)("accept", () => {
     expect(await flowRuns(create)).toHaveLength(5);
   });
 
+  it.each([
+    { trigger: false, matching: false },
+    { trigger: true, matching: false },
+    { trigger: false, matching: true },
+    { trigger: true, matching: true },
+  ])("import topic history records one optout with stored trigger=$trigger and matching flows=$matching", async ({ trigger, matching }) => {
+    const topic = await post(fullKey, "/topics", { name: "Import history", key: "import_history", default_subscription: "opt_in" });
+    const contact = await post(fullKey, "/contacts", { email: "import-history@example.com" });
+    const tenant = (await db.query("select tenant_id from contacts where id=$1", [contact.json.id])).rows[0].tenant_id;
+    const flows = matching ? [
+      await contactFlow({ type: "topic_subscribed", topic_id: topic.json.id }),
+      await contactFlow({ type: "contact_updated" }),
+    ] : [];
+    const queued = await createImport(db, { id: id("import"), tenantId: tenant, storageKey: id("file"), columnMap: {},
+      onConflict: "upsert", segments: [], topics: [{ id: topic.json.id, subscription: "opt_out" }], triggerAutomations: trigger });
+    const job = (await claimImports(db, 1))[0]!;
+    expect(job.id).toBe(queued!.id);
+    expect(job.trigger_automations).toBe(trigger);
+    const rows = [{ email: contact.json.email, first_name: "Imported", last_name: null, properties: {}, unsubscribed: false }];
+    const result = await tx(db, (client) => importBatch(client, job, rows));
+    expect(result).toMatchObject({ created: 0, updated: 1, skipped: 0 });
+    expect(result.rows[0]!.topics_subscribed).toEqual([]);
+    expect((await db.query("select status from topic_subscriptions where contact_id=$1 and topic_id=$2", [contact.json.id, topic.json.id])).rows).toEqual([{ status: "unsubscribed" }]);
+    const history = () => db.query(
+      "select contact_id,field,from_value,to_value,request_id from contact_changes where contact_id=$1 and field=$2",
+      [contact.json.id, `topics.${topic.json.id}`],
+    );
+    const expected = [{ contact_id: contact.json.id, field: `topics.${topic.json.id}`, from_value: true, to_value: false, request_id: job.id }];
+    expect((await history()).rows).toEqual(expected);
+    const repeat = await tx(db, (client) => importBatch(client, job, rows));
+    expect(repeat.rows[0]!.topics_subscribed).toEqual([]);
+    expect((await history()).rows).toEqual(expected);
+    for (const flow of flows) expect(await flowRuns(flow)).toHaveLength(0);
+    expect((await db.query("select id from custom_events where request_id=$1", [job.id])).rows).toHaveLength(0);
+    expect((await db.query("select id from automation_runs")).rows).toHaveLength(0);
+  });
+
+  it.each([false, true])("import topic history keeps effective defaults consent and last duplicate choice with stored trigger=%s", async (trigger) => {
+    const on = await post(fullKey, "/topics", { name: "History default on", key: "history_on", default_subscription: "opt_in" });
+    const off = await post(fullKey, "/topics", { name: "History default off", key: "history_off", default_subscription: "opt_out" });
+    const positive = await post(fullKey, "/topics", { name: "History positive", key: "history_positive", default_subscription: "opt_out" });
+    const contact = await post(fullKey, "/contacts", { email: "history-defaults@example.com" });
+    const explicit = await post(fullKey, "/contacts", { email: "history-explicit@example.com", topics: [{ id: positive.json.id, subscription: "opt_out" }] });
+    const global = await post(fullKey, "/contacts", { email: "history-global@example.com", unsubscribed: true });
+    const tenant = (await db.query("select tenant_id from contacts where id=$1", [contact.json.id])).rows[0].tenant_id;
+    const flows = [
+      await contactFlow({ type: "topic_subscribed", topic_id: on.json.id }),
+      await contactFlow({ type: "topic_subscribed", topic_id: off.json.id }),
+      await contactFlow({ type: "topic_subscribed", topic_id: positive.json.id }),
+      await contactFlow({ type: "contact_updated" }),
+    ];
+    await createImport(db, { id: id("import"), tenantId: tenant, storageKey: id("file"), columnMap: {}, onConflict: "upsert", segments: [],
+      topics: [
+        { id: on.json.id, subscription: "opt_in" },
+        { id: off.json.id, subscription: "opt_in" }, { id: off.json.id, subscription: "opt_out" },
+        { id: positive.json.id, subscription: "opt_out" }, { id: positive.json.id, subscription: "opt_in" },
+      ], triggerAutomations: trigger });
+    const job = (await claimImports(db, 1))[0]!;
+    expect(job.trigger_automations).toBe(trigger);
+    const rows = [contact, explicit, global].map((row) => ({
+      email: row.json.email, first_name: null, last_name: null, properties: {}, unsubscribed: false,
+    }));
+    const result = await tx(db, (client) => importBatch(client, job, rows));
+    expect(result).toMatchObject({ created: 0, updated: 3, skipped: 0 });
+    expect(result.rows.find((row) => row.id === contact.json.id)!.topics_subscribed).toEqual([positive.json.id]);
+    expect(result.rows.find((row) => row.id === explicit.json.id)!.topics_subscribed).toEqual([]);
+    expect(result.rows.find((row) => row.id === global.json.id)!.topics_subscribed).toEqual([]);
+    expect(result.rows.find((row) => row.id === global.json.id)!.contact.unsubscribed_at).not.toBeNull();
+    const history = () => db.query(
+      "select contact_id,field,from_value,to_value,request_id from contact_changes where request_id=$1 and field like 'topics.%'", [job.id],
+    );
+    const expected = [{ contact_id: contact.json.id, field: `topics.${positive.json.id}`, from_value: false, to_value: true, request_id: job.id }];
+    expect((await history()).rows).toEqual(expected);
+    expect((await db.query("select status from topic_subscriptions where contact_id=$1 and topic_id=$2", [explicit.json.id, positive.json.id])).rows).toEqual([{ status: "unsubscribed" }]);
+    const repeat = await tx(db, (client) => importBatch(client, job, rows));
+    expect(repeat.rows.every((row) => row.topics_subscribed.length === 0)).toBe(true);
+    expect((await history()).rows).toEqual(expected);
+    for (const [index, flow] of flows.entries()) expect(await flowRuns(flow)).toHaveLength(index === 2 && trigger ? 1 : 0);
+    expect((await db.query("select distinct priority from automation_runs")).rows).toEqual(trigger ? [{ priority: "bulk" }] : []);
+  });
+
+  it.each([false, true])("import topic history serializes identical existing-contact optouts with stored trigger=%s", async (trigger) => {
+    const topic = await post(fullKey, "/topics", { name: "Concurrent history", key: "concurrent_history", default_subscription: "opt_in" });
+    const contact = await post(fullKey, "/contacts", { email: "history-race@example.com" });
+    const tenant = (await db.query("select tenant_id from contacts where id=$1", [contact.json.id])).rows[0].tenant_id;
+    const flow = await contactFlow({ type: "topic_subscribed", topic_id: topic.json.id });
+    for (let index = 0; index < 2; index++) await createImport(db, { id: id("import"), tenantId: tenant, storageKey: id("file"),
+      columnMap: {}, onConflict: "upsert", segments: [], topics: [{ id: topic.json.id, subscription: "opt_out" }], triggerAutomations: trigger });
+    const jobs = await claimImports(db, 2);
+    expect(jobs).toHaveLength(2);
+    expect(jobs.every((job) => job.trigger_automations === trigger)).toBe(true);
+    const rows = [{ email: contact.json.email, first_name: null, last_name: null, properties: {}, unsubscribed: false }];
+    // Hold the first transaction's contact lock until Postgres observes the second waiting.
+    let release = () => {};
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let ready = () => {};
+    const locked = new Promise<void>((resolve) => { ready = resolve; });
+    let firstPid = 0;
+    const first = tx(db, async (client) => {
+      firstPid = (await client.query("select pg_backend_pid() as pid")).rows[0].pid;
+      const result = await importBatch(client, jobs[0]!, rows);
+      ready();
+      await held;
+      return result;
+    });
+    // If the first import fails, do not leave the barrier waiting forever.
+    void first.catch(() => ready());
+    await locked;
+    let secondPid = 0;
+    const second = tx(db, async (client) => {
+      secondPid = (await client.query("select pg_backend_pid() as pid")).rows[0].pid;
+      return importBatch(client, jobs[1]!, rows);
+    });
+    void second.catch(() => {});
+    try {
+      let blocked = false;
+      for (let attempt = 0; attempt < 100 && !blocked; attempt++) {
+        if (secondPid) blocked = (await db.query("select $1::int = any(pg_blocking_pids($2::int)) as blocked", [firstPid, secondPid])).rows[0].blocked;
+        if (!blocked) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(blocked).toBe(true);
+    } finally {
+      release();
+      await Promise.allSettled([first, second]);
+    }
+    const results = await Promise.all([first, second]);
+    expect(results.every((result) => result.created === 0 && result.updated === 1 && result.rows[0]!.topics_subscribed.length === 0)).toBe(true);
+    expect((await db.query(
+      "select from_value,to_value,request_id from contact_changes where contact_id=$1 and field=$2",
+      [contact.json.id, `topics.${topic.json.id}`],
+    )).rows).toEqual([{ from_value: true, to_value: false, request_id: jobs[0]!.id }]);
+    expect((await db.query("select status from topic_subscriptions where contact_id=$1 and topic_id=$2", [contact.json.id, topic.json.id])).rows).toEqual([{ status: "unsubscribed" }]);
+    expect(await flowRuns(flow)).toHaveLength(0);
+  });
+
+  it("import topic history skips existing contacts and retains deleted-contact revival in skip mode", async () => {
+    const topic = await post(fullKey, "/topics", { name: "Skip history", key: "skip_history", default_subscription: "opt_in" });
+    const existing = await post(fullKey, "/contacts", { email: "history-skip@example.com", first_name: "Preserved" });
+    const deleted = await post(fullKey, "/contacts", { email: "history-revive@example.com", properties: { old: true } });
+    await call(fullKey, "DELETE", `/contacts/${deleted.json.id}`);
+    const tenant = (await db.query("select tenant_id from contacts where id=$1", [existing.json.id])).rows[0].tenant_id;
+    const flow = await contactFlow({ type: "topic_subscribed", topic_id: topic.json.id });
+    await createImport(db, { id: id("import"), tenantId: tenant, storageKey: id("file"), columnMap: {}, onConflict: "skip",
+      segments: [], topics: [{ id: topic.json.id, subscription: "opt_out" }], triggerAutomations: true });
+    const job = (await claimImports(db, 1))[0]!;
+    const rows = [existing, deleted].map((contact) => ({
+      email: contact.json.email, first_name: "Revived", last_name: null, properties: { fresh: true }, unsubscribed: false,
+    }));
+    const result = await tx(db, (client) => importBatch(client, job, rows));
+    expect(result).toMatchObject({ created: 1, updated: 0, skipped: 1, ids: [deleted.json.id] });
+    expect(result.rows[0]).toMatchObject({ created: true, topics_subscribed: [], contact: { first_name: "Revived", properties: { fresh: true } } });
+    expect((await db.query("select first_name from contacts where id=$1", [existing.json.id])).rows).toEqual([{ first_name: "Preserved" }]);
+    expect((await db.query("select id from topic_subscriptions where contact_id=$1 and topic_id=$2", [existing.json.id, topic.json.id])).rows).toHaveLength(0);
+    expect((await db.query(
+      "select contact_id,from_value,to_value from contact_changes where request_id=$1 and field=$2", [job.id, `topics.${topic.json.id}`],
+    )).rows).toEqual([{ contact_id: deleted.json.id, from_value: true, to_value: false }]);
+    const repeat = await tx(db, (client) => importBatch(client, job, rows));
+    expect(repeat).toMatchObject({ created: 0, updated: 0, skipped: 2, rows: [] });
+    expect((await db.query("select id from contact_changes where request_id=$1 and field=$2", [job.id, `topics.${topic.json.id}`])).rows).toHaveLength(1);
+    expect(await flowRuns(flow)).toHaveLength(0);
+  });
+
+  it("import topic history uses SQL returned status instead of a requested optout", async () => {
+    const topic = await post(fullKey, "/topics", { name: "Returned history", key: "returned_history", default_subscription: "opt_in" });
+    const contact = await post(fullKey, "/contacts", { email: "history-returning@example.com" });
+    const tenant = (await db.query("select tenant_id from contacts where id=$1", [contact.json.id])).rows[0].tenant_id;
+    const flow = await contactFlow({ type: "topic_subscribed", topic_id: topic.json.id });
+    const job = { id: id("import"), tenant_id: tenant, on_conflict: "upsert" as const, segments: [],
+      topics: [{ id: topic.json.id, subscription: "opt_out" }], trigger_automations: true };
+    const rows = [{ email: contact.json.email, first_name: null, last_name: null, properties: {}, unsubscribed: false }];
+    await db.query(`create function preserve_import_preference() returns trigger language plpgsql as $$
+      begin if new.contact_id = TG_ARGV[0] and new.topic_id = TG_ARGV[1] then new.status := 'subscribed'; end if; return new; end $$;
+      create trigger preserve_import_preference before insert or update on topic_subscriptions
+      for each row execute function preserve_import_preference('${contact.json.id}', '${topic.json.id}')`);
+    try {
+      const result = await tx(db, (client) => importBatch(client, job, rows));
+      expect(result.rows[0]!.topics_subscribed).toEqual([]);
+      expect((await db.query("select status from topic_subscriptions where contact_id=$1 and topic_id=$2", [contact.json.id, topic.json.id])).rows).toEqual([{ status: "subscribed" }]);
+      expect((await db.query("select id from contact_changes where request_id=$1 and field like 'topics.%'", [job.id])).rows).toHaveLength(0);
+      expect(await flowRuns(flow)).toHaveLength(0);
+    } finally {
+      await db.query("drop trigger preserve_import_preference on topic_subscriptions; drop function preserve_import_preference()");
+    }
+    await tx(db, (client) => importBatch(client, job, rows));
+    expect((await db.query("select from_value,to_value from contact_changes where request_id=$1 and field=$2", [job.id, `topics.${topic.json.id}`])).rows).toEqual([{ from_value: true, to_value: false }]);
+  });
+
+  it("import topic history rolls back a failed optout and records exactly one transition on retry", async () => {
+    const topic = await post(fullKey, "/topics", { name: "Rollback history", key: "rollback_history", default_subscription: "opt_in" });
+    const contact = await post(fullKey, "/contacts", { email: "history-rollback@example.com" });
+    const tenant = (await db.query("select tenant_id from contacts where id=$1", [contact.json.id])).rows[0].tenant_id;
+    await createImport(db, { id: id("import"), tenantId: tenant, storageKey: id("file"), columnMap: {}, onConflict: "upsert",
+      segments: [], topics: [{ id: topic.json.id, subscription: "opt_out" }], triggerAutomations: false });
+    const job = (await claimImports(db, 1))[0]!;
+    const rows = [{ email: contact.json.email, first_name: "Rolled back", last_name: null, properties: {}, unsubscribed: false }];
+    await db.query(`create function reject_import_optout_history() returns trigger language plpgsql as $$
+      begin if new.request_id = TG_ARGV[0] and new.field = TG_ARGV[1] then raise exception 'synthetic import optout history failure'; end if; return new; end $$;
+      create trigger reject_import_optout_history after insert on contact_changes
+      for each row execute function reject_import_optout_history('${job.id}', 'topics.${topic.json.id}')`);
+    try {
+      await expect(tx(db, (client) => importBatch(client, job, rows))).rejects.toThrow("synthetic import optout history failure");
+      expect((await db.query("select first_name from contacts where id=$1", [contact.json.id])).rows).toEqual([{ first_name: null }]);
+      expect((await db.query("select id from topic_subscriptions where contact_id=$1 and topic_id=$2", [contact.json.id, topic.json.id])).rows).toHaveLength(0);
+      expect((await db.query("select id from contact_changes where request_id=$1", [job.id])).rows).toHaveLength(0);
+    } finally {
+      await db.query("drop trigger reject_import_optout_history on contact_changes; drop function reject_import_optout_history()");
+    }
+    await tx(db, (client) => importBatch(client, job, rows));
+    await tx(db, (client) => importBatch(client, job, rows));
+    expect((await db.query("select from_value,to_value,request_id from contact_changes where contact_id=$1 and field=$2", [contact.json.id, `topics.${topic.json.id}`])).rows).toEqual([
+      { from_value: true, to_value: false, request_id: job.id },
+    ]);
+  });
+
   it("import triggers commit with progress, resume without duplicates, and roll back on trigger fanout failure", async () => {
     const create = await contactFlow({ type: "contact_created" });
     const tenant = (await db.query<{ tenant_id: string }>("select tenant_id from automations limit 1")).rows[0]!.tenant_id;
