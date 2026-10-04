@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "./index.js";
+import { automationSchema, renderTemplate } from "@dispatchmail/core";
 
 const ingestEmail = vi.hoisted(() => vi.fn());
 const emit = vi.hoisted(() => vi.fn());
@@ -720,6 +721,46 @@ describe("typed automation context", () => {
     expect(event.received_at).toBe("2026-10-04T00:00:00Z");
     const contact = Object.assign(Object.create({ hidden: "secret" }), { activated: false, seats: 3 });
     expect(mappedVariables({ PLAN: "event.plan", ACTIVE: "contact.activated", SEATS: "contact.seats", SECRET: "contact.hidden", MISSING: "event.absent" }, { event, contact })).toEqual({ PLAN: "pro", ACTIVE: false, SEATS: 3 });
+  });
+  it("reads hyphenated own fields without traversing inherited roots or nested fields", () => {
+    const event = Object.assign(Object.create({ "hidden-plan": "secret" }), {
+      "plan-id": "pro",
+      "customer-data": Object.assign(Object.create({ "plan-id": "inherited", "hidden-id": "secret" }), { "plan-id": "team" }),
+    });
+    const mapping = {
+      PLAN: "event.plan-id", NESTED: "event.customer-data.plan-id",
+      HIDDEN: "event.hidden-plan", NESTED_HIDDEN: "event.customer-data.hidden-id",
+      PROTOTYPE: "event.__proto__.hidden-plan", MISSING: "event.absent.plan-id",
+    };
+    expect(mappedVariables(mapping, { event })).toEqual({ PLAN: "pro", NESTED: "team" });
+    expect(mappedVariables(mapping, Object.create({ event }))).toEqual({});
+    expect(mappedVariables({ PLAN: "event.customer-data.plan-id" }, {
+      event: { "customer-data": Object.create({ "plan-id": "inherited" }) },
+    })).toEqual({});
+    expect(mappedVariables({ PLAN: "event.customer-data.plan-id" }, {
+      event: Object.create({ "customer-data": { "plan-id": "inherited" } }),
+    })).toEqual({});
+  });
+  it("executes a validated hyphenated mapping into rendered send variables", async () => {
+    const graph = automationSchema.parse({
+      name: "Plan changed",
+      steps: [
+        { key: "start", type: "trigger", config: { event_name: "billing.changed" } },
+        { key: "send", type: "send_email", config: { template: { id: "tmpl_1", variables: { PLAN: "literal", NESTED_PLAN: "literal" } }, variable_mapping: { PLAN: "event.plan-id", NESTED_PLAN: "event.customer-data.plan-id" } } },
+      ],
+      connections: [{ from: "start", to: "send" }],
+    });
+    const run = fake({ ...graph, data: { "plan-id": "pro", "customer-data": { "plan-id": "team" } } });
+    ingestEmail.mockResolvedValue({ email: { id: "email_1", status: "queued" } });
+    await executeAutomationRun(run.db, "tenant_1", "run_1");
+    expect(run.state.run.state).toBe("done");
+    expect(ingestEmail).toHaveBeenCalledOnce();
+    const variables = ingestEmail.mock.calls[0]![1].variables;
+    expect(variables.PLAN).toBe("pro");
+    expect(variables.NESTED_PLAN).toBe("team");
+    expect(renderTemplate({ html: "<p>Plan: {{PLAN}} / {{NESTED_PLAN}}</p>", text: "Plan: {{PLAN}} / {{NESTED_PLAN}}" }, variables)).toMatchObject({
+      html: "<p>Plan: pro / team</p>", text: "Plan: pro / team",
+    });
   });
   it("routes against receiving topics and maps fresh recipient values", async () => {
     const run = fake({

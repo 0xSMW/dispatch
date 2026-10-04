@@ -49,7 +49,14 @@ function harness(handler: (sql: string, params: unknown[]) => { rows: unknown[] 
     (request as unknown as { auth: { tenant_id: string } }).auth = { tenant_id: "tenant_1" };
   });
   app.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) => {
-    reply.status(error.name === "ZodError" ? 400 : (error.statusCode ?? 500)).send({ name: error.name, message: error.message });
+    if (error.name === "ZodError") {
+      const issues = (error as Error & { issues: Array<{ path: Array<string | number>; message: string }> }).issues;
+      return reply.status(400).send({
+        name: "validation_error", statusCode: 400, message: issues[0]?.message ?? "Invalid request",
+        issues: issues.map((issue) => ({ path: issue.path.join("."), message: issue.message })),
+      });
+    }
+    reply.status(error.statusCode ?? 500).send({ name: error.name, message: error.message });
   });
   registerAutomations(app, { db, paging: () => ({}) });
   return { app, query, connect, release };
@@ -342,6 +349,78 @@ describe("automation routes", () => {
       payload: { name: "Bad", steps: [{ key: "start", type: "trigger", config: { event_name: "e" } }], connections: [{ from: "start", to: "gone" }] },
     });
     expect(response.statusCode).toBe(400);
+  });
+
+  it("rejects missing-trigger creation before opening a transaction or writing", async () => {
+    const { app, query, connect } = harness(() => ({ rows: [] }));
+    const response = await app.inject({
+      method: "POST", url: "/automations",
+      payload: { name: "Missing trigger", steps: [{ key: "later", type: "delay", config: { duration: "1 hour" } }], connections: [] },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      name: "validation_error", message: "An automation needs exactly one trigger step",
+      issues: [{ path: "connections", message: "An automation needs exactly one trigger step" }],
+    });
+    expect(connect).not.toHaveBeenCalled();
+    expect(query).not.toHaveBeenCalled();
+    await app.close();
+  });
+
+  it("rolls back missing-trigger replacement without automation, version, or run writes", async () => {
+    const current = stored({ enabled: true, paused_at: "2026-10-04T00:00:00Z", version: 7 });
+    const before = structuredClone(current);
+    const { app, query, release } = harness((sql) => ({ rows: sql.includes("from automations") ? [current] : [] }));
+    const response = await app.inject({
+      method: "PATCH", url: "/automations/automation_1",
+      payload: { steps: [{ key: "later", type: "delay", config: { duration: "1 hour" } }], connections: [] },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      name: "validation_error", message: "An automation needs exactly one trigger step",
+      issues: [{ path: "connections", message: "An automation needs exactly one trigger step" }],
+    });
+    expect(query.mock.calls.map(([sql]) => sql)).toEqual([
+      "begin", expect.stringContaining("from automations"), "rollback",
+    ]);
+    expect(query.mock.calls.some(([sql]) => /^(insert|update|delete)\b/.test(sql.trim()))).toBe(false);
+    expect(current).toEqual(before);
+    expect(release).toHaveBeenCalledOnce();
+    await app.close();
+  });
+
+  it("saves and reloads a hyphenated send mapping unchanged", async () => {
+    let current = stored({ enabled: false });
+    const { app, query } = harness((sql, params) => {
+      if (sql.includes("insert into automations")) {
+        current = stored({
+          id: String(params[0]), trigger: String(params[3]), enabled: params[6] as boolean,
+          steps: JSON.parse(params[4] as string), connections: JSON.parse(params[5] as string),
+          trigger_type: params[7] as AutomationRow["trigger_type"], reentry: params[8] as AutomationRow["reentry"],
+        });
+        return { rows: [current] };
+      }
+      return { rows: sql.includes("from automations") ? [current] : [] };
+    });
+    const response = await app.inject({
+      method: "POST", url: "/automations",
+      payload: {
+        name: "Plan changed",
+        steps: [
+          { key: "start", type: "trigger", config: { event_name: "billing.changed" } },
+          { key: "send", type: "send_email", config: { template: "tmpl_1", variable_mapping: { PLAN: "event.plan-id" } } },
+        ],
+        connections: [{ from: "start", to: "send" }],
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().steps[1].config.variable_mapping).toEqual({ PLAN: "event.plan-id" });
+    const insert = query.mock.calls.find(([sql]) => sql.includes("insert into automations"))!;
+    expect(JSON.parse(insert[1]![4] as string)[1].config.variable_mapping).toEqual({ PLAN: "event.plan-id" });
+    const reloaded = await app.inject({ method: "GET", url: `/automations/${response.json().id}` });
+    expect(reloaded.statusCode).toBe(200);
+    expect(reloaded.json().steps[1].config.variable_mapping).toEqual({ PLAN: "event.plan-id" });
+    await app.close();
   });
 
   it("creates, patches, and duplicates a typed trigger without losing its reentry policy", async () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evaluate, isIsoDate, operatorsForType, propertySchema, propertyUpdateSchema, ruleSchema, stepConfigs, type Operator } from "./index.js";
+import { evaluate, eventSchema, isIsoDate, operatorsForType, propertySchema, propertyUpdateSchema, ruleSchema, stepConfigs, type Operator } from "./index.js";
 
 describe("typed properties and shared rules", () => {
   it.each([
@@ -64,5 +64,24 @@ describe("typed properties and shared rules", () => {
     const config = { template: "tmpl_1", variable_mapping: { NAME: "contact.first_name", PLAN: "event.plan" } };
     expect(stepConfigs.send_email.parse(config).variable_mapping).toEqual(config.variable_mapping);
     expect(stepConfigs.send_email.safeParse({ ...config, variable_mapping: { NAME: "brand.secret" } }).success).toBe(false);
+  });
+  it("accepts declared hyphenated fields and nested dotted mapping segments unchanged", () => {
+    expect(eventSchema.parse({ name: "billing.changed", schema: { "plan-id": "string" } }).schema).toEqual({ "plan-id": "string" });
+    const variable_mapping = {
+      PLAN: "event.plan-id",
+      DETAILS: "event.customer-data.plan-id",
+      CONTACT_PLAN: "contact.plan-id",
+      NAME: "contact.first_name",
+      RECEIVED: "event.received_at",
+    };
+    expect(stepConfigs.send_email.parse({ template: "tmpl_1", variable_mapping }).variable_mapping).toEqual(variable_mapping);
+  });
+  it.each([
+    "brand.plan-id", "events.plan-id", "Event.plan-id", "event", "contact",
+    "event.", "event..plan-id", "event.plan-id.", "event.plan-id..name",
+    ".event.plan-id", "event. plan-id", "event.plan id", "event.plan-id\n", "contact.\tname",
+    "event[plan-id]", "event.plan[id]", "event.plan/id",
+  ])("rejects invalid mapping path %j", (path) => {
+    expect(stepConfigs.send_email.safeParse({ template: "tmpl_1", variable_mapping: { PLAN: path } }).success).toBe(false);
   });
 });

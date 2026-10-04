@@ -1028,7 +1028,7 @@ export const stepConfigs = {
       reply_to: addresses.optional(),
       template: templateRef,
       variables: z.record(z.unknown()).optional(),
-      variable_mapping: z.record(z.string().regex(/^(event|contact)\.[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*$/, "Use an event or contact field")).optional()
+      variable_mapping: z.record(z.string().regex(/^(event|contact)\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/, "Use an event or contact field")).optional()
     })
     .superRefine((value, ctx) => {
       if (value.kind === "transactional" && value.topic_id) {
@@ -1241,7 +1241,9 @@ const graphFields = {
 function toGraph(input: { trigger?: string; steps: Array<Record<string, unknown>>; connections?: unknown[] }, ctx: z.RefinementCtx) {
   try {
     const graph = normalizeAutomation(input);
-    for (const message of automationIssues(graph.steps, graph.connections)) ctx.addIssue({ code: "custom", message, path: ["connections"] });
+    const issues = automationIssues(graph.steps, graph.connections);
+    for (const message of issues) ctx.addIssue({ code: "custom", message, path: ["connections"] });
+    if (issues.length) return z.NEVER;
     const trigger_config = graph.steps.find((step) => step.type === "trigger")!.config as TriggerConfig;
     return { ...graph, trigger: triggerKey(trigger_config), trigger_type: trigger_config.type, trigger_config };
   } catch (error) {
@@ -1259,6 +1261,7 @@ export const automationSchema = z
   .object({ name: z.string().min(1).max(120), status: automationStatus.optional(), enabled: z.boolean().optional(), reentry: z.enum(["once", "every_time"]).optional(), ...graphFields })
   .transform(({ name, status, enabled, reentry, ...graph }, ctx) => {
     const parsed = toGraph(graph, ctx);
+    if (parsed === z.NEVER) return z.NEVER;
     return { name, enabled: status ? status === "enabled" : (enabled ?? false), ...parsed,
       reentry: reentry ?? (parsed.trigger_type === "event" ? "every_time" : "once") };
   });
