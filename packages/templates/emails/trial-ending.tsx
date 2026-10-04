@@ -58,6 +58,9 @@ TrialEnding.PreviewProps = {
 } satisfies Props;
 TrialEnding.Subject = "Your {{{PRODUCT_NAME}}} trial ends on {{{TRIAL_END_DATE}}}";
 TrialEnding.Category = "billing";
+TrialEnding.Kind = "transactional" as const;
+TrialEnding.Stage = "dunning" as const;
+TrialEnding.When = "Send shortly before a trial ends. Supply the trial end date and a link to choose a plan.";
 TrialEnding.Track = true;
 TrialEnding.Description = "Sent before a trial ends so the reader can choose a plan.";
 TrialEnding.Variables = [

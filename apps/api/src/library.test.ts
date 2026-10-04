@@ -51,7 +51,7 @@ describe("template library", () => {
 
   it("previews every template in the real library for a tenant with no brand set", async () => {
     const real = await loadLibrary();
-    expect(real.templates).toHaveLength(16);
+    expect(real.templates).toHaveLength(25);
     // What previewBrand() gives a new tenant: a name and nothing else.
     const brand = brandContext({}, { tenantName: "Acme", domain: "example.com", from: "support@example.com" });
     for (const entry of real.templates) {

@@ -71,6 +71,9 @@ Invitation.PreviewProps = {
 Invitation.Subject =
   "{{{INVITER_NAME}}} invited you to {{{#if ORG_NAME}}}{{{ORG_NAME}}}{{{/if}}}{{{#unless ORG_NAME}}}{{{PRODUCT_NAME}}}{{{/unless}}}";
 Invitation.Category = "authentication";
+Invitation.Kind = "transactional" as const;
+Invitation.Stage = "onboarding" as const;
+Invitation.When = "Send when someone invites a teammate to join. Supply the invitation link and any team details.";
 Invitation.Track = false;
 Invitation.Description = "Sent when a person invites someone else to a team.";
 Invitation.Variables = [

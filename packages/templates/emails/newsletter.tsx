@@ -86,6 +86,9 @@ Newsletter.PreviewProps = {
 // The subject of a newsletter is set on the send or the broadcast. This one is the default when none is given.
 Newsletter.Subject = "Latest from {{{PRODUCT_NAME}}}";
 Newsletter.Category = "marketing";
+Newsletter.Kind = "marketing" as const;
+Newsletter.Stage = null;
+Newsletter.When = "Send product notes to a subscribed marketing topic. Set the sections and review the subject before sending.";
 Newsletter.Track = true;
 Newsletter.Description = "Sent as a marketing note with sections, an address, and an unsubscribe link.";
 Newsletter.Variables = [

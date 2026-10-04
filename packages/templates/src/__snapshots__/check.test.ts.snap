@@ -1,5 +1,239 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
+exports[`sample renders > card-update-reminder matches its snapshot 1`] = `
+{
+  "subject": "Your Acme payment still needs attention",
+  "text": "
+
+Acme
+
+
+UPDATE YOUR PAYMENT METHOD
+
+We still could not collect $49.00 for your Acme subscription.
+
+
+
+Invoice INV-1042 needs attention.
+
+
+
+Review the payment details and update your payment method to resolve the balance.
+
+Update payment method https://example.com/billing/payment
+
+https://example.com/billing/payment
+
+Acme, Inc.
+
+
+
+Acme https://acme.example
+
+https://acme.example
+
+
+
+Contact support https://acme.example/support
+
+https://acme.example/support
+
+
+
+Support email support@acme.example
+
+
+
+Privacy policy https://acme.example/privacy
+
+https://acme.example/privacy
+
+
+
+You received this email because a subscription payment is still outstanding.
+
+© 2026 Acme, Inc.",
+}
+`;
+
+exports[`sample renders > come-back-offer matches its snapshot 1`] = `
+{
+  "subject": "A fresh start with Acme",
+  "text": "
+
+Acme
+
+
+A FRESH START
+
+Hi Ada, would you like to give Acme another try?
+
+Explore the current plans and find one that fits your next project.
+
+No pressure. You can review the options before you decide.
+
+
+
+See your options https://example.com/plans
+
+https://example.com/plans
+
+
+
+Acme, Inc.
+
+
+
+Acme https://acme.example
+
+https://acme.example
+
+
+
+Contact support https://acme.example/support
+
+https://acme.example/support
+
+
+
+Support email support@acme.example
+
+
+
+Privacy policy https://acme.example/privacy
+
+https://acme.example/privacy
+
+
+
+You received this email because you subscribed to product offers.
+
+1 Main Street, Springfield
+
+Unsubscribe https://acme.example/unsubscribe/token
+
+Manage preferences https://acme.example/unsubscribe/token
+
+https://acme.example/unsubscribe/token
+
+© 2026 Acme, Inc.",
+}
+`;
+
+exports[`sample renders > confirm-subscription matches its snapshot 1`] = `
+{
+  "subject": "Confirm your Acme subscription",
+  "text": "
+
+Acme
+
+
+CONFIRM YOUR SUBSCRIPTION
+
+Confirm that you want to receive emails from Acme. You are not subscribed until you confirm.
+
+Confirm subscription https://example.com/confirm/token
+
+https://example.com/confirm/token
+
+This link expires in 7 days.
+
+If you did not request this subscription, ignore this email. We will not subscribe you.
+
+Acme, Inc.
+
+
+
+Acme https://acme.example
+
+https://acme.example
+
+
+
+Contact support https://acme.example/support
+
+https://acme.example/support
+
+
+
+Support email support@acme.example
+
+
+
+Privacy policy https://acme.example/privacy
+
+https://acme.example/privacy
+
+
+
+You received this email because this address was submitted on a signup form.
+
+© 2026 Acme, Inc.",
+}
+`;
+
+exports[`sample renders > feature-tips matches its snapshot 1`] = `
+{
+  "subject": "A tip for your Acme account",
+  "text": "
+
+Acme
+
+
+A TIP FOR GETTING STARTED
+
+Hi Ada, here is a way to get more from Acme.
+
+Save a reusable template for a message you send often.
+
+
+
+Try it in your account https://example.com/templates
+
+https://example.com/templates
+
+
+
+Acme, Inc.
+
+
+
+Acme https://acme.example
+
+https://acme.example
+
+
+
+Contact support https://acme.example/support
+
+https://acme.example/support
+
+
+
+Support email support@acme.example
+
+
+
+Privacy policy https://acme.example/privacy
+
+https://acme.example/privacy
+
+
+
+You received this email because you signed up for product tips.
+
+1 Main Street, Springfield
+
+Unsubscribe https://acme.example/unsubscribe/token
+
+Manage preferences https://acme.example/unsubscribe/token
+
+https://acme.example/unsubscribe/token
+
+© 2026 Acme, Inc.",
+}
+`;
+
 exports[`sample renders > invitation matches its snapshot 1`] = `
 {
   "subject": "Ada Lovelace invited you to North team",
@@ -341,6 +575,68 @@ https://acme.example/privacy
 
 
 You received this email because you subscribed to notes from the product.
+
+1 Main Street, Springfield
+
+Unsubscribe https://acme.example/unsubscribe/token
+
+Manage preferences https://acme.example/unsubscribe/token
+
+https://acme.example/unsubscribe/token
+
+© 2026 Acme, Inc.",
+}
+`;
+
+exports[`sample renders > newsletter-welcome matches its snapshot 1`] = `
+{
+  "subject": "Welcome to the Acme newsletter",
+  "text": "
+
+Acme
+
+
+THANKS FOR SUBSCRIBING
+
+Hi Ada, welcome to the Acme newsletter.
+
+We will share product news and practical tips. You can change your preferences or unsubscribe below.
+
+
+
+Explore Acme https://example.com/start
+
+https://example.com/start
+
+
+
+Acme, Inc.
+
+
+
+Acme https://acme.example
+
+https://acme.example
+
+
+
+Contact support https://acme.example/support
+
+https://acme.example/support
+
+
+
+Support email support@acme.example
+
+
+
+Privacy policy https://acme.example/privacy
+
+https://acme.example/privacy
+
+
+
+You received this email because you subscribed to our product notes.
 
 1 Main Street, Springfield
 
@@ -836,6 +1132,68 @@ You received this email because a security setting on your account changed.
 }
 `;
 
+exports[`sample renders > setup-reminder matches its snapshot 1`] = `
+{
+  "subject": "Take the next step with Acme",
+  "text": "
+
+Acme
+
+
+READY FOR YOUR NEXT STEP?
+
+Hi Ada, a little time in Acme can help you get started.
+
+Open your account and finish the next setup step. If you get stuck, contact support and we can help.
+
+
+
+Continue setup https://example.com/setup
+
+https://example.com/setup
+
+
+
+Acme, Inc.
+
+
+
+Acme https://acme.example
+
+https://acme.example
+
+
+
+Contact support https://acme.example/support
+
+https://acme.example/support
+
+
+
+Support email support@acme.example
+
+
+
+Privacy policy https://acme.example/privacy
+
+https://acme.example/privacy
+
+
+
+You received this email because you signed up for tips on getting started.
+
+1 Main Street, Springfield
+
+Unsubscribe https://acme.example/unsubscribe/token
+
+Manage preferences https://acme.example/unsubscribe/token
+
+https://acme.example/unsubscribe/token
+
+© 2026 Acme, Inc.",
+}
+`;
+
 exports[`sample renders > shipping-update matches its snapshot 1`] = `
 {
   "subject": "Your order is on its way",
@@ -904,6 +1262,62 @@ You received this email because an order you placed has a shipping update.
 }
 `;
 
+exports[`sample renders > subscription-canceled matches its snapshot 1`] = `
+{
+  "subject": "Your Acme subscription was canceled",
+  "text": "
+
+Acme
+
+
+YOUR SUBSCRIPTION WAS CANCELED
+
+Your Acme subscription was canceled because payment was not completed.
+
+
+
+The outstanding invoice is INV-1042.
+
+
+
+Review your billing details if you would like to resolve the payment. Contact support if you need help with your account.
+
+Review billing https://example.com/billing/payment
+
+https://example.com/billing/payment
+
+Acme, Inc.
+
+
+
+Acme https://acme.example
+
+https://acme.example
+
+
+
+Contact support https://acme.example/support
+
+https://acme.example/support
+
+
+
+Support email support@acme.example
+
+
+
+Privacy policy https://acme.example/privacy
+
+https://acme.example/privacy
+
+
+
+You received this email because your subscription was canceled after an unpaid invoice.
+
+© 2026 Acme, Inc.",
+}
+`;
+
 exports[`sample renders > trial-ending matches its snapshot 1`] = `
 {
   "subject": "Your Acme trial ends on March 16, 2026",
@@ -966,6 +1380,68 @@ You received this email because your trial is close to its end.
 }
 `;
 
+exports[`sample renders > upgrade-invite matches its snapshot 1`] = `
+{
+  "subject": "Need more room in Acme?",
+  "text": "
+
+Acme
+
+
+ROOM FOR YOUR NEXT STEP
+
+Hi Ada, is your current Acme plan still a good fit?
+
+If you need more room, compare the available plans. Pick the one that fits your work, or stay on your current plan.
+
+
+
+Compare plans https://example.com/plans
+
+https://example.com/plans
+
+
+
+Acme, Inc.
+
+
+
+Acme https://acme.example
+
+https://acme.example
+
+
+
+Contact support https://acme.example/support
+
+https://acme.example/support
+
+
+
+Support email support@acme.example
+
+
+
+Privacy policy https://acme.example/privacy
+
+https://acme.example/privacy
+
+
+
+You received this email because you subscribed to product recommendations.
+
+1 Main Street, Springfield
+
+Unsubscribe https://acme.example/unsubscribe/token
+
+Manage preferences https://acme.example/unsubscribe/token
+
+https://acme.example/unsubscribe/token
+
+© 2026 Acme, Inc.",
+}
+`;
+
 exports[`sample renders > verify-email matches its snapshot 1`] = `
 {
   "subject": "Confirm your email for Acme",
@@ -1021,6 +1497,68 @@ https://acme.example/privacy
 
 
 You received this email because an address needed to be confirmed for your account.
+
+© 2026 Acme, Inc.",
+}
+`;
+
+exports[`sample renders > we-miss-you matches its snapshot 1`] = `
+{
+  "subject": "Pick things up in Acme",
+  "text": "
+
+Acme
+
+
+WANT TO PICK THINGS UP?
+
+Hi Ada, it has been a while since you used Acme.
+
+If now is a good time, open your account and take a look. Tell us if something got in the way and we can help.
+
+
+
+Return to Acme https://example.com/account
+
+https://example.com/account
+
+
+
+Acme, Inc.
+
+
+
+Acme https://acme.example
+
+https://acme.example
+
+
+
+Contact support https://acme.example/support
+
+https://acme.example/support
+
+
+
+Support email support@acme.example
+
+
+
+Privacy policy https://acme.example/privacy
+
+https://acme.example/privacy
+
+
+
+You received this email because you subscribed to product reminders.
+
+1 Main Street, Springfield
+
+Unsubscribe https://acme.example/unsubscribe/token
+
+Manage preferences https://acme.example/unsubscribe/token
+
+https://acme.example/unsubscribe/token
 
 © 2026 Acme, Inc.",
 }

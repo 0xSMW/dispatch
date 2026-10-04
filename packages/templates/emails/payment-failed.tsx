@@ -77,6 +77,9 @@ PaymentFailed.PreviewProps = {
 } satisfies Props;
 PaymentFailed.Subject = "Your {{{PRODUCT_NAME}}} payment failed";
 PaymentFailed.Category = "billing";
+PaymentFailed.Kind = "transactional" as const;
+PaymentFailed.Stage = "dunning" as const;
+PaymentFailed.When = "Send after an invoice payment fails. Supply AMOUNT and UPDATE_PAYMENT_URL from the payment event.";
 PaymentFailed.Track = true;
 PaymentFailed.Description = "Sent when a payment attempt does not go through.";
 PaymentFailed.Variables = [

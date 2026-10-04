@@ -1,6 +1,6 @@
 # Templates
 
-`@dispatchmail/templates` is the sixteen emails Dispatch stores for a new tenant. The components are in `emails/`. Building the package writes `library.json`, and that file is what the API installs. Nothing in this package sends mail.
+`@dispatchmail/templates` contains 25 emails in Dispatch's template library, including lifecycle and subscription confirmation emails. The components are in `emails/`. Building the package writes `library.json`, and that file is what the API installs. Nothing in this package sends mail.
 
 ## Preview
 
@@ -11,6 +11,12 @@ pnpm --filter @dispatchmail/templates exec email dev --dir emails
 ```
 
 Folders whose names start with `_` stay out of the preview sidebar.
+
+## Build checks
+
+The build checks each template's content, variables, Transactional or Marketing kind, lifecycle stage, and when-to-use guidance before writing the library. Marketing templates need an unsubscribe link and company address in both HTML and plain text. Lifecycle emails use recipient-name fallbacks; payment emails retain `AMOUNT` and `UPDATE_PAYMENT_URL`.
+
+Templates alone do not install lifecycle automation graphs. Preset installation and provider receivers are separate features.
 
 ## Things to know
 
@@ -40,3 +46,12 @@ The matrix has not been run. Nobody has opened these templates in the clients be
 | shipping-update | not checked | not checked | not checked | not checked | not checked | not checked | not checked | not checked | not checked |
 | notification | not checked | not checked | not checked | not checked | not checked | not checked | not checked | not checked | not checked |
 | newsletter | not checked | not checked | not checked | not checked | not checked | not checked | not checked | not checked | not checked |
+| newsletter-welcome | not checked | not checked | not checked | not checked | not checked | not checked | not checked | not checked | not checked |
+| setup-reminder | not checked | not checked | not checked | not checked | not checked | not checked | not checked | not checked | not checked |
+| feature-tips | not checked | not checked | not checked | not checked | not checked | not checked | not checked | not checked | not checked |
+| upgrade-invite | not checked | not checked | not checked | not checked | not checked | not checked | not checked | not checked | not checked |
+| we-miss-you | not checked | not checked | not checked | not checked | not checked | not checked | not checked | not checked | not checked |
+| come-back-offer | not checked | not checked | not checked | not checked | not checked | not checked | not checked | not checked | not checked |
+| card-update-reminder | not checked | not checked | not checked | not checked | not checked | not checked | not checked | not checked | not checked |
+| subscription-canceled | not checked | not checked | not checked | not checked | not checked | not checked | not checked | not checked | not checked |
+| confirm-subscription | not checked | not checked | not checked | not checked | not checked | not checked | not checked | not checked | not checked |

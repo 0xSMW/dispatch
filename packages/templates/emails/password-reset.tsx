@@ -65,6 +65,9 @@ PasswordReset.PreviewProps = {
 } satisfies Props;
 PasswordReset.Subject = "Reset your {{{PRODUCT_NAME}}} password";
 PasswordReset.Category = "authentication";
+PasswordReset.Kind = "transactional" as const;
+PasswordReset.Stage = null;
+PasswordReset.When = "Send when a person requests a password reset. Supply a short-lived reset link.";
 PasswordReset.Track = false;
 PasswordReset.Description = "Sent when someone asks to reset the password on their account.";
 PasswordReset.Variables = [

@@ -55,6 +55,9 @@ MagicLink.PreviewProps = {
 } satisfies Props;
 MagicLink.Subject = "Your {{{PRODUCT_NAME}}} sign-in link";
 MagicLink.Category = "authentication";
+MagicLink.Kind = "transactional" as const;
+MagicLink.Stage = null;
+MagicLink.When = "Send when a person requests a sign-in link. Use a short-lived link that works once.";
 MagicLink.Track = false;
 MagicLink.Description = "Sent when someone asks for a link to sign in.";
 MagicLink.Variables = [

@@ -60,6 +60,9 @@ OneTimeCode.PreviewProps = {
 } satisfies Props;
 OneTimeCode.Subject = "{{{CODE}}} is your {{{PRODUCT_NAME}}} code";
 OneTimeCode.Category = "authentication";
+OneTimeCode.Kind = "transactional" as const;
+OneTimeCode.Stage = null;
+OneTimeCode.When = "Send when a person requests a one-time sign-in code. Supply the code and its expiry.";
 OneTimeCode.Track = false;
 OneTimeCode.Description = "Sent when someone needs a one-time code to sign in.";
 OneTimeCode.Variables = [

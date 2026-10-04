@@ -1,4 +1,5 @@
-import { renderTemplate } from "@dispatchmail/core";
+import { missingVariables, renderTemplate, reservedVariables } from "@dispatchmail/core";
+import { stages } from "./types";
 
 const reserved = [
   "PRODUCT_NAME",
@@ -15,9 +16,9 @@ const reserved = [
   "UNSUBSCRIBE_URL",
 ] as const;
 
-const reservedNames = new Set<string>(reserved);
+const reservedNames = new Set<string>(reservedVariables);
 
-const actionKeys = new Set(["ACTION_URL", "SECURE_ACCOUNT_URL", "REVOKE_URL"]);
+const actionKeys = new Set(["ACTION_URL", "SECURE_ACCOUNT_URL", "REVOKE_URL", "CONFIRM_URL"]);
 
 export type ThemePair = {
   name?: string;
@@ -37,6 +38,8 @@ type Entry = {
   category?: string;
   track: boolean;
   kind: string;
+  stage?: string | null;
+  when?: string;
   subject: string;
   html: string;
   text: string;
@@ -111,6 +114,27 @@ function contentKeys(source: string, listFields: Map<string, Set<string>>) {
 
 function required(variable: Variable) {
   return variable.fallback_value === null || variable.fallback_value === undefined;
+}
+
+// Pass only fields supplied by the actual trigger or recipient context, not preview samples.
+// Preset builds use this check for each send step against their declared trigger data.
+export function checkTemplateVariables(entry: Pick<Entry, "slug" | "variables" | "subject" | "html" | "text">, supplied: readonly string[]) {
+  const available = new Set(supplied);
+  const missing = new Set(entry.variables
+    .filter((variable) => required(variable) && !available.has(variable.key) && !reservedNames.has(variable.key))
+    .map((variable) => variable.key));
+  const values = Object.fromEntries(supplied.map((key) => {
+    const variable = entry.variables.find((item) => item.key === key);
+    return [key, variable?.type === "number" ? 0 : variable?.type === "list" ? [] : "supplied"];
+  }));
+  try {
+    renderTemplate(entry, values, brandContext());
+  } catch (error) {
+    const keys = missingVariables(error);
+    if (!keys.length) return [`${entry.slug}: ${error instanceof Error ? error.message : "render failed"}`];
+    for (const key of keys) missing.add(key);
+  }
+  return [...missing].map((key) => `${entry.slug}: required variable ${key} has no fallback or supplied value`);
 }
 
 function brandContext() {
@@ -274,9 +298,14 @@ export function checkLibrary(library: { templates: Entry[] }, pairs: readonly Th
     }
 
     if (entry.kind === "marketing") {
-      if (!html.includes("{{{UNSUBSCRIBE_URL}}}")) fail(entry.slug, 16, "missing UNSUBSCRIBE_URL");
-      if (!html.includes("{{{COMPANY_ADDRESS}}}")) fail(entry.slug, 16, "missing COMPANY_ADDRESS");
+      if (!/\bhref\s*=\s*(["'])\{\{\{UNSUBSCRIBE_URL\}\}\}\1/i.test(html)) fail(entry.slug, 16, "missing UNSUBSCRIBE_URL link");
+      if (!text.includes("{{{UNSUBSCRIBE_URL}}}")) fail(entry.slug, 16, "text is missing UNSUBSCRIBE_URL");
+      if (!textContent.includes("{{{COMPANY_ADDRESS}}}")) fail(entry.slug, 16, "missing visible COMPANY_ADDRESS");
+      if (!text.includes("{{{COMPANY_ADDRESS}}}")) fail(entry.slug, 16, "text is missing COMPANY_ADDRESS");
     }
+    if (entry.kind !== "transactional" && entry.kind !== "marketing") fail(entry.slug, 17, "invalid kind");
+    if (entry.stage !== null && !stages.some((stage) => stage === entry.stage)) fail(entry.slug, 17, "invalid or missing stage");
+    if (!entry.when?.trim()) fail(entry.slug, 17, "missing when guidance");
   }
 
   return failures;

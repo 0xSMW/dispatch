@@ -67,6 +67,9 @@ SecurityNotice.PreviewProps = {
 } satisfies Props;
 SecurityNotice.Subject = "{{{CHANGE}}}";
 SecurityNotice.Category = "authentication";
+SecurityNotice.Kind = "transactional" as const;
+SecurityNotice.Stage = null;
+SecurityNotice.When = "Send after a security setting changes. Explain the change and how to secure the account.";
 SecurityNotice.Track = false;
 SecurityNotice.Description = "Sent when a security setting on an account changes.";
 SecurityNotice.Variables = [

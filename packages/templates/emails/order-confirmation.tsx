@@ -116,6 +116,9 @@ OrderConfirmation.PreviewProps = {
 } satisfies Props;
 OrderConfirmation.Subject = "Order {{{ORDER_NAME}}} confirmed";
 OrderConfirmation.Category = "commerce";
+OrderConfirmation.Kind = "transactional" as const;
+OrderConfirmation.Stage = null;
+OrderConfirmation.When = "Send after an order is placed. Confirm its items and total with a link to the order status.";
 OrderConfirmation.Track = true;
 OrderConfirmation.Description = "Sent when an order is placed, with the items and the total.";
 OrderConfirmation.Variables = [
