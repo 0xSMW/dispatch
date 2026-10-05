@@ -17,7 +17,7 @@ import { useFilters } from "../../hooks/useFilters";
 import { useList } from "../../hooks/useList";
 import { useResource } from "../../hooks/useResource";
 import type { AutomationRun, AutomationRunDetail } from "../../types";
-import { allKeys, stepLabels, type Tree } from "./graph";
+import { allKeys, projectRun, stepLabels, type Tree } from "./graph";
 import { StepList, elapsed, type RunStep, type StepOptions } from "./Steps";
 import { Canvas, ViewSwitch, type View } from "./Canvas";
 import { runReason } from "./reasons";
@@ -96,7 +96,8 @@ export function Runs({ automationId, tree, options }: { automationId: string; tr
 export function RunDrawer({ automationId, runId, tree, onClose, options }: { automationId: string; runId: string; tree: Tree | null; onClose: () => void; options?: StepOptions }) {
   const run = useResource<AutomationRunDetail>(`/automations/${automationId}/runs/${runId}`);
   const data = run.data;
-  const steps = new Map<string, RunStep>((data?.steps ?? []).filter((step) => step.key).map((step) => [step.key!, { ...step, output: step.output ?? step.data }]));
+  const stored = new Map<string, RunStep>((data?.steps ?? []).filter((step) => step.key).map((step) => [step.key!, { ...step, output: step.output ?? step.data }]));
+  const steps = tree ? projectRun(tree, stored) : stored;
   const known = tree ? allKeys(tree) : new Set<string>();
   const others = (data?.steps ?? []).filter((step) => !step.key || !known.has(step.key));
   const [view, setView] = useState<View>("list");

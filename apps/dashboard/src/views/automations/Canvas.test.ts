@@ -579,4 +579,79 @@ describe("AutomationEditor on the canvas", () => {
     expect(drawer.querySelector(".canvasView.stacked")).toBeTruthy();
     expect(drawer.querySelector(".canvasView.immersive")).toBeNull();
   });
+
+  it.each([
+    { taken: true, viewer: false },
+    { taken: false, viewer: false },
+    { taken: true, viewer: true },
+    { taken: false, viewer: true },
+  ])("projects the taken shared Exit through the drawer List and Canvas (true=$taken, viewer=$viewer)", async ({ taken, viewer }) => {
+    if (viewer) signIn("sess_test", ["read"]);
+    const shared = {
+      ...automation,
+      steps: [
+        automation.steps[0]!,
+        automation.steps[2]!,
+        { key: "end", type: "exit", config: {} },
+      ],
+      connections: [
+        { from: "trigger", to: "pro", type: "default" },
+        { from: "pro", to: "end", type: "condition_met" },
+        { from: "pro", to: "end", type: "condition_not_met" },
+      ],
+    };
+    const history = [
+      { key: "pro", type: "condition", status: "completed", data: { result: taken } },
+      { key: "end", type: "exit", status: "completed", output: { exited: "exit", marker: "stored_exit_output" } },
+      { key: "removed_exit", type: "exit", status: "completed", output: { marker: "unknown_output" } },
+      { type: "delay", status: "completed", output: { marker: "unkeyed_output" } },
+    ];
+    const before = JSON.stringify(history);
+    api((url) => {
+      if (url.pathname === "/automations/automation_1") return { body: shared };
+      if (url.pathname === "/automations/automation_1/runs/run_1") return { body: {
+        object: "automation_run",
+        id: "run_1",
+        status: "completed",
+        event: { name: "user.created", payload: {} },
+        created_at: "2026-09-02T10:00:00.000Z",
+        updated_at: "2026-09-02T10:00:03.000Z",
+        steps: history,
+      } };
+      return undefined;
+    });
+    open("/automations/automation_1/editor?tab=runs&run=run_1&view=list");
+    const drawer = await screen.findByRole("dialog");
+    // Select List explicitly; these consumers receive only display-key results.
+    fireEvent.click(await within(drawer).findByRole("button", { name: "List" }));
+    const reached = taken ? "end" : "end_lane";
+    const skipped = taken ? "end_lane" : "end";
+    const card = await within(drawer).findByRole("article", { name: `Step ${reached}` });
+    const untaken = within(drawer).getByRole("article", { name: `Step ${skipped}` });
+    expect(card.className).toContain("tint success");
+    expect(within(card).getByText(/stored_exit_output/)).toBeTruthy();
+    expect(untaken.className).toContain("tint neutral skipped");
+    expect(within(untaken).getByText("Not reached in this run.")).toBeTruthy();
+    expect(within(untaken).queryByText(/stored_exit_output/)).toBeNull();
+    const otherPanel = within(drawer).getByRole("heading", { name: "Steps no longer in this automation" }).closest("section")!;
+    expect(within(otherPanel).getByText("removed_exit")).toBeTruthy();
+    expect(within(otherPanel).getByText(/unknown_output/)).toBeTruthy();
+    expect(within(otherPanel).getByText(/unkeyed_output/)).toBeTruthy();
+    expect(within(otherPanel).queryByText(/stored_exit_output/)).toBeNull();
+
+    fireEvent.click(within(drawer).getByRole("button", { name: "Canvas" }));
+    const node = await within(drawer).findByRole("button", { name: `Step ${reached}` });
+    expect(node.className).toContain("tint success");
+    const otherNode = within(drawer).getByRole("button", { name: `Step ${skipped}` });
+    expect(otherNode.className).toContain("tint skipped");
+    const focused = within(drawer).getByRole("region", { name: `Step ${reached} settings` });
+    expect(within(focused).getByText(/stored_exit_output/)).toBeTruthy();
+    fireEvent.click(otherNode);
+    const unfocused = within(drawer).getByRole("region", { name: `Step ${skipped} settings` });
+    expect(within(unfocused).getByText("Not reached in this run.")).toBeTruthy();
+    expect(within(unfocused).queryByText(/stored_exit_output/)).toBeNull();
+    expect(JSON.stringify(history)).toBe(before);
+    const serialized = toTree(shared.steps, shared.connections).tree;
+    expect(serialized.steps[0]?.branches?.condition_not_met?.[0]?.sharedKey).toBe("end");
+  });
 });

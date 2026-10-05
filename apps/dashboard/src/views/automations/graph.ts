@@ -401,6 +401,60 @@ export function allKeys(tree: Tree): Set<string> {
   return keys;
 }
 
+/** Projects stored shared Exit results onto the one successfully completed display route. */
+export function projectRun<T extends { status?: string; output?: unknown; error?: string | null }>(tree: Tree, results: ReadonlyMap<string, T>): Map<string, T> {
+  const shared = new Set<string>();
+  const collect = (list: Node[]) => {
+    for (const node of list) {
+      if (node.type === "exit" && node.sharedKey) shared.add(node.sharedKey);
+      for (const branch of branchesOf(node)) collect(branchSteps(node, branch));
+    }
+  };
+  collect(tree.steps);
+  const projected = new Map(results);
+  const candidates = new Map<string, string[]>();
+  const succeeded = (node: Node) => {
+    const result = results.get(node.key);
+    return result?.status === "completed" && !result.error;
+  };
+  const selected = (node: Node): Branch | null => {
+    const output = results.get(node.key)?.output;
+    if (!output || typeof output !== "object") return null;
+    const decision = output as Record<string, unknown>;
+    if (node.type === "condition") {
+      return decision.result === true ? "condition_met" : decision.result === false ? "condition_not_met" : null;
+    }
+    if (node.type === "branch") {
+      return typeof decision.path === "string" && branchesOf(node).includes(decision.path) ? decision.path : null;
+    }
+    if (node.type === "wait_for_event") {
+      if (decision.timed_out === true) return "timeout";
+      if (decision.timed_out === false) return "event_received";
+      // Resumed event waits store the firing ID, without a timed_out flag.
+      if (decision.timed_out === undefined && typeof decision.event_id === "string" && decision.event_id) return "event_received";
+    }
+    return null;
+  };
+  const walk = (list: Node[], reached: boolean) => {
+    for (const node of list) {
+      const original = node.sharedKey ?? node.key;
+      if (node.type === "exit" && shared.has(original)) {
+        projected.delete(node.key);
+        if (reached) candidates.set(original, [...(candidates.get(original) ?? []), node.key]);
+      }
+      const finished = reached && succeeded(node);
+      for (const branch of branchesOf(node)) walk(branchSteps(node, branch), finished && selected(node) === branch);
+      reached = finished;
+    }
+  };
+  walk(tree.steps, true);
+  for (const [original, displays] of candidates) {
+    const result = results.get(original);
+    if (result && displays.length === 1) projected.set(displays[0]!, result);
+  }
+  return projected;
+}
+
 // A run remembers its steps by key. A new step that took the key of a removed one would show
 // that step's old results as its own, so a key is never reused: each gets a random suffix.
 // Tests replace `suffix` to get keys they can name.

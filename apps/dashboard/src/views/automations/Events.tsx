@@ -49,6 +49,11 @@ export function Events() {
   const [sending, setSending] = useState<string | null>(null);
   const [viewing, setViewing] = useState<FiredEvent | null>(null);
 
+  function reload() {
+    void definitions.reload();
+    void fired.reload();
+  }
+
   return (
     <ListPage
       title="Events"
@@ -119,7 +124,7 @@ export function Events() {
       <Panel
         title="Fired events"
         actions={
-          <button type="button" className="secondary small" onClick={() => void fired.reload()} disabled={fired.loading}>
+          <button type="button" className="secondary small" onClick={reload} disabled={fired.loading}>
             <RefreshCw size={14} />
             Refresh
           </button>
@@ -154,7 +159,7 @@ export function Events() {
           initial={sending}
           definitions={definitions.rows}
           onClose={() => setSending(null)}
-          onDone={() => void fired.reload()}
+          onDone={reload}
         />
       ) : null}
       {viewing ? (

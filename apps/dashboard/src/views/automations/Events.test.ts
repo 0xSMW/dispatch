@@ -19,6 +19,53 @@ function api() {
   });
 }
 
+const refreshedAt = "2026-09-03T12:00:00.000Z";
+
+function refreshApi(sendStatus = 202) {
+  let definitionReads = 0;
+  let firedReads = 0;
+  return mockFetch((url, init) => {
+    const path = new URL(url).pathname;
+    if (init.method === "POST" && path === "/events/send") {
+      return sendStatus === 202
+        ? { status: 202, body: { object: "event", event: "user.upgraded", id: "cevt_2" } }
+        : { status: sendStatus, body: { error: { type: "validation_error", message: "Event rejected." } } };
+    }
+    if (path === "/events") {
+      definitionReads += 1;
+      return { body: { object: "list", has_more: false, data: definitionReads === 1
+        ? definitions : [{ ...definitions[0], fired_count: 1205, last_fired_at: refreshedAt }] } };
+    }
+    if (path === "/fired-events") {
+      firedReads += 1;
+      return { body: { object: "list", has_more: false, data: firedReads === 1
+        ? fired : [{ ...fired[0], id: "cevt_2", email: "grace@example.com", created_at: refreshedAt }, ...fired] } };
+    }
+    return { body: {} };
+  });
+}
+
+function listRequests(fetch: ReturnType<typeof mockFetch>) {
+  return fetch.mock.calls
+    .filter(([, init]) => (init?.method ?? "GET") === "GET")
+    .map(([url]) => String(url));
+}
+
+async function expectRefreshed(fetch: ReturnType<typeof mockFetch>) {
+  expect(await screen.findByText("grace@example.com")).toBeTruthy();
+  await waitFor(() => expect(screen.getByText("1,205")).toBeTruthy());
+  const definition = screen.getByText("1,205").closest("tr")!;
+  expect(definition.querySelector("time")?.dateTime).toBe(refreshedAt);
+  const firing = screen.getByText("grace@example.com").closest("tr")!;
+  expect(firing.querySelector("time")?.dateTime).toBe(refreshedAt);
+  expect(listRequests(fetch)).toEqual([
+    "http://localhost:3100/events?limit=40",
+    "http://localhost:3100/fired-events?limit=20",
+    "http://localhost:3100/events?limit=40",
+    "http://localhost:3100/fired-events?limit=20",
+  ]);
+}
+
 const posted = (fetch: ReturnType<typeof api>, path: string) => {
   const call = fetch.mock.calls.find(([url, init]) => init?.method === "POST" && new URL(String(url)).pathname === path);
   return call ? JSON.parse(String(call[1]!.body)) : null;
@@ -68,9 +115,10 @@ describe("Events", () => {
     await waitFor(() => expect(posted(fetch, "/events")).toEqual({ name: "user.created", schema: { trial_ends: "date" } }));
   });
 
-  it("sends a test event with a payload prefilled from the definition", async () => {
-    const fetch = api();
+  it("sends a prefilled test event and refreshes definitions and firing rows on success", async () => {
+    const fetch = refreshApi();
     render(h(Events), { wrapper });
+    await screen.findByText("ada@example.com");
     const row = (await screen.findAllByText("user.upgraded"))[0]!.closest("tr")!;
     fireEvent.click(within(row).getByRole("button", { name: "Actions" }));
     fireEvent.click(await screen.findByRole("menuitem", { name: "Send test event" }));
@@ -81,6 +129,45 @@ describe("Events", () => {
     await waitFor(() =>
       expect(posted(fetch, "/events/send")).toEqual({ event: "user.upgraded", email: "ada@example.com", payload: { plan: "text", seats: 1 } }),
     );
+    await expectRefreshed(fetch);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it.each(["full", "read"])("refreshes both lists manually with %s permissions", async (permission) => {
+    signIn("sess_test", [permission]);
+    const fetch = refreshApi();
+    render(h(Events), { wrapper });
+    await screen.findByText("ada@example.com");
+    if (permission === "read") {
+      expect(screen.queryByRole("button", { name: /Send/ })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Actions" })).toBeNull();
+      expect(screen.queryByRole("menuitem", { name: "Send test event" })).toBeNull();
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await expectRefreshed(fetch);
+    expect(fetch.mock.calls.every(([, init]) => (init?.method ?? "GET") === "GET")).toBe(true);
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("reloads neither list after a failed Send", async () => {
+    const fetch = refreshApi(422);
+    render(h(Events), { wrapper });
+    await screen.findByText("ada@example.com");
+    fireEvent.click(screen.getByRole("button", { name: "Send test event" }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("Event"), { target: { value: "user.upgraded" } });
+    const send = within(dialog).getByRole("button", { name: /Send/ }) as HTMLButtonElement;
+    fireEvent.click(send);
+    await waitFor(() => expect(posted(fetch, "/events/send")).not.toBeNull());
+    await waitFor(() => expect(send.disabled).toBe(false));
+    expect(listRequests(fetch)).toEqual([
+      "http://localhost:3100/events?limit=40",
+      "http://localhost:3100/fired-events?limit=20",
+    ]);
+    expect(screen.getByText("1,204")).toBeTruthy();
+    expect(screen.getByText("1,204").closest("tr")!.querySelector("time")?.dateTime).toBe(definitions[0]!.last_fired_at);
+    expect(screen.queryByText("grace@example.com")).toBeNull();
+    expect(screen.getByRole("dialog")).toBeTruthy();
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { branching, toGraph, toTree, type Graph, type ListPath, type Node, type Tree } from "./graph";
+import { branching, projectRun, toGraph, toTree, type Graph, type ListPath, type Node, type Tree } from "./graph";
 import {
   branchGap,
   columnGap,
@@ -209,6 +209,33 @@ describe("layout", () => {
     expect((byId(nodes, "nudge") as StepNode).data.error).toBe("Template not found");
     expect(byId(nodes, "start").data).toMatchObject({ status: "completed" });
     expect((byId(layout(tree(nested), { editable: false }).nodes, "pro") as StepNode).data.status).toBeNull();
+  });
+
+  it.each([true, false])("uses display-key shared Exit projection for run tint and focus (condition %s)", (taken) => {
+    const shape = toTree([
+      { key: "start", type: "trigger" },
+      { key: "condition", type: "condition" },
+      { key: "end", type: "exit" },
+    ], [
+      { from: "start", to: "condition" },
+      { from: "condition", to: "end", type: "condition_met" },
+      { from: "condition", to: "end", type: "condition_not_met" },
+    ]).tree;
+    const exit: RunStep = { key: "end", type: "exit", status: "completed", output: { exited: "exit" } };
+    const raw = new Map<string, RunStep>([
+      ["condition", { type: "condition", status: "completed", output: { result: taken } }],
+      ["end", exit],
+    ]);
+    const run = projectRun(shape, raw);
+    const { nodes } = layout(shape, { editable: false, run });
+    const reached = taken ? "end" : "end_lane";
+    const skipped = taken ? "end_lane" : "end";
+    expect((byId(nodes, reached) as StepNode).data.status).toBe("completed");
+    expect((byId(nodes, skipped) as StepNode).data.status).toBe("not_started");
+    expect(runFocus(shape, run)).toBe(reached);
+    expect(locate(shape, reached)?.path).toEqual([{ key: "condition", branch: taken ? "condition_met" : "condition_not_met" }]);
+    expect(run.get(reached)).toBe(exit);
+    expect([...raw.keys()]).toEqual(["condition", "end"]);
   });
 });
 
