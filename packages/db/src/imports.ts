@@ -35,6 +35,8 @@ export type ImportRow = {
   completed_at: string | Date | null;
 };
 
+export type ImportSummary = Pick<ImportRow, "id" | "status" | "trigger_automations" | "counts" | "error" | "created_at" | "completed_at">;
+
 export type ImportContact = {
   email: string;
   first_name: string | null;
@@ -52,7 +54,7 @@ export function emptyCounts(): ImportCounts {
   return { total: 0, created: 0, updated: 0, skipped: 0, failed: 0 };
 }
 
-export function presentImport(row: Pick<ImportRow, "id" | "status" | "counts" | "error" | "created_at" | "completed_at" | "trigger_automations">) {
+export function presentImport(row: ImportSummary) {
   return {
     object: "contact_import" as const,
     id: row.id,
@@ -81,11 +83,11 @@ export async function createImport(
     topics: Array<{ id: string; subscription: string }>;
     triggerAutomations?: boolean;
   },
-) {
+): Promise<ImportSummary> {
   const create = async (client: Queryable) => {
     await assertImportRefs(client, input.tenantId, input.segments, input.topics);
     const triggerAutomations = input.triggerAutomations ?? (await settings(client, input.tenantId)).import_trigger_automations;
-    const row = await client.query<ImportRow>(
+    const row = await client.query<ImportSummary>(
       `insert into contact_imports (id, tenant_id, storage_key, column_map, on_conflict, segments, topics, trigger_automations)
        values ($1, $2, $3, $4, $5, $6, $7, $8)
        returning ${importColumns}`,
@@ -107,8 +109,8 @@ export async function createImport(
   return "connect" in db ? tx(db as Db, create) : create(db);
 }
 
-export async function findImport(db: Queryable, tenantId: string, importId: string) {
-  const row = await db.query<ImportRow>(
+export async function findImport(db: Queryable, tenantId: string, importId: string): Promise<ImportSummary> {
+  const row = await db.query<ImportSummary>(
     `select ${importColumns} from contact_imports where tenant_id = $1 and id = $2`,
     [tenantId, importId],
   );
@@ -116,7 +118,7 @@ export async function findImport(db: Queryable, tenantId: string, importId: stri
   return row.rows[0];
 }
 
-export async function cancelImport(db: Queryable, tenantId: string, importId: string) {
+export async function cancelImport(db: Queryable, tenantId: string, importId: string): Promise<ImportSummary> {
   await db.query(
     `update contact_imports set status = 'cancelled', locked_at = null, completed_at = now()
      where tenant_id = $1 and id = $2 and status in ('queued', 'in_progress')`,

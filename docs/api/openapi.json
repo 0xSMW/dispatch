@@ -12505,7 +12505,11 @@
     },
     "/automations/{id}/steps/{key}/metrics": {
       "get": {
+        "operationId": "getAutomationSplitMetrics",
         "summary": "Compare stored split variants",
+        "tags": [
+          "Automations"
+        ],
         "description": "Assignments use their recorded variant, not current weights. Run counts use assignment dates; email metrics use event dates, both in the half-open [start_date,end_date) window. Same-run attribution and historical sandbox classification apply. Includes configured zero-result and historical keys.",
         "parameters": [
           { "in": "path", "name": "id", "required": true, "schema": { "type": "string" } },
@@ -12522,7 +12526,11 @@
     },
     "/automations/{id}/steps/{key}/winner": {
       "post": {
+        "operationId": "pickAutomationSplitWinner",
         "summary": "Pick a split winner on an already paused version",
+        "tags": [
+          "Automations"
+        ],
         "description": "Full access only. Changes only weights to winner100/rest0, increments the graph version, preserves keys/connections/recorded decisions and valid runs/waits. Does not resume or Stop. Caller resumes separately with expected_version only after success; failure leaves the pause intact.",
         "parameters": [
           { "in": "path", "name": "id", "required": true, "schema": { "type": "string" } },

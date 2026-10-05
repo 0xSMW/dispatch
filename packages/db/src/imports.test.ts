@@ -1,7 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
 import type { ContactRow } from "./audience.js";
-import type { Queryable } from "./index.js";
-import { assertImportRefs, createImport, dedupeByEmail, importBatch, importKey, presentImport } from "./imports.js";
+import type { Db, Queryable } from "./index.js";
+import { assertImportRefs, cancelImport, claimImports, createImport, dedupeByEmail, findImport, importBatch, importKey, presentImport, type ImportRow, type ImportSummary } from "./imports.js";
 
 function client(handler: (sql: string, params: unknown[]) => unknown[] = () => []) {
   const queries: Array<{ sql: string; params: unknown[] }> = [];
@@ -56,6 +56,64 @@ function batchClient(options: {
 }
 
 describe("contact import queries", () => {
+  it.each(["create", "find", "cancel"] as const)("returns only the summary projection for %s", async (operation) => {
+    const summary: ImportSummary = {
+      id: job.id, status: operation === "cancel" ? "cancelled" : "queued", trigger_automations: false,
+      counts: { total: 0, created: 0, updated: 0, skipped: 0, failed: 0 },
+      error: null, created_at: "2026-10-01", completed_at: operation === "cancel" ? "2026-10-02" : null,
+    };
+    const columns = ["id", "status", "trigger_automations", "counts", "error", "created_at", "completed_at"];
+    const db = client((sql) => {
+      if (sql.startsWith("update contact_imports")) return [];
+      const projection = sql.startsWith("insert") ? sql.split("returning ")[1] : sql.match(/^select (.+) from contact_imports/)?.[1];
+      expect(projection?.split(", ")).toEqual(columns);
+      return [Object.fromEntries(columns.map((key) => [key, summary[key as keyof ImportSummary]]))];
+    });
+    const row = operation === "create"
+      ? await createImport(db, {
+        id: job.id, tenantId: job.tenant_id, storageKey: "key", columnMap: {}, onConflict: "upsert",
+        segments: [], topics: [], triggerAutomations: false,
+      })
+      : operation === "find" ? await findImport(db, job.tenant_id, job.id) : await cancelImport(db, job.tenant_id, job.id);
+    expectTypeOf(row).toEqualTypeOf<ImportSummary>();
+    expectTypeOf<Parameters<typeof presentImport>[0]>().toEqualTypeOf<ImportSummary>();
+    expect(row).toEqual(summary);
+    expect(Object.keys(row)).toEqual(columns);
+    expect(presentImport(row)).toEqual({ object: "contact_import", ...summary });
+    expect(db.queries).toHaveLength(operation === "cancel" ? 2 : 1);
+    if (operation !== "create") expect(db.queries.at(-1)?.params).toEqual([job.tenant_id, job.id]);
+  });
+
+  it("claims the full work projection rather than an import summary", async () => {
+    const work: ImportRow = {
+      ...job, status: "in_progress", storage_key: "imports/tenant_1/import_1", column_map: { email: { column: "Email" } },
+      segments: [{ id: "segment_1" }], topics: [{ id: "topic_1", subscription: "opt_in" }],
+      trigger_automations: true, counts: { total: 3, created: 1, updated: 0, skipped: 0, failed: 0 },
+      row_offset: 1, locked_at: "2026-10-02", claim_version: 2,
+      error: null, created_at: "2026-10-01", completed_at: null,
+    };
+    const columns = [
+      "id", "tenant_id", "status", "storage_key", "column_map", "on_conflict", "segments", "topics",
+      "trigger_automations", "counts", "row_offset", "locked_at", "claim_version", "error", "created_at", "completed_at",
+    ];
+    const db = client((sql) => {
+      if (sql === "begin" || sql === "commit") return [];
+      const projection = sql.startsWith("select") ? sql.match(/^select (.+)\n/)?.[1] : sql.split("returning ")[1];
+      expect(projection?.split(", ")).toEqual(columns);
+      return [Object.fromEntries(columns.map((key) => [key, work[key as keyof ImportRow]]))];
+    });
+    const release = vi.fn();
+    const pool = { query: db.query, connect: async () => ({ query: db.query, release }) } as unknown as Db;
+    const rows = await claimImports(pool, 1);
+    expectTypeOf(rows).toEqualTypeOf<ImportRow[]>();
+    expect(rows).toEqual([work]);
+    expect(Object.keys(rows[0])).toEqual(columns);
+    expect(db.queries[1].params).toEqual([1]);
+    expect(db.queries[2].params).toEqual([[work.id]]);
+    expect(db.queries.map(({ sql }) => sql.split(" ")[0])).toEqual(["begin", "select", "update", "commit"]);
+    expect(release).toHaveBeenCalledOnce();
+  });
+
   it("refuses dynamic import creation and batches before contact, topic or history writes", async () => {
     const db = client(() => [{ id: "segment_1", rule: { type: "rule", field: "contact.email", operator: "exists" } }]);
     await expect(createImport(db, {

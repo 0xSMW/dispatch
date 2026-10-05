@@ -313,7 +313,10 @@ class TestDispatch(unittest.TestCase):
         self.assertEqual(get_type_hints(AutomationGuard)["filter"], str)
         self.assertIn("branch", get_args(get_type_hints(AutomationConnectionInput)["type"]))
         self.assertEqual(get_type_hints(AutomationConnectionInput)["path"], str)
-        self.assertEqual(get_args(get_type_hints(AutomationStepInput)["type"])[-3:], ("exit", "filter", "branch"))
+        self.assertEqual(get_args(get_type_hints(AutomationStepInput)["type"]), (
+            "trigger", "send_email", "delay", "wait_for_event", "condition",
+            "add_to_segment", "contact_update", "contact_delete", "exit", "filter", "branch", "split",
+        ))
         self.assertEqual(get_type_hints(RuleGroup)["rules"], list[PredicateRule | RuleGroup])
         rule = {"type": "rule", "field": "contact.activated", "operator": "eq", "value": False}
         paths = [

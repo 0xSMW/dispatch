@@ -173,6 +173,7 @@ describe.skipIf(!live)("accept", () => {
           const installed = content(await client.callTool({ name: "install_preset", arguments: { slug: "onboarding-drip", from: "hello@dispatch-fixture.net", name: "MCP installed" } }));
           expect(installed.automation.status).toBe("disabled");
           expect(installed.templates.created.length).toBeGreaterThan(0);
+          expect(installed.templates.created.some((template: { slug: string }) => template.slug === "welcome")).toBe(true);
           expect((await db.query("select enabled from automations where id=$1", [installed.automation.id])).rows).toEqual([{ enabled: false }]);
         });
         const before = (await db.query("select (select count(*) from emails) as emails, (select count(*) from automations) as automations, (select count(*) from contacts) as contacts, (select count(*) from custom_events) as events")).rows;
@@ -184,8 +185,10 @@ describe.skipIf(!live)("accept", () => {
             expect(content(result).name).toBe("read_only");
           }
           expect(content(await client.callTool({ name: "get_email", arguments: { id: emailId } })).id).toBe(emailId);
-          const template = (await db.query("select id from templates order by id limit 1")).rows[0]!.id;
-          const rendered = await client.callTool({ name: "render_template", arguments: { idOrAlias: template, variables: { FIRST_NAME: "Ada" } } });
+          const rendered = await client.callTool({ name: "render_template", arguments: {
+            idOrAlias: "welcome",
+            variables: { RECIPIENT_NAME: "Ada", ACTION_URL: "https://app.example.test/start", ACTION_LABEL: "Get started", HELP_URL: "https://app.example.test/help" },
+          } });
           expect(rendered.isError).not.toBe(true);
           expect(content(rendered).rendered.html).toBeTruthy();
           const missing = await client.callTool({ name: "get_email", arguments: { id: "missing" } });
@@ -215,8 +218,8 @@ describe.skipIf(!live)("accept", () => {
       const automationId = made.json.id as string;
       await db.query(`insert into custom_events(id,tenant_id,request_id,name,email,data)
         select 'ce_split_'||n,$1,'req_split','split-start','split@example.test','{}'::jsonb from generate_series(1,$2::integer) n`, [tenantId, count]);
-      await db.query(`insert into automation_runs(id,tenant_id,automation_id,event_id,request_id,state,next_step_index)
-        select 'run_split_'||n,$1,$2,'ce_split_'||n,'req_split','ready',0 from generate_series(1,$3::integer) n`, [tenantId, automationId, count]);
+      await db.query(`insert into automation_runs(id,tenant_id,automation_id,event_id,state,next_step_index)
+        select 'run_split_'||n,$1,$2,'ce_split_'||n,'ready',0 from generate_series(1,$3::integer) n`, [tenantId, automationId, count]);
       for (let n = 1; n <= count; n++) await executeAutomationRun(db, tenantId, `run_split_${n}`);
       return { tenantId, automationId, graph };
     }
@@ -678,8 +681,11 @@ describe.skipIf(!live)("accept", () => {
       expect((await call(fullKey, "PATCH", `/contacts/${person.json.id}/topics`, { topics: [{ id: topic.json.id, subscription: "opt_out" }] })).status).toBe(200);
       const topicBefore = (await db.query("select * from topic_subscriptions")).rows;
       expect((await receive(row, payload("clerk", "create"), "create")).status).toBe(200);
-      expect((await call(fullKey, "GET", `/contacts/${person.json.id}`)).json).toMatchObject({
-        unsubscribed: true, properties: { keep: "value", clerk_user_id: "user_fixture" },
+      const preserved = (await call(fullKey, "GET", `/contacts/${person.json.id}`)).json;
+      expect(preserved.unsubscribed).toBe(true);
+      expect(preserved.properties).toEqual({
+        keep: { value: "value", type: "string" },
+        clerk_user_id: { value: "user_fixture", type: "string" },
       });
       expect((await db.query("select * from topic_subscriptions")).rows).toEqual(topicBefore);
       expect((await receive(row, { type: "user.deleted", data: { id: "user_fixture" } }, "retain")).json.status).toBe("processed");
@@ -1211,10 +1217,10 @@ describe.skipIf(!live)("accept", () => {
       expect((await db.query("select contact_id from broadcast_recipients where tenant_id=$1 and broadcast_id=$2", [tenant,broadcastId])).rows).toEqual([{ contact_id: b }]);
       for (const operator of ["contains", "not_contains", "exists", "is_empty"] as const) {
         const value = operator.includes("contains") ? staticList.json.id : undefined;
-        const expected = operator === "contains" || operator === "exists" ? [a] : contacts.slice(1);
+        const expected = operator === "exists" ? contacts : operator === "contains" ? [a] : contacts.slice(1);
         expect(await selected(tenant, leaf("contact.segments", operator, value))).toEqual(expected);
         const topicValue = operator.includes("contains") ? topic.json.id : undefined;
-        const topicExpected = operator === "contains" || operator === "exists" ? contacts.filter((contact) => contact !== b) : [b];
+        const topicExpected = operator === "exists" ? contacts : operator === "contains" ? contacts.filter((contact) => contact !== b) : [b];
         expect(await selected(tenant, leaf("contact.topics", operator, topicValue))).toEqual(topicExpected);
       }
       expect((await call(fullKey, "PATCH", `/segments/${dynamic.json.id}`, { name: "Refreshed eligible" })).status).toBe(200);
@@ -1242,7 +1248,7 @@ describe.skipIf(!live)("accept", () => {
       const dynamic = await post(fullKey, "/segments", { name: "Refusal filter", rule: leaf("contact.email", "exists") });
       const staticList = await post(fullKey, "/segments", { name: "Rollback list" });
       expect((await call(fullKey, "DELETE", `/contacts/${contacts[2]}`)).status).toBe(200);
-      const createdFlow = await contactFlow({ type: "contact_added" });
+      const createdFlow = await contactFlow({ type: "contact_created" });
       const snapshot = async () => (await db.query(`select
         (select jsonb_agg(to_jsonb(c) order by id) from contacts c where tenant_id=$1) as contacts,
         (select jsonb_agg(to_jsonb(s) order by id) from segment_contacts s where tenant_id=$1) as members,
@@ -1283,7 +1289,7 @@ describe.skipIf(!live)("accept", () => {
         id: id("import"), tenantId: tenant, storageKey: "unused-refusal", columnMap: {},
         onConflict: "upsert", segments: [{ id: dynamic.json.id }], topics: [], triggerAutomations: true,
       })).rejects.toMatchObject({ statusCode: 409 });
-      const steps = [{ key: "start", type: "trigger", config: { type: "contact_added" } },
+      const steps = [{ key: "start", type: "trigger", config: { type: "contact_created" } },
         { key: "join", type: "add_to_segment", config: { segment_id: dynamic.json.id } }];
       const graph = { steps, connections: [{ from: "start", to: "join", type: "default" }] };
       expect((await post(fullKey, "/automations", { name: "Refused add", ...graph })).status).toBe(409);
@@ -1319,10 +1325,10 @@ describe.skipIf(!live)("accept", () => {
       const { tenant, contacts } = await fixture();
       const list = await post(fullKey, "/segments", { name: "Converted automation target" });
       const step = { key: "join", type: "add_to_segment", config: { segment_id: list.json.id } };
-      const executable = await contactFlow({ type: "contact_added" }, [step]);
+      const executable = await contactFlow({ type: "contact_created" }, [step]);
       const saved = await post(fullKey, "/automations", {
         name: "Disabled saved join", steps: [
-          { key: "start", type: "trigger", config: { type: "contact_added" } }, step,
+          { key: "start", type: "trigger", config: { type: "contact_created" } }, step,
         ], connections: [{ from: "start", to: "join", type: "default" }],
       });
       const triggered = await contactFlow({ type: "segment_added", segment_id: list.json.id });
@@ -1448,8 +1454,9 @@ describe.skipIf(!live)("accept", () => {
           release: () => client.release(),
         };
       } } as unknown as Db;
+      const importId = id("import");
       const creation = createImport(pool, {
-        id: id("import"), tenantId: tenant, storageKey: "unused-creation-lock", columnMap: {},
+        id: importId, tenantId: tenant, storageKey: "unused-creation-lock", columnMap: {},
         onConflict: "upsert", segments: [{ id: segment.json.id }], topics: [], triggerAutomations: false,
       });
       void creation.catch(() => ready());
@@ -1469,21 +1476,36 @@ describe.skipIf(!live)("accept", () => {
       } finally { release(); await Promise.allSettled([creation, conversion]); }
       const queued = await creation;
       await conversion;
-      expect(queued).toMatchObject({ status: "queued", segments: [{ id: segment.json.id }] });
+      expect(queued).toMatchObject({ id: importId, status: "queued" });
+      expect((await db.query("select segments from contact_imports where tenant_id=$1 and id=$2", [tenant, importId])).rows)
+        .toEqual([{ segments: [{ id: segment.json.id }] }]);
+      const claimed = await claimImports(db, 1);
+      expect(claimed).toHaveLength(1);
+      const job = claimed[0]!;
+      expect(job).toMatchObject({ id: queued!.id, tenant_id: tenant, status: "in_progress", segments: [{ id: segment.json.id }] });
       // Conversion after a valid queue commit is allowed; its worker must refuse
       // the now-dynamic target rather than using the original validated type.
-      await expect(tx(db, (client) => importBatch(client, queued!, [
+      await expect(tx(db, (client) => importBatch(client, job, [
         { email: "creation-lock@fixture.net", first_name: null, last_name: null, properties: {}, unsubscribed: false },
       ]))).rejects.toMatchObject({ statusCode: 409 });
+      expect((await db.query("select id from contacts where tenant_id=$1 and email='creation-lock@fixture.net'", [tenant])).rows).toEqual([]);
+      expect((await db.query("select id from contact_changes where tenant_id=$1 and request_id=$2", [tenant, job.id])).rows).toEqual([]);
+      expect((await db.query("select id from custom_events where tenant_id=$1 and request_id=$2", [tenant, job.id])).rows).toEqual([]);
     });
 
     it.each(["import", "conversion"] as const)("serializes %s-first import/conversion and rolls back refused batch changes", async (first) => {
       const { tenant } = await fixture();
       const segment = await post(fullKey, "/segments", { name: "Import lock fixture" });
-      const job = await createImport(db, {
-        id: id("import"), tenantId: tenant, storageKey: "unused-lock", columnMap: {}, onConflict: "upsert",
+      const importId = id("import");
+      const queued = await createImport(db, {
+        id: importId, tenantId: tenant, storageKey: "unused-lock", columnMap: {}, onConflict: "upsert",
         segments: [{ id: segment.json.id }], topics: [], triggerAutomations: true,
       });
+      expect(queued).toMatchObject({ id: importId, status: "queued" });
+      const claimed = await claimImports(db, 1);
+      expect(claimed).toHaveLength(1);
+      const job = claimed[0]!;
+      expect(job).toMatchObject({ id: queued!.id, tenant_id: tenant, status: "in_progress", segments: [{ id: segment.json.id }] });
       const { staticSegment, updateSegment } = await import("@dispatchmail/db");
       const rows = [{ email: "import-lock@fixture.net", first_name: "Imported", last_name: null, properties: {}, unsubscribed: false }];
       let ready!: () => void, release!: () => void;
@@ -1495,7 +1517,7 @@ describe.skipIf(!live)("accept", () => {
         await staticSegment(client, tenant, segment.json.id);
         ready();
         await resume;
-        if (first === "import") return importBatch(client, job!, rows);
+        if (first === "import") return importBatch(client, job, rows);
         return updateSegment(client, tenant, segment.json.id, { rule: leaf("contact.email", "exists") });
       });
       void owner.catch(() => ready());
@@ -1503,7 +1525,7 @@ describe.skipIf(!live)("accept", () => {
       const challenger = tx(db, async (client) => {
         challengerPid = (await client.query("select pg_backend_pid() as pid")).rows[0].pid;
         if (first === "import") return updateSegment(client, tenant, segment.json.id, { rule: leaf("contact.email", "exists") });
-        return importBatch(client, job!, rows);
+        return importBatch(client, job, rows);
       }).then(() => null, (error: unknown) => error);
       try {
         let blocked = false;
@@ -1519,8 +1541,8 @@ describe.skipIf(!live)("accept", () => {
       expect((await db.query("select email from contacts where tenant_id=$1 and email=$2", [tenant, rows[0]!.email])).rows)
         .toEqual(first === "import" ? [{ email: rows[0]!.email }] : []);
       if (first === "conversion") {
-        expect((await db.query("select id from contact_changes where request_id=$1", [job!.id])).rows).toEqual([]);
-        expect((await db.query("select id from custom_events where request_id=$1", [job!.id])).rows).toEqual([]);
+        expect((await db.query("select id from contact_changes where request_id=$1", [job.id])).rows).toEqual([]);
+        expect((await db.query("select id from custom_events where request_id=$1", [job.id])).rows).toEqual([]);
       }
     });
 
@@ -4364,13 +4386,15 @@ describe.skipIf(!live)("accept", () => {
     await call(fullKey, "PATCH", `/contacts/${contact.json.id}`, { properties: { due_at: "2026-10-04T00:00:00Z" } });
     await call(fullKey, "PATCH", `/contacts/${contact.json.id}`, { properties: { due_at: "2026-10-04T00:00:00+00:00" } });
     expect(await flowRuns(due)).toHaveLength(1);
-    // Exercise the later rule-backed dynamic schema without adding that product yet.
-    await db.query("alter table segments add column rule jsonb");
+    // Exercise a legacy rule-backed row without changing the shipped schema.
+    const original = (await db.query("select rule from segments where tenant_id=$1 and id=$2", [run.tenant_id, segment.json.id])).rows[0]!;
     try {
-      await db.query("update segments set rule = $2::jsonb where id = $1", [segment.json.id, JSON.stringify({ type: "rule", field: "contact.active", operator: "eq", value: true })]);
+      await db.query("update segments set rule=$3::jsonb where tenant_id=$1 and id=$2", [run.tenant_id, segment.json.id, JSON.stringify({ type: "rule", field: "contact.active", operator: "eq", value: true })]);
       expect((await call(fullKey, "PATCH", `/automations/${joined}`, { status: "enabled" })).status).toBe(422);
-      expect((await post(fullKey, `/contacts/${contact.json.id}/segments/${segment.json.id}`, {})).status).toBe(422);
-    } finally { await db.query("alter table segments drop column rule"); }
+      expect((await post(fullKey, `/contacts/${contact.json.id}/segments/${segment.json.id}`, {})).status).toBe(409);
+    } finally {
+      await db.query("update segments set rule=$3::jsonb where tenant_id=$1 and id=$2", [run.tenant_id, segment.json.id, original.rule === null ? null : JSON.stringify(original.rule)]);
+    }
   });
 
   it("renders reserved and configured sandbox recipients and exposes their stored flags in detail and list responses", async () => {
