@@ -180,6 +180,23 @@ The optional `reentry` field is `once` or `every_time`. New contact triggers def
 
 Event names beginning with `@` are reserved for internal contact triggers and refused in new application events, definitions, event triggers, and event waits. Internal triggers are hidden from `/fired-events`, do not match event triggers or wake waits, and never require the application to fire an event manually. Step-triggered writes cannot start their own automation; cross-automation trigger chains stop at depth five.
 
+### Lifecycle presets
+
+List built-in graphs with `GET /template-library/automations` or preview one with `GET /template-library/automations/{slug}`. Install with authenticated full write permission:
+
+```http
+POST /template-library/automations/onboarding-drip/install
+Content-Type: application/json
+
+{"from":"Acme <hello@acme.com>","topic_id":"topic_123"}
+```
+
+HTTP 200 returns `{automation, templates: {created, reused}, events, properties, next_steps, request_id}`. The automation is disabled, every send binds your sender, and compatible existing dependencies and template copies are reused unchanged. A reused draft is not published. `name` is optional and defaults to the preset name.
+
+The sender needs a live verified tenant domain with sending enabled (403 otherwise); missing sender returns 422 `Choose a sender`. Newsletter welcome requires an explicit live same-tenant topic at installation, returning 422 `Choose a topic` without writes when omitted. Other Marketing presets may install without a topic, returning `Choose a topic for marketing steps`; enabling stays blocked until configured. Transactional steps never gain a topic. Unknown slugs return 404; malformed fields return 400; name, incompatible dependency, tombstone, or contention conflicts return 409 and roll back all installation writes. Review the graph and its emails before enabling. See the [six recipes](../automations/README.md).
+
+`GET /events` list rows include `fired_count` and nullable `last_fired_at`. Counts match live, tenant-scoped firings by definition name, excluding deleted and internal `@` events. A never-fired definition has `0` and `null`; detail responses remain unchanged.
+
 ### Contact imports
 
 `POST /contacts/imports` accepts multipart CSV, optional JSON `column_map`, `segments`, and `topics` fields, and optional `on_conflict` (`upsert` or `skip`). Its optional `trigger_automations` field encodes a boolean as exactly `true` or `false`. Explicit `false` overrides a tenant default of `true`. When omitted, the tenant's `import_trigger_automations` setting, default `false`, is resolved and stored at creation. A later settings change never changes that queued import.

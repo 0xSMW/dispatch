@@ -64,22 +64,82 @@ Open the dashboard to see it arrive in the email list. To try failures, send to 
 
 ### Send from code
 
+The same request in every language is `POST /emails`:
+
+```json
+{"from":"hello@example.com","to":"you@example.net","subject":"Welcome aboard","html":"<p>Thanks for signing up.</p>"}
+```
+
+#### TypeScript
+
+```sh
+pnpm add @dispatchmail/sdk
+```
+
 ```ts
 import { Dispatch } from "@dispatchmail/sdk";
 
-const dispatch = new Dispatch({ apiKey: process.env.DISPATCH_API_KEY });
+const dispatch = new Dispatch({ apiKey: process.env.DISPATCH_API_KEY, baseUrl: process.env.DISPATCH_API_URL });
 
-await dispatch.emails.send({
+const { data, error } = await dispatch.emails.send({
   from: "hello@example.com",
   to: "you@example.net",
   subject: "Welcome aboard",
   html: "<p>Thanks for signing up.</p>",
 });
+if (error) throw new Error(error.message);
 ```
 
-The Python SDK is in `packages/sdk-python` and the Go SDK in `packages/sdk-go`, with runnable programs in `examples/`. The `dispatch` CLI does the same from your terminal. See [docs/cli.md](cli.md).
+#### Python
+
+From a checkout:
+
+```sh
+python -m pip install ./packages/sdk-python
+```
+
+```python
+import os
+from dispatch import Dispatch
+
+dispatch = Dispatch(api_key=os.environ["DISPATCH_API_KEY"], base_url=os.environ["DISPATCH_API_URL"])
+email = dispatch.send({
+    "from": "hello@example.com",
+    "to": "you@example.net",
+    "subject": "Welcome aboard",
+    "html": "<p>Thanks for signing up.</p>",
+})
+# API errors raise DispatchError.
+```
+
+#### Go
+
+The module is `github.com/dispatch/dispatch-go`. To use the SDK from this checkout:
+
+```sh
+go mod edit -require=github.com/dispatch/dispatch-go@v0.0.0
+go mod edit -replace=github.com/dispatch/dispatch-go=./packages/sdk-go
+```
+
+```go
+import dispatch "github.com/dispatch/dispatch-go"
+
+client := dispatch.New("") // Reads DISPATCH_API_KEY and DISPATCH_API_URL.
+email, err := client.Send(dispatch.Map{
+    "from": "hello@example.com", "to": "you@example.net",
+    "subject": "Welcome aboard", "html": "<p>Thanks for signing up.</p>",
+}, "")
+if err != nil { return err }
+_ = email
+```
+
+Runnable programs are in `examples/`. The `dispatch` CLI does the same from your terminal. See [docs/cli.md](cli.md).
 
 Ordinary sends are **Transactional** when you omit `topic_id` (`topicId` in TypeScript): no contact, topic, or automation is needed. Set it for **Marketing** to respect opt-outs and add recipient-specific unsubscribe links and one-click headers. There is no new `kind` field on the send API or `emails.send`. Automation steps store their kind explicitly; Marketing drafts can wait for a topic but cannot be enabled or resumed without one. See [sending](api/README.md#sending) and [automations](automations.md#transactional-or-marketing).
+
+### Optional lifecycle recipes
+
+Choose one of [six lifecycle recipes](automations/README.md) for newsletter welcome, onboarding, upgrades, win-back, failed payment, or reactivation. Each installs disabled using a verified sender, preserves reused templates unchanged, and documents the app-owned fields/events and review before enabling. Newsletter requires a live topic at install; other Marketing flows can defer their topics but cannot enable without them. [Offline examples](../examples/lifecycle/README.md) use the actual SDKs without sending during tests.
 
 ### Run it in production
 
@@ -295,6 +355,23 @@ The optional `reentry` field is `once` or `every_time`. New contact triggers def
 `POST /automations/{id}/stop` disables the automation and cancels active runs. It accepts an optional JSON `{ "reset_reentry": true }`; omission or `false` preserves enrollments. With `true`, only once enrollments of contacts whose active runs were actually cancelled by this stop are deleted. Completed runs keep their enrollments, other automations are unaffected, and no trigger is replayed. Already queued emails are separate resources and are not cancelled.
 
 Event names beginning with `@` are reserved for internal contact triggers and refused in new application events, definitions, event triggers, and event waits. Internal triggers are hidden from `/fired-events`, do not match event triggers or wake waits, and never require the application to fire an event manually. Step-triggered writes cannot start their own automation; cross-automation trigger chains stop at depth five.
+
+### Lifecycle presets
+
+List built-in graphs with `GET /template-library/automations` or preview one with `GET /template-library/automations/{slug}`. Install with authenticated full write permission:
+
+```http
+POST /template-library/automations/onboarding-drip/install
+Content-Type: application/json
+
+{"from":"Acme <hello@acme.com>","topic_id":"topic_123"}
+```
+
+HTTP 200 returns `{automation, templates: {created, reused}, events, properties, next_steps, request_id}`. The automation is disabled, every send binds your sender, and compatible existing dependencies and template copies are reused unchanged. A reused draft is not published. `name` is optional and defaults to the preset name.
+
+The sender needs a live verified tenant domain with sending enabled (403 otherwise); missing sender returns 422 `Choose a sender`. Newsletter welcome requires an explicit live same-tenant topic at installation, returning 422 `Choose a topic` without writes when omitted. Other Marketing presets may install without a topic, returning `Choose a topic for marketing steps`; enabling stays blocked until configured. Transactional steps never gain a topic. Unknown slugs return 404; malformed fields return 400; name, incompatible dependency, tombstone, or contention conflicts return 409 and roll back all installation writes. Review the graph and its emails before enabling. See the [six recipes](automations/README.md).
+
+`GET /events` list rows include `fired_count` and nullable `last_fired_at`. Counts match live, tenant-scoped firings by definition name, excluding deleted and internal `@` events. A never-fired definition has `0` and `null`; detail responses remain unchanged.
 
 ### Contact imports
 
@@ -530,11 +607,21 @@ A Subscribed to topic trigger starts when effective receipt changes from off to 
 
 Give an ordinary send a `topic_id`, or choose a Topic on an automation send step, to make it Marketing. Dispatch adds one-click unsubscribe headers and fills the template's unsubscribe placeholders with signed, recipient-specific preference links. It rechecks opt-outs at delivery. Broadcasts are Marketing and respect global unsubscribes and any selected topic.
 
-Without a topic, an ordinary or automation send is Transactional and does not use marketing subscription checks. Use that for requested receipts or password resets, not to bypass a person's marketing preference.
+Without a topic, an ordinary send is Transactional and does not use marketing subscription checks. Automation steps store kind explicitly: a Marketing draft without a topic stays Marketing and cannot enable or resume without a live topic. Use that for requested receipts or password resets, not to bypass a person's marketing preference.
 
 Suppressions are separate from subscriptions: manual suppressions, permanent bounces, and complaints can block delivery regardless of topic preference. Open Suppressions from either Audience or Emails, or inspect them through the API.
 
 See [Marketing sending behavior](api/README.md#sending), [templates](templates.md#variables), and [unsubscribe webhooks](webhooks.md).
+
+## App-owned lifecycle state
+
+[Lifecycle recipes](automations/README.md) declare activated (boolean), plan (string), or last_active_at (date) as needed. Your app writes actual values at signup, activation, billing changes and meaningful activity. Payloads do not update properties; installed definitions do not populate state. Preserve consent rather than resetting subscription flags to make a flow run.
+
+## Ask your agent
+
+```text
+Help me add and inspect Dispatch contacts while preserving their consent preferences. Use the public documentation for my running Dispatch version and only shipped endpoints and SDK methods. Read DISPATCH_API_URL and DISPATCH_API_KEY from my environment; never print or embed the key. Respect my current permissions and ask for confirmation before sending email, publishing, deleting, or changing live configuration.
+```
 
 ---
 
@@ -578,6 +665,8 @@ Fire an event with `POST /events/send`:
 The API returns `202` after storing the event and runs. The worker executes the steps. The example address is a sandbox recipient, so any resulting email is inspectable but does not reach a provider.
 
 An event definition under `/events` is optional. If you define a payload schema, Dispatch checks fired payloads against it. Creating a definition does not fire an event.
+
+`GET /events` list rows include `fired_count` and nullable `last_fired_at` for live fired events in your tenant. An unused definition has `0` and `null`; null is not the current time. Internal contact events and deleted fired rows are excluded. These counts describe recorded events, not successful email delivery.
 
 When a fired event names a new email address, Dispatch creates a subscribed contact before starting runs. It also fills missing first and last names from the payload, without replacing names already present. A deleted contact is not revived. Other payload fields remain event data; they are not automatically stored as contact properties.
 
@@ -1054,6 +1143,749 @@ Starting again accepts future events; it does not resume stopped runs or replay 
 
 For run notifications, see [webhooks](webhooks.md).
 
+## Lifecycle presets
+
+Choose one of [six lifecycle recipes](automations/README.md) or a blank graph. Read-only listing and preview install nothing. Installation creates a disabled flow and missing compatible definitions, preserving reused templates unchanged. Newsletter requires a live topic at install; other Marketing presets may defer topics but cannot enable without them. Review app-owned fields/events, freshness, content and billing limits first.
+
+```sh
+dispatch automations create --preset onboarding-drip --from hello@acme.com --topic topic_123
+```
+
+Preset mode makes name optional and rejects custom graph, trigger, status and re-entry flags. Its --topic binds Marketing steps and the newsletter trigger. Blank/custom mode retains the topic_subscribed-trigger meaning of --topic.
+
+## Ask your agent
+
+```text
+Help me review Dispatch lifecycle presets and draft a disabled automation using the shipped API. Use the public documentation for my running Dispatch version and only shipped endpoints and SDK methods. Read DISPATCH_API_URL and DISPATCH_API_KEY from my environment; never print or embed the key. Respect my current permissions and ask for confirmation before sending email, publishing, deleting, or changing live configuration.
+```
+
+---
+
+Source: [docs/automations/README.md](automations/README.md)
+
+# Lifecycle recipes
+
+Six starting points, installed disabled. Transactional sending remains one request; lifecycle setup is optional.
+
+| Stage | Recipe | Starts when |
+|:---|:---|:---|
+| acquisition | [Newsletter welcome](automations/newsletter-welcome.md) | `{"type":"topic_subscribed","topic_id":"{{topic_id}}"}` |
+| onboarding | [Onboarding drip](automations/onboarding-drip.md) | `{"type":"contact_created"}` |
+| retention | [Invite to upgrade](automations/invite-to-upgrade.md) | `{"type":"event","event_name":"usage.limit_reached"}` |
+| reengagement | [Win back](automations/win-back.md) | `{"type":"event","event_name":"user.inactive"}` |
+| dunning | [Failed payment](automations/failed-payment.md) | `{"type":"event","event_name":"stripe.invoice.payment_failed"}` |
+| reactivation | [Come back](automations/come-back.md) | `{"type":"contact_updated","field":"plan","to":"canceled"}` |
+
+## Discover and install
+
+`GET /template-library/automations` returns `{object: "list", has_more: false, data: [...]}`. This fixed collection has slugs, not ID cursors. `GET /template-library/automations/{slug}` returns `{object: "automation_preset", ...definition}`. Listing and preview install nothing.
+
+### TypeScript
+
+```ts
+const presets = await dispatch.templates.library.automations();
+const preset = await dispatch.templates.library.automation("onboarding-drip");
+const installed = await dispatch.templates.library.installAutomation("onboarding-drip", {
+  from: "Acme <hello@acme.com>", topicId: "topic_123",
+});
+if (installed.error) throw new Error(installed.error.message);
+// installed.data.automation.status === "disabled"
+```
+
+### Python
+
+```python
+installed = dispatch.template_library_install_automation(
+    "onboarding-drip", **{"from": "Acme <hello@acme.com>", "topic_id": "topic_123"})
+# Exceptions propagate; installed["automation"]["status"] == "disabled"
+```
+
+### Go
+
+```go
+installed, err := client.TemplateLibraryInstallAutomation("onboarding-drip", dispatch.AutomationInstallInput{
+    From: "Acme <hello@acme.com>", TopicID: "topic_123",
+})
+if err != nil { return err }
+// installed.Automation.Status == "disabled"
+```
+
+Authenticated `POST /template-library/automations/{slug}/install` accepts `{name?, from, topic_id?}`. HTTP 200 returns a full disabled automation, templates.created/reused (IDs/slugs), newly created events/properties and next_steps, with existing request_id metadata. Empty arrays remain present. A sender on a verified, sending-enabled live tenant domain is required (missing: 422 `Choose a sender`). Newsletter also requires a live same-tenant topic (missing: 422 `Choose a topic`). Other Marketing presets can install topicless, but cannot enable until every Marketing step has a live topic.
+
+`next_steps` is ordered: `Choose a topic for marketing steps` when missing, then `Review the automation and its emails`, then `Enable the automation`. Newsletter never installs with an unresolved topic. The newsletter placeholder above belongs to the read-only definition, not an install request or stored trigger.
+
+## Review before enabling
+
+A second installation needs a distinct name; live name conflicts return 409. Compatible definitions are reused unchanged; incompatible types return 409. New template copies are published, but reused edited/draft copies are never overwritten or auto-published. Review publication, variables, content, brand, links, consent and business timing. Explicitly enable with `dispatch.automations.update(id, { status: "enabled" })` or `PATCH /automations/{id}` with `{"status":"enabled"}`. next_steps are guidance, not proof of complete app data.
+
+Recipes preserve shipped freshness, graph and re-entry. Newsletter uses a binary Condition; a general Branch still needs 2–10 paths plus Otherwise. Following filters recheck on resume; enable does not replay history. Payment waits are contact/event-name based, not invoice-correlated. The preset does not cancel subscriptions or configure an authenticated Stripe receiver.
+
+[Offline SDK examples and checks](../examples/lifecycle/README.md) make no live requests on import or test. See [automation semantics](automations.md), [properties and consent](audience.md), [variables](templates.md#variables) and [domains](domains.md).
+
+## Ask your agent
+
+```text
+Help me review Dispatch lifecycle presets and draft a disabled automation using the shipped API. Use the public documentation for my running Dispatch version and only shipped endpoints and SDK methods. Read DISPATCH_API_URL and DISPATCH_API_KEY from my environment; never print or embed the key. Respect my current permissions and ask for confirmation before sending email, publishing, deleting, or changing live configuration.
+```
+
+---
+
+Source: [docs/automations/come-back.md](automations/come-back.md)
+
+# Come back
+
+## Goal
+
+Offer a return incentive two weeks after an account moves to a canceled plan.
+
+## App-owned state and events
+
+Your app owns `plan` (string): initialize from billing truth; set canceled only after actual cancellation; set the restored plan after reactivation. No custom event is required. Changed live values start the flow; repeated canceled writes are no-ops.
+
+Installation creates missing compatible definitions, not values or a producer. Existing property types and declared event-field types must be compatible; conflicts return 409 rather than silent rewrites.
+
+## Trigger and re-entry
+
+Trigger: `{"type":"contact_updated","field":"plan","to":"canceled"}`. Re-entry: `once`. Lifetime once per identified contact, including after completion or failure. Enabling does not replay old events or enroll existing contacts.
+
+## Ordered graph and freshness
+
+| Key | Step/config | Next path |
+|:---|:---|:---|
+| `trigger` | `trigger`: `{"type":"contact_updated","field":"plan","to":"canceled"}` | default → `freshness` |
+| `freshness` | `filter`: `{"rule":{"type":"rule","field":"event.received_at","operator":"within","value":"21 days"},"scope":"following"}` | default → `wait` |
+| `wait` | `delay`: `{"duration":"14 days"}` | default → `still_canceled` |
+| `still_canceled` | `filter`: `{"rule":{"type":"rule","field":"contact.plan","operator":"eq","value":"canceled"},"scope":"next"}` | default → `offer` |
+| `offer` | `send_email`: `{"template":"come-back-offer","kind":"marketing"}` | default → `exit` |
+| `exit` | `exit`: `{}` | End |
+
+The trigger has to canceled with no from constraint. After fourteen days contact.plan eq canceled gates the offer. Restored or missing plans exit. The automation does not cancel or restore a subscription.
+
+Freshness uses scope following: it rechecks before every later step, including resumed delays/event waits after a pause. It uses recorded time, not a payload timestamp. Stale guards exit with `exit_reason: "filter"`; resume does not reset clocks. Contact rules use current stored values, not property-definition fallbacks. Already queued emails are not cancelled.
+
+## Install, review, enable
+
+Choose a sender on a live, verified, sending-enabled tenant domain; display names are accepted. Installation binds from on every send step without altering template senders. Verification at installation is not a permanent sending guarantee. Use a full-access key and write permission; Viewers can inspect, not install or enable.
+
+Topic is optional at install, but every Marketing step needs a live topic before enable. Topicless installation stays disabled with `Choose a topic for marketing steps`; enable returns 422. The selected topic binds only Marketing steps, never Transactional steps.
+
+```sh
+dispatch automations create --preset come-back --from 'Acme <hello@acme.com>' --topic topic_123
+# Optional: --name 'Your distinct automation name'
+dispatch automations get auto_123
+```
+
+After review, enable explicitly (replace auto_123 with the returned automation.id):
+
+```sh
+dispatch automations update auto_123 --status enabled
+```
+
+Authenticated `POST /template-library/automations/come-back/install` accepts `{"from":"Acme <hello@acme.com>","topic_id":"topic_123"}`. HTTP 200 returns `{automation, templates: {created, reused}, events, properties, next_steps}` and existing request_id metadata. Empty arrays are present; events/properties list newly created definitions only. Automation status is always disabled. Reinstall with another name: a live name conflict returns 409, not silent idempotency.
+
+### TypeScript
+
+```ts
+import { Dispatch, type Result } from "@dispatchmail/sdk";
+
+function value<T>(result: Result<T>): T {
+  if (result.error) throw new Error(result.error.message);
+  return result.data;
+}
+const dispatch = new Dispatch({ apiKey: process.env.DISPATCH_API_KEY, baseUrl: process.env.DISPATCH_API_URL });
+const installed = value(await dispatch.templates.library.installAutomation("come-back", { from: "Acme <hello@acme.com>", topicId: "topic_123" }));
+const id = installed.automation.id;
+value(await dispatch.automations.get(id));
+for (const template of [...installed.templates.created, ...installed.templates.reused]) {
+  value(await dispatch.templates.get(template.id));
+}
+// STOP: inspect next_steps, graph, content, variables, links, brand and publication.
+```
+
+After reviewing the graph and every email, enable in a separate approved operation:
+
+```ts
+value(await dispatch.automations.update(id, { status: "enabled" }));
+```
+
+Missing library copies are installed published. Reused edited or draft copies are never overwritten, repaired or auto-published. Inspect the published version; render a draft with real variables using `dispatch.templates.render(templateId, variables, { draft: true })` and check its error. Publish only an explicitly approved draft with `dispatch.templates.publish(templateId)`. Review [Brand](templates.md#brand), consent, sender, topics and business timing before the separate enable call. Server next_steps are guidance, not assurance that arbitrary caller data or edited copies are ready.
+
+## App calls
+
+These real SDK functions use the value error-checking helper in [offline examples](../examples/lifecycle/recipes.ts). Importing makes no requests. Invoking changes data and can trigger email after enabling.
+
+```ts
+export async function cancelPlan(dispatch: Dispatch, email: string) {
+  // Only after the billing system actually cancels the subscription.
+  return value(await dispatch.contacts.update({ email, properties: { plan: "canceled" } }));
+}
+
+export async function restorePlan(dispatch: Dispatch, email: string) {
+  return value(await dispatch.contacts.update({ email, properties: { plan: "pro" } }));
+}
+```
+
+Updates assume a live existing contact and preserve consent. Create actual new signups with `dispatch.contacts.create({ email, firstName: "Ada", properties: yourActualState })`; do not revive deleted contacts to force a campaign.
+
+Inspect `dispatch.automations.runs.list(id)` and `dispatch.automations.runs.get(id, runId)` for outputs and filter exits; queued does not mean delivered.
+
+## Ask your agent
+
+```text
+Help me review Dispatch lifecycle presets and draft a disabled automation using the shipped API. Use the public documentation for my running Dispatch version and only shipped endpoints and SDK methods. Read DISPATCH_API_URL and DISPATCH_API_KEY from my environment; never print or embed the key. Respect my current permissions and ask for confirmation before sending email, publishing, deleting, or changing live configuration.
+```
+
+---
+
+Source: [docs/automations/failed-payment.md](automations/failed-payment.md)
+
+# Failed payment
+
+## Goal
+
+Notify about a failed invoice, wait for payment and follow up on timeouts.
+
+## App-owned state and events
+
+No contact property is declared. Manually produce stripe.invoice.payment_failed through the SDK today with actual billing strings: AMOUNT, UPDATE_PAYMENT_URL, INVOICE_NUMBER, invoice_id. Produce stripe.invoice.paid with invoice_id after confirmed payment. Your app owns deduplication, ordering and billing truth.
+
+Installation creates missing compatible definitions, not values or a producer. Existing property types and declared event-field types must be compatible; conflicts return 409 rather than silent rewrites.
+
+## Trigger and re-entry
+
+Trigger: `{"type":"event","event_name":"stripe.invoice.payment_failed"}`. Re-entry: `every_time`. Every matching event can start another run; callers must deduplicate unwanted repeats. Enabling does not replay old events or enroll existing contacts.
+
+## Ordered graph and freshness
+
+| Key | Step/config | Next path |
+|:---|:---|:---|
+| `trigger` | `trigger`: `{"type":"event","event_name":"stripe.invoice.payment_failed"}` | default → `freshness` |
+| `freshness` | `filter`: `{"rule":{"type":"rule","field":"event.received_at","operator":"within","value":"10 days"},"scope":"following"}` | default → `failed` |
+| `failed` | `send_email`: `{"template":"payment-failed","kind":"transactional"}` | default → `first_wait` |
+| `first_wait` | `wait_for_event`: `{"event_name":"stripe.invoice.paid","timeout":"3 days"}` | event_received → `exit`; timeout → `reminder` |
+| `reminder` | `send_email`: `{"template":"card-update-reminder","kind":"transactional"}` | default → `second_wait` |
+| `second_wait` | `wait_for_event`: `{"event_name":"stripe.invoice.paid","timeout":"4 days"}` | event_received → `exit`; timeout → `canceled` |
+| `canceled` | `send_email`: `{"template":"subscription-canceled","kind":"transactional"}` | default → `exit` |
+| `exit` | `exit`: `{}` | End |
+
+Both paid-event waits match contact/email and event name, not invoice_id. A paid event for another invoice can end the run; including invoice_id adds no automatic correlation. These waits consume later events, not historical invoice state. Prevent overlapping invoice runs or adapt a reviewed flow. The preset does not cancel a subscription. Billing must actually cancel before the final subscription-canceled notice; this graph has no cancellation-state guard. Do not enable unchanged if your billing policy cannot guarantee that timing.
+
+Freshness uses scope following: it rechecks before every later step, including resumed delays/event waits after a pause. It uses recorded time, not a payload timestamp. Stale guards exit with `exit_reason: "filter"`; resume does not reset clocks. Contact rules use current stored values, not property-definition fallbacks. Already queued emails are not cancelled.
+
+## Install, review, enable
+
+Choose a sender on a live, verified, sending-enabled tenant domain; display names are accepted. Installation binds from on every send step without altering template senders. Verification at installation is not a permanent sending guarantee. Use a full-access key and write permission; Viewers can inspect, not install or enable.
+
+All sends are Transactional: no topic is required or attached to these steps.
+
+```sh
+dispatch automations create --preset failed-payment --from 'Acme <hello@acme.com>'
+# Optional: --name 'Your distinct automation name'
+dispatch automations get auto_123
+```
+
+After review, enable explicitly (replace auto_123 with the returned automation.id):
+
+```sh
+dispatch automations update auto_123 --status enabled
+```
+
+Authenticated `POST /template-library/automations/failed-payment/install` accepts `{"from":"Acme <hello@acme.com>"}`. HTTP 200 returns `{automation, templates: {created, reused}, events, properties, next_steps}` and existing request_id metadata. Empty arrays are present; events/properties list newly created definitions only. Automation status is always disabled. Reinstall with another name: a live name conflict returns 409, not silent idempotency.
+
+### TypeScript
+
+```ts
+import { Dispatch, type Result } from "@dispatchmail/sdk";
+
+function value<T>(result: Result<T>): T {
+  if (result.error) throw new Error(result.error.message);
+  return result.data;
+}
+const dispatch = new Dispatch({ apiKey: process.env.DISPATCH_API_KEY, baseUrl: process.env.DISPATCH_API_URL });
+const installed = value(await dispatch.templates.library.installAutomation("failed-payment", { from: "Acme <hello@acme.com>" }));
+const id = installed.automation.id;
+value(await dispatch.automations.get(id));
+for (const template of [...installed.templates.created, ...installed.templates.reused]) {
+  value(await dispatch.templates.get(template.id));
+}
+// STOP: inspect next_steps, graph, content, variables, links, brand and publication.
+```
+
+After reviewing the graph and every email, enable in a separate approved operation:
+
+```ts
+value(await dispatch.automations.update(id, { status: "enabled" }));
+```
+
+Missing library copies are installed published. Reused edited or draft copies are never overwritten, repaired or auto-published. Inspect the published version; render a draft with real variables using `dispatch.templates.render(templateId, variables, { draft: true })` and check its error. Publish only an explicitly approved draft with `dispatch.templates.publish(templateId)`. Review [Brand](templates.md#brand), consent, sender, topics and business timing before the separate enable call. Server next_steps are guidance, not assurance that arbitrary caller data or edited copies are ready.
+
+## App calls
+
+These real SDK functions use the value error-checking helper in [offline examples](../examples/lifecycle/recipes.ts). Importing makes no requests. Invoking changes data and can trigger email after enabling.
+
+```ts
+export type Invoice = { amount: string; updatePaymentUrl: string; number: string; id: string };
+
+export async function paymentFailed(dispatch: Dispatch, email: string, invoice: Invoice) {
+  // Actual billing values, never library preview samples.
+  return value(await dispatch.events.send({ event: "stripe.invoice.payment_failed", email,
+    payload: { AMOUNT: invoice.amount, UPDATE_PAYMENT_URL: invoice.updatePaymentUrl,
+      INVOICE_NUMBER: invoice.number, invoice_id: invoice.id } }));
+}
+
+export async function invoicePaid(dispatch: Dispatch, email: string, invoiceId: string) {
+  return value(await dispatch.events.send({ event: "stripe.invoice.paid", email,
+    payload: { invoice_id: invoiceId } }));
+}
+```
+
+The schema type-checks supplied keys but does not require every declared key. Preview samples are not production fallbacks; missing printed payment data can fail rendering. Validate real values in your producer. Today these are manual app-owned event calls, not an automatically connected Stripe integration. Future authenticated receiver setup must verify Stripe signatures, deduplicate provider events and map billing truth before forwarding; the preset installs no receiver. See [billing integration](templates/stripe.md) and [Python/Go examples](../examples/lifecycle/README.md).
+
+Inspect `dispatch.automations.runs.list(id)` and `dispatch.automations.runs.get(id, runId)` for outputs and filter exits; queued does not mean delivered.
+
+## Ask your agent
+
+```text
+Help me review Dispatch lifecycle presets and draft a disabled automation using the shipped API. Use the public documentation for my running Dispatch version and only shipped endpoints and SDK methods. Read DISPATCH_API_URL and DISPATCH_API_KEY from my environment; never print or embed the key. Respect my current permissions and ask for confirmation before sending email, publishing, deleting, or changing live configuration.
+```
+
+---
+
+Source: [docs/automations/invite-to-upgrade.md](automations/invite-to-upgrade.md)
+
+# Invite to upgrade
+
+## Goal
+
+Invite a free account at its usage limit to upgrade, then recheck before reminding.
+
+## App-owned state and events
+
+Your app owns `plan` (string): initialize from account truth and update on every plan change. Fire usage.limit_reached once per intended notification, after persisting actual plan. Its declared payload schema is empty. Payloads do not update properties.
+
+Installation creates missing compatible definitions, not values or a producer. Existing property types and declared event-field types must be compatible; conflicts return 409 rather than silent rewrites.
+
+## Trigger and re-entry
+
+Trigger: `{"type":"event","event_name":"usage.limit_reached"}`. Re-entry: `every_time`. Every matching event can start another run; callers must deduplicate unwanted repeats. Enabling does not replay old events or enroll existing contacts.
+
+## Ordered graph and freshness
+
+| Key | Step/config | Next path |
+|:---|:---|:---|
+| `trigger` | `trigger`: `{"type":"event","event_name":"usage.limit_reached"}` | default → `freshness` |
+| `freshness` | `filter`: `{"rule":{"type":"rule","field":"event.received_at","operator":"within","value":"10 days"},"scope":"following"}` | default → `free_plan` |
+| `free_plan` | `filter`: `{"rule":{"type":"rule","field":"contact.plan","operator":"eq","value":"free"},"scope":"next"}` | default → `invite` |
+| `invite` | `send_email`: `{"template":"upgrade-invite","kind":"marketing"}` | default → `wait` |
+| `wait` | `delay`: `{"duration":"4 days"}` | default → `still_free` |
+| `still_free` | `filter`: `{"rule":{"type":"rule","field":"contact.plan","operator":"eq","value":"free"},"scope":"next"}` | default → `reminder` |
+| `reminder` | `send_email`: `{"template":"upgrade-invite","kind":"marketing","subject":"Still need more room in {{{PRODUCT_NAME}}}?"}` | default → `exit` |
+| `exit` | `exit`: `{}` | End |
+
+Both free-plan filters require exact string free, before the invite and after four days. Paid or missing plans fail. The reminder reuses upgrade-invite with subject `Still need more room in {{{PRODUCT_NAME}}}?`.
+
+Freshness uses scope following: it rechecks before every later step, including resumed delays/event waits after a pause. It uses recorded time, not a payload timestamp. Stale guards exit with `exit_reason: "filter"`; resume does not reset clocks. Contact rules use current stored values, not property-definition fallbacks. Already queued emails are not cancelled.
+
+## Install, review, enable
+
+Choose a sender on a live, verified, sending-enabled tenant domain; display names are accepted. Installation binds from on every send step without altering template senders. Verification at installation is not a permanent sending guarantee. Use a full-access key and write permission; Viewers can inspect, not install or enable.
+
+Topic is optional at install, but every Marketing step needs a live topic before enable. Topicless installation stays disabled with `Choose a topic for marketing steps`; enable returns 422. The selected topic binds only Marketing steps, never Transactional steps.
+
+```sh
+dispatch automations create --preset invite-to-upgrade --from 'Acme <hello@acme.com>' --topic topic_123
+# Optional: --name 'Your distinct automation name'
+dispatch automations get auto_123
+```
+
+After review, enable explicitly (replace auto_123 with the returned automation.id):
+
+```sh
+dispatch automations update auto_123 --status enabled
+```
+
+Authenticated `POST /template-library/automations/invite-to-upgrade/install` accepts `{"from":"Acme <hello@acme.com>","topic_id":"topic_123"}`. HTTP 200 returns `{automation, templates: {created, reused}, events, properties, next_steps}` and existing request_id metadata. Empty arrays are present; events/properties list newly created definitions only. Automation status is always disabled. Reinstall with another name: a live name conflict returns 409, not silent idempotency.
+
+### TypeScript
+
+```ts
+import { Dispatch, type Result } from "@dispatchmail/sdk";
+
+function value<T>(result: Result<T>): T {
+  if (result.error) throw new Error(result.error.message);
+  return result.data;
+}
+const dispatch = new Dispatch({ apiKey: process.env.DISPATCH_API_KEY, baseUrl: process.env.DISPATCH_API_URL });
+const installed = value(await dispatch.templates.library.installAutomation("invite-to-upgrade", { from: "Acme <hello@acme.com>", topicId: "topic_123" }));
+const id = installed.automation.id;
+value(await dispatch.automations.get(id));
+for (const template of [...installed.templates.created, ...installed.templates.reused]) {
+  value(await dispatch.templates.get(template.id));
+}
+// STOP: inspect next_steps, graph, content, variables, links, brand and publication.
+```
+
+After reviewing the graph and every email, enable in a separate approved operation:
+
+```ts
+value(await dispatch.automations.update(id, { status: "enabled" }));
+```
+
+Missing library copies are installed published. Reused edited or draft copies are never overwritten, repaired or auto-published. Inspect the published version; render a draft with real variables using `dispatch.templates.render(templateId, variables, { draft: true })` and check its error. Publish only an explicitly approved draft with `dispatch.templates.publish(templateId)`. Review [Brand](templates.md#brand), consent, sender, topics and business timing before the separate enable call. Server next_steps are guidance, not assurance that arbitrary caller data or edited copies are ready.
+
+## App calls
+
+These real SDK functions use the value error-checking helper in [offline examples](../examples/lifecycle/recipes.ts). Importing makes no requests. Invoking changes data and can trigger email after enabling.
+
+```ts
+export async function reachLimit(dispatch: Dispatch, email: string) {
+  // Actual free account state first; payloads do not update contact.plan.
+  value(await dispatch.contacts.update({ email, properties: { plan: "free" } }));
+  return value(await dispatch.events.send({ event: "usage.limit_reached", email, payload: {} }));
+}
+
+export async function upgrade(dispatch: Dispatch, email: string) {
+  return value(await dispatch.contacts.update({ email, properties: { plan: "pro" } }));
+}
+```
+
+Updates assume a live existing contact and preserve consent. Create actual new signups with `dispatch.contacts.create({ email, firstName: "Ada", properties: yourActualState })`; do not revive deleted contacts to force a campaign.
+
+Inspect `dispatch.automations.runs.list(id)` and `dispatch.automations.runs.get(id, runId)` for outputs and filter exits; queued does not mean delivered.
+
+## Ask your agent
+
+```text
+Help me review Dispatch lifecycle presets and draft a disabled automation using the shipped API. Use the public documentation for my running Dispatch version and only shipped endpoints and SDK methods. Read DISPATCH_API_URL and DISPATCH_API_KEY from my environment; never print or embed the key. Respect my current permissions and ask for confirmation before sending email, publishing, deleting, or changing live configuration.
+```
+
+---
+
+Source: [docs/automations/newsletter-welcome.md](automations/newsletter-welcome.md)
+
+# Newsletter welcome
+
+## Goal
+
+Welcome a subscriber and recommend tips or setup based on current activation.
+
+## App-owned state and events
+
+Your app owns `activated` (boolean): initialize false before subscribing; set true when setup completes. No custom event is required. Change topic preferences only with consent.
+
+Installation creates missing compatible definitions, not values or a producer. Existing property types and declared event-field types must be compatible; conflicts return 409 rather than silent rewrites.
+
+## Trigger and re-entry
+
+Trigger: `{"type":"topic_subscribed","topic_id":"{{topic_id}}"}`. Installation binds the placeholder to the selected live topic. Re-entry: `once`. Lifetime once per identified contact, including after completion or failure. Enabling does not replay old events or enroll existing contacts.
+
+## Ordered graph and freshness
+
+| Key | Step/config | Next path |
+|:---|:---|:---|
+| `trigger` | `trigger`: `{"type":"topic_subscribed","topic_id":"{{topic_id}}"}` | default → `freshness` |
+| `freshness` | `filter`: `{"rule":{"type":"rule","field":"event.received_at","operator":"within","value":"7 days"},"scope":"following"}` | default → `welcome` |
+| `welcome` | `send_email`: `{"template":"newsletter-welcome","kind":"marketing"}` | default → `wait` |
+| `wait` | `delay`: `{"duration":"3 days"}` | default → `activation` |
+| `activation` | `condition`: `{"type":"rule","field":"contact.activated","operator":"eq","value":true}` | condition_met → `tips`; condition_not_met → `setup` |
+| `tips` | `send_email`: `{"template":"feature-tips","kind":"marketing"}` | default → `exit` |
+| `setup` | `send_email`: `{"template":"setup-reminder","kind":"marketing"}` | default → `exit` |
+| `exit` | `exit`: `{}` | End |
+
+The binary Condition tests contact.activated eq true: met → tips; not met → setup. Missing activation takes setup. It is not a one-path Branch; Branch still requires 2–10 ordered paths plus Otherwise.
+
+Freshness uses scope following: it rechecks before every later step, including resumed delays/event waits after a pause. It uses recorded time, not a payload timestamp. Stale guards exit with `exit_reason: "filter"`; resume does not reset clocks. Contact rules use current stored values, not property-definition fallbacks. Already queued emails are not cancelled.
+
+## Install, review, enable
+
+Choose a sender on a live, verified, sending-enabled tenant domain; display names are accepted. Installation binds from on every send step without altering template senders. Verification at installation is not a permanent sending guarantee. Use a full-access key and write permission; Viewers can inspect, not install or enable.
+
+A live same-tenant topic is required at install: omission returns 422 validation_error, `Choose a topic`, with no installation. It binds the subscription trigger and every Marketing send.
+
+```sh
+dispatch automations create --preset newsletter-welcome --from 'Acme <hello@acme.com>' --topic topic_123
+# Optional: --name 'Your distinct automation name'
+dispatch automations get auto_123
+```
+
+After review, enable explicitly (replace auto_123 with the returned automation.id):
+
+```sh
+dispatch automations update auto_123 --status enabled
+```
+
+Authenticated `POST /template-library/automations/newsletter-welcome/install` accepts `{"from":"Acme <hello@acme.com>","topic_id":"topic_123"}`. HTTP 200 returns `{automation, templates: {created, reused}, events, properties, next_steps}` and existing request_id metadata. Empty arrays are present; events/properties list newly created definitions only. Automation status is always disabled. Reinstall with another name: a live name conflict returns 409, not silent idempotency.
+
+### TypeScript
+
+```ts
+import { Dispatch, type Result } from "@dispatchmail/sdk";
+
+function value<T>(result: Result<T>): T {
+  if (result.error) throw new Error(result.error.message);
+  return result.data;
+}
+const dispatch = new Dispatch({ apiKey: process.env.DISPATCH_API_KEY, baseUrl: process.env.DISPATCH_API_URL });
+const installed = value(await dispatch.templates.library.installAutomation("newsletter-welcome", { from: "Acme <hello@acme.com>", topicId: "topic_123" }));
+const id = installed.automation.id;
+value(await dispatch.automations.get(id));
+for (const template of [...installed.templates.created, ...installed.templates.reused]) {
+  value(await dispatch.templates.get(template.id));
+}
+// STOP: inspect next_steps, graph, content, variables, links, brand and publication.
+```
+
+After reviewing the graph and every email, enable in a separate approved operation:
+
+```ts
+value(await dispatch.automations.update(id, { status: "enabled" }));
+```
+
+Missing library copies are installed published. Reused edited or draft copies are never overwritten, repaired or auto-published. Inspect the published version; render a draft with real variables using `dispatch.templates.render(templateId, variables, { draft: true })` and check its error. Publish only an explicitly approved draft with `dispatch.templates.publish(templateId)`. Review [Brand](templates.md#brand), consent, sender, topics and business timing before the separate enable call. Server next_steps are guidance, not assurance that arbitrary caller data or edited copies are ready.
+
+## App calls
+
+These real SDK functions use the value error-checking helper in [offline examples](../examples/lifecycle/recipes.ts). Importing makes no requests. Invoking changes data and can trigger email after enabling.
+
+```ts
+export async function subscribeNewsletter(dispatch: Dispatch, email: string, topicId: string) {
+  // Opt_out-default topic; consented new subscriber, not an existing user's reset.
+  value(await dispatch.contacts.create({ email, firstName: "Ada", properties: { activated: false },
+    topics: [{ id: topicId, subscription: "opt_out" }] }));
+  return value(await dispatch.contacts.topics.update({ email,
+    topics: [{ id: topicId, subscription: "opt_in" }] }));
+}
+
+export async function activate(dispatch: Dispatch, email: string) {
+  return value(await dispatch.contacts.update({ email, properties: { activated: true } }));
+}
+```
+
+Inspect `dispatch.automations.runs.list(id)` and `dispatch.automations.runs.get(id, runId)` for outputs and filter exits; queued does not mean delivered.
+
+## Ask your agent
+
+```text
+Help me review Dispatch lifecycle presets and draft a disabled automation using the shipped API. Use the public documentation for my running Dispatch version and only shipped endpoints and SDK methods. Read DISPATCH_API_URL and DISPATCH_API_KEY from my environment; never print or embed the key. Respect my current permissions and ask for confirmation before sending email, publishing, deleting, or changing live configuration.
+```
+
+---
+
+Source: [docs/automations/onboarding-drip.md](automations/onboarding-drip.md)
+
+# Onboarding drip
+
+## Goal
+
+Welcome a new account and help unactivated accounts complete setup.
+
+## App-owned state and events
+
+Your app owns `activated` (boolean): write false at signup and true after setup completes. No custom event is required. A genuinely new contact or explicit revival starts the flow, not an update to an existing live contact.
+
+Installation creates missing compatible definitions, not values or a producer. Existing property types and declared event-field types must be compatible; conflicts return 409 rather than silent rewrites.
+
+## Trigger and re-entry
+
+Trigger: `{"type":"contact_created"}`. Re-entry: `once`. Lifetime once per identified contact, including after completion or failure. Enabling does not replay old events or enroll existing contacts.
+
+## Ordered graph and freshness
+
+| Key | Step/config | Next path |
+|:---|:---|:---|
+| `trigger` | `trigger`: `{"type":"contact_created"}` | default → `freshness` |
+| `freshness` | `filter`: `{"rule":{"type":"rule","field":"contact.created_at","operator":"within","value":"14 days"},"scope":"following"}` | default → `welcome` |
+| `welcome` | `send_email`: `{"template":"welcome","kind":"transactional","variable_mapping":{"RECIPIENT_NAME":"contact.first_name"}}` | default → `not_activated` |
+| `not_activated` | `filter`: `{"rule":{"type":"rule","field":"contact.activated","operator":"neq","value":true},"scope":"following"}` | default → `setup_wait` |
+| `setup_wait` | `delay`: `{"duration":"2 days"}` | default → `setup` |
+| `setup` | `send_email`: `{"template":"setup-reminder","kind":"marketing"}` | default → `tips_wait` |
+| `tips_wait` | `delay`: `{"duration":"3 days"}` | default → `tips` |
+| `tips` | `send_email`: `{"template":"feature-tips","kind":"marketing"}` | default → `exit` |
+| `exit` | `exit`: `{}` | End |
+
+The initial welcome is Transactional. The following contact.activated neq true guard is installed after it and prevents later Marketing when activation becomes true. Missing activation is not true and passes this specific rule.
+
+Freshness uses scope following: it rechecks before every later step, including resumed delays/event waits after a pause. It uses recorded time, not a payload timestamp. Stale guards exit with `exit_reason: "filter"`; resume does not reset clocks. Contact rules use current stored values, not property-definition fallbacks. Already queued emails are not cancelled.
+
+## Install, review, enable
+
+Choose a sender on a live, verified, sending-enabled tenant domain; display names are accepted. Installation binds from on every send step without altering template senders. Verification at installation is not a permanent sending guarantee. Use a full-access key and write permission; Viewers can inspect, not install or enable.
+
+Topic is optional at install, but every Marketing step needs a live topic before enable. Topicless installation stays disabled with `Choose a topic for marketing steps`; enable returns 422. The selected topic binds only Marketing steps, never Transactional steps.
+
+```sh
+dispatch automations create --preset onboarding-drip --from 'Acme <hello@acme.com>' --topic topic_123
+# Optional: --name 'Your distinct automation name'
+dispatch automations get auto_123
+```
+
+After review, enable explicitly (replace auto_123 with the returned automation.id):
+
+```sh
+dispatch automations update auto_123 --status enabled
+```
+
+Authenticated `POST /template-library/automations/onboarding-drip/install` accepts `{"from":"Acme <hello@acme.com>","topic_id":"topic_123"}`. HTTP 200 returns `{automation, templates: {created, reused}, events, properties, next_steps}` and existing request_id metadata. Empty arrays are present; events/properties list newly created definitions only. Automation status is always disabled. Reinstall with another name: a live name conflict returns 409, not silent idempotency.
+
+### TypeScript
+
+```ts
+import { Dispatch, type Result } from "@dispatchmail/sdk";
+
+function value<T>(result: Result<T>): T {
+  if (result.error) throw new Error(result.error.message);
+  return result.data;
+}
+const dispatch = new Dispatch({ apiKey: process.env.DISPATCH_API_KEY, baseUrl: process.env.DISPATCH_API_URL });
+const installed = value(await dispatch.templates.library.installAutomation("onboarding-drip", { from: "Acme <hello@acme.com>", topicId: "topic_123" }));
+const id = installed.automation.id;
+value(await dispatch.automations.get(id));
+for (const template of [...installed.templates.created, ...installed.templates.reused]) {
+  value(await dispatch.templates.get(template.id));
+}
+// STOP: inspect next_steps, graph, content, variables, links, brand and publication.
+```
+
+After reviewing the graph and every email, enable in a separate approved operation:
+
+```ts
+value(await dispatch.automations.update(id, { status: "enabled" }));
+```
+
+Missing library copies are installed published. Reused edited or draft copies are never overwritten, repaired or auto-published. Inspect the published version; render a draft with real variables using `dispatch.templates.render(templateId, variables, { draft: true })` and check its error. Publish only an explicitly approved draft with `dispatch.templates.publish(templateId)`. Review [Brand](templates.md#brand), consent, sender, topics and business timing before the separate enable call. Server next_steps are guidance, not assurance that arbitrary caller data or edited copies are ready.
+
+## App calls
+
+These real SDK functions use the value error-checking helper in [offline examples](../examples/lifecycle/recipes.ts). Importing makes no requests. Invoking changes data and can trigger email after enabling.
+
+```ts
+export async function startOnboarding(dispatch: Dispatch, email: string, topicId: string) {
+  // Genuinely new signup after enabling; topic preference must reflect consent.
+  return value(await dispatch.contacts.create({ email, firstName: "Ada", properties: { activated: false },
+    topics: [{ id: topicId, subscription: "opt_in" }] }));
+}
+
+export async function activate(dispatch: Dispatch, email: string) {
+  return value(await dispatch.contacts.update({ email, properties: { activated: true } }));
+}
+```
+
+Inspect `dispatch.automations.runs.list(id)` and `dispatch.automations.runs.get(id, runId)` for outputs and filter exits; queued does not mean delivered.
+
+## Ask your agent
+
+```text
+Help me review Dispatch lifecycle presets and draft a disabled automation using the shipped API. Use the public documentation for my running Dispatch version and only shipped endpoints and SDK methods. Read DISPATCH_API_URL and DISPATCH_API_KEY from my environment; never print or embed the key. Respect my current permissions and ask for confirmation before sending email, publishing, deleting, or changing live configuration.
+```
+
+---
+
+Source: [docs/automations/win-back.md](automations/win-back.md)
+
+# Win back
+
+## Goal
+
+Reconnect with an inactive user and offer an incentive only if they remain inactive.
+
+## App-owned state and events
+
+Your app owns `last_active_at` (date): store the actual meaningful activity time as an ISO timestamp; update on every return. An app inactivity job fires user.inactive (empty declared payload schema). Do not fabricate old dates to enroll someone.
+
+Installation creates missing compatible definitions, not values or a producer. Existing property types and declared event-field types must be compatible; conflicts return 409 rather than silent rewrites.
+
+## Trigger and re-entry
+
+Trigger: `{"type":"event","event_name":"user.inactive"}`. Re-entry: `every_time`. Every matching event can start another run; callers must deduplicate unwanted repeats. Enabling does not replay old events or enroll existing contacts.
+
+## Ordered graph and freshness
+
+| Key | Step/config | Next path |
+|:---|:---|:---|
+| `trigger` | `trigger`: `{"type":"event","event_name":"user.inactive"}` | default → `freshness` |
+| `freshness` | `filter`: `{"rule":{"type":"rule","field":"event.received_at","operator":"within","value":"14 days"},"scope":"following"}` | default → `miss_you` |
+| `miss_you` | `send_email`: `{"template":"we-miss-you","kind":"marketing"}` | default → `wait` |
+| `wait` | `delay`: `{"duration":"7 days"}` | default → `still_inactive` |
+| `still_inactive` | `filter`: `{"rule":{"type":"rule","field":"contact.last_active_at","operator":"not_within","value":"7 days"},"scope":"next"}` | default → `offer` |
+| `offer` | `send_email`: `{"template":"come-back-offer","kind":"marketing"}` | default → `exit` |
+| `exit` | `exit`: `{}` | End |
+
+After seven days, contact.last_active_at not_within 7 days gates the offer. Recent, absent or invalid dates fail. For valid dates not_within complements the inclusive window, including future dates; keep app clocks correct.
+
+Freshness uses scope following: it rechecks before every later step, including resumed delays/event waits after a pause. It uses recorded time, not a payload timestamp. Stale guards exit with `exit_reason: "filter"`; resume does not reset clocks. Contact rules use current stored values, not property-definition fallbacks. Already queued emails are not cancelled.
+
+## Install, review, enable
+
+Choose a sender on a live, verified, sending-enabled tenant domain; display names are accepted. Installation binds from on every send step without altering template senders. Verification at installation is not a permanent sending guarantee. Use a full-access key and write permission; Viewers can inspect, not install or enable.
+
+Topic is optional at install, but every Marketing step needs a live topic before enable. Topicless installation stays disabled with `Choose a topic for marketing steps`; enable returns 422. The selected topic binds only Marketing steps, never Transactional steps.
+
+```sh
+dispatch automations create --preset win-back --from 'Acme <hello@acme.com>' --topic topic_123
+# Optional: --name 'Your distinct automation name'
+dispatch automations get auto_123
+```
+
+After review, enable explicitly (replace auto_123 with the returned automation.id):
+
+```sh
+dispatch automations update auto_123 --status enabled
+```
+
+Authenticated `POST /template-library/automations/win-back/install` accepts `{"from":"Acme <hello@acme.com>","topic_id":"topic_123"}`. HTTP 200 returns `{automation, templates: {created, reused}, events, properties, next_steps}` and existing request_id metadata. Empty arrays are present; events/properties list newly created definitions only. Automation status is always disabled. Reinstall with another name: a live name conflict returns 409, not silent idempotency.
+
+### TypeScript
+
+```ts
+import { Dispatch, type Result } from "@dispatchmail/sdk";
+
+function value<T>(result: Result<T>): T {
+  if (result.error) throw new Error(result.error.message);
+  return result.data;
+}
+const dispatch = new Dispatch({ apiKey: process.env.DISPATCH_API_KEY, baseUrl: process.env.DISPATCH_API_URL });
+const installed = value(await dispatch.templates.library.installAutomation("win-back", { from: "Acme <hello@acme.com>", topicId: "topic_123" }));
+const id = installed.automation.id;
+value(await dispatch.automations.get(id));
+for (const template of [...installed.templates.created, ...installed.templates.reused]) {
+  value(await dispatch.templates.get(template.id));
+}
+// STOP: inspect next_steps, graph, content, variables, links, brand and publication.
+```
+
+After reviewing the graph and every email, enable in a separate approved operation:
+
+```ts
+value(await dispatch.automations.update(id, { status: "enabled" }));
+```
+
+Missing library copies are installed published. Reused edited or draft copies are never overwritten, repaired or auto-published. Inspect the published version; render a draft with real variables using `dispatch.templates.render(templateId, variables, { draft: true })` and check its error. Publish only an explicitly approved draft with `dispatch.templates.publish(templateId)`. Review [Brand](templates.md#brand), consent, sender, topics and business timing before the separate enable call. Server next_steps are guidance, not assurance that arbitrary caller data or edited copies are ready.
+
+## App calls
+
+These real SDK functions use the value error-checking helper in [offline examples](../examples/lifecycle/recipes.ts). Importing makes no requests. Invoking changes data and can trigger email after enabling.
+
+```ts
+export async function markInactive(dispatch: Dispatch, email: string, lastActiveAt: string) {
+  value(await dispatch.contacts.update({ email, properties: { last_active_at: lastActiveAt } }));
+  return value(await dispatch.events.send({ event: "user.inactive", email, payload: {} }));
+}
+
+export async function recordActivity(dispatch: Dispatch, email: string, at: string) {
+  return value(await dispatch.contacts.update({ email, properties: { last_active_at: at } }));
+}
+```
+
+Updates assume a live existing contact and preserve consent. Create actual new signups with `dispatch.contacts.create({ email, firstName: "Ada", properties: yourActualState })`; do not revive deleted contacts to force a campaign.
+
+Inspect `dispatch.automations.runs.list(id)` and `dispatch.automations.runs.get(id, runId)` for outputs and filter exits; queued does not mean delivered.
+
+## Ask your agent
+
+```text
+Help me review Dispatch lifecycle presets and draft a disabled automation using the shipped API. Use the public documentation for my running Dispatch version and only shipped endpoints and SDK methods. Read DISPATCH_API_URL and DISPATCH_API_KEY from my environment; never print or embed the key. Respect my current permissions and ask for confirmation before sending email, publishing, deleting, or changing live configuration.
+```
+
 ---
 
 Source: [docs/aws.md](aws.md)
@@ -1095,7 +1927,7 @@ Source: [docs/cli.md](cli.md)
 
 # CLI
 
-This file is generated by `scripts/cli-docs.ts` from `dispatch commands`. Edit the command definitions in `apps/cli/src/commands`, then run `pnpm exec tsx scripts/cli-docs.ts`.
+The command reference is generated by `scripts/cli-docs.ts` from `dispatch commands`. Preserve the hand-authored Lifecycle presets and Ask your agent sections when regenerating. Edit command definitions in `apps/cli/src/commands`, then run `pnpm exec tsx scripts/cli-docs.ts`.
 
 The CLI is named `dispatch` in the examples. During local development, run it through pnpm:
 
@@ -3134,6 +3966,9 @@ dispatch automations create [name] [options]
 | Option | Description |
 |:---|:---|
 | `--name <name>` | Automation name (same as the positional argument) |
+| `--preset <slug>` | Install a lifecycle preset disabled; name defaults to preset name |
+| `--from <address>` | Required sender in preset mode |
+| `--topic <id>` | Marketing topic in preset mode; required for newsletter welcome |
 | `--trigger <event>` | Event name that starts a run |
 | `--steps <json>` | Steps as a JSON array |
 | `--connections <json>` | Connections between steps as a JSON array |
@@ -3684,6 +4519,26 @@ Show worker backlog, webhook attempts, automation states, and log health (Dispat
 dispatch system
 ```
 
+## Lifecycle presets
+
+```sh
+dispatch automations create --preset onboarding-drip --from hello@acme.com --topic topic_123 --json
+dispatch automations create 'New readers' --preset newsletter-welcome --from hello@acme.com --topic topic_123
+# Review automation.id, templates.created/reused and next_steps first.
+dispatch automations get auto_123
+dispatch automations update auto_123 --status enabled
+```
+
+Name is optional (positional or --name); the server supplies the default. --steps/--file are not required. Preset mode rejects custom graph, trigger, status and re-entry flags. --topic binds Marketing steps and the newsletter trigger; blank/custom mode retains its topic_subscribed-trigger meaning. Verified sender is required. Newsletter needs a live tenant topic at install; other Marketing flows may install topicless and disabled, but cannot enable without topics.
+
+JSON preserves HTTP 200 `{automation, templates: {created, reused}, events, properties, next_steps}` and existing request_id metadata. Use automation.id, not a top-level install ID. Installation never enables, overwrites edited copies or auto-publishes reused drafts. Review [six recipes](automations/README.md). Viewers can inspect, not install; lifecycle writes need full-access/write permission.
+
+## Ask your agent
+
+```text
+Help me review Dispatch lifecycle presets and draft a disabled automation using the shipped API. Use the public documentation for my running Dispatch version and only shipped endpoints and SDK methods. Read DISPATCH_API_URL and DISPATCH_API_KEY from my environment; never print or embed the key. Respect my current permissions and ask for confirmation before sending email, publishing, deleting, or changing live configuration.
+```
+
 ---
 
 Source: [docs/deliverability/README.md](deliverability/README.md)
@@ -3765,6 +4620,16 @@ Publishing uses UPSERT with a TTL of 300 seconds. It can replace existing record
 Read the result's hosted zone, records-written count, and skipped records with reasons. Add or resolve skipped records manually, then run Doctor and Verify DNS. Publishing is not verification and does not wait for DNS propagation.
 
 See [AWS credentials and resources](aws.md) for the deployment-side setup.
+
+## Lifecycle senders
+
+[Lifecycle installation](automations/README.md) requires a live, verified, sending-enabled tenant domain. It accepts `Acme <hello@acme.com>` and binds the sender to every send step without changing reused templates. Recheck state before enabling: installation does not make verification or permissions permanent. This adds no contacts/topics to the ordinary Transactional send path.
+
+## Ask your agent
+
+```text
+Help me inspect sending domains and their verification status in Dispatch. Use the public documentation for my running Dispatch version and only shipped endpoints and SDK methods. Read DISPATCH_API_URL and DISPATCH_API_KEY from my environment; never print or embed the key. Respect my current permissions and ask for confirmation before sending email, publishing, deleting, or changing live configuration.
+```
 
 ---
 
@@ -4542,6 +5407,16 @@ Reference them with placeholders such as `{{{PRODUCT_NAME}}}` and `{{{BRAND_COLO
 Brand also sets the heading and description on the public unsubscribe page. It does not set a static unsubscribe URL: Marketing links are generated for each recipient.
 
 Brand is available through `GET /brand` and `PATCH /brand`. See [the API reference](api/README.md#routes) and [React Email's brand prop](react-email.md#brand-values).
+
+## Lifecycle library
+
+[Lifecycle recipes](automations/README.md) install an entire disabled flow. Library partitions by stage first, so staged Transactional onboarding and billing templates also appear under Lifecycle. Missing copies are created published; reused edited/draft aliases are never overwritten or auto-published. Inspect variables, kind and publication before enabling. Edit shared [Brand](templates.md#brand) values without rewriting content.
+
+## Ask your agent
+
+```text
+Help me create a reusable Dispatch email template and declare its required variables and optional fallbacks. Use the public documentation for my running Dispatch version and only shipped endpoints and SDK methods. Read DISPATCH_API_URL and DISPATCH_API_KEY from my environment; never print or embed the key. Respect my current permissions and ask for confirmation before sending email, publishing, deleting, or changing live configuration.
+```
 
 ---
 

@@ -11,6 +11,13 @@ Links are relative to this file in `docs/`.
 - [API](api/README.md): Authentication, permissions, response shapes, sending, and REST routes.
 - [Audience](audience.md): Contacts, typed properties, CSV imports, topics, and static segments.
 - [Automations](automations.md): Triggers, re-entry, email kinds, conditions, waits, and run controls.
+- [Lifecycle recipes](automations/README.md): Goal, app-owned fields, exact graph, freshness and install/review/enable examples.
+- [Come back](automations/come-back.md): Goal, app-owned fields, exact graph, freshness and install/review/enable examples.
+- [Failed payment](automations/failed-payment.md): Goal, app-owned fields, exact graph, freshness and install/review/enable examples.
+- [Invite to upgrade](automations/invite-to-upgrade.md): Goal, app-owned fields, exact graph, freshness and install/review/enable examples.
+- [Newsletter welcome](automations/newsletter-welcome.md): Goal, app-owned fields, exact graph, freshness and install/review/enable examples.
+- [Onboarding drip](automations/onboarding-drip.md): Goal, app-owned fields, exact graph, freshness and install/review/enable examples.
+- [Win back](automations/win-back.md): Goal, app-owned fields, exact graph, freshness and install/review/enable examples.
 - [AWS](aws.md): AWS resources and permissions for SES, S3, and delivery queues.
 - [CLI](cli.md): CLI credentials, commands, flags, output, and errors.
 - [Deliverability](deliverability/README.md): Sender authentication, reputation, suppression, and delivery tracking.

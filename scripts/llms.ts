@@ -7,6 +7,19 @@ import { dirname, join, posix, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const publicDocs = [
+  ...[
+    ["README", "Lifecycle recipes"],
+    ["newsletter-welcome", "Newsletter welcome"],
+    ["onboarding-drip", "Onboarding drip"],
+    ["invite-to-upgrade", "Invite to upgrade"],
+    ["win-back", "Win back"],
+    ["failed-payment", "Failed payment"],
+    ["come-back", "Come back"],
+  ].map(([slug, title]) => ({
+    path: `docs/automations/${slug}.md`,
+    title: title!,
+    summary: "Goal, app-owned fields, exact graph, freshness and install/review/enable examples.",
+  })),
   {
     path: "README.md",
     title: "Dispatch",
