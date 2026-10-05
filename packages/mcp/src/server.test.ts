@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { test } from "vitest";
 import { Dispatch } from "@dispatchmail/sdk";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/shared/inMemory.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { config, createServer } from "./server.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 

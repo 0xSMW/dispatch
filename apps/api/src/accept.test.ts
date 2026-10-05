@@ -248,8 +248,8 @@ describe.skipIf(!live)("accept", () => {
       await executeAutomationRun(db, tenantId, retry);
       expect((await db.query("select next_step_key,state from automation_runs where id=$1", [retry])).rows[0]).toMatchObject({ next_step_key: "wa", state: "waiting" });
       const fired = await fireEvent(db, tenantId, "req_after_winner", { name: "split-start", email: "new@example.test", data: {} });
-      for (const run of fired.runs) await executeAutomationRun(db, tenantId, run.id);
-      const after = (await db.query("select data from automation_steps where run_id=$1 and type='split'", [fired.runs[0]!.id])).rows;
+      for (const runId of fired.runs) await executeAutomationRun(db, tenantId, runId);
+      const after = (await db.query("select data from automation_steps where run_id=$1 and type='split'", [fired.runs[0]!])).rows;
       expect(after[0].data.variant).toBe("b");
     }, 180000);
 
