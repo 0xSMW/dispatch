@@ -41,6 +41,7 @@ export const nav = [
   { to: "/templates", label: "Templates", icon: FileText },
   { to: "/audience", label: "Audience", icon: Users },
   { to: "/metrics", label: "Metrics", icon: BarChart3 },
+  { to: "/goals", label: "Goals", icon: BarChart3 },
   { to: "/domains", label: "Domains", icon: Globe2 },
   { to: "/logs", label: "Logs", icon: ScrollText },
   { to: "/api-keys", label: "API keys", icon: KeyRound },

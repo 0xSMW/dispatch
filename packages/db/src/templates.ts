@@ -90,6 +90,9 @@ export async function addTemplateVersion(
   options: { reuseDraft?: boolean } = {},
 ) {
   if (input.publish) assertBlocks(input);
+  // All version writers serialize with explicit library updates on the parent.
+  // Holding only a version lock cannot prevent a concurrent new latest version.
+  await db.query("select id from templates where tenant_id = $1 and id = $2 for update", [tenantId, templateId]);
   const draft = options.reuseDraft ? await unpublishedDraft(db, tenantId, templateId) : null;
   const versionId = draft ?? id("version");
   if (draft) await overwriteVersion(db, tenantId, draft, input, Boolean(input.publish));
@@ -245,8 +248,8 @@ async function insertVersion(
 ) {
   await db.query(
     `insert into template_versions
-       (id, tenant_id, template_id, subject, html, text, variables, from_address, reply_to, source, published_at)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, ${publish ? "now()" : "null"})`,
+       (id, tenant_id, template_id, subject, html, text, variables, from_address, reply_to, source, published_at, created_at)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, ${publish ? "now()" : "null"}, clock_timestamp())`,
     [
       versionId,
       tenantId,

@@ -1100,4 +1100,14 @@ create index if not exists inbound_deliveries_created_idx on inbound_deliveries 
 
 -- Global bounded retention scans follow the worker's ordinary log retention cadence.
 create index if not exists inbound_deliveries_retention_idx on inbound_deliveries (created_at, id);
+
+-- Retroactive goals use sends and retained contact/event history, not attachment.
+create table if not exists goals (
+  id text primary key, tenant_id text not null references tenants(id) on delete cascade,
+  name text not null, target jsonb not null, eligibility jsonb,
+  window_days integer not null default 30 check (window_days between 1 and 365),
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now(), deleted_at timestamptz
+);
+create index if not exists goals_tenant_live_idx on goals (tenant_id, created_at, id) where deleted_at is null;
+create index if not exists custom_events_goal_idx on custom_events (tenant_id, lower(email), created_at) where deleted_at is null;
 `;

@@ -1,6 +1,6 @@
 import {
   ApiError, durationSeconds, engagementFields, isIsoDate, operatorsForType, propertyTypes, segmentRuleSchema,
-  type PropertyType, type Rule, type RuleFieldType,
+  ruleSchema, type PropertyType, type Rule, type RuleFieldType,
 } from "@dispatchmail/core";
 import type { Queryable } from "./index.js";
 import { contactColumns, type ContactRow } from "./audience.js";
@@ -92,7 +92,7 @@ function text(raw: string) {
   from parts where jsonb_typeof(value) is distinct from 'array' or value = '[]'::jsonb)`;
 }
 
-function scalar(rule: Extract<Rule, { type: "rule" }>, raw: string, type: RuleFieldType, bind: Bind): string {
+function scalar(rule: Extract<Rule, { type: "rule" }>, raw: string, type: RuleFieldType, bind: Bind, clock = "statement_timestamp()"): string {
   const { operator, value } = rule;
   if (operator === "exists") return `(${raw} is not null and ${raw} <> 'null'::jsonb)`;
   if (operator === "is_empty") return `(${raw} is null or ${raw} in ('null'::jsonb, '""'::jsonb, '[]'::jsonb))`;
@@ -103,7 +103,7 @@ function scalar(rule: Extract<Rule, { type: "rule" }>, raw: string, type: RuleFi
   if (operator === "within" || operator === "not_within") {
     const seconds = bind(durationSeconds(value as string));
     const actual = date(raw);
-    const now = "(floor(extract(epoch from statement_timestamp()) * 1000))";
+    const now = `(floor(extract(epoch from ${clock}) * 1000))`;
     const within = `(${actual} between ${now} - ${seconds}::numeric * 1000 and ${now})`;
     // Invalid/missing dates match neither operator.
     return `coalesce(${operator === "not_within" ? `not ${within}` : within}, false)`;
@@ -150,9 +150,9 @@ export function segmentPredicate(rule: Rule, bind: Bind, properties: readonly Se
   return compileRule(validated.rule, bind, validated.definitions);
 }
 
-function validateRule(rule: Rule, properties: readonly SegmentProperty[]) {
-  limits(rule);
-  const parsed = segmentRuleSchema.safeParse(rule);
+function validateRule(rule: Rule, properties: readonly SegmentProperty[], goal = false) {
+  if (!goal) limits(rule);
+  const parsed = (goal ? ruleSchema : segmentRuleSchema).safeParse(rule);
   if (!parsed.success) invalid(parsed.error.issues[0]?.message ?? "Invalid segment rule");
   const definitions = new Map<string, PropertyType>();
   for (const property of properties) {
@@ -184,6 +184,25 @@ function validateRule(rule: Rule, properties: readonly SegmentProperty[]) {
   }
   validate(parsed.data);
   return { rule: parsed.data, definitions };
+}
+
+// Goals share the grammar and typed scalar compiler, not segment-only limits.
+export function goalPredicate(rule: Rule, bind: Bind, properties: readonly SegmentProperty[]): string {
+  const validated = validateRule(rule, properties, true);
+  return compileRule(validated.rule, bind, validated.definitions);
+}
+
+export function goalStatePredicate(rule: Rule, bind: Bind, properties: readonly SegmentProperty[], state: string, clock: string): string {
+  const validated = validateRule(rule, properties, true);
+  function compile(node: Rule): string {
+    if (node.type !== "rule") return `(${node.rules.map(compile).join(node.type === "and" ? " and " : " or ")})`;
+    const key = node.field.slice(8);
+    if (!node.field.startsWith("contact.") || node.field.startsWith("email."))
+      invalid("Goal history supports contact state only");
+    const type = fields.get(key) ?? validated.definitions.get(key) ?? (["topics", "segments"].includes(key) ? "set" : undefined);
+    return scalar(node, `((${state}) -> ${bind(key)}::text)`, type!, bind, clock);
+  }
+  return compile(validated.rule);
 }
 
 function compileRule(rule: Rule, bind: Bind, definitions: ReadonlyMap<string, PropertyType>): string {
@@ -313,6 +332,10 @@ async function references(db: Queryable, tenantId: string, rule: Rule, liveScope
       throw new ApiError("not_found", 404, "Segment rule resource not found");
     }
   }
+}
+
+export async function assertGoalReferences(db: Queryable, tenantId: string, rule: Rule) {
+  await references(db, tenantId, rule, false);
 }
 
 /** Save-time validation does not execute a contact count or fetch contacts. */

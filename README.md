@@ -15,6 +15,7 @@ Every email event is traceable, so you can see what's queued, sent, delivered, b
 - **Inbound email.** Receive replies and incoming mail on your domains, and pick them up through the API or a webhook.
 - **Domains.** Adding a domain returns every DNS record SES needs: DKIM, SPF, DMARC, and MX. Dispatch can publish them to Route 53, and it checks the domain until it verifies.
 - **Tracking and metrics.** Track opens and clicks per domain, and follow delivery, bounce, and complaint rates over time.
+- **Goals.** Measure event or contact-state conversions retroactively for automation, broadcast and step sends, with current eligibility and explicit history limits. See [Goals](docs/goals.md).
 - **Webhooks.** Get a signed event for every delivery, bounce, open, and click. Failed deliveries retry automatically, and you can replay any event.
 - **Logs.** Every API request is logged, so you can see exactly what your app sent. Passwords, keys, and other secrets are removed before a log is stored.
 - **Suppressions.** A hard bounce or a complaint adds the address to the suppression list. Later sends to it are skipped and reported as `email.suppressed`.

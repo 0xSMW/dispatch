@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ReactNode } from "react";
 import { reservedVariables } from "@dispatchmail/core";
-import { themePairs, type EmailVariable } from "../emails/_theme";
+import { themePairs, themePlaceholders, type EmailVariable } from "../emails/_theme";
 import { checkLibrary, checkTemplateVariables } from "./check";
 import { paymentInput } from "./fixtures";
 import { presetIssues, presets } from "./presets";
@@ -85,6 +85,7 @@ const lifecycleInputs: Record<string, readonly string[]> = {
 };
 
 const brand = {
+  theme: themePlaceholders,
   productName: "{{{PRODUCT_NAME}}}",
   productUrl: "{{{PRODUCT_URL}}}",
   logoUrl: "{{{LOGO_URL}}}",

@@ -15,6 +15,8 @@ import {
   brandContext,
   brandSchema,
   brandTextColor,
+  assertBrandContrast,
+  resolvedTheme,
   type BrandRecord,
   batchEnvelopeSchema,
   domainSchema,
@@ -82,6 +84,7 @@ import {
   templateFrom,
   templateSelect,
   updateTemplateMeta,
+  updateLibraryTemplates,
   type TemplateRecord,
   type TemplateWrite,
   softDelete,
@@ -107,6 +110,7 @@ import { rateKey, rateLimitValue, sessionRateKey, sessionRateLimitValue, signins
 import { registerBroadcasts } from "./broadcasts.js";
 import { registerUnsubscribe } from "./unsubscribe.js";
 import { registerForms } from "./forms.js";
+import { registerGoals } from "./goals.js";
 import { registerIntegrations } from "./integrations.js";
 import { registerReceiver } from "./receiver.js";
 import {
@@ -895,15 +899,24 @@ app.get("/brand", async (request) => {
 
 app.patch("/brand", async (request) => {
   const input = brandSchema.parse(request.body ?? {});
-  const current = await tenantBrand(request.auth!.tenant_id);
-  const next: BrandRecord = { ...current };
-  for (const [key, value] of Object.entries(input)) {
-    if (value === null) delete next[key as keyof BrandRecord];
-    else (next as Record<string, unknown>)[key] = value;
-  }
-  await db.query("update tenants set brand = $2 where id = $1", [request.auth!.tenant_id, JSON.stringify(next)]);
+  const next = await tx(db, async (client) => {
+    const locked = await client.query<{ brand: BrandRecord | null }>("select brand from tenants where id=$1 for update", [request.auth!.tenant_id]);
+    const merged: BrandRecord = { ...locked.rows[0]?.brand };
+    for (const [key, value] of Object.entries(input)) {
+      if (value === null) delete merged[key as keyof BrandRecord];
+      else (merged as Record<string, unknown>)[key] = value;
+    }
+    assertBrandContrast(merged);
+    await client.query("update tenants set brand=$2 where id=$1", [request.auth!.tenant_id, JSON.stringify(merged)]);
+    return merged;
+  });
   clearBrandCache(request.auth!.tenant_id);
   return { ...presentBrand(next), variables: await previewBrand(request.auth!.tenant_id) };
+});
+app.post("/brand/update-library", async (request) => {
+  const library = await loadLibrary();
+  return tx(db, (client) => updateLibraryTemplates(client, request.auth!.tenant_id,
+    library.templates.map((entry) => libraryEntry(library, entry.slug)), library.version));
 });
 
 app.post("/templates/:id/render", async (request) => {
@@ -950,6 +963,7 @@ registerLinks(app);
 registerBroadcasts(app, { db, paging });
 registerUnsubscribe(app, { db, secret: appSecret });
 registerForms(app, { db, paging, secret: appSecret, appUrl, publicUrl });
+registerGoals(app, { db, paging });
 registerIntegrations(app, { db, paging, secret: appSecret, publicUrl });
 registerReceiver(app, { db, secret: appSecret });
 
@@ -2060,7 +2074,7 @@ async function tenantBrand(tenantId: string) {
 }
 
 function presentBrand(brand: BrandRecord) {
-  return { object: "brand" as const, ...brand, text_color: brandTextColor(brand.color || "#18181b") };
+  return { object: "brand" as const, ...brand, ...resolvedTheme(brand), button_text_color: brandTextColor(brand.color || "#18181b") };
 }
 
 async function renderBrand(tenantId: string, from?: string | null) {

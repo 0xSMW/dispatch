@@ -30,6 +30,7 @@ import { Keys } from "./views/keys/Keys";
 import { Log } from "./views/logs/Log";
 import { Logs } from "./views/logs/Logs";
 import { Metrics } from "./views/metrics/Metrics";
+import { Goals } from "./views/goals/Goals";
 import { NotFound } from "./views/NotFound";
 import { Shared } from "./views/public/Shared";
 import { Unsubscribe } from "./views/public/Unsubscribe";
@@ -97,6 +98,7 @@ export const routes = [
           { path: "audience/forms", element: <Forms /> },
 
           { path: "metrics", element: <Metrics /> },
+          { path: "goals", element: <Goals /> },
 
           { path: "domains", element: <Domains /> },
           { path: "domains/add", element: <DomainAdd /> },

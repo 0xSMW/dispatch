@@ -23,6 +23,18 @@ const remove = (path: string, summary: string, sdk: string | null): Call => ({ m
 const email = { from: "Acme <hello@acme.com>", to: ["ada@example.com"], subject: "Hello", html: "<p>Hello</p>" };
 
 const pages: Record<string, Omit<Reference, "prompt">> = {
+  "/goals": {
+    title: "Goals",
+    calls: [
+      get("/goals?limit=40", "List goals", "dispatch.goals.list({ limit: 40 })"),
+      post("/goals", "Create a retroactive event goal", 'dispatch.goals.create({ name: "Upgrade", target: { event: "upgraded" }, windowDays: 30 })',
+        { name: "Upgrade", target: { event: "upgraded" }, window_days: 30 }),
+      get("/goals/:id", "Retrieve a goal", 'dispatch.goals.get(":id")'),
+      patch("/goals/:id", "Update a goal", 'dispatch.goals.update(":id", { eligibility: null })', { eligibility: null }),
+      remove("/goals/:id", "Delete a goal", 'dispatch.goals.remove(":id")'),
+      get("/goals/:id/metrics?broadcast_id=broadcast_123", "Conversions for historical first-send cohorts", 'dispatch.goals.metrics(":id", { broadcastId: "broadcast_123" })'),
+    ],
+  },
   "/setup": { title: "Setup", calls: [get("/setup", "Onboarding progress", "dispatch.setup.get()")] },
 
   "/emails": {
@@ -312,7 +324,8 @@ const pages: Record<string, Omit<Reference, "prompt">> = {
   "/settings/smtp": { title: "SMTP", calls: [get("/system", "Relay host and ports", "dispatch.system.get()")] },
   "/settings/brand": {
     title: "Brand",
-    calls: [get("/brand", "Retrieve the brand", "dispatch.brand.get()"), patch("/brand", "Update it", 'dispatch.brand.update({ product_name: "Acme" })', { product_name: "Acme" })],
+    calls: [get("/brand", "Retrieve the brand", "dispatch.brand.get()"), patch("/brand", "Update it", 'dispatch.brand.update({ product_name: "Acme" })', { product_name: "Acme" }),
+      post("/brand/update-library", "Update unedited installed library copies; list skipped edits", "dispatch.brand.updateLibrary()")],
   },
   "/settings/unsubscribe-page": {
     title: "Unsubscribe page",
@@ -323,6 +336,7 @@ const pages: Record<string, Omit<Reference, "prompt">> = {
 
 // Canonical page prompts. Public guides can reuse these words without adding deployment secrets.
 const goals: Record<string, string> = {
+  Goals: "Help me define retroactive event or contact-state goals and compare real-send conversion cohorts. Explain current eligibility and retained-history limits.",
   Setup: "Help me complete Dispatch setup: verify a sending domain, create an API key, and send a first transactional email.",
   Emails: "Help me send and inspect transactional email with Dispatch.",
   Email: "Help me inspect an email's delivery events, attachments, and deliverability checks.",
@@ -437,11 +451,18 @@ export function sdk(call: Call, apiUrl: string) {
   ].join("\n");
 }
 
-type Arguments = "none" | "query" | "id" | "body" | "idBody" | "idQuery" | "send" | "share" | "publish" | "links" | "event" | "recipients" | "schedule" | "emails" | "unsuppress" | "render" | "install" | "integration";
+type Arguments = "none" | "query" | "id" | "body" | "idBody" | "idQuery" | "send" | "share" | "publish" | "links" | "event" | "recipients" | "schedule" | "emails" | "unsuppress" | "render" | "install" | "integration" | "goal";
 type FlatCall = [python: string | null, go: string | null, args: Arguments];
 
 // These clients are flat, not translations of the TypeScript namespace. Null means unsupported.
 const flatCalls: Record<string, FlatCall> = {
+  "GET /goals": ["goals", "Goals", "query"],
+  "POST /goals": ["create_goal", "CreateGoal", "goal"],
+  "GET /goals/:id": ["goal", "Goal", "id"],
+  "PATCH /goals/:id": ["update_goal", "UpdateGoal", "idBody"],
+  "DELETE /goals/:id": ["delete_goal", "DeleteGoal", "id"],
+  "GET /goals/:id/metrics": ["goal_metrics", "GoalMetrics", "idQuery"],
+  "POST /brand/update-library": ["update_library_templates", "UpdateLibraryTemplates", "none"],
   "GET /setup": ["setup", "Setup", "none"],
   "GET /emails": ["emails", "Emails", "query"],
   "POST /emails": ["send", "Send", "send"],
@@ -570,6 +591,9 @@ function flatCall(call: Call, language: "python" | "go"): string | null {
       case "query": input = queryArgs(); break;
       case "id": input = id; break;
       case "body": input = value(body); break;
+      case "goal": input = language === "python" ? value(body)
+        : `dispatch.GoalInput{Name: ${value(body.name)}, Target: ${value(body.target)}, WindowDays: ${value(body.window_days ?? 30)}}`;
+        break;
       case "integration": input = language === "python" ? value(body)
         : `dispatch.IntegrationInput{Provider: ${value(body.provider)}, Name: ${value(body.name)}, Secret: ${value(body.secret)}${body.slug ? `, Slug: ${value(body.slug)}` : ""}}`;
         break;

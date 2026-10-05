@@ -3,6 +3,8 @@ import { ApiError, id, list, type TemplateVariable } from "@dispatchmail/core";
 import { contactColumns, type ContactRow } from "./audience.js";
 export { settings, updateSettings } from "./settings.js";
 export * from "./forms.js";
+export * from "./goals.js";
+export * from "./library-updates.js";
 export * from "./consent.js";
 export * from "./inbound/management.js";
 export * from "./inbound/security.js";

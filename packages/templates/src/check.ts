@@ -1,4 +1,4 @@
-import { missingVariables, renderTemplate, reservedVariables } from "@dispatchmail/core";
+import { missingVariables, renderTemplate, reservedVariables, themeContext } from "@dispatchmail/core";
 import { stages } from "./types";
 
 const reserved = [
@@ -138,7 +138,7 @@ export function checkTemplateVariables(entry: Pick<Entry, "slug" | "variables" |
 }
 
 function brandContext() {
-  return Object.fromEntries(reserved.map((key) => [key, "Brand"]));
+  return { ...Object.fromEntries(reserved.map((key) => [key, "Brand"])), ...themeContext({}) };
 }
 
 function renderEntry(entry: Entry, variables: Record<string, unknown>) {

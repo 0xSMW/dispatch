@@ -711,7 +711,10 @@ export type ContactImport = {
 
 // Brand and public pages
 
-export type BrandSettings = {
+export type Goal = import("@dispatchmail/core").Goal;
+export type GoalMetrics = import("@dispatchmail/core").GoalMetrics;
+export type LibraryUpdates = import("@dispatchmail/core").LibraryUpdates;
+export type BrandSettings = Partial<import("@dispatchmail/core").ThemeTokens> & {
   object: "brand";
   product_name?: string;
   product_url?: string;
@@ -725,7 +728,7 @@ export type BrandSettings = {
   /** The public unsubscribe page's heading and the line under it. Null or absent means the default. */
   unsubscribe_title?: string | null;
   unsubscribe_description?: string | null;
-  text_color: string;
+  button_text_color?: string;
 };
 
 export type Preferences = {

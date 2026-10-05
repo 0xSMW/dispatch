@@ -117,6 +117,203 @@ afterAll(async () => {
 });
 
 describe.skipIf(!live)("accept", () => {
+  // Wave9 hand-counted actual SQL fixtures. Authored now, execution deferred to8.
+  describe("retroactive goal conversions", () => {
+    async function fixture() {
+      const tenant = (await call(fullKey, "GET", "/me")).json.tenant_id as string;
+      for (const [key, type] of [["score", "number"], ["active", "boolean"], ["eligible", "boolean"]]) {
+        expect((await post(fullKey, "/contact-properties", { key, type })).status).toBe(200);
+      }
+      const contacts: Record<string, string> = {};
+      const states: Record<string, object> = {
+        a: { score: 0, active: false, eligible: true },
+        b: { score: 0, active: true, eligible: true },
+        c: { score: 0, active: false, eligible: true },
+        d: { score: 10, active: true, eligible: true },
+        g: { score: 10, active: true, eligible: false },
+        sandbox: { score: 10, active: true, eligible: true },
+      };
+      for (const [name, properties] of Object.entries(states)) {
+        const contact = await post(fullKey, "/contacts", { email: `${name}@goals-fixture.net`, properties });
+        expect(contact.status).toBe(200);
+        contacts[name] = contact.json.id;
+        await db.query("update contacts set created_at='2026-08-01T00:00:00Z' where tenant_id=$1 and id=$2", [tenant, contact.json.id]);
+        // Replace today's synthetic creation receipts with the explicit history below.
+        await db.query("delete from contact_changes where tenant_id=$1 and contact_id=$2", [tenant, contact.json.id]);
+      }
+      const automation = id("automation"), broadcast = id("broadcast");
+      await db.query("insert into automations(id,tenant_id,name,trigger,steps) values($1,$2,'Goals fixture','goal-start','[]')", [automation, tenant]);
+      await db.query("insert into broadcasts(id,tenant_id,name,from_email,subject) values($1,$2,'Goals fixture','sender@goals-fixture.net','Goal')", [broadcast, tenant]);
+      async function send(name: string | null, date: string, options: { sandbox?: boolean; historicalReal?: boolean; step?: string } = {}) {
+        const emailId = id("email"), recipient = id("recipient");
+        await db.query(`insert into emails(id,tenant_id,request_id,from_email,subject,contact_id,automation_id,broadcast_id,automation_step,sandbox,created_at)
+          values($1,$2,'goal-fixture','sender@goals-fixture.net','Goal',$3,$4,$5,$6,$7,$8)`,
+        [emailId, tenant, name ? contacts[name] : null, automation, broadcast, options.step ?? "first", Boolean(options.sandbox || options.historicalReal), date]);
+        await db.query("insert into email_recipients(id,tenant_id,email_id,email,kind,sandbox) values($1,$2,$3,$4,'to',$5)",
+          [recipient, tenant, emailId, `${name ?? "legacy"}@goals-fixture.net`, Boolean(options.sandbox || options.historicalReal)]);
+        await db.query("insert into email_events(id,tenant_id,email_id,recipient_id,type,data,created_at) values($1,$2,$3,$4,'email.sent',$5::jsonb,$6)",
+          [id("event"), tenant, emailId, recipient, JSON.stringify({ sandbox: Boolean(options.sandbox) }), date]);
+      }
+      await send("a", "2026-09-01T10:00:00Z");
+      await send("a", "2026-09-02T09:00:00Z");
+      await send("a", "2026-09-02T12:00:00Z", { step: "followup" });
+      await send("b", "2026-09-01T11:00:00Z");
+      await send("c", "2026-08-31T10:00:00Z");
+      await send("c", "2026-09-02T10:00:00Z");
+      await send("d", "2026-09-02T12:00:00Z", { historicalReal: true });
+      await send("g", "2026-09-01T12:00:00Z");
+      await send("sandbox", "2026-09-02T15:00:00Z", { sandbox: true });
+      await send(null, "2026-09-02T16:00:00Z");
+      async function event(name: string, date: string, key = fullKey) {
+        const eventTenant = key === fullKey ? tenant : (await call(key, "GET", "/me")).json.tenant_id;
+        await db.query("insert into custom_events(id,tenant_id,request_id,name,email,data,created_at) values($1,$2,'goal-fixture','upgraded',$3,'{}',$4)",
+          [id("ce"), eventTenant, `${name.toUpperCase()}@GOALS-FIXTURE.NET`, date]);
+      }
+      await event("a", "2026-09-01T09:59:59Z"); // Before send does not convert.
+      await event("a", "2026-09-02T10:00:00Z"); // Inclusive first-send window end.
+      await event("a", "2026-09-02T20:00:00Z"); // Follow-up step window, no duplicate.
+      await event("b", "2026-09-02T11:00:01Z"); // One second too late.
+      await event("d", "2026-09-03T12:00:00Z"); // After cohort end, within conversion window.
+      await event("g", "2026-09-01T15:00:00Z");
+      await event("sandbox", "2026-09-02T16:00:00Z");
+      await event("legacy", "2026-09-02T17:00:00Z");
+      await event("b", "2026-09-01T12:00:00Z", await seedTenant()); // Foreign target does not convert.
+      async function changes(name: string, date: string, values: Array<[string, unknown, unknown]>) {
+        const request = id("receipt");
+        for (const [field, before, after] of values) await db.query(`insert into contact_changes(id,tenant_id,contact_id,field,from_value,to_value,request_id,created_at)
+          values($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8)`,
+          [id("change"), tenant, contacts[name], field, JSON.stringify(before), JSON.stringify(after), request, date]);
+      }
+      await changes("a", "2026-09-01T12:00:00Z", [["score", 0, 10], ["active", false, true]]);
+      await changes("a", "2026-09-01T15:00:00Z", [["score", 10, 0], ["active", true, false]]);
+      await changes("b", "2026-09-01T12:00:00Z", [["score", 0, 10]]);
+      await changes("b", "2026-09-01T13:00:00Z", [["score", 10, 0], ["active", false, true]]);
+      await changes("d", "2026-09-01T10:00:00Z", [["score", 0, 10], ["active", false, true]]); // Already matched at send.
+      await changes("g", "2026-09-02T12:00:00Z", [["score", 0, 10], ["active", false, true]]);
+      return { tenant, contacts, automation, broadcast };
+    }
+    const range = "start_date=2026-09-01T00:00:00Z&end_date=2026-09-03T00:00:00Z";
+    async function report(goal: string, scope: string) {
+      const response = await call(fullKey, "GET", `/goals/${goal}/metrics?${range}&${scope}`);
+      expect(response.status, JSON.stringify(response.json)).toBe(200);
+      return response.json;
+    }
+    it("hand-counts historical broadcast/automation/step events, first-send days, windows and real sandbox attribution", async () => {
+      const { automation, broadcast } = await fixture();
+      const created = await post(fullKey, "/goals", { name: "Created today", target: { event: "upgraded" }, window_days: 1 });
+      expect(created.status).toBe(200);
+      expect(Date.parse(created.json.created_at)).toBeGreaterThan(Date.parse("2026-09-03T00:00:00Z"));
+      for (const scope of [`broadcast_id=${broadcast}`, `automation_id=${automation}`, ""]) {
+        const data = await report(created.json.id, scope);
+        expect(data).toMatchObject({ contacts_reached: 4, converted: 3, rate: 0.75 });
+        expect(data.data).toEqual([
+          { date: "2026-09-01", contacts_reached: 3, converted: 2, rate: 2 / 3 },
+          { date: "2026-09-02", contacts_reached: 1, converted: 1, rate: 1 },
+        ]);
+      }
+      expect(await report(created.json.id, `automation_id=${automation}&step_key=followup`))
+        .toMatchObject({ contacts_reached: 1, converted: 1, rate: 1 });
+      // No dependency on today's edited graph: historical removed steps still report.
+      expect(await report(created.json.id, `automation_id=${automation}&step_key=removed`))
+        .toMatchObject({ contacts_reached: 0, converted: 0, rate: 0 });
+      await call(fullKey, "PATCH", `/goals/${created.json.id}`, {
+        eligibility: { type: "rule", field: "contact.eligible", operator: "eq", value: true },
+      });
+      expect(await report(created.json.id, `broadcast_id=${broadcast}`))
+        .toMatchObject({ contacts_reached: 3, converted: 2, rate: 2 / 3 });
+    });
+    it("counts coherent whole-rule state entry rather than current match or independent changed leaves", async () => {
+      const { broadcast } = await fixture();
+      const created = await post(fullKey, "/goals", { name: "Activated", window_days: 1, target: { rule: {
+        type: "and", rules: [
+          { type: "rule", field: "contact.score", operator: "gte", value: 10 },
+          { type: "rule", field: "contact.active", operator: "eq", value: true },
+        ],
+      } } });
+      expect(created.status).toBe(200);
+      const metrics = await report(created.json.id, `broadcast_id=${broadcast}`);
+      expect(metrics).toMatchObject({ contacts_reached: 4, converted: 2, rate: 0.5 });
+      expect(metrics.data).toEqual([
+        { date: "2026-09-01", contacts_reached: 3, converted: 2, rate: 2 / 3 },
+        { date: "2026-09-02", contacts_reached: 1, converted: 0, rate: 0 },
+      ]);
+      expect(metrics.history.available_from).toBe("2026-09-01T10:00:00.000Z");
+      expect(metrics.history.limitation).toMatch(/recorded contact changes/);
+    });
+    it("enforces goal CRUD validation, read/full/send-key and tenant boundaries", async () => {
+      const { broadcast } = await fixture();
+      const created = await post(fullKey, "/goals", { name: "Permissions", target: { event: "upgraded" } });
+      const goal = created.json.id;
+      const viewer = await teammate("Viewer"), session = await signInAs(viewer.email, viewer.password);
+      for (const path of ["/goals", `/goals/${goal}`, `/goals/${goal}/metrics?${range}&broadcast_id=${broadcast}`])
+        expect((await call(session.token, "GET", path)).status).toBe(200);
+      for (const [method, path, body] of [
+        ["POST", "/goals", { name: "Denied", target: { event: "upgraded" } }],
+        ["PATCH", `/goals/${goal}`, { name: "Denied" }], ["DELETE", `/goals/${goal}`, undefined],
+      ] as const) expect((await call(session.token, method, path, body)).status).toBe(403);
+      const other = await seedTenant();
+      expect((await call(other, "GET", `/goals/${goal}`)).status).toBe(404);
+      const sending = await post(fullKey, "/api-keys", { name: "Send only", scope: "send" });
+      expect((await call(sending.json.token, "GET", "/goals")).status).toBe(401);
+      for (const input of [{ window_days: 0 }, { target: { event: "@reserved" } }, { target: { event: "x", rule: {} } }])
+        expect((await call(fullKey, "PATCH", `/goals/${goal}`, input)).status).toBe(400);
+      expect((await call(fullKey, "GET", `/goals/${goal}/metrics?automation_id=x&broadcast_id=y`)).status).toBe(400);
+      expect((await call(fullKey, "DELETE", `/goals/${goal}`)).json).toMatchObject({ deleted: true });
+      expect((await call(fullKey, "GET", `/goals/${goal}`)).status).toBe(404);
+    });
+  });
+  describe("theme library updates", () => {
+    it("validates nondefault tokens and safely updates only latest unedited library copies", async () => {
+      const { themeVariables } = await import("@dispatchmail/core");
+      const original = await post(fullKey, "/template-library/welcome/install", {});
+      const edited = await post(fullKey, "/template-library/feature-tips/install", {});
+      expect(original.status).toBe(200);
+      expect(edited.status).toBe(200);
+      const originalId = original.json.id, editedId = edited.json.id;
+      // Both normal patch and alternate version creation remove library provenance.
+      expect((await call(fullKey, "PATCH", `/templates/${editedId}`, { html: "<p>Tenant-owned exact HTML</p>" })).status).toBe(200);
+      const tenant = (await call(fullKey, "GET", "/me")).json.tenant_id;
+      const { addTemplateVersion } = await import("@dispatchmail/db");
+      const installed = await call(fullKey, "GET", `/templates/${originalId}`);
+      await tx(db, (client) => addTemplateVersion(client, tenant, originalId, {
+        name: installed.json.name, subject: installed.json.subject, html: installed.json.html, text: installed.json.text,
+        from: "Custom <hello@dispatch-fixture.net>", reply_to: ["support@dispatch-fixture.net"],
+        variables: [...installed.json.variables, { key: "TENANT_CUSTOM", type: "string", fallback_value: "keep" }],
+        publish: true, source: installed.json.source,
+      }));
+      const before = (await db.query("select id,html,variables,from_address,reply_to from template_versions where template_id=$1 order by created_at desc,id desc limit 1", [originalId])).rows[0];
+      const tokens = { text_color: "#172b3a", background_color: "#f0f4f8", surface_color: "#ffffff",
+        border_color: "#456789", color: "#123456", font_family: "Georgia, 'Times New Roman', serif",
+        font_size: 18, radius: 3, button_style: "outline" };
+      expect((await call(fullKey, "PATCH", "/brand", tokens)).status).toBe(200);
+      expect((await db.query("select html from template_versions where id=$1", [before.id])).rows[0].html).toBe(before.html);
+      const saved = await call(fullKey, "GET", "/brand");
+      expect(saved.json).toMatchObject({ ...tokens, button_text_color: "#ffffff" });
+      expect(saved.json.variables).toMatchObject({ THEME_TEXT_COLOR: "#172b3a", THEME_FONT_SIZE: "18px", THEME_RADIUS: "3px", BRAND_TEXT_COLOR: "#ffffff" });
+      const preview = await call(fullKey, "GET", "/template-library/welcome");
+      const html = preview.json.rendered.html as string;
+      for (const token of ["#172b3a", "#f0f4f8", "#456789", "18px", "3px"]) expect(html).toContain(token);
+      expect(html).not.toMatch(/\{\{\{THEME_/);
+      for (const invalid of [{ text_color: "#f0f4f8" }, { font_size: 13 }, { radius: 17 }, { font_family: "unsafe" }, { color: "#ffffff" }])
+        expect((await call(fullKey, "PATCH", "/brand", invalid)).status).toBe(invalid.font_size || invalid.radius || invalid.font_family ? 400 : 422);
+      for (const name of themeVariables) expect((await post(fullKey, "/templates", { name: "Reserved", variables: [name] })).status).toBe(400);
+      const action = await call(fullKey, "POST", "/brand/update-library");
+      expect(action.status).toBe(200);
+      expect(action.json.updated).toContainEqual({ id: originalId, name: installed.json.name, slug: "welcome" });
+      expect(action.json.skipped).toContainEqual(expect.objectContaining({ id: editedId, slug: "feature-tips" }));
+      const after = (await db.query("select id,html,variables,from_address,reply_to,source from template_versions where template_id=$1 order by created_at desc,id desc limit 1", [originalId])).rows[0];
+      expect(after.id).not.toBe(before.id);
+      expect(after.html).toContain("THEME_");
+      expect(after).toMatchObject({ from_address: before.from_address, reply_to: before.reply_to });
+      expect(after.variables).toContainEqual({ key: "TENANT_CUSTOM", type: "string", fallback_value: "keep" });
+      expect(after.source.kind).toBe("library");
+      expect((await call(fullKey, "GET", `/templates/${editedId}`)).json.html).toBe("<p>Tenant-owned exact HTML</p>");
+      const viewer = await teammate("Viewer"), session = await signInAs(viewer.email, viewer.password);
+      expect((await call(session.token, "GET", "/brand")).status).toBe(200);
+      expect((await call(session.token, "POST", "/brand/update-library")).status).toBe(403);
+      expect((await call(session.token, "PATCH", "/brand", { radius: 4 })).status).toBe(403);
+    });
+  });
   // Authored during wave8 engineering. Execute only in the final guarded local block.
   describe("signed inbound receivers", () => {
     const signingSecret = "synthetic-inbound-signing-secret";

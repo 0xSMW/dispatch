@@ -1,5 +1,7 @@
 # Templates
 
+See [Brand theme tokens](templates/theme.md) for email-safe fonts, sizes, colors and explicit library updates that skip edited templates.
+
 Store reusable HTML and plain text with a subject, sender, and variables. Send by template ID or alias. Saving changes creates or updates a draft; sends use the published version until you publish again.
 
 Use the dashboard to edit and preview, or write components locally with [React Email](react-email.md). Authentication and billing integration examples are in [the template guides](templates/README.md).

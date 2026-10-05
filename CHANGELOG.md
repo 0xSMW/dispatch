@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added retroactive event/contact-state goals with current eligibility, real-send first-send cohorts, conversion windows and UTC daily rates. Goals can be managed in the dashboard and measured in automation, broadcast and global Metrics.
+- Added brand theme tokens and explicit library updates that preserve sending settings and skip edited copies.
+
 - Add signup-form management and safe credential-free HTML/fetch snippets under Audience, Forms. Enforce verified senders, declared properties/live topics, exact origins, 16 KB bodies, honeypot/IP limits, rolling address/form cooldowns and configurable tenant UTC daily caps. Pending consent is not receiving. Seven-day purpose/scoped confirmation links only grant consent on deliberate POST, with transactional single-use state, explicit revival, once-only topic transitions and configured HTTPS redirects. Viewer email/log output hides confirmation links.
 - Add signed raw-byte Stripe, Clerk, Supabase database and Standard Webhooks receivers with a 1 MB cap, public rate limits, hash-only one-time/rotated URL tokens and encrypted credentials. Commit replay guards, non-reviving contact updates, contact triggers, provider events and wait recovery together. Keep body-free delivery history with bounded log-retention pruning. Add Settings, Integrations and receiver-first guides; normal reads never return credentials.
 - Complete the Integrations setup tile grid with provider-specific creation and receiver guides, outgoing Webhooks/SMTP and auth recipes. Link delivery history to contacts, retain read-only inspection and transient one-time credentials, and use `DISPATCH_API_URL` consistently in integration recipes.

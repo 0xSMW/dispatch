@@ -75,7 +75,7 @@ describe("templates", () => {
     const draft = memoryDb();
     await createTemplate(draft, "tenant_1", { name: "Welcome", alias: "welcome", subject: "Hello", text: "Hi" });
     const inserted = draft.sqls.find((sql) => sql.includes("insert into template_versions"));
-    expect(inserted).toContain("null)");
+    expect(inserted).toContain("null, clock_timestamp())");
     expect(draft.sqls.some((sql) => sql.includes("set published_version_id"))).toBe(false);
 
     const published = memoryDb();
@@ -111,7 +111,8 @@ describe("templates", () => {
   it("adds an unpublished version unless publish is set", async () => {
     const draft = memoryDb();
     await addTemplateVersion(draft, "tenant_1", "template_1", { name: "Welcome", subject: "Next", html: "<p>Next</p>" });
-    expect(draft.sqls.find((sql) => sql.includes("insert into template_versions"))).toContain("null)");
+    expect(draft.sqls.find((sql) => sql.includes("insert into template_versions"))).toContain("null, clock_timestamp())");
+    expect(draft.sqls).toContain("select id from templates where tenant_id = $1 and id = $2 for update");
     expect(draft.sqls.some((sql) => sql.includes("set published_version_id"))).toBe(false);
 
     const published = memoryDb();

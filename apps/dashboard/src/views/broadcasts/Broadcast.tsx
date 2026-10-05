@@ -24,6 +24,7 @@ import { Preview } from "../templates/editor";
 import { contactField, fill, sampleContact } from "../templates/render";
 import { useBrand } from "../templates/Versions";
 import { deletable } from "./Broadcasts";
+import { GoalConversions } from "../goals/GoalConversions";
 import "../../styles/editor.css";
 
 export const recipientTabs = [
@@ -164,6 +165,7 @@ export function Broadcast() {
       ) : null}
 
       {row && row.status !== "draft" ? <Stats row={row} /> : null}
+      {row ? <GoalConversions broadcastId={row.id} /> : null}
       {row && row.status !== "draft" ? <Recipients id={row.id} /> : null}
       {row && row.status !== "draft" ? <ClickedLinks id={row.id} /> : null}
 

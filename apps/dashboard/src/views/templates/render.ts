@@ -1,6 +1,7 @@
 // Client-side preview fill for template and broadcast HTML. It matches `renderTemplate` in
 // packages/core, blocks included, and a test compares the two. The server is the source of truth at send time; this only feeds EmailFrame.
 import type { Brand, TemplateVariable } from "../../types";
+import { brandTextColor, themeContext, themeVariables, type BrandRecord } from "../../../../../packages/core/src/brand";
 
 export type VariableType = "string" | "number" | "list";
 
@@ -12,6 +13,7 @@ export const reservedVariables = [
   "RESEND_UNSUBSCRIBE_URL", "DISPATCH_UNSUBSCRIBE_URL", "contact", "this",
   "PRODUCT_NAME", "PRODUCT_URL", "LOGO_URL", "BRAND_COLOR", "BRAND_TEXT_COLOR",
   "SUPPORT_EMAIL", "SUPPORT_URL", "PRIVACY_URL", "COMPANY_NAME", "COMPANY_ADDRESS", "CURRENT_YEAR",
+  ...themeVariables,
 ];
 
 const placeholder = /\{\{\{\s*([A-Za-z0-9_.]+)\s*(?:\|([^}]*))?\}\}\}|\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g;
@@ -260,11 +262,12 @@ export function brandValues(brand: Brand | null | undefined): Scope {
   const value = (key: string) => (typeof brand?.[key] === "string" && brand[key] ? (brand[key] as string) : undefined);
   const product = value("product_name");
   return {
+    ...themeContext((brand ?? {}) as BrandRecord),
     PRODUCT_NAME: product,
     PRODUCT_URL: value("product_url"),
     LOGO_URL: value("logo_url") ?? "",
     BRAND_COLOR: value("color") ?? "#18181b",
-    BRAND_TEXT_COLOR: value("text_color") ?? "#ffffff",
+    BRAND_TEXT_COLOR: value("button_text_color") ?? brandTextColor(value("color") ?? "#18181b"),
     SUPPORT_EMAIL: value("support_email"),
     SUPPORT_URL: value("support_url") ?? "",
     PRIVACY_URL: value("privacy_url") ?? "",

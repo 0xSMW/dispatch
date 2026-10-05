@@ -880,6 +880,20 @@ class Dispatch:
     # Brand and template library
     def brand(self) -> Json:
         return self._request("GET", "/brand")
+    def update_library_templates(self) -> Json:
+        return self._request("POST", "/brand/update-library")
+    def goals(self, **query: Any) -> Json:
+        return self._request("GET", _query("/goals", query))
+    def goal(self, goal_id: str) -> Json:
+        return self._request("GET", _path("goals", goal_id))
+    def create_goal(self, goal: Json) -> Json:
+        return self._request("POST", "/goals", goal)
+    def update_goal(self, goal_id: str, goal: Json) -> Json:
+        return self._request("PATCH", _path("goals", goal_id), goal)
+    def delete_goal(self, goal_id: str) -> Json:
+        return self._request("DELETE", _path("goals", goal_id))
+    def goal_metrics(self, goal_id: str, **query: Any) -> Json:
+        return self._request("GET", _query(_path("goals", goal_id) + "/metrics", query))
 
     def update_brand(self, brand: Json) -> Json:
         return self._request("PATCH", "/brand", brand)

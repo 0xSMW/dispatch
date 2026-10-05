@@ -1,20 +1,19 @@
 import type React from "react";
 import { Text } from "react-email";
-import { light } from "../_theme";
+import { useTheme, type Brand } from "../_theme";
 
 const code = {
-  fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-  fontSize: "32px",
   letterSpacing: "4px",
   lineHeight: "1.5",
-  color: light.text,
   marginTop: "0",
   marginBottom: "16px",
 };
 
-export function Code({ children }: { children: React.ReactNode }) {
+export function Code({ children, brand }: { children: React.ReactNode; brand?: Brand }) {
+  const theme = useTheme(brand);
   return (
-    <Text className="dm-text" style={code}>
+    <Text className="dm-text" style={{ ...code, fontSize: theme.THEME_FONT_SIZE,
+      fontFamily: theme.THEME_FONT_FAMILY, color: theme.THEME_TEXT_COLOR }}>
       {children}
     </Text>
   );

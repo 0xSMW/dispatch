@@ -1,7 +1,9 @@
+import { useState } from "react";
 import { BarChart } from "../../components/BarChart";
 import { DateRange, useDateRange } from "../../components/DateRange";
 import { Failed } from "../../components/Empty";
 import { FilterBar } from "../../components/FilterBar";
+import { Select } from "../../components/Field";
 import { Panel } from "../../components/Panel";
 import { Skeleton } from "../../components/Skeleton";
 import { useResource } from "../../hooks/useResource";
@@ -12,6 +14,7 @@ import type { Tree } from "./graph";
 import { withQuery } from "../../lib/client";
 import type { RunCounts, RunMetrics as Metrics } from "../../types";
 import type { Series } from "../../components/chart";
+import { GoalConversions } from "../goals/GoalConversions";
 import "../../styles/audience.css";
 import "../../styles/automations.css";
 
@@ -74,12 +77,18 @@ export function RunMetrics({ automationId, tree = null, names = {}, emails }: {
   const range = useDateRange();
   const metrics = useResource<Metrics>(withQuery(`/automations/${automationId}/runs/metrics`, { start_date: range.start, end_date: range.end }));
   const data = metrics.data;
+  const [stepKey, setStepKey] = useState("");
+  const steps = emailRows(tree, names, emails?.data ?? null).filter((row) => row.key !== "legacy");
+  const selectedStep = steps.some((row) => row.key === stepKey) ? stepKey : "";
 
   return (
     <div className="stack">
       <FilterBar search={false}>
         <DateRange />
       </FilterBar>
+      {steps.length ? <Select label="Goal email step" value={selectedStep} onChange={setStepKey}
+        options={[{ value: "", label: "All automation emails" }, ...steps.map((row) => ({ value: row.key, label: `${row.name} · ${row.key}` }))]} /> : null}
+      <GoalConversions automationId={automationId} stepKey={selectedStep || undefined} start={range.start} end={range.end} />
       {emails ? <Panel title="Emails">
         <Table
           rows={emailRows(tree, names, emails.data)}

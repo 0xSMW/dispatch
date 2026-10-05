@@ -14,6 +14,11 @@ function setup(row = sent) {
     "GET /segments": list([segment]),
     "GET /topics": list([topic]),
     "GET /brand": { object: "brand" },
+    "GET /goals": list([{ id: "goal_1", name: "Paid", target: { event: "paid" }, window_days: 30 }]),
+    "GET /goals/goal_1/metrics": {
+      contacts_reached: 8, converted: 1, rate: 0.125, data: [],
+      history: { available_from: null, limitation: "Recorded changes only." },
+    },
     "GET /emails/metrics": {
       object: "metrics",
       totals: { delivered: 110, delivery_rate: 93.2, bounced: 8, bounce_rate: 6.8, unique_opened: 55, open_rate: 50, unique_clicked: 11, click_rate: 10, unsubscribed: 2, unsubscribe_rate: 1.8, complained: 0, complaint_rate: 0 },
@@ -64,6 +69,17 @@ describe("Broadcast", () => {
     expect(calls(fetch, "GET /broadcasts/broadcast_1/recipients").at(-1)!.url.searchParams.get("type")).toBe("bounced");
     fireEvent.change(within(panel).getByLabelText("Search recipients"), { target: { value: "gone" } });
     await waitFor(() => expect(calls(fetch, "GET /broadcasts/broadcast_1/recipients").at(-1)!.url.searchParams.get("email")).toBe("gone"));
+  });
+
+  it("measures goal conversions across this broadcast's real sends, without an unrelated range", async () => {
+    const fetch = setup();
+    expect(await screen.findByText("12.5%")).toBeTruthy();
+    const query = calls(fetch, "GET /goals/goal_1/metrics")[0]!.url.searchParams;
+    expect(query.get("broadcast_id")).toBe("broadcast_1");
+    expect(query.get("automation_id")).toBeNull();
+    expect(query.get("step_key")).toBeNull();
+    expect(query.get("start_date")).toBeNull();
+    expect(query.get("end_date")).toBeNull();
   });
 
   it("pauses a sending broadcast and cancels it after typing CANCEL", async () => {

@@ -515,6 +515,7 @@ export class Dispatch {
   readonly segments = new Segments(this);
   readonly topics = new Topics(this);
   readonly forms = new Forms(this);
+  readonly goals = new Goals(this);
   readonly integrations = new Integrations(this);
   readonly suppressions = new Suppressions(this);
   readonly broadcasts = new Broadcasts(this);
@@ -1355,6 +1356,27 @@ class Brand extends Resource {
   update(payload: Body) {
     return this.client.call<Row>("PATCH", "/brand", wire(payload));
   }
+  updateLibrary() {
+    return this.client.call<LibraryUpdates>("POST", "/brand/update-library");
+  }
+}
+export type LibraryUpdates = { updated: Array<{ id: string; name: string; slug: string }>; skipped: Array<{ id: string; name: string; slug: string; reason?: string }> };
+export type GoalInput = { name: string; target: { event: string } | { rule: Rule }; eligibility?: Rule | null; windowDays?: number };
+export type Goal = Row & { object: "goal"; name: string; target: GoalInput["target"]; eligibility: Rule | null; window_days: number; created_at: string; updated_at: string };
+export type GoalMetricsOptions = { automationId?: string; broadcastId?: string; stepKey?: string; startDate?: string; endDate?: string };
+export type GoalMetrics = {
+  object: "goal_metrics"; goal_id: string; start_date: string; end_date: string;
+  contacts_reached: number; converted: number; rate: number;
+  data: Array<{ date: string; contacts_reached: number; converted: number; rate: number }>;
+  history: { available_from: string | null; limitation: string };
+};
+class Goals extends Resource {
+  list(page: Page = {}) { return this.client.call<List<Goal>>("GET", `/goals${query(page)}`); }
+  get(id: string) { return this.client.call<Goal>("GET", `/goals/${seg(id)}`); }
+  create(input: GoalInput) { return this.client.call<Goal>("POST", "/goals", wire(input)); }
+  update(id: string, input: Partial<GoalInput>) { return this.client.call<Goal>("PATCH", `/goals/${seg(id)}`, wire(input)); }
+  remove(id: string) { return this.client.call<Deleted>("DELETE", `/goals/${seg(id)}`); }
+  metrics(id: string, options: GoalMetricsOptions = {}) { return this.client.call<GoalMetrics>("GET", `/goals/${seg(id)}/metrics${query(options)}`); }
 }
 
 export type TenantSettings = {

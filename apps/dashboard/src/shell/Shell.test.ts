@@ -83,7 +83,7 @@ describe("Shell keys", () => {
     vi.stubGlobal("innerWidth", width);
     if (role === "viewer") signIn("viewer", ["read"]);
     open("/events");
-    const labels = ["Emails", "Broadcasts", "Automations", "Templates", "Audience", "Metrics", "Domains",
+    const labels = ["Emails", "Broadcasts", "Automations", "Templates", "Audience", "Metrics", "Goals", "Domains",
       "Logs", "API keys", "Webhooks", "Timeline", "Events", "Settings"];
     expect(nav.map((item) => item.label)).toEqual(labels);
     const menu = screen.getByRole("navigation", { name: "Main" });
@@ -95,7 +95,7 @@ describe("Shell keys", () => {
     expect(main.queryByText("Engage")).toBeNull();
     expect(main.getAllByRole("link").map((link) => link.getAttribute("href"))).toEqual(nav.map((item) => item.to));
     expect(main.getByRole("link", { name: "Events" }).getAttribute("href")).toBe("/events");
-    expect(main.queryByRole("link", { name: "Goals" })).toBeNull();
+    expect(main.getByRole("link", { name: "Goals" }).getAttribute("href")).toBe("/goals");
   });
 
   it.each([

@@ -36,6 +36,9 @@ function api(empty = false) {
     if (url.pathname === "/domains") {
       return { body: { object: "list", has_more: false, data: [{ id: "domain_1", name: "acme.com" }, { id: "domain_2", name: "mail.acme.com" }] } };
     }
+    if (url.pathname === "/goals") return { body: { object: "list", has_more: false, data: [{ id: "goal_1", name: "Paid", target: { event: "paid" }, window_days: 30 }] } };
+    if (url.pathname === "/automations" || url.pathname === "/broadcasts") return { body: { object: "list", has_more: false, data: [{ id: url.pathname === "/automations" ? "automation_1" : "broadcast_1", name: "Welcome" }] } };
+    if (url.pathname === "/goals/goal_1/metrics") return { body: { contacts_reached: 8, converted: 1, rate: 0.125, data: [], history: { available_from: null, limitation: "Recorded changes only." } } };
     const dimension = url.searchParams.get("dimensions");
     const sums = empty ? {} : totals;
     const data =
@@ -114,6 +117,28 @@ describe("Metrics", () => {
     api(true);
     open();
     expect(await screen.findByText("No email activity")).toBeTruthy();
+  });
+
+  it("offers global, automation and broadcast goals with the shared ISO range and no domain filter", async () => {
+    const fetch = api();
+    open("/metrics?domain=domain_2");
+    await screen.findByText("12.5%");
+    const goalCalls = () => fetch.mock.calls.map(([raw]) => new URL(String(raw))).filter((url) => url.pathname === "/goals/goal_1/metrics");
+    let query = goalCalls().at(-1)!.searchParams;
+    expect(query.get("automation_id")).toBeNull();
+    expect(query.get("broadcast_id")).toBeNull();
+    expect(query.get("domain_id")).toBeNull();
+    expect(query.get("start_date")).toBe(metricCalls(fetch)[0]!.searchParams.get("start_date"));
+    expect(query.get("end_date")).toBe(metricCalls(fetch)[0]!.searchParams.get("end_date"));
+    fireEvent.change(screen.getByLabelText("Goal scope"), { target: { value: "automation" } });
+    await screen.findByLabelText("Goal automation");
+    await waitFor(() => expect(goalCalls().at(-1)!.searchParams.get("automation_id")).toBe("automation_1"));
+    fireEvent.change(screen.getByLabelText("Goal scope"), { target: { value: "broadcast" } });
+    await screen.findByLabelText("Goal broadcast");
+    await waitFor(() => expect(goalCalls().at(-1)!.searchParams.get("broadcast_id")).toBe("broadcast_1"));
+    query = goalCalls().at(-1)!.searchParams;
+    expect(query.get("automation_id")).toBeNull();
+    expect(query.get("step_key")).toBeNull();
   });
 });
 

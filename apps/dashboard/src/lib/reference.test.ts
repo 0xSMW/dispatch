@@ -15,6 +15,20 @@ const apiUrl = "https://api.acme.test";
 afterEach(() => vi.unstubAllGlobals());
 
 describe("API reference", () => {
+  it("exposes goals and explicit theme updates with three shipped client contracts", () => {
+    const goals = referenceFor("/goals")!;
+    expect(goals.prompt).not.toContain("undefined");
+    const create = goals.calls.find((call) => call.method === "POST")!;
+    expect(go(create, apiUrl)).toContain("dispatch.GoalInput{");
+    expect(python(create, apiUrl)).toContain("client.create_goal(");
+    const metrics = goals.calls.find((call) => call.path.includes("/metrics"))!;
+    expect(python(metrics, apiUrl)).toContain("client.goal_metrics(");
+    expect(go(metrics, apiUrl)).toContain("client.GoalMetrics(");
+    const update = referenceFor("/settings/brand")!.calls.find((call) => call.path === "/brand/update-library")!;
+    expect(sdk(update, apiUrl)).toContain("dispatch.brand.updateLibrary()");
+    expect(python(update, apiUrl)).toContain("client.update_library_templates()");
+    expect(go(update, apiUrl)).toContain("client.UpdateLibraryTemplates()");
+  });
   it("uses shipped integrations client methods and a concrete credential-safe Agent prompt", () => {
     const reference = referenceFor("/settings/integrations")!;
     expect(reference.prompt).toMatch(/^Help me inspect Dispatch inbound integrations/);

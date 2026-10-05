@@ -1,6 +1,10 @@
 export { sandboxAddress } from "./sandbox.js";
 export * from "./forms.js";
 export * from "./integrations.js";
+export * from "./goals.js";
+export * from "./theme.js";
+export * from "./brand.js";
+export { ApiError } from "./errors.js";
 export { awsCredentials } from "./aws.js";
 export { isIsoDate, propertyTypes, propertyValueMatches, type PropertyType } from "./properties.js";
 import { isIsoDate, propertyTypes, propertyValueMatches, type PropertyType } from "./properties.js";
@@ -10,6 +14,9 @@ import { lookup } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
 import { Agent, fetch as agentFetch } from "undici";
 import { z } from "zod";
+import { themeVariables } from "./theme.js";
+import { brandTextColor, themeContext, type BrandRecord } from "./brand.js";
+import { ApiError } from "./errors.js";
 
 export type Scope = "full" | "send";
 export type EmailStatus =
@@ -459,7 +466,8 @@ export const reservedVariables = [
   "FIRST_NAME", "LAST_NAME", "EMAIL", "UNSUBSCRIBE_URL",
   "RESEND_UNSUBSCRIBE_URL", "DISPATCH_UNSUBSCRIBE_URL", "contact", "this",
   "PRODUCT_NAME", "PRODUCT_URL", "LOGO_URL", "BRAND_COLOR", "BRAND_TEXT_COLOR",
-  "SUPPORT_EMAIL", "SUPPORT_URL", "PRIVACY_URL", "COMPANY_NAME", "COMPANY_ADDRESS", "CURRENT_YEAR"
+  "SUPPORT_EMAIL", "SUPPORT_URL", "PRIVACY_URL", "COMPANY_NAME", "COMPANY_ADDRESS", "CURRENT_YEAR",
+  ...themeVariables
 ];
 // Names on Object.prototype would read as built-ins if a lookup ever skipped the own-property check.
 const unsafeVariables = ["constructor", "prototype", "__proto__", "toString", "valueOf", "hasOwnProperty"];
@@ -536,61 +544,6 @@ export type TemplateUpdateInput = z.input<typeof templateUpdateSchema>;
 
 export const templateVersionSchema = baseTemplateSchema.omit({ name: true, alias: true, publish: true });
 
-const httpsUrl = z.string().url().refine((value) => value.startsWith("https://"), "must be an https url");
-
-export const brandSchema = z.object({
-  product_name: z.string().min(1).max(120).optional(),
-  product_url: httpsUrl.optional(),
-  logo_url: httpsUrl.nullable().optional(),
-  color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
-  support_email: z.string().email().optional(),
-  support_url: httpsUrl.nullable().optional(),
-  company_name: z.string().min(1).max(200).optional(),
-  company_address: z.string().max(500).optional(),
-  // Linked from the footer of every library email. Billing emails are expected to carry one.
-  privacy_url: httpsUrl.nullable().optional(),
-  // The heading and the line under it on the public unsubscribe page. Null goes back to the default.
-  unsubscribe_title: z.string().min(1).max(120).nullable().optional(),
-  unsubscribe_description: z.string().min(1).max(500).nullable().optional()
-}).strict();
-
-export type BrandInput = z.infer<typeof brandSchema>;
-
-export type BrandRecord = {
-  product_name?: string;
-  product_url?: string;
-  logo_url?: string | null;
-  color?: string;
-  support_email?: string;
-  support_url?: string | null;
-  company_name?: string;
-  company_address?: string;
-  privacy_url?: string | null;
-  unsubscribe_title?: string | null;
-  unsubscribe_description?: string | null;
-};
-
-function channel(hex: string) {
-  const value = Number.parseInt(hex, 16) / 255;
-  return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
-}
-
-function luminance(color: string) {
-  const hex = color.replace("#", "");
-  return 0.2126 * channel(hex.slice(0, 2)) + 0.7152 * channel(hex.slice(2, 4)) + 0.0722 * channel(hex.slice(4, 6));
-}
-
-function contrast(left: string, right: string) {
-  const lighter = Math.max(luminance(left), luminance(right));
-  const darker = Math.min(luminance(left), luminance(right));
-  return (lighter + 0.05) / (darker + 0.05);
-}
-
-// Black or white, whichever reads better. One of the two always reaches 4.5:1 on any color.
-export function brandTextColor(color: string) {
-  return contrast(color, "#ffffff") >= contrast(color, "#000000") ? "#ffffff" : "#000000";
-}
-
 export function brandContext(
   brand: BrandRecord,
   fallback: { tenantName: string; domain?: string | null; from?: string | null; year?: number }
@@ -598,6 +551,7 @@ export function brandContext(
   const color = brand.color || "#18181b";
   const productName = brand.product_name || fallback.tenantName;
   return {
+    ...themeContext(brand),
     PRODUCT_NAME: productName,
     PRODUCT_URL: brand.product_url || (fallback.domain ? `https://${fallback.domain}` : ""),
     LOGO_URL: brand.logo_url || "",
@@ -1411,16 +1365,6 @@ function hasSubjectOrTemplate(value: { template?: unknown; subject?: unknown }) 
   return Boolean(value.template || value.subject);
 }
 
-export class ApiError extends Error {
-  statusCode: number;
-  name: string;
-
-  constructor(name: string, statusCode: number, message: string) {
-    super(message);
-    this.name = name;
-    this.statusCode = statusCode;
-  }
-}
 
 export function id(prefix: string) {
   return `${prefix}_${randomUUID().replaceAll("-", "")}`;

@@ -2877,6 +2877,69 @@
         }
       }
     },
+    "/goals": {
+      "get": {
+        "operationId": "listGoals", "tags": ["Goals"], "summary": "List goals",
+        "parameters": [
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 100 } },
+          { "name": "after", "in": "query", "schema": { "type": "string" } },
+          { "name": "before", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Goals page", "content": { "application/json": { "schema": {
+          "type": "object", "required": ["object", "has_more", "data"], "properties": {
+            "object": { "const": "list" }, "has_more": { "type": "boolean" },
+            "data": { "type": "array", "items": { "$ref": "#/components/schemas/Goal" } }
+          }
+        } } } } }
+      },
+      "post": {
+        "operationId": "createGoal", "tags": ["Goals"], "summary": "Create a retroactive goal",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GoalInput" } } } },
+        "responses": { "200": { "description": "Created goal", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Goal" } } } } }
+      }
+    },
+    "/goals/{id}": {
+      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "get": {
+        "operationId": "getGoal", "tags": ["Goals"], "summary": "Retrieve a goal",
+        "responses": { "200": { "description": "Goal", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Goal" } } } } }
+      },
+      "patch": {
+        "operationId": "updateGoal", "tags": ["Goals"], "summary": "Update a goal",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GoalUpdate" } } } },
+        "responses": { "200": { "description": "Updated goal", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Goal" } } } } }
+      },
+      "delete": {
+        "operationId": "deleteGoal", "tags": ["Goals"], "summary": "Soft-delete a goal",
+        "responses": { "200": { "description": "Deleted", "content": { "application/json": { "schema": {
+          "type": "object", "required": ["object", "id", "deleted"], "properties": {
+            "object": { "const": "goal" }, "id": { "type": "string" }, "deleted": { "const": true }
+          }
+        } } } } }
+      }
+    },
+    "/goals/{id}/metrics": {
+      "get": {
+        "operationId": "goalMetrics", "tags": ["Goals"], "summary": "Measure historical conversions",
+        "description": "No attachment is needed. Uses each live contact's first real attributed send in the selected scope, then selects first-send cohorts in [start_date,end_date). Eligibility is current. Targets count once in the inclusive conversion window, capped at measurement time, including conversions after end_date. UTC daily cohorts and fractional rates (zero for empty cohorts). Omit scope for all attributed sends. Rule history starts with recorded contact changes; unrecorded transitions and older topic/segment removals are unavailable.",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "automation_id", "in": "query", "description": "Mutually exclusive with broadcast_id.", "schema": { "type": "string" } },
+          { "name": "broadcast_id", "in": "query", "schema": { "type": "string" } },
+          { "name": "step_key", "in": "query", "description": "Requires automation_id.", "schema": { "type": "string" } },
+          { "name": "start_date", "in": "query", "description": "ISO datetime; default end_date minus 30 days.", "schema": { "type": "string", "format": "date-time" } },
+          { "name": "end_date", "in": "query", "description": "Exclusive first-send bound; default database measurement time.", "schema": { "type": "string", "format": "date-time" } }
+        ],
+        "responses": { "200": { "description": "Goal conversions", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GoalMetrics" } } } } }
+      }
+    },
+    "/brand/update-library": {
+      "post": {
+        "operationId": "updateLibraryTemplates", "tags": ["Brand"], "summary": "Explicitly update unedited installed library templates",
+        "description": "Full access only. Locks latest versions and skips edited/custom copies. Existing sending settings and variable names are retained. Does not install missing templates or publish draft copies.",
+        "responses": { "200": { "description": "Updated and skipped identities", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LibraryUpdates" } } } } }
+      }
+    },
     "/brand": {
       "get": {
         "operationId": "getBrand",
@@ -16988,6 +17051,77 @@
           }
         }
       },
+      "ThemeColor": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
+      "ThemeFont": { "type": "string", "enum": [
+        "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+        "Arial, Helvetica, sans-serif", "Georgia, 'Times New Roman', serif", "'Courier New', Courier, monospace"
+      ] },
+      "GoalTarget": {
+        "oneOf": [
+          { "type": "object", "required": ["event"], "properties": { "event": { "type": "string", "minLength": 1, "maxLength": 120, "pattern": "^[^@]" } }, "additionalProperties": false },
+          { "type": "object", "required": ["rule"], "properties": { "rule": { "$ref": "#/components/schemas/Rule" } }, "additionalProperties": false }
+        ],
+        "description": "Real custom event name or whole contact-state entry. Rule targets require recorded scalar history, not events, engagement or topic/segment membership."
+      },
+      "GoalInput": {
+        "type": "object", "required": ["name", "target"], "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "target": { "$ref": "#/components/schemas/GoalTarget" },
+          "eligibility": { "oneOf": [{ "$ref": "#/components/schemas/Rule" }, { "type": "null" }], "description": "Current contact state. Current live topic/static-segment membership is supported." },
+          "window_days": { "type": "integer", "minimum": 1, "maximum": 365, "default": 30 }
+        }
+      },
+      "GoalUpdate": {
+        "type": "object", "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "target": { "$ref": "#/components/schemas/GoalTarget" },
+          "eligibility": { "oneOf": [{ "$ref": "#/components/schemas/Rule" }, { "type": "null" }] },
+          "window_days": { "type": "integer", "minimum": 1, "maximum": 365 }
+        }
+      },
+      "Goal": {
+        "type": "object", "required": ["object", "id", "name", "target", "eligibility", "window_days", "created_at", "updated_at"],
+        "properties": {
+          "object": { "const": "goal" }, "id": { "type": "string" },
+          "name": { "type": "string" }, "target": { "$ref": "#/components/schemas/GoalTarget" },
+          "eligibility": { "oneOf": [{ "$ref": "#/components/schemas/Rule" }, { "type": "null" }] },
+          "window_days": { "type": "integer" }, "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "GoalDay": {
+        "type": "object", "required": ["date", "contacts_reached", "converted", "rate"],
+        "properties": {
+          "date": { "type": "string", "format": "date" }, "contacts_reached": { "type": "integer" },
+          "converted": { "type": "integer" }, "rate": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      },
+      "GoalMetrics": {
+        "type": "object", "required": ["object", "goal_id", "start_date", "end_date", "contacts_reached", "converted", "rate", "data", "history"],
+        "properties": {
+          "object": { "const": "goal_metrics" }, "goal_id": { "type": "string" },
+          "start_date": { "type": "string", "format": "date-time" }, "end_date": { "type": "string", "format": "date-time" },
+          "contacts_reached": { "type": "integer" }, "converted": { "type": "integer" },
+          "rate": { "type": "number", "minimum": 0, "maximum": 1 },
+          "data": { "type": "array", "items": { "$ref": "#/components/schemas/GoalDay" } },
+          "history": { "type": "object", "required": ["available_from", "limitation"], "properties": {
+            "available_from": { "type": ["string", "null"], "format": "date-time" }, "limitation": { "type": "string" }
+          } }
+        }
+      },
+      "LibraryUpdates": {
+        "type": "object", "required": ["updated", "skipped"],
+        "properties": {
+          "updated": { "type": "array", "items": { "$ref": "#/components/schemas/LibraryUpdateItem" } },
+          "skipped": { "type": "array", "items": { "$ref": "#/components/schemas/LibraryUpdateItem" } }
+        }
+      },
+      "LibraryUpdateItem": {
+        "type": "object", "required": ["id", "name", "slug"],
+        "properties": { "id": { "type": "string" }, "name": { "type": "string" }, "slug": { "type": "string" }, "reason": { "type": "string" } }
+      },
       "Brand": {
         "type": "object",
         "required": [
@@ -17055,12 +17189,17 @@
           },
           "text_color": {
             "type": "string",
-            "description": "Black or white, whichever contrasts better with `color`.",
-            "enum": [
-              "#000000",
-              "#ffffff"
-            ]
+            "description": "Body text token, not the computed button color.",
+            "pattern": "^#[0-9a-fA-F]{6}$"
           },
+          "button_text_color": { "type": "string", "enum": ["#000000", "#ffffff"], "description": "Computed legacy button/public-page text. BRAND_TEXT_COLOR retains this meaning." },
+          "background_color": { "$ref": "#/components/schemas/ThemeColor" },
+          "surface_color": { "$ref": "#/components/schemas/ThemeColor" },
+          "border_color": { "$ref": "#/components/schemas/ThemeColor" },
+          "font_family": { "$ref": "#/components/schemas/ThemeFont" },
+          "font_size": { "type": "integer", "minimum": 14, "maximum": 18 },
+          "radius": { "type": "integer", "minimum": 0, "maximum": 16 },
+          "button_style": { "type": "string", "enum": ["filled", "outline"] },
           "variables": {
             "type": "object",
             "description": "The reserved template variables, such as `PRODUCT_NAME` and `SUPPORT_EMAIL`, as a preview render fills them. Fallbacks for unset brand fields are applied.",
@@ -17072,7 +17211,16 @@
       },
       "BrandUpdate": {
         "type": "object",
+        "description": "Merged settings must reach 4.5:1 body/background, body/surface and button-text/button contrast. Filled buttons compute black/white; outline uses brand color on surface.",
         "properties": {
+          "text_color": { "$ref": "#/components/schemas/ThemeColor" },
+          "background_color": { "$ref": "#/components/schemas/ThemeColor" },
+          "surface_color": { "$ref": "#/components/schemas/ThemeColor" },
+          "border_color": { "$ref": "#/components/schemas/ThemeColor" },
+          "font_family": { "$ref": "#/components/schemas/ThemeFont" },
+          "font_size": { "type": "integer", "minimum": 14, "maximum": 18 },
+          "radius": { "type": "integer", "minimum": 0, "maximum": 16 },
+          "button_style": { "type": "string", "enum": ["filled", "outline"] },
           "product_name": {
             "type": "string",
             "minLength": 1,

@@ -1,6 +1,6 @@
 import type React from "react";
 import { Body, Container, Head, Html, Img, Link, Preview, Section, Text } from "react-email";
-import { dark, exampleBrand, fontFamily, light, linkStyle, muted, text, type Brand } from "../_theme";
+import { dark, emailTheme, exampleBrand, light, linkStyle, muted, text, ThemeContext, type Brand } from "../_theme";
 import { If } from "./If";
 
 const darkModeCss = `
@@ -123,23 +123,30 @@ export function Layout({
   if (brand === exampleBrand && typeof process !== "undefined" && process.env.NODE_ENV === "production") {
     throw new Error('Pass a brand to this template. Without one it is branded "Example", which is only for previews.');
   }
+  const theme = emailTheme(brand);
   return (
+    <ThemeContext.Provider value={theme}>
     <Html lang="en" dir="ltr">
       <Head>
         <meta name="color-scheme" content="light dark" />
         <meta name="supported-color-schemes" content="light dark" />
         <title>{title}</title>
-        <style>{darkModeCss}</style>
+        <style>{brand.theme ? `
+          .dm-canvas { background-color: ${theme.THEME_BACKGROUND_COLOR}; }
+          .dm-card { background-color: ${theme.THEME_SURFACE_COLOR}; }
+        ` : darkModeCss}</style>
       </Head>
       <Body
         className="dm-canvas"
-        style={{ fontFamily, fontSize: "16px", lineHeight: "1.5", color: light.text }}
+        style={{ fontFamily: theme.THEME_FONT_FAMILY, fontSize: theme.THEME_FONT_SIZE,
+          lineHeight: "1.5", color: theme.THEME_TEXT_COLOR, backgroundColor: theme.THEME_BACKGROUND_COLOR }}
       >
         <Preview useTitleTag={false}>{preview}</Preview>
         <Container
           className="dm-card"
           tdClassName="dm-card"
-          style={{ maxWidth: "600px", backgroundColor: light.card, padding: "32px 24px" }}
+          style={{ maxWidth: "600px", backgroundColor: theme.THEME_SURFACE_COLOR, padding: "32px 24px",
+            border: `1px solid ${theme.THEME_BORDER_COLOR}`, borderRadius: theme.THEME_RADIUS }}
         >
           <Header brand={brand} />
           {children}
@@ -147,5 +154,6 @@ export function Layout({
         </Container>
       </Body>
     </Html>
+    </ThemeContext.Provider>
   );
 }
