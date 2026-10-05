@@ -10,6 +10,17 @@ beforeEach(() => {
 });
 
 describe("segments", () => {
+  it("serializes filter creation preview and explicit null conversion", async () => {
+    method("segments.preview").mockResolvedValue({ data: { count: 2, sample: [] }, error: null });
+    const rule = { type: "rule", field: "email.opened", operator: "eq", value: false, scope: { automation_id: "auto_1" }, window: "30 days" };
+    spies();
+    await run(segments, ["create", "Filter", "--rule", JSON.stringify(rule)]);
+    expect(method("segments.create")).toHaveBeenCalledWith({ name: "Filter", rule });
+    await run(segments, ["preview", "--rule", JSON.stringify(rule)]);
+    expect(method("segments.preview")).toHaveBeenCalledWith(rule);
+    await run(segments, ["update", "seg_1", "--rule", "null"]);
+    expect(method("segments.update")).toHaveBeenCalledWith("seg_1", { rule: null });
+  });
   it("covers list, create, get, update, delete, and contacts", async () => {
     method("segments.list").mockResolvedValue(list([]));
     method("segments.contacts").mockResolvedValue(list([]));

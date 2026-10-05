@@ -101,7 +101,8 @@ describe("audience presenters", () => {
       updated_at: contact.updated_at,
     });
     expect(topic.default_subscription).toBe("opt_out");
-    expect(presentSegment({ id: "segment_1", name: "Early", created_at: contact.created_at, updated_at: contact.updated_at })).not.toHaveProperty("description");
+    expect(presentSegment({ id: "segment_1", name: "Early", created_at: contact.created_at, updated_at: contact.updated_at }))
+      .toMatchObject({ description: null, type: "static", rule: null });
   });
 
   it("maps a manual bounce reason onto origin", () => {
@@ -175,8 +176,8 @@ describe("audience queries", () => {
   });
 
   it("refuses membership writes to dynamic segments before touching members", async () => {
-    const db = client(() => ({ rows: [{ id: "segment_1", type: "dynamic" }] }));
-    await expect(addContactSegment(db, "tenant_1", "contact_1", "segment_1")).rejects.toMatchObject({ name: "validation_error", statusCode: 422 });
+    const db = client(() => ({ rows: [{ id: "segment_1", rule: { type: "rule", field: "contact.email", operator: "exists" } }] }));
+    await expect(addContactSegment(db, "tenant_1", "contact_1", "segment_1")).rejects.toMatchObject({ name: "conflict", statusCode: 409 });
     expect(db.queries).toHaveLength(1);
   });
 

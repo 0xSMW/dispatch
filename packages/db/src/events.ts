@@ -37,6 +37,9 @@ export async function appendEvent(
   data: Record<string, unknown>;
 } | null> {
   const mode = input.mode ?? "api";
+  // Preserve the actual affected addresses for recipient-aware historical engagement.
+  // Delivery routing may change later, so current recipient flags are not an oracle.
+  if (input.recipients) input = { ...input, data: { ...input.data, recipients: [...input.recipients] } };
   // Provider activity is real unless explicitly simulated. Tracking and unsubscribe
   // inherit current routing, but the stored boolean is historical, not a live flag lookup.
   const providerActivity = mode === "delivery" && input.provider && input.provider !== "sandbox";

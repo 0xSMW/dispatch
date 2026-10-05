@@ -4,6 +4,15 @@ The local stack runs the whole product without AWS. The fake provider stands in 
 
 ## Start
 
+### Dynamic audience migration
+
+The append-only migration adds nullable `segments.rule`, the email
+`(tenant_id, contact_id, created_at)` index, and the recipient
+`(tenant_id, lower(email))` index. It does not backfill contact attribution.
+Creating these indexes can lock writes for a while on a large installation.
+Plan an upgrade window and monitor PostgreSQL before resuming normal traffic.
+Schema replay is idempotent.
+
 ```sh
 cp .env.example .env
 docker compose up -d

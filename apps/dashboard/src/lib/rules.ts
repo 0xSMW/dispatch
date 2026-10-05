@@ -6,10 +6,13 @@ export type Choice = { value: string; label: string };
 export type ContextField = {
   path: string;
   label: string;
-  group: "Event" | "Contact" | "Topics" | "Segments";
+  group: "Event" | "Contact" | "Topics" | "Segments" | "Email engagement";
   type: FieldType;
   choices?: Choice[];
 };
+export const engagementFields: ContextField[] = ["sent", "delivered", "opened", "clicked", "bounced"].map((fact) => ({
+  path: `email.${fact}`, label: fact[0]!.toUpperCase() + fact.slice(1), group: "Email engagement", type: "boolean",
+}));
 export type RuleSources = {
   events?: Array<Pick<EventDefinition, "name" | "schema">>;
   properties?: Array<Pick<ContactProperty, "key" | "type">>;

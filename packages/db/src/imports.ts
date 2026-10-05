@@ -3,6 +3,7 @@ import { tx, type Db, type Queryable } from "./index.js";
 import { contactColumns, type ContactRow } from "./audience.js";
 import { settings } from "./settings.js";
 import { contactDiff, fireContactTrigger, recordContactChanges } from "./contact-triggers.js";
+import { staticSegment } from "./segment-writes.js";
 
 export type ImportCounts = {
   total: number;
@@ -81,6 +82,7 @@ export async function createImport(
     triggerAutomations?: boolean;
   },
 ) {
+  await assertImportRefs(db, input.tenantId, input.segments, input.topics);
   const triggerAutomations = input.triggerAutomations ?? (await settings(db, input.tenantId)).import_trigger_automations;
   const row = await db.query<ImportRow>(
     `insert into contact_imports (id, tenant_id, storage_key, column_map, on_conflict, segments, topics, trigger_automations)
@@ -126,6 +128,7 @@ export async function assertImportRefs(
   const segmentIds = [...new Set(segments.map((segment) => segment.id))];
   const topicIds = [...new Set(topics.map((topic) => topic.id))];
   if (segmentIds.length === 0 && topicIds.length === 0) return;
+  for (const id of segmentIds.sort()) await staticSegment(db, tenantId, id);
   const row = await db.query<{ segments: number; topics: number }>(
     `select
        (select count(*) from segments s where tenant_id = $1 and id = any($2::text[]) and deleted_at is null
@@ -178,6 +181,7 @@ export async function importBatch(
   contacts: ImportContact[],
 ) {
   if (contacts.length === 0) return { created: 0, updated: 0, skipped: 0, ids: [] as string[], rows: [] as ImportChange[] };
+  for (const id of [...new Set((job.segments ?? []).map((segment) => segment.id))].sort()) await staticSegment(client, job.tenant_id, id);
   // A deleted contact is treated as new in both modes: it comes back with the file's values and
   // none of its old ones. A global unsubscribe is never cleared by an import.
   const inserted = await client.query<ContactRow>(

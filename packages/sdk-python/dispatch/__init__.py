@@ -186,11 +186,13 @@ class TopicSubscriptionInput(TypedDict, total=False):
 
 
 class SegmentInput(TypedDict, total=False):
+    rule: Rule | None
     name: str
     description: str
 
 
 class SegmentUpdateInput(TypedDict, total=False):
+    rule: Rule | None
     name: str
     description: str
 
@@ -262,6 +264,8 @@ Operator = Literal[
 
 
 class PredicateRule(TypedDict):
+    scope: NotRequired[dict[str, str]]
+    window: NotRequired[str]
     type: Literal["rule"]
     field: str
     operator: Operator
@@ -1076,6 +1080,9 @@ class Dispatch:
     # Segments
     def segments(self, **query: Any) -> Json:
         return self._request("GET", _query("/segments", query))
+
+    def preview_segment(self, rule: Rule) -> Json:
+        return self._request("POST", "/segments/preview", {"rule": rule})
 
     def create_segment(self, segment: SegmentInput | Json) -> Json:
         return self._request("POST", "/segments", segment)

@@ -1,4 +1,5 @@
-import { ApiError, id, isIsoDate, type PropertyType } from "@dispatchmail/core";
+import { ApiError, id, isIsoDate, type PropertyType, type Rule } from "@dispatchmail/core";
+import { staticSegment } from "./segment-writes.js";
 import type { Queryable } from "./index.js";
 
 export type ContactRow = {
@@ -113,14 +114,19 @@ export function presentTopic(row: {
 export function presentSegment(row: {
   id: string;
   name: string;
+  description?: string | null;
+  rule?: Rule | null;
   created_at: string;
   updated_at: string;
-  contacts?: number;
+  contacts?: number | null;
 }) {
   return {
     object: "segment" as const,
     id: row.id,
     name: row.name,
+    description: row.description ?? null,
+    type: row.rule == null ? "static" as const : "dynamic" as const,
+    rule: row.rule ?? null,
     ...(row.contacts === undefined ? {} : { contacts: row.contacts }),
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -302,12 +308,7 @@ export async function updateProperty(db: Queryable, tenantId: string, propertyId
 }
 
 export async function addContactSegment(db: Queryable, tenantId: string, contactId: string, segmentId: string) {
-  const segment = await db.query(
-    "select id, case when to_jsonb(segments)->>'rule' is not null then 'dynamic' else coalesce(to_jsonb(segments)->>'type', 'static') end as type from segments where tenant_id = $1 and id = $2 and deleted_at is null",
-    [tenantId, segmentId],
-  );
-  if (!segment.rows[0]) throw new ApiError("not_found", 404, "Segment not found");
-  if (segment.rows[0].type && segment.rows[0].type !== "static") throw new ApiError("validation_error", 422, "Membership writes require a static segment");
+  await staticSegment(db, tenantId, segmentId);
   const row = await db.query(
     `insert into segment_contacts (id, tenant_id, segment_id, contact_id)
      values ($1, $2, $3, $4)
@@ -324,6 +325,7 @@ export async function addContactSegment(db: Queryable, tenantId: string, contact
 }
 
 export async function removeContactSegment(db: Queryable, tenantId: string, contactId: string, segmentId: string) {
+  await staticSegment(db, tenantId, segmentId);
   const row = await db.query(
     `delete from segment_contacts
      where tenant_id = $1 and contact_id = $2 and segment_id = $3

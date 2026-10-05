@@ -86,11 +86,12 @@ export function broadcastWhere(query: BroadcastQuery) {
 
 export type ContactQuery = { q?: string; subscribed?: string; segment_id?: string };
 
-export function contactWhere(query: ContactQuery) {
+export function contactWhere(query: ContactQuery, segment?: string) {
   const filter = builder();
+  if (segment) filter.clauses.push(segment);
   if (query.segment_id) {
     filter.clauses.push(
-      `exists (select 1 from segment_contacts sc where sc.tenant_id = contacts.tenant_id and sc.contact_id = contacts.id and sc.segment_id = ${filter.bind(query.segment_id)})`,
+      `exists (select 1 from segment_contacts sc where sc.tenant_id = c.tenant_id and sc.contact_id = c.id and sc.segment_id = ${filter.bind(query.segment_id)})`,
     );
   }
   const q = query.q?.trim();

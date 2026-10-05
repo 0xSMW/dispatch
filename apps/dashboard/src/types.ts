@@ -329,10 +329,14 @@ export type Segment = {
   object: "segment";
   id: string;
   name: string;
-  contacts?: number;
+  description?: string | null;
+  type: "static" | "dynamic";
+  rule: import("./views/automations/graph").Rule | null;
+  contacts?: number | null;
   created_at: string;
   updated_at: string;
 };
+export type SegmentPreview = { count: number; sample: Contact[] };
 
 export type SegmentContact = {
   object: "contact";
@@ -671,7 +675,7 @@ export type ContactActivity = {
   created_at: string;
 };
 
-export type ContactSegment = { object: "segment"; id: string; name: string; created_at: string };
+export type ContactSegment = { object: "segment"; id: string; name: string; type: "static" | "dynamic"; rule?: Segment["rule"]; created_at: string };
 
 /** `explicit` is false when the contact made no choice and `subscription` is the topic's default. */
 export type ContactTopic = { id: string; name: string; key: string; subscription: "opt_in" | "opt_out"; explicit?: boolean };

@@ -1,6 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ApiError, evaluate, operatorsForType, type Operator, type Rule } from "@dispatchmail/core";
-import { segmentPredicate, type SegmentProperty } from "./segments.js";
+import { segmentCount, segmentFilter, segmentPredicate, segmentPreview, type SegmentProperty } from "./segments.js";
+import type { Queryable } from "./index.js";
 
 const properties: SegmentProperty[] = [
   { key: "plan", type: "string" }, { key: "score", type: "number" },
@@ -224,10 +225,9 @@ describe("segmentPredicate", () => {
     expect(result.sql).toContain("t.id = $3::text");
   });
 
-  it("static membership excludes deleted/dynamic segments without requiring future schema columns", () => {
+  it("static membership excludes deleted/dynamic segments", () => {
     const result = compile(leaf("contact.segments", "contains", "customers"));
-    expect(result.sql).toContain("to_jsonb(s)->>'rule' is null");
-    expect(result.sql).toContain("coalesce(to_jsonb(s)->>'type', 'static') = 'static'");
+    expect(result.sql).toContain("s.rule is null");
     expect(result.sql).toContain("m.segment_id = s.id");
     expect(result.sql).not.toContain("c.unsubscribed_at");
   });
@@ -270,5 +270,146 @@ describe("segmentPredicate", () => {
       { type: "or", rules: leaves }, { type: "and", rules: leaves }, leaf("contact.email", "exists"),
     ] })).toThrow("at most 20 conditions");
     expect(() => compile({ type: "and", rules: [...leaves, ...leaves, leaf("contact.email")] })).toThrow("at most 20 conditions");
+  });
+});
+
+describe("engagement SQL preparation", () => {
+  it("supports all five facts and the four boolean existence combinations", () => {
+    for (const field of ["email.sent", "email.delivered", "email.opened", "email.clicked", "email.bounced"]) {
+      for (const operator of ["eq", "neq"] as const) {
+        for (const value of [true, false]) {
+          const result = compile(leaf(field, operator, value), [], 4);
+          expect(result.values).toEqual([field]);
+          expect(result.sql.startsWith("not exists")).toBe((operator === "eq") !== value);
+          expect(result.sql).toContain("ev.type = $5::text");
+          expect(result.sql).toContain("ev.tenant_id = e.tenant_id");
+          expect(result.sql).toContain("ev.tenant_id = c.tenant_id");
+          expect(result.sql).toContain("(e.contact_id = c.id or e.contact_id is null)");
+        }
+      }
+    }
+  });
+
+  it("binds exclusive scope and inclusive statement-time windows", () => {
+    for (const scope of [{ automation_id: "auto');--" }, { broadcast_id: "bc');--" }]) {
+      const result = compile({ ...leaf("email.opened", "eq", true), scope, window: "30 days" } as Rule, [], 2);
+      expect(result.values).toEqual(["email.opened", Object.values(scope)[0], 30 * 86400]);
+      expect(result.sql).toContain(`e.${Object.keys(scope)[0]} = $4::text`);
+      expect(result.sql).toContain("scope.tenant_id = e.tenant_id");
+      expect(result.sql).toContain("scope.deleted_at is null");
+      expect(result.sql).toContain("extract(epoch from ev.created_at) between");
+      expect(result.sql).toContain("extract(epoch from statement_timestamp()) - $5::numeric");
+      expect(result.sql).not.toContain("');--");
+    }
+    expect(compile(leaf("email.opened", "eq", false), []).sql).not.toContain("statement_timestamp()");
+  });
+
+  it("uses recipient identities, guarded payload addresses and historical sandbox attribution", () => {
+    const sql = compile(leaf("email.bounced", "eq", true), []).sql;
+    expect(sql).toContain("ev.recipient_id = r.id");
+    expect(sql).toContain("r.tenant_id = e.tenant_id and r.email_id = e.id");
+    expect(sql).toContain("not r.sandbox or (ev.data->>'sandbox' = 'false'");
+    expect(sql).toContain("lower(r.email) = lower(c.email)");
+    expect(sql).toContain("jsonb_typeof(ev.data->'email') = 'string'");
+    expect(sql).toContain("jsonb_typeof(ev.data->'recipients') = 'array'");
+    expect(sql).toContain("lower(address.value #>> '{}') = lower(r.email)");
+    expect(sql).toContain("e.provider_message_id || ':Bounce:' || r.email");
+    expect(sql).toContain("ev.data->>'sandbox' in ('true', 'false')");
+    expect(sql).toContain("other.id <> r.id");
+    expect(compile(leaf("email.delivered", "eq", true), []).sql).toContain("':Delivery:'");
+    expect(compile(leaf("email.clicked", "eq", true), []).sql).not.toContain("':Delivery:'");
+  });
+
+  it("refuses every malformed engagement/contact extension before any binding", () => {
+    const invalidRules = [
+      leaf("email.received", "eq", true), leaf("email.opened", "contains", true),
+      leaf("email.opened", "eq", "true"),
+      { ...leaf("email.sent", "eq", true), scope: { automation_id: "", broadcast_id: "b" } },
+      { ...leaf("email.sent", "eq", true), scope: {} },
+      { ...leaf("email.sent", "eq", true), scope: { automation_id: "a", broadcast_id: "b" } },
+      ...["0 seconds", "-1 day", "Infinity days", "banana"].map((window) => ({ ...leaf("email.sent", "eq", true), window })),
+      { ...leaf("contact.email", "eq", "a"), window: "1 day" },
+      { ...leaf("contact.email", "eq", "a"), scope: { automation_id: "a" } },
+    ];
+    for (const bad of invalidRules) {
+      const bind = vi.fn(() => "$1");
+      expect(() => segmentPredicate({ type: "and", rules: [leaf("contact.email", "eq", "a"), bad as Rule] }, bind, [])).toThrow(ApiError);
+      expect(bind).not.toHaveBeenCalled();
+    }
+  });
+});
+
+describe("segment read helpers", () => {
+  function database(results: unknown[][]) {
+    const query = vi.fn(async (_sql: string, _params?: unknown[]) => ({ rows: results.shift() ?? [] }));
+    return { db: { query } as unknown as Queryable, query };
+  }
+
+  it("resolves static membership with caller offsets and tenant/live guards", async () => {
+    const { db, query } = database([[{ rule: null }], []]);
+    const bind = vi.fn(() => "$9");
+    const sql = await segmentFilter(db, "tenant_a", "segment_a", bind);
+    expect(bind).toHaveBeenCalledExactlyOnceWith("segment_a");
+    expect(sql).toContain("s.id = $9::text");
+    expect(sql).toContain("s.rule is null");
+    expect(query.mock.calls[0]).toEqual([
+      "select rule from segments where tenant_id = $1 and id = $2 and deleted_at is null", ["tenant_a", "segment_a"],
+    ]);
+  });
+
+  it("refuses inaccessible segments and validates the whole dynamic rule before binding", async () => {
+    const bind = vi.fn(() => "$1");
+    const missing = database([[]]);
+    await expect(segmentFilter(missing.db, "tenant", "foreign", bind)).rejects.toMatchObject({ name: "not_found", statusCode: 404 });
+    const malformed = database([[{ rule: { type: "and", rules: [leaf("contact.email", "eq", "a"), leaf("contact.unknown")] } }], []]);
+    await expect(segmentFilter(malformed.db, "tenant", "s", bind)).rejects.toThrow("Unknown segment field");
+    expect(bind).not.toHaveBeenCalled();
+  });
+
+  it("refuses dynamic membership dependencies before binding and checks tenant references", async () => {
+    const rule = leaf("contact.segments", "not_contains", "dynamic_id");
+    const { db, query } = database([[{ rule }], [], [{ id: "dynamic_id", dynamic: true }]]);
+    const bind = vi.fn(() => "$1");
+    await expect(segmentFilter(db, "tenant", "s", bind)).rejects.toThrow("only reference static");
+    expect(bind).not.toHaveBeenCalled();
+    expect(query.mock.calls[2]).toEqual([
+      expect.stringContaining("tenant_id = $1 and id = any($2::text[]) and deleted_at is null"), ["tenant", ["dynamic_id"]],
+    ]);
+    const foreign = database([[], [], [{ count: "0", sample: [] }]]);
+    expect(await segmentPreview(foreign.db, "tenant", rule)).toEqual({ count: 0, sample: [] });
+  });
+
+  it("resolves preview scopes but leaves saved deleted scopes as guarded nonmatches", async () => {
+    const rule = { ...leaf("email.sent", "eq", true), scope: { automation_id: "deleted" } } as Rule;
+    const preview = database([[], []]);
+    await expect(segmentPreview(preview.db, "tenant", rule)).rejects.toMatchObject({ name: "not_found", statusCode: 404 });
+    expect(preview.query.mock.calls[1]).toEqual([expect.stringContaining("from automations"), ["tenant", ["deleted"]]]);
+    const stored = database([[{ rule }], []]);
+    const sql = await segmentFilter(stored.db, "tenant", "s", () => "$2");
+    expect(sql).toContain("scope.deleted_at is null");
+    expect(stored.query).toHaveBeenCalledTimes(2);
+  });
+
+  it("counts uncached live contacts with owned numbering and normalizes PostgreSQL count", async () => {
+    const { db, query } = database([[{ rule: leaf("contact.plan", "eq", "pro") }], properties, [{ count: "21" }]]);
+    expect(await segmentCount(db, "tenant", "s")).toBe(21);
+    expect(query.mock.calls[2]).toEqual([
+      expect.stringContaining("c.tenant_id = $1 and c.deleted_at is null"), ["tenant", "plan", '"pro"'],
+    ]);
+    expect(query.mock.calls[2]?.[0]).toContain("$3::jsonb");
+  });
+
+  it("returns count and at most ten ordered contact samples from one statement snapshot", async () => {
+    const sample = [{ id: "contact_a", email: "ada@example.test" }];
+    const { db, query } = database([[], [{ count: "11", sample }]]);
+    expect(await segmentPreview(db, "tenant", leaf("contact.email", "contains", "@"))).toEqual({ count: 11, sample });
+    expect(query).toHaveBeenCalledTimes(2);
+    const [sql, params] = query.mock.calls[1]!;
+    expect(sql).toContain("with matched as materialized");
+    expect(sql).toContain("order by created_at, id limit 10");
+    expect(sql).toContain("jsonb_agg(to_jsonb(sample) order by created_at, id)");
+    expect(sql).toContain("select count(*) from matched");
+    expect(sql).not.toContain("c.tenant_id,");
+    expect(params).toEqual(["tenant", "@"]);
   });
 });

@@ -50,7 +50,7 @@ export type Api = {
     imports: { create: Call; list: Call; get: Call; cancel: Call };
   };
   contactProperties: Crud;
-  segments: Crud & { contacts: Call };
+  segments: Crud & { contacts: Call; preview: Call };
   topics: Crud;
   suppressions: { add: Call; list: Call; get: Call; remove: Call; batchAdd: Call; batchRemove: Call };
   broadcasts: Crud & {

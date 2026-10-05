@@ -10,7 +10,7 @@ import { Time } from "../../components/Time";
 import { ContextField } from "../../components/ContextField";
 import { TypedValue } from "../../components/TypedValue";
 import { useResource } from "../../hooks/useResource";
-import { contextFields, isIsoDate, operatorsForType, propertyTypes, typedValue, valueIssue, valueKind, type ContextField as ContextFieldRow } from "../../lib/rules";
+import { contextFields, engagementFields, isIsoDate, operatorsForType, propertyTypes, typedValue, valueIssue, valueKind, type ContextField as ContextFieldRow } from "../../lib/rules";
 import type { ContactProperty, EventDefinition, PropertyType, SendKind, Template } from "../../types";
 import { contentKind, kindLabels, sendKind, sendSemantics, templateKind } from "../../lib/emailKind";
 import { EmailCountLine, type EmailCounts } from "./EmailMetrics";
@@ -39,6 +39,7 @@ import "../../styles/automations.css";
 
 export type StepOptions = {
   templates: Array<Option & { kind?: SendKind }>; segments: Option[]; events: string[]; topics?: Option[];
+  staticSegments?: Option[];
   eventDefinitions?: EventDefinition[];
   contactProperties?: ContactProperty[];
   topicsReady?: boolean;
@@ -550,7 +551,7 @@ export function StepForm({ node, path, index, actions, disabled, errors, options
     case "exit":
       return <p className="muted">End this run here. No following step runs.</p>;
     case "add_to_segment": {
-      const segments = options?.segments ?? [];
+      const segments = options?.staticSegments ?? options?.segments ?? [];
       const id = text("segment_id");
       const choices = id && !segments.some((option) => option.value === id) ? [{ value: id, label: id }, ...segments] : segments;
       return (
@@ -842,10 +843,18 @@ function moveRuleTypes(types: Record<string, PropertyType>, location: string, op
 }
 
 /** One rule, or an all-of / any-of group of rules, as the core `ruleSchema` defines them. */
-export function RuleEditor({ rule, onChange, disabled = false, depth = 0, fields = [], valueTypes = {}, onTypesChange, location = "" }: {
+export type EngagementScopes = {
+  automations: readonly { value: string; label: string }[];
+  broadcasts: readonly { value: string; label: string }[];
+};
+export function RuleEditor({ rule, onChange, disabled = false, depth = 0, fields: suppliedFields = [], valueTypes = {}, onTypesChange, location = "", context = "automation", engagementScopes }: {
   rule: Rule; onChange: (rule: Rule) => void; disabled?: boolean; depth?: number; fields?: ContextFieldRow[];
   valueTypes?: Record<string, PropertyType>; onTypesChange?: (types: Record<string, PropertyType>) => void; location?: string;
+  context?: "automation" | "segment"; engagementScopes?: EngagementScopes;
 }) {
+  const fields = context === "segment" ? [...suppliedFields.filter((field) => !field.path.startsWith("event.") && !field.path.startsWith("email.")), ...engagementFields] : suppliedFields;
+  const leaves = (node: Rule): number => node.type === "rule" ? 1 : node.rules.reduce((sum, child) => sum + leaves(child), 0);
+  const atLimit = context === "segment" && leaves(rule) >= 20;
   const mode = rule?.type === "and" || rule?.type === "or" ? rule.type : "rule";
   const rowTypes = (at: string) => ({
     manualType: valueTypes[at],
@@ -869,13 +878,15 @@ export function RuleEditor({ rule, onChange, disabled = false, depth = 0, fields
         onChange={setMode}
         options={[
           { value: "rule", label: "One rule" },
-          { value: "and", label: "All of these rules" },
-          { value: "or", label: "Any of these rules" },
+          ...(context === "segment" && depth >= 4 ? [] : [
+            { value: "and", label: "All of these rules" },
+            { value: "or", label: "Any of these rules" },
+          ]),
         ]}
         disabled={disabled}
       />
       {rule.type === "rule" ? (
-        <RuleRow rule={rule} onChange={onChange} disabled={disabled} fields={fields} {...rowTypes(location)} />
+        <RuleRow rule={rule} onChange={onChange} disabled={disabled} fields={fields} context={context} engagementScopes={engagementScopes} {...rowTypes(location)} />
       ) : (
         <div className="stack">
           {rule.rules.map((child, index) => (
@@ -886,6 +897,8 @@ export function RuleEditor({ rule, onChange, disabled = false, depth = 0, fields
                   onChange={(next) => onChange({ ...rule, rules: rule.rules.map((item, at) => (at === index ? next : item)) })}
                   disabled={disabled}
                   fields={fields}
+                  context={context}
+                  engagementScopes={engagementScopes}
                   {...rowTypes(`${location ? `${location}.` : ""}${index}`)}
                 />
               ) : (
@@ -895,6 +908,8 @@ export function RuleEditor({ rule, onChange, disabled = false, depth = 0, fields
                   onChange={(next) => onChange({ ...rule, rules: rule.rules.map((item, at) => (at === index ? next : item)) })}
                   disabled={disabled}
                   fields={fields}
+                  context={context}
+                  engagementScopes={engagementScopes}
                   valueTypes={valueTypes}
                   onTypesChange={onTypesChange}
                   location={`${location ? `${location}.` : ""}${index}`}
@@ -915,14 +930,14 @@ export function RuleEditor({ rule, onChange, disabled = false, depth = 0, fields
             </div>
           ))}
           <div className="toolbar">
-            <button type="button" className="secondary small" disabled={disabled} onClick={() => onChange({ ...rule, rules: [...rule.rules, blankRule] })}>
+            <button type="button" className="secondary small" disabled={disabled || atLimit || (context === "segment" && depth >= 4)} onClick={() => onChange({ ...rule, rules: [...rule.rules, blankRule] })}>
               Add rule
             </button>
             {depth === 0 ? (
               <button
                 type="button"
                 className="secondary small"
-                disabled={disabled}
+                disabled={disabled || atLimit}
                 onClick={() => onChange({ ...rule, rules: [...rule.rules, { type: rule.type === "and" ? "or" : "and", rules: [blankRule] }] })}
               >
                 Add group
@@ -935,9 +950,10 @@ export function RuleEditor({ rule, onChange, disabled = false, depth = 0, fields
   );
 }
 
-function RuleRow({ rule, onChange, disabled, fields, manualType: savedType, onTypeChange }: {
+function RuleRow({ rule, onChange, disabled, fields, manualType: savedType, onTypeChange, context = "automation", engagementScopes }: {
   rule: Extract<Rule, { type: "rule" }>; onChange: (rule: Rule) => void; disabled: boolean; fields: ContextFieldRow[];
   manualType?: PropertyType; onTypeChange?: (type: PropertyType) => void;
+  context?: "automation" | "segment"; engagementScopes?: EngagementScopes;
 }) {
   const unary = rule.operator === "exists" || rule.operator === "is_empty";
   const window = rule.operator === "within" || rule.operator === "not_within";
@@ -956,26 +972,30 @@ function RuleRow({ rule, onChange, disabled, fields, manualType: savedType, onTy
     return String(rule.value ?? "");
   };
   const changeType = (type: typeof kind, field = rule.field) => {
-    const choices = operatorsForType(type);
+    const choices = field.startsWith("email.") ? ["eq", "neq"] : operatorsForType(type);
     const operator = choices.includes(rule.operator) ? rule.operator : choices[0]!;
     const next: Rule = { ...rule, field, operator };
+    if (!field.startsWith("email.")) { delete next.scope; delete next.window; }
     if (operator === "exists" || operator === "is_empty") delete next.value;
     else next.value = operator === "within" || operator === "not_within" ? rule.value : convert(type);
     onChange(next);
   };
-  const allowed = operatorsForType(kind);
+  const engagement = rule.field.startsWith("email.");
+  const allowed = engagement ? ["eq", "neq"] : operatorsForType(kind);
   // Loaded incompatible operators are visible, never silently rewritten by opening the editor.
   const operatorOptions = allowed.includes(rule.operator) ? allowed : [rule.operator, ...allowed];
   const raw = typeof rule.value === "number" && !Number.isFinite(rule.value) ? "" : String(rule.value ?? "");
   return (
     <div className="ruleRow">
+      {engagement && context !== "segment" ? <p role="alert">Email engagement is not supported in automation rules.</p> : null}
+      {context === "segment" && rule.field && !known ? <p role="alert">Choose a supported segment field.</p> : null}
       <ContextField value={rule.field} onChange={(field) => {
         const selected = fields.find((item) => item.path === field);
         if (selected) {
           setManualType(selected.type === "set" ? "string" : selected.type);
           changeType(selected.type, field);
         } else changeType(manualType, field);
-      }} fields={fields} disabled={disabled} />
+      }} fields={fields} disabled={disabled} allowCustom={context !== "segment"} />
       <Select
         label="Operator"
         value={rule.operator}
@@ -1026,6 +1046,26 @@ function RuleRow({ rule, onChange, disabled, fields, manualType: savedType, onTy
           )}
         </>
       )}
+      {engagement && context === "segment" ? <>
+        <Select label="Email scope" value={rule.scope?.automation_id !== undefined ? "automation" : rule.scope?.broadcast_id !== undefined ? "broadcast" : "any"}
+          options={[{ value: "any", label: "Any email" }, { value: "automation", label: "Automation" }, { value: "broadcast", label: "Broadcast" }]}
+          disabled={disabled} onChange={(scope) => {
+            const next = { ...rule };
+            if (scope === "any") delete next.scope;
+            else next.scope = scope === "automation" ? { automation_id: "" } : { broadcast_id: "" };
+            onChange(next);
+          }} />
+        {rule.scope ? <Select label={rule.scope.automation_id !== undefined ? "Automation" : "Broadcast"}
+          value={rule.scope.automation_id ?? rule.scope.broadcast_id ?? ""} placeholder="Choose a resource"
+          options={[...(rule.scope.automation_id !== undefined ? engagementScopes?.automations ?? [] : engagementScopes?.broadcasts ?? [])]}
+          disabled={disabled} onChange={(value) => onChange({ ...rule, scope: rule.scope?.automation_id !== undefined ? { automation_id: value } : { broadcast_id: value } })} /> : null}
+        <Field label="Window" value={rule.window ?? ""} placeholder="30 days" hint="Optional positive duration. Empty means all recorded time."
+          disabled={disabled} onChange={(value) => {
+            const next = { ...rule };
+            if (value.trim()) next.window = value; else delete next.window;
+            onChange(next);
+          }} />
+      </> : null}
     </div>
   );
 }

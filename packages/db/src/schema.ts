@@ -1049,4 +1049,8 @@ begin
     end loop;
   end if;
 end $$;
+-- Dynamic audiences. Index creation can lock writes on large installations.
+alter table segments add column if not exists rule jsonb;
+create index if not exists emails_tenant_contact_created_idx on emails (tenant_id, contact_id, created_at);
+create index if not exists email_recipients_tenant_address_idx on email_recipients (tenant_id, lower(email));
 `;

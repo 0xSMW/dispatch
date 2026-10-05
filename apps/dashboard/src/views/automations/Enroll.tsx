@@ -51,7 +51,7 @@ export function Enroll({ automation, jobId, onJob, onClose }: {
           <p className="muted">Enroll existing contacts in {automation.name}. Lifetime re-entry rules still apply.</p>
           <Select label="Audience" value={audience} onChange={setAudience} disabled={start.isLoading}
             placeholder="Choose an audience"
-            options={[{ value: "all", label: "All contacts" }, ...(!segments.error && !segments.loading ? segments.rows.map((row) => ({ value: row.id, label: row.name })) : [])]} />
+            options={[{ value: "all", label: "All contacts" }, ...(!segments.error && !segments.loading ? segments.rows.filter((row) => row.type !== "dynamic").map((row) => ({ value: row.id, label: row.name })) : [])]} />
           {segments.loading ? <p className="fieldHint">Loading segments…</p> : null}
           {segments.error ? <div role="alert">Could not load segments: {segments.error} <button type="button" className="secondary small" onClick={() => void segments.reload()}>Retry</button></div> : null}
           <p className="notice warning">This can send emails immediately.</p>

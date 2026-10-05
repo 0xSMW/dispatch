@@ -6,6 +6,7 @@ import { remove } from "./delete.js";
 import { get } from "./get.js";
 import { list } from "./list.js";
 import { update } from "./update.js";
+import { preview } from "./preview.js";
 
 export const segments = new Command("segments")
   .description("Manage segments of contacts")
@@ -14,5 +15,6 @@ export const segments = new Command("segments")
   .addCommand(create)
   .addCommand(get)
   .addCommand(update)
+  .addCommand(preview)
   .addCommand(remove)
   .addCommand(contacts);

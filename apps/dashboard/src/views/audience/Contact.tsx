@@ -253,7 +253,7 @@ function Segments({ contactId }: { contactId: string }) {
   const all = useAll<Segment>("/segments");
   const [choice, setChoice] = useState("");
   const current = member.data?.data ?? [];
-  const available = (all.data?.data ?? []).filter((segment) => !current.some((item) => item.id === segment.id));
+  const available = (all.data?.data ?? []).filter((segment) => segment.type !== "dynamic" && !current.some((item) => item.id === segment.id));
 
   const add = useMutation((segmentId: string) => client.post(`/contacts/${contactId}/segments/${segmentId}`), {
     success: "Added to segment.",
@@ -283,7 +283,7 @@ function Segments({ contactId }: { contactId: string }) {
               {current.map((segment) => (
                 <span key={segment.id} className="tagChip">
                   {segment.name}
-                  {can ? (
+                  {can && segment.type !== "dynamic" ? (
                     <button
                       type="button"
                       className="ghost icon small"

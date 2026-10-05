@@ -48,6 +48,7 @@ export function permitted(permissions: string[], method: string, route: string) 
   if (permissions.includes("full")) return true;
   if (!permissions.includes("read")) return false;
   if (method === "GET" || method === "HEAD") return true;
+  if (method === "POST" && route === "/segments/preview") return true;
   return (method === "POST" && route === "/me/password") || (method === "DELETE" && route === "/sessions/:id");
 }
 

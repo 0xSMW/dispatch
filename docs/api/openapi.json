@@ -9123,6 +9123,47 @@
         }
       }
     },
+    "/segments/preview": {
+      "post": {
+        "operationId": "previewSegment",
+        "summary": "Preview a dynamic segment",
+        "description": "Read-only POST, available to full and viewer roles. Uncached count and at most ten sample contacts from one statement snapshot. Five total levels, twenty conditions; declared contact fields, static membership and supported email engagement only.",
+        "tags": ["Segments"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["rule"],
+                "properties": { "rule": { "$ref": "#/components/schemas/Rule" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Preview",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["count", "sample"],
+                  "properties": {
+                    "count": { "type": "integer", "minimum": 0 },
+                    "sample": { "type": "array", "maxItems": 10, "items": { "$ref": "#/components/schemas/Contact" } },
+                    "request_id": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Invalid rule", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "404": { "description": "Scope resource not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
+        }
+      }
+    },
     "/segments/{id}": {
       "get": {
         "operationId": "getSegment",
@@ -19723,6 +19764,7 @@
       },
       "SegmentInput": {
         "type": "object",
+        "additionalProperties": false,
         "required": [
           "name"
         ],
@@ -19735,11 +19777,16 @@
           "description": {
             "type": "string",
             "maxLength": 500
+          },
+          "rule": {
+            "anyOf": [{ "$ref": "#/components/schemas/Rule" }, { "type": "null" }],
+            "description": "Null or omitted creates a static list. A nonnull rule creates a dynamic filter, limited to five levels and twenty conditions."
           }
         }
       },
       "SegmentUpdate": {
         "type": "object",
+        "additionalProperties": false,
         "properties": {
           "name": {
             "type": "string",
@@ -19749,6 +19796,10 @@
           "description": {
             "type": "string",
             "maxLength": 500
+          },
+          "rule": {
+            "anyOf": [{ "$ref": "#/components/schemas/Rule" }, { "type": "null" }],
+            "description": "Omitted preserves the rule. Null converts to an empty static list. Converting a populated static list is a 409 until members are explicitly removed."
           }
         }
       },
@@ -19757,7 +19808,9 @@
         "required": [
           "object",
           "id",
-          "name"
+          "name",
+          "type",
+          "rule"
         ],
         "properties": {
           "object": {
@@ -19771,8 +19824,18 @@
             "type": "string"
           },
           "contacts": {
-            "type": "integer",
-            "description": "Member count. Present in list results only."
+            "type": ["integer", "null"],
+            "description": "Static list count or null for dynamic list rows. Detail always returns a numeric count, cached up to 30 seconds."
+          },
+          "description": {
+            "type": ["string", "null"]
+          },
+          "type": {
+            "type": "string",
+            "enum": ["static", "dynamic"]
+          },
+          "rule": {
+            "anyOf": [{ "$ref": "#/components/schemas/Rule" }, { "type": "null" }]
           },
           "created_at": {
             "type": "string",
@@ -20760,7 +20823,7 @@
         }
       },
       "Rule": {
-        "description": "Dotted event.* and contact.* fields. contact.topics contains receiving topic IDs with defaults applied; contact.segments contains live static membership IDs. Live legacy properties with those names win. event.received_at is the immutable recorded event timestamp, not a payload value. within/not_within need a positive finite duration and test the inclusive interval [now-duration, now]. Missing or invalid dates return false for both; for valid dates not_within is the complement, including future values.",
+        "description": "Shared contact/event grammar. Segment context excludes event fields, limits five total levels/twenty conditions and permits email.sent/delivered/opened/clicked/bounced boolean eq/neq with optional exclusive automation_id/broadcast_id scope and positive duration window. Email facts mean existence, exclude sandbox and use the inclusive recorded-event interval [statement time-duration, statement time]. No window means all recorded time; negative facts also match never-sent contacts. Automation contexts explicitly refuse email engagement. contact.segments in segments references static membership only; automation context includes fresh matched dynamic IDs. Legacy own properties retain precedence. event.received_at is immutable. within/not_within take positive durations; invalid dates match neither. SQL supports finite numeric and ISO values with malformed legacy guards, not universal JavaScript legacy-parser equivalence.",
         "oneOf": [
           {
             "type": "object",
@@ -20797,7 +20860,14 @@
                   "is_empty"
                 ]
               },
-              "value": {}
+              "value": {},
+              "scope": {
+                "oneOf": [
+                  { "type": "object", "additionalProperties": false, "required": ["automation_id"], "properties": { "automation_id": { "type": "string", "minLength": 1 } } },
+                  { "type": "object", "additionalProperties": false, "required": ["broadcast_id"], "properties": { "broadcast_id": { "type": "string", "minLength": 1 } } }
+                ]
+              },
+              "window": { "type": "string", "description": "Email engagement only: positive finite shared duration, such as 30 days." }
             }
           },
           {

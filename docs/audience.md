@@ -1,6 +1,6 @@
 # Audience
 
-Audience holds contacts, custom properties, static segments, and topic preferences. None is required to send a transactional email.
+Audience holds contacts, custom properties, static lists, dynamic filters, and topic preferences. None is required to send a transactional email.
 
 Contacts are identified by email, matched case-insensitively. Create them through the dashboard, the contact API, or a CSV import. [Firing an event](automations.md#triggers) with a new email address also creates a contact.
 
@@ -112,7 +112,7 @@ Omit the TypeScript/Python option, or leave the Go pointer nil, to use the tenan
 
 ## Segments
 
-Segments are static lists. Membership changes when you add or remove a contact, not when the contact's properties change.
+Choose **Static list** for manual membership, or **Filter** for contacts matching current state. Static membership changes when you add or remove a contact. Dynamic membership changes automatically as contact properties, preferences, or recorded email activity change.
 
 Create a segment under Audience → Segments, then manage members from the segment or contact page. The API supports:
 
@@ -126,7 +126,45 @@ An Added to segment trigger starts only on new membership. Deleting its segment 
 
 Use a segment to choose a broadcast's audience. Being in a segment is not permission to receive Marketing email: global unsubscribes, topic preferences, and suppressions still apply. Deleting a contact removes its segment memberships.
 
-There are no rule-based dynamic segments in the current release.
+### Dynamic filters
+
+`POST /segments` accepts an optional `rule`. Null or omission creates a static list. For example:
+
+```json
+{
+  "name": "Active trial users",
+  "rule": {
+    "type": "and",
+    "rules": [
+      { "type": "rule", "field": "contact.plan", "operator": "eq", "value": "trial" },
+      { "type": "rule", "field": "email.opened", "operator": "eq", "value": true, "window": "30 days" }
+    ]
+  }
+}
+```
+
+Declare `plan` as a String property first. Filters support declared contact properties, built-ins, receiving `contact.topics`, and static `contact.segments`. Rules allow five total node levels and twenty conditions. Membership cannot reference another dynamic filter; event fields are not segment fields. Existing own properties named `topics` or `segments` retain precedence.
+
+Email facts are `email.sent`, `email.delivered`, `email.opened`, `email.clicked`, and `email.bounced`. They accept boolean `eq`/`neq`. Optional scope is exactly one of `{"automation_id":"auto_..."}` or `{"broadcast_id":"broadcast_..."}`. Save and preview require a live same-tenant scope; deleting it later means no matching facts, not an unscoped fallback. Optional positive-duration `window` includes both bounds, from statement time minus the duration through statement time. Without a window, all recorded history is eligible. Facts test existence, not event counts. Negative facts also match contacts never sent mail. Sandbox events do not count; recipient-specific events cannot count a different recipient.
+
+`POST /segments/preview` with `{ "rule": ... }` returns an uncached `{ "count": number, "sample": [...] }`, with at most ten contacts from one statement snapshot. Viewers may preview but cannot save. The dashboard debounces this preview while editing.
+
+`GET /segments` returns `type`, `rule`, and `contacts: null` for dynamic rows. Detail returns a numeric count, cached for up to 30 seconds. Editing, conversion, and deletion invalidate that segment's count. Filtered contact lists, contact segment context, broadcast review, and snapshots use SQL matching, not application-side contact filtering.
+
+`PATCH /segments/{id}` preserves the rule when omitted; explicit `rule: null` converts to an empty static list. Remove a static list's members explicitly before converting it to a filter. A static list used by another filter cannot become dynamic. Dynamic membership add/delete, contact segment arrays, imports, Add to segment steps, and Added to segment triggers are refused. Predicate changes do not emit Added to segment events.
+
+Snapshots copy recipients in one database statement and remain unchanged by later contact edits. Review counts can change before the snapshot. Consent, suppressions, and mailbox deduplication still apply.
+
+SQL supports valid finite numeric and ISO values and safely guards malformed legacy shapes. It does not promise universal JavaScript `Number()`/locale-date parsing or arbitrary manually stored large-number precision equivalence. Automation evaluation remains unchanged and explicitly refuses unresolved email-engagement rules.
+
+```ts
+const rule = { type: "rule", field: "email.clicked", operator: "eq", value: true } as const;
+await dispatch.segments.preview(rule);
+await dispatch.segments.create({ name: "Clicked", rule });
+await dispatch.segments.update("seg_...", { rule: null });
+```
+
+Python uses `preview_segment(rule)`, `create_segment({"name": "Clicked", "rule": rule})`, and `update_segment(id, {"rule": None})`. Go uses `PreviewSegment(rule)`, `CreateSegment(SegmentInput{Name: "Clicked", Rule: rule})`, and `UpdateSegment(id, Map{"rule": nil})`; an omitted field preserves the existing filter.
 
 ## Topics
 

@@ -6,6 +6,7 @@ import {
   automationStatus,
   assertTriggerConfig,
   assertSendKinds,
+  assertSegmentSteps,
   createEnrollmentJob,
   findEnrollmentJob,
   cancelEnrollmentJob,
@@ -235,7 +236,9 @@ export function registerAutomations(
     return tx(db, async (client) => {
       const config = (input.steps as Array<{ type: string; config: TriggerConfig }>).find((step) => step.type === "trigger")!.config;
       await assertTriggerConfig(client, tenantId, config);
-      await assertSendKinds(client, tenantId, automationGraph({ steps: input.steps as Array<Record<string, unknown>>, trigger: input.trigger, connections: input.connections }).steps, input.enabled);
+      const steps = automationGraph({ steps: input.steps as Array<Record<string, unknown>>, trigger: input.trigger, connections: input.connections }).steps;
+      await assertSegmentSteps(client, tenantId, steps);
+      await assertSendKinds(client, tenantId, steps, input.enabled);
       const row = await client.query<AutomationRow>(
         `insert into automations (id, tenant_id, name, trigger, steps, connections, enabled, trigger_type, reentry, used_keys)
        values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
@@ -313,6 +316,7 @@ export function registerAutomations(
       if (graph || status === "enabled") {
         const config = (graph ?? automationGraph(current)).steps.find((step) => step.type === "trigger")!.config as TriggerConfig;
         await assertTriggerConfig(client, tenantId, config);
+        await assertSegmentSteps(client, tenantId, (graph ?? automationGraph(current)).steps);
         await assertSendKinds(client, tenantId, (graph ?? automationGraph(current)).steps, status === "enabled");
       }
       if (graph && automationStatus(current) === "enabled" && enabled) {

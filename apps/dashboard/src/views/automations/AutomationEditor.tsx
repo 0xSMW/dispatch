@@ -164,6 +164,7 @@ export function AutomationEditor() {
         return { value: item.id, label: `${item.alias ? `${item.name} (${item.alias})` : item.name}${kind ? ` · ${kindLabels[kind]}` : ""}`, kind };
       }),
       segments: segments.rows.map((item) => ({ value: item.id, label: item.name })),
+      staticSegments: segments.rows.filter((item) => item.type !== "dynamic").map((item) => ({ value: item.id, label: item.name })),
       events: events.rows.map((item) => item.name),
       topics: topics.rows.map((item) => ({ value: item.id, label: item.name })),
       eventDefinitions: events.rows,

@@ -13,7 +13,7 @@ import {
   expect,
   it,
 } from "vitest";
-import type { Provider, ProviderEmail } from "@dispatchmail/core";
+import type { Provider, ProviderEmail, Rule } from "@dispatchmail/core";
 import type { ContactRow, Db } from "@dispatchmail/db";
 import type { Storage } from "@dispatchmail/storage";
 import { Readable } from "node:stream";
@@ -116,6 +116,260 @@ afterAll(async () => {
 });
 
 describe.skipIf(!live)("accept", () => {
+  describe("dynamic segment SQL", () => {
+    const leaf = (field: string, operator: Extract<Rule, { type: "rule" }>["operator"], value?: unknown): Rule => ({ type: "rule", field, operator, ...(value === undefined ? {} : { value }) });
+    async function fixture() {
+      for (const [key, type] of [["plan", "string"], ["score", "number"], ["active", "boolean"], ["last_seen", "date"]] as const)
+        expect((await post(fullKey, "/contact-properties", { key, type })).status).toBe(200);
+      const contacts: string[] = [];
+      for (const letter of ["a", "b", "c", "d", "e", "f"]) {
+        const response = await post(fullKey, "/contacts", { email: `segment-${letter}@fixture.net` });
+        expect(response.status).toBe(200);
+        contacts.push(response.json.id);
+      }
+      const tenant = (await db.query("select tenant_id from contacts where id=$1", [contacts[0]])).rows[0].tenant_id as string;
+      const values = [
+        { plan: "alpha", score: 2, active: true, last_seen: "2026-09-30T00:00:00Z" },
+        { plan: "beta", score: 5, active: false, last_seen: "2026-10-01T00:00:00Z" },
+        { plan: "", score: null, active: "true", last_seen: "2026-02-30" },
+        { plan: {}, score: "not a number", active: {}, last_seen: [] },
+        {},
+        { plan: null, score: [], active: null, last_seen: null },
+      ];
+      for (let index = 0; index < contacts.length; index++)
+        await db.query("update contacts set properties=$3::jsonb where tenant_id=$1 and id=$2", [tenant, contacts[index], JSON.stringify(values[index])]);
+      return { tenant, contacts };
+    }
+    async function selected(tenant: string, rule: Rule, prefix = "") {
+      const { segmentPredicate } = await import("@dispatchmail/db");
+      const params: unknown[] = [tenant];
+      const predicate = segmentPredicate(rule, (value) => { params.push(value); return `$${params.length}`; }, [
+        { key: "plan", type: "string" }, { key: "score", type: "number" }, { key: "active", type: "boolean" }, { key: "last_seen", type: "date" },
+      ]);
+      return (await db.query<{ id: string }>(`${prefix} select c.id from contacts c where c.tenant_id=$1 and c.deleted_at is null and (${predicate}) order by c.email`, params)).rows.map((row) => row.id);
+    }
+
+    it("selects fixed expected IDs for every supported scalar operator and malformed legacy shape", async () => {
+      const { tenant, contacts } = await fixture();
+      const [a, b, c, d, e, f] = contacts;
+      const cases: Array<[Rule, Array<string | undefined>]> = [
+        [leaf("contact.plan", "eq", "alpha"), [a]], [leaf("contact.plan", "neq", "alpha"), [b,c,d,e,f]],
+        [leaf("contact.plan", "contains", "a"), [a,b]], [leaf("contact.plan", "not_contains", "a"), [c,d,e,f]],
+        [leaf("contact.plan", "starts_with", "al"), [a]], [leaf("contact.plan", "ends_with", "ta"), [b]],
+        [leaf("contact.plan", "exists"), [a,b,c,d]], [leaf("contact.plan", "is_empty"), [c,e,f]],
+        [leaf("contact.score", "eq", 2), [a]], [leaf("contact.score", "neq", 2), [b,c,d,e,f]],
+        [leaf("contact.score", "gt", 2), [b]], [leaf("contact.score", "gte", 2), [a,b]],
+        [leaf("contact.score", "lt", 5), [a]], [leaf("contact.score", "lte", 5), [a,b]],
+        [leaf("contact.score", "exists"), [a,b,d,f]], [leaf("contact.score", "is_empty"), [c,e,f]],
+        [leaf("contact.active", "eq", true), [a]], [leaf("contact.active", "neq", true), [b,c,d,e,f]],
+        [leaf("contact.active", "eq", false), [b]], [leaf("contact.active", "neq", false), [a,c,d,e,f]],
+        [leaf("contact.active", "exists"), [a,b,c,d]], [leaf("contact.active", "is_empty"), [e,f]],
+        [leaf("contact.last_seen", "eq", "2026-09-30T00:00:00Z"), [a]],
+        [leaf("contact.last_seen", "neq", "2026-09-30T00:00:00Z"), [b,c,d,e,f]],
+        [leaf("contact.last_seen", "gt", "2026-09-30"), [b]], [leaf("contact.last_seen", "gte", "2026-09-30"), [a,b]],
+        [leaf("contact.last_seen", "lt", "2026-10-01"), [a]], [leaf("contact.last_seen", "lte", "2026-10-01"), [a,b]],
+        [leaf("contact.last_seen", "exists"), [a,b,c,d]], [leaf("contact.last_seen", "is_empty"), [d,e,f]],
+        [leaf("contact.email", "starts_with", "segment-a"), [a]], [leaf("contact.unsubscribed", "eq", false), contacts],
+        [leaf("contact.created_at", "exists"), contacts],
+      ];
+      for (const [rule, ids] of cases) expect(await selected(tenant, rule), JSON.stringify(rule)).toEqual(ids);
+      await db.query("update contacts set properties=jsonb_set(properties,'{plan}',to_jsonb($3::text)) where tenant_id=$1 and id=$2", [tenant,d,"50%_sale"]);
+      expect(await selected(tenant,leaf("contact.plan","contains","%_"))).toEqual([d]);
+      expect(await selected(tenant,leaf("contact.plan","starts_with","50%_"))).toEqual([d]);
+      for (const [index,value] of [0.1,1e20,1e-10,-3].entries()) {
+        await db.query("update contacts set properties=jsonb_set(properties,'{score}',$3::jsonb) where tenant_id=$1 and id=$2", [tenant,contacts[index],JSON.stringify(value)]);
+        expect(await selected(tenant,leaf("contact.score","eq",value))).toEqual([contacts[index]]);
+      }
+      expect(await selected(tenant,leaf("contact.last_seen","gte","2026-09-29T23:00:00-01:00"))).toEqual([a,b]);
+      // Each projected value is anchored to the very statement that executes the
+      // production predicate, making both inclusive window boundaries deterministic.
+      const boundaryPrefix = `with contacts as (select source.id, source.tenant_id, source.email,
+        source.first_name, source.last_name, source.unsubscribed_at, source.deleted_at, source.created_at, source.updated_at,
+        jsonb_set(source.properties, '{last_seen}', to_jsonb(to_char(
+          (date_trunc('milliseconds', statement_timestamp()) + case source.email
+            when 'segment-a@fixture.net' then interval '-1 day'
+            when 'segment-b@fixture.net' then interval '0'
+            when 'segment-c@fixture.net' then interval '1 second'
+            else interval '-1 day -1 second' end) at time zone 'UTC',
+          'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))) as properties
+        from public.contacts source)`;
+      // Run a statement-time leaf directly too; malformed calendar/text shapes must
+      // never make a PostgreSQL cast fail even when no other predicate excludes them.
+      expect(await selected(tenant, leaf("contact.last_seen", "within", "1 day"), boundaryPrefix)).toEqual([a,b]);
+      expect(await selected(tenant, leaf("contact.last_seen", "not_within", "1 day"), boundaryPrefix)).toEqual([c,d,e,f]);
+    });
+
+    it("uses dynamic lists context preview and atomic snapshots with current receiving preferences", async () => {
+      const { tenant, contacts } = await fixture();
+      const [a,b] = contacts;
+      const topic = await post(fullKey, "/topics", { name: "Segment fixture", default_subscription: "opt_in" });
+      const staticList = await post(fullKey, "/segments", { name: "Static fixture" });
+      expect((await post(fullKey, `/contacts/${a}/segments/${staticList.json.id}`, {})).status).toBe(200);
+      const rule: Rule = { type: "and", rules: [
+        leaf("contact.score", "gte", 2), leaf("contact.topics", "contains", topic.json.id),
+        leaf("contact.segments", "not_contains", staticList.json.id),
+      ] };
+      const dynamic = await post(fullKey, "/segments", { name: "Current eligible", rule });
+      expect(dynamic.status).toBe(200);
+      expect(dynamic.json).toMatchObject({ type: "dynamic", rule });
+      const filtered = await call(fullKey, "GET", `/contacts?segment_id=${dynamic.json.id}`);
+      expect(filtered.json.data.map((row: { id: string }) => row.id)).toEqual([b]);
+      const members = await call(fullKey, "GET", `/segments/${dynamic.json.id}/contacts?limit=1`);
+      expect(members.json.data).toMatchObject([{ id: b, contact_id: b }]);
+      expect(members.json.has_more).toBe(false);
+      const preview = await post(fullKey, "/segments/preview", { rule });
+      expect(preview.json).toMatchObject({ count: 1, sample: [{ id: b, properties: { score: { value: 5, type: "number" } } }] });
+      const context = await contactContext(db, tenant, "segment-b@fixture.net");
+      expect(context!.segments).toContain(dynamic.json.id);
+      const segments = await call(fullKey, "GET", `/contacts/${b}/segments`);
+      expect(segments.json.data.map((row: { id: string }) => row.id)).toContain(dynamic.json.id);
+      const listed = await call(fullKey, "GET", "/segments");
+      expect(listed.json.data.find((row: { id: string }) => row.id === dynamic.json.id).contacts).toBeNull();
+      expect((await call(fullKey, "GET", `/segments/${dynamic.json.id}`)).json.contacts).toBe(1);
+      const { broadcastAudience, snapshotBroadcast } = await import("@dispatchmail/db");
+      expect((await broadcastAudience(db, tenant, { segmentId: dynamic.json.id, topicId: topic.json.id })).recipients).toBe(1);
+      const broadcastId = id("broadcast");
+      await db.query("insert into broadcasts (id, tenant_id, name, from_email, subject, html, segment_id, topic_id) values ($1,$2,'Dynamic fixture','sender@fixture.net','Fixture','<p>Fixture</p>',$3,$4)", [broadcastId, tenant, dynamic.json.id, topic.json.id]);
+      expect(await tx(db, (client) => snapshotBroadcast(client, tenant, broadcastId))).toBe(1);
+      expect((await db.query("select contact_id from broadcast_recipients where tenant_id=$1 and broadcast_id=$2", [tenant,broadcastId])).rows).toEqual([{ contact_id: b }]);
+      expect((await call(fullKey, "PATCH", `/contacts/${b}/topics`, { topics: [{ id: topic.json.id, subscription: "opt_out" }] })).status).toBe(200);
+      expect((await post(fullKey, "/segments/preview", { rule })).json.count).toBe(0);
+      expect((await contactContext(db, tenant, "segment-b@fixture.net"))!.segments).not.toContain(dynamic.json.id);
+      expect((await db.query("select contact_id from broadcast_recipients where tenant_id=$1 and broadcast_id=$2", [tenant,broadcastId])).rows).toEqual([{ contact_id: b }]);
+      for (const operator of ["contains", "not_contains", "exists", "is_empty"] as const) {
+        const value = operator.includes("contains") ? staticList.json.id : undefined;
+        const expected = operator === "contains" || operator === "exists" ? [a] : contacts.slice(1);
+        expect(await selected(tenant, leaf("contact.segments", operator, value))).toEqual(expected);
+        const topicValue = operator.includes("contains") ? topic.json.id : undefined;
+        const topicExpected = operator === "contains" || operator === "exists" ? contacts.filter((contact) => contact !== b) : [b];
+        expect(await selected(tenant, leaf("contact.topics", operator, topicValue))).toEqual(topicExpected);
+      }
+      const otherKey = await seedTenant();
+      expect((await call(otherKey, "GET", `/contacts?segment_id=${dynamic.json.id}`)).status).toBe(404);
+    });
+
+    it("attributes all email facts by contact or legacy recipient without cross-recipient sandbox leakage", async () => {
+      const { tenant, contacts } = await fixture();
+      const [a,b,c,d] = contacts;
+      const automationId = id("automation"), broadcastId = id("broadcast");
+      await db.query("insert into automations (id,tenant_id,name,trigger,steps) values ($1,$2,'Engagement scope','fixture','[]')", [automationId,tenant]);
+      await db.query("insert into broadcasts (id,tenant_id,name,from_email,subject) values ($1,$2,'Engagement scope','sender@fixture.net','Fixture')", [broadcastId,tenant]);
+      async function email(contactId: string | null, recipients: Array<[string, boolean]>, scope: "automation" | "broadcast", sandbox = false) {
+        const emailId = id("email");
+        await db.query(`insert into emails (id,tenant_id,request_id,from_email,subject,contact_id,automation_id,broadcast_id,sandbox,provider_message_id)
+          values ($1,$2,'fixture','sender@fixture.net','Fixture',$3,$4,$5,$6,$7)`,
+          [emailId,tenant,contactId,scope === "automation" ? automationId : null,scope === "broadcast" ? broadcastId : null,sandbox,`provider-${emailId}`]);
+        const ids: string[] = [];
+        for (const [address,simulated] of recipients) {
+          const recipientId = id("recipient");
+          await db.query("insert into email_recipients (id,tenant_id,email_id,email,kind,sandbox) values ($1,$2,$3,$4,'to',$5)", [recipientId,tenant,emailId,address,simulated]);
+          ids.push(recipientId);
+        }
+        return { emailId,ids };
+      }
+      const primary = await email(a!, [["segment-a@fixture.net",false]], "automation");
+      const fallback = await email(null, [["SEGMENT-B@fixture.net",false]], "broadcast");
+      const wrongPrimary = await email(a!, [["segment-c@fixture.net",false]], "automation");
+      const simulated = await email(d!, [["segment-d@fixture.net",true]], "broadcast", true);
+      const mixed = await email(null, [["segment-c@fixture.net",false],["segment-d@fixture.net",true]], "broadcast");
+      const otherKey = await seedTenant();
+      const foreign = await post(otherKey,"/contacts",{email:"segment-e@fixture.net"});
+      const populatedForeign = await email(foreign.json.id, [["segment-e@fixture.net",false]], "broadcast");
+      await db.query("insert into email_events (id,tenant_id,email_id,type,data) values ($1,$2,$3,'email.clicked','{\"sandbox\":false}')",
+        [id("event"),tenant,populatedForeign.emailId]);
+      const foreignTenant = (await db.query("select tenant_id from contacts where id=$1",[foreign.json.id])).rows[0].tenant_id;
+      await db.query("insert into email_events (id,tenant_id,email_id,type,data) values ($1,$2,$3,'email.clicked','{\"sandbox\":false}')",
+        [id("event"),foreignTenant,mixed.emailId]);
+      for (const fact of ["sent","delivered","opened","clicked","bounced"]) {
+        for (const record of [primary,fallback,wrongPrimary,simulated]) {
+          // Duplicate events remain one existence fact; tracking recipient identity
+          // and historical provider address data are both represented.
+          for (let duplicate = 0; duplicate < 2; duplicate++)
+            await db.query("insert into email_events (id,tenant_id,email_id,recipient_id,type,data) values ($1,$2,$3,$4,$5,$6::jsonb)",
+              [id("event"),tenant,record.emailId,record.ids[0],`email.${fact}`,JSON.stringify({ sandbox: record === simulated })]);
+        }
+      }
+      for (const fact of ["sent","clicked"])
+        await db.query("insert into email_events (id,tenant_id,email_id,recipient_id,type,data) values ($1,$2,$3,$4,$5,$6::jsonb)",
+          [id("event"),tenant,mixed.emailId,fact === "clicked" ? mixed.ids[0] : null,`email.${fact}`,JSON.stringify({ sandbox:false,recipients:["segment-c@fixture.net"] })]);
+      for (const [fact,data] of [
+        ["email.delivered",{sandbox:true,recipients:["segment-d@fixture.net"]}],
+        ["email.bounced",{sandbox:true,email:"segment-d@fixture.net"}],
+      ] as const)
+        await db.query("insert into email_events (id,tenant_id,email_id,type,data) values ($1,$2,$3,$4,$5::jsonb)",
+          [id("event"),tenant,mixed.emailId,fact,JSON.stringify(data)]);
+      await db.query("insert into email_events (id,tenant_id,email_id,recipient_id,type,data) values ($1,$2,$3,$4,'email.opened','{\"sandbox\":false}')",
+        [id("event"),tenant,mixed.emailId,primary.ids[0]]);
+      await db.query("insert into email_events (id,tenant_id,email_id,recipient_id,type,data) values ($1,$2,$3,$4,'email.opened',$5::jsonb)",
+        [id("event"),tenant,mixed.emailId,mixed.ids[1],JSON.stringify({ sandbox:true })]);
+      for (const fact of ["sent","delivered","opened","clicked","bounced"]) {
+        const expected = fact === "sent" || fact === "clicked" ? [a,b,c] : [a,b];
+        expect(await selected(tenant,leaf(`email.${fact}`,"eq",true))).toEqual(expected);
+        expect(await selected(tenant,leaf(`email.${fact}`,"neq",false))).toEqual(expected);
+        expect(await selected(tenant,leaf(`email.${fact}`,"eq",false))).toEqual(contacts.filter((contact) => !expected.includes(contact)));
+        expect(await selected(tenant,leaf(`email.${fact}`,"neq",true))).toEqual(contacts.filter((contact) => !expected.includes(contact)));
+      }
+      const scoped: Rule = { ...leaf("email.opened","eq",true) as Extract<Rule,{type:"rule"}>, scope:{ automation_id:automationId }, window:"30 days" };
+      expect(await selected(tenant,scoped)).toEqual([a]);
+      expect(await selected(tenant,{ ...scoped,scope:{broadcast_id:broadcastId} })).toEqual([b]);
+      // Historical real attribution survives a later routing change when the event
+      // identifies its original real recipient.
+      await db.query("update emails set sandbox=true where id=$1", [primary.emailId]);
+      await db.query("update email_recipients set sandbox=true where email_id=$1", [primary.emailId]);
+      expect(await selected(tenant,scoped)).toEqual([a]);
+      // Events at either boundary count; future and just-older records do not.
+      const bounds = `with email_events as (
+        select ev.id,ev.tenant_id,ev.email_id,ev.recipient_id,ev.type,ev.provider_event_id,ev.data,
+          statement_timestamp() + case when e.automation_id is not null then interval '-30 days'
+            else interval '0' end as created_at
+        from public.email_events ev join emails e on e.tenant_id=ev.tenant_id and e.id=ev.email_id
+      )`;
+      expect(await selected(tenant,{ ...scoped,scope:{broadcast_id:broadcastId} },bounds)).toEqual([b]);
+      expect(await selected(tenant,scoped,bounds)).toEqual([a]);
+      const outside = bounds.replace("interval '-30 days'", "interval '-30 days -1 second'").replace("interval '0'", "interval '1 second'");
+      expect(await selected(tenant,scoped,outside)).toEqual([]);
+      expect(await selected(tenant,{ ...scoped,scope:{broadcast_id:broadcastId} },outside)).toEqual([]);
+      await db.query("update automations set deleted_at=now() where id=$1", [automationId]);
+      expect(await selected(tenant,scoped)).toEqual([]);
+      const { segmentFilter } = await import("@dispatchmail/db");
+      const params: unknown[] = [tenant];
+      const segment = await post(fullKey,"/segments",{name:"Engagement plan",rule:leaf("email.clicked","eq",true)});
+      expect(segment.status).toBe(200);
+      const predicate = await segmentFilter(db,tenant,segment.json.id,(value) => {params.push(value);return `$${params.length}`;});
+      const plan = await db.query(`explain (analyze,buffers) select count(*) from contacts c where c.tenant_id=$1 and c.deleted_at is null and (${predicate})`,params);
+      console.info("dynamic segment engagement plan",plan.rows);
+    });
+
+    it("counts the original fixed three-condition 50000-contact rule and records EXPLAIN", async () => {
+      const seed = await post(fullKey, "/contacts", { email: "performance-seed@fixture.net" });
+      const tenant = (await db.query("select tenant_id from contacts where id=$1", [seed.json.id])).rows[0].tenant_id;
+      await db.query("delete from contacts where tenant_id=$1 and id=$2", [tenant, seed.json.id]);
+      for (const [key,type] of [["plan","string"],["score","number"],["active","boolean"]] as const)
+        expect((await post(fullKey, "/contact-properties", { key,type })).status).toBe(200);
+      await db.query(`insert into contacts (id,tenant_id,email,properties)
+        select 'contact_perf_' || n, $1, 'perf-' || n || '@fixture.net',
+          jsonb_build_object('score',n,'active',n%2=0,'plan','pro') from generate_series(1,50000) n`, [tenant]);
+      const rule: Rule = { type: "and", rules: [leaf("contact.score","gte",25000),leaf("contact.active","eq",true),leaf("contact.plan","eq","pro")] };
+      const segment = await post(fullKey, "/segments", { name: "Fixed performance", rule });
+      expect(segment.status).toBe(200);
+      const preview = await post(fullKey, "/segments/preview", { rule });
+      expect(preview.json.count).toBe(12501);
+      expect(preview.json.sample.map((contact: { id: string }) => contact.id)).toEqual(
+        Array.from({ length: 10 }, (_, index) => `contact_perf_${25000 + index * 2}`),
+      );
+      const { segmentCount, segmentFilter } = await import("@dispatchmail/db");
+      await db.query("analyze contacts");
+      const started = performance.now();
+      expect(await segmentCount(db, tenant, segment.json.id)).toBe(12501);
+      const elapsed = performance.now()-started;
+      const params: unknown[] = [tenant];
+      const predicate = await segmentFilter(db, tenant, segment.json.id, (value) => { params.push(value); return `$${params.length}`; });
+      const plan = await db.query(`explain (analyze, buffers) select count(*) from contacts c where c.tenant_id=$1 and c.deleted_at is null and (${predicate})`, params);
+      console.info("dynamic segment fixed performance", { contacts: 50000, rule, elapsed, plan: plan.rows });
+      expect(elapsed).toBeLessThan(500);
+    });
+  });
+
   it("lists all lifecycle preset definitions through stored full and viewer authentication without installing resources", async () => {
     const { loadLibrary } = await import("./library.js");
     const library = await loadLibrary();

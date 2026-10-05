@@ -4,6 +4,10 @@ import { contactColumns, type ContactRow } from "./audience.js";
 export { settings, updateSettings } from "./settings.js";
 export { assertSendKinds } from "./send-kinds.js";
 export { migrate } from "./migration.js";
+// Compiler and bounded read helpers share the fixed contacts alias c.
+export { segmentPredicate, segmentFilter, segmentCount, segmentPreview, assertSegmentRule } from "./segments.js";
+export { segmentMatch, contactSegments } from "./segment-matches.js";
+export { staticSegment, assertSegmentSteps, updateSegment, segmentColumns } from "./segment-writes.js";
 
 const { Pool } = pg;
 

@@ -726,8 +726,9 @@ export const subscriptionSchema = z.object({
 
 export const segmentSchema = z.object({
   name: z.string().min(1).max(120),
-  description: z.string().max(500).optional()
-});
+  description: z.string().max(500).optional(),
+  rule: z.lazy(() => segmentRuleSchema).nullable().optional()
+}).strict();
 export type SegmentInput = z.input<typeof segmentSchema>;
 
 export const segmentUpdateSchema = segmentSchema.partial();
@@ -872,14 +873,32 @@ export function operatorsForType(type: RuleFieldType): readonly Operator[] {
 }
 
 export type Rule =
-  | { type: "rule"; field: string; operator: Operator; value?: unknown }
+  | { type: "rule"; field: string; operator: Operator; value?: unknown; scope?: EngagementScope; window?: string }
   | { type: "and" | "or"; rules: Rule[] };
+
+export const engagementFields = ["email.sent", "email.delivered", "email.opened", "email.clicked", "email.bounced"] as const;
+export type EngagementField = (typeof engagementFields)[number];
+export type EngagementScope = { automation_id: string; broadcast_id?: never } | { broadcast_id: string; automation_id?: never };
+export type EngagementRule = { type: "rule"; field: EngagementField; operator: "eq" | "neq"; value: boolean; scope?: EngagementScope; window?: string };
+const engagementScopeSchema = z.union([
+  z.object({ automation_id: z.string().min(1) }).strict(),
+  z.object({ broadcast_id: z.string().min(1) }).strict()
+]);
 
 const nestedRule: z.ZodType<Rule> = z.lazy(() =>
   z.union([
-    z.object({ type: z.literal("rule"), field: z.string().min(1).max(200), operator: z.enum(operators), value: z.unknown().optional() })
+    z.object({ type: z.literal("rule"), field: z.string().min(1).max(200), operator: z.enum(operators), value: z.unknown().optional(),
+      scope: engagementScopeSchema.optional(), window: z.string().refine(validWindow, "Use a positive finite duration").optional() })
       .refine((rule) => rule.operator !== "within" && rule.operator !== "not_within" || validWindow(rule.value), {
         message: "Date windows need a positive duration, such as 30 days", path: ["value"]
+      })
+      .superRefine((rule, context) => {
+        if (rule.field.startsWith("email.")) {
+          if (!(engagementFields as readonly string[]).includes(rule.field) || !["eq", "neq"].includes(rule.operator) || typeof rule.value !== "boolean")
+            context.addIssue({ code: z.ZodIssueCode.custom, message: "Email engagement requires a supported fact, eq/neq and a boolean" });
+        } else if (rule.scope !== undefined || rule.window !== undefined) {
+          context.addIssue({ code: z.ZodIssueCode.custom, message: "Scope and window are only supported on email engagement" });
+        }
       }),
     z.object({ type: z.enum(["and", "or"]), rules: z.array(nestedRule).min(1).max(50) })
   ])
@@ -904,6 +923,29 @@ function ruleDepth(value: unknown) {
 export const ruleSchema: z.ZodType<Rule, z.ZodTypeDef, unknown> = z
   .custom<unknown>((value) => ruleDepth(value) <= maxRuleDepth, `Rules can nest at most ${maxRuleDepth} levels`)
   .pipe(nestedRule);
+
+export function hasEngagement(rule: Rule): boolean {
+  return rule.type === "rule" ? rule.field.startsWith("email.") : rule.rules.some(hasEngagement);
+}
+
+export const automationRuleSchema = ruleSchema.refine((rule) => !hasEngagement(rule), "Email engagement is not supported in automation rules");
+
+export const segmentRuleSchema = z.custom<unknown>((value) => {
+  const pending: Array<[unknown, number]> = [[value, 1]];
+  let conditions = 0;
+  while (pending.length) {
+    const [node, depth] = pending.pop()!;
+    if (depth > 5 || !node || typeof node !== "object") return false;
+    if ((node as { type?: unknown }).type === "rule" && ++conditions > 20) return false;
+    const children = (node as { rules?: unknown }).rules;
+    if (Array.isArray(children)) {
+      if (children.length > 20) return false;
+      children.forEach((child) => pending.push([child, depth + 1]));
+    }
+  }
+  return true;
+}, "Segment rules allow at most five levels and twenty conditions").pipe(ruleSchema);
+export const segmentPreviewSchema = z.object({ rule: segmentRuleSchema }).strict();
 
 // Two numbers, or two dates, to compare. Anything else (null, an empty string, a list, a number
 // against a date) has no order, and the rule is false.
@@ -1056,7 +1098,7 @@ export const stepConfigs = {
       event: eventName.optional(),
       timeout: z.string().min(1).max(60).optional(),
       timeout_seconds: z.number().int().optional(),
-      filter_rule: ruleSchema.optional()
+      filter_rule: automationRuleSchema.optional()
     })
     .transform((value, ctx) => {
       const name = value.event_name ?? value.event;
@@ -1068,14 +1110,14 @@ export const stepConfigs = {
       if (timeout) checkDuration(timeout, ctx, "timeout");
       return { event_name: name, ...(timeout ? { timeout } : {}), ...(value.filter_rule ? { filter_rule: value.filter_rule } : {}) };
     }),
-  condition: ruleSchema,
+  condition: automationRuleSchema,
   exit: z.object({}).strict(),
-  filter: z.object({ rule: ruleSchema, scope: z.enum(["next", "following"]) }),
+  filter: z.object({ rule: automationRuleSchema, scope: z.enum(["next", "following"]) }),
   branch: z.object({
     paths: z.array(z.object({
       key: z.string().regex(/^[A-Za-z0-9_-]{1,60}$/).refine((key) => key !== "otherwise", "otherwise is reserved"),
       label: z.string().trim().min(1).max(120),
-      rule: ruleSchema
+      rule: automationRuleSchema
     })).min(2).max(10)
   }).superRefine(({ paths }, ctx) => {
     const keys = new Set<string>();

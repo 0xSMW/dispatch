@@ -209,7 +209,7 @@ export function Contacts() {
       {dialog === "segment" ? (
         <AddToSegment
           ids={selection.ids}
-          segments={segments.data?.data ?? []}
+          segments={(segments.data?.data ?? []).filter((segment) => segment.type !== "dynamic")}
           onClose={close}
           onDone={() => {
             selection.clear();
@@ -328,7 +328,7 @@ function AddContact({ onClose, onDone }: { onClose: () => void; onDone: () => vo
         <div className="form two">
           <fieldset className="checkList">
             <legend>Segments</legend>
-            {(segments.data?.data ?? []).map((segment) => (
+            {(segments.data?.data ?? []).filter((segment) => segment.type !== "dynamic").map((segment) => (
               <label key={segment.id} className="check">
                 <input type="checkbox" checked={segmentIds.includes(segment.id)} onChange={() => setSegmentIds(toggle(segmentIds, segment.id))} />
                 {segment.name}

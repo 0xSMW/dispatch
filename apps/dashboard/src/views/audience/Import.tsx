@@ -234,7 +234,7 @@ export function ImportContacts({ onClose, onDone }: { onClose: () => void; onDon
             <fieldset className="checkList">
               <legend>Add to segments</legend>
               {segments.loading ? <Skeleton lines={2} /> : null}
-              {(segments.data?.data ?? []).map((segment) => (
+              {(segments.data?.data ?? []).filter((segment) => segment.type !== "dynamic").map((segment) => (
                 <label key={segment.id} className="check">
                   <input
                     type="checkbox"

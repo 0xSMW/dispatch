@@ -3,6 +3,7 @@ import type { Queryable } from "./index.js";
 import { publishedTemplate } from "./index.js";
 import { loadBrand } from "./emails.js";
 import { realEmailEvent } from "./sandbox.js";
+import { segmentFilter } from "./segments.js";
 
 export type BroadcastRow = {
   id: string;
@@ -129,6 +130,8 @@ export function presentBroadcast(row: BroadcastRow) {
 // snapshotBroadcast, so the number on the review step is the number that gets queued.
 // `no_first_name` and `no_last_name` count the recipients who would see a blank for that field.
 export async function broadcastAudience(db: Queryable, tenantId: string, filter: { segmentId: string | null; topicId: string | null }) {
+  const params: unknown[] = [tenantId, filter.segmentId, filter.topicId];
+  const predicate = filter.segmentId ? await segmentFilter(db, tenantId, filter.segmentId, (value) => { params.push(value); return `$${params.length}`; }) : "true";
   type Counts = { total: number; recipients: number; unsubscribed: number; suppressed: number; opted_out: number; no_first_name: number; no_last_name: number };
   const row = await db.query<Counts>(
     `select
@@ -139,8 +142,9 @@ export async function broadcastAudience(db: Queryable, tenantId: string, filter:
        count(*) filter (where not unsubscribed and not suppressed and topic_ok)::integer as recipients,
        count(*) filter (where not unsubscribed and not suppressed and topic_ok and no_first_name)::integer as no_first_name,
        count(*) filter (where not unsubscribed and not suppressed and topic_ok and no_last_name)::integer as no_last_name
-     from (
+     from (select distinct on (mailbox) * from (
        select
+         lower(c.email) as mailbox, c.created_at, c.id,
          coalesce(trim(c.first_name), '') = '' as no_first_name,
          coalesce(trim(c.last_name), '') = '' as no_last_name,
          c.unsubscribed_at is not null as unsubscribed,
@@ -148,25 +152,19 @@ export async function broadcastAudience(db: Queryable, tenantId: string, filter:
            select 1 from suppressions sup
            where sup.tenant_id = c.tenant_id and lower(sup.email) = lower(c.email) and sup.removed_at is null
          ) as suppressed,
-         (
+         coalesce((
            $3::text is null
            or (t.default_status = 'subscribed' and coalesce(s.status, 'subscribed') = 'subscribed')
            or (t.default_status = 'unsubscribed' and s.status = 'subscribed')
-         ) as topic_ok
+         ), false) as topic_ok
        from contacts c
        left join topics t on t.tenant_id = c.tenant_id and t.id = $3 and t.deleted_at is null
        left join topic_subscriptions s on s.tenant_id = c.tenant_id and s.topic_id = t.id and s.contact_id = c.id
        where c.tenant_id = $1
          and c.deleted_at is null
-         and (
-           $2::text is null
-           or exists (
-             select 1 from segment_contacts sc
-             where sc.tenant_id = c.tenant_id and sc.segment_id = $2 and sc.contact_id = c.id
-           )
-         )
-     ) audience`,
-    [tenantId, filter.segmentId, filter.topicId],
+         and ($2::text is null or (${predicate}))
+     ) candidates order by mailbox, (not unsubscribed and not suppressed and topic_ok) desc, created_at, id) audience`,
+    params,
   );
   const counts = row.rows[0] ?? { total: 0, recipients: 0, unsubscribed: 0, suppressed: 0, opted_out: 0, no_first_name: 0, no_last_name: 0 };
   return { object: "broadcast_audience" as const, ...counts };
@@ -552,6 +550,8 @@ export async function snapshotBroadcast(client: Queryable, tenantId: string, bro
     segment_id: string | null;
   }>("select topic_id, segment_id from broadcasts where tenant_id = $1 and id = $2 for update", [tenantId, broadcastId]);
   if (!broadcast.rows[0]) throw new ApiError("not_found", 404, "Broadcast not found");
+  const params: unknown[] = [tenantId, broadcast.rows[0].segment_id, broadcast.rows[0].topic_id, broadcastId];
+  const predicate = broadcast.rows[0].segment_id ? await segmentFilter(client, tenantId, broadcast.rows[0].segment_id, (value) => { params.push(value); return `$${params.length}`; }) : "true";
   // One statement, entirely in the database: a segment of millions never crosses into Node.
   // `distinct on` keeps one row per mailbox when two contacts differ only by letter case.
   const inserted = await client.query(
@@ -569,23 +569,17 @@ export async function snapshotBroadcast(client: Queryable, tenantId: string, bro
          select 1 from suppressions sup
          where sup.tenant_id = c.tenant_id and lower(sup.email) = lower(c.email) and sup.removed_at is null
        )
-       and (
-         $2::text is null
-         or exists (
-           select 1 from segment_contacts sc
-           where sc.tenant_id = c.tenant_id and sc.segment_id = $2 and sc.contact_id = c.id
-         )
-       )
+       and ($2::text is null or (${predicate}))
        and (
          $3::text is null
          or (t.default_status = 'subscribed' and coalesce(s.status, 'subscribed') = 'subscribed')
          or (t.default_status = 'unsubscribed' and s.status = 'subscribed')
        )
-     order by lower(c.email), c.created_at
+     order by lower(c.email), c.created_at, c.id
      ) picked
      on conflict (tenant_id, broadcast_id, contact_id)
      do update set email = excluded.email, status = 'queued', updated_at = now()`,
-    [tenantId, broadcast.rows[0].segment_id, broadcast.rows[0].topic_id, broadcastId],
+    params,
   );
   return inserted.rowCount ?? 0;
 }

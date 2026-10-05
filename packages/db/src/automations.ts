@@ -10,10 +10,12 @@ import { recipientContext } from "./broadcasts.js";
 import { subscriptionLinks, unsubscribeVariables } from "./unsubscribe.js";
 import { emitRunEvent } from "./run-events.js";
 import { assertSendKinds } from "./send-kinds.js";
+import { contactSegments } from "./segment-matches.js";
 import {
   ApiError,
   durationSeconds,
-  evaluate,
+  evaluate as evaluateRule,
+  hasEngagement,
   id,
   normalizeAutomation,
   parseAddress,
@@ -24,6 +26,11 @@ import {
   type StepConfig,
   type TriggerConfig
 } from "@dispatchmail/core";
+
+function evaluate(rule: Rule, context: Record<string, unknown>) {
+  if (hasEngagement(rule)) throw new ApiError("validation_error", 422, "Email engagement is not supported in automation rules");
+  return evaluateRule(rule, context);
+}
 
 export type AutomationRun = {
   id: string;
@@ -468,7 +475,7 @@ export async function contactContext(db: Queryable, tenantId: string, email: str
            and coalesce(s.status, t.default_status) = 'subscribed' order by t.id) as topics,
        array(select s.id from segments s
          join segment_contacts m on m.tenant_id = s.tenant_id and m.segment_id = s.id
-         where s.tenant_id = contacts.tenant_id and m.contact_id = contacts.id and s.deleted_at is null
+         where s.tenant_id = contacts.tenant_id and m.contact_id = contacts.id and s.deleted_at is null and s.rule is null
          order by s.id) as segments
      from contacts where tenant_id = $1 and lower(email) = lower($2) and deleted_at is null
      order by created_at limit 1`,
@@ -476,10 +483,11 @@ export async function contactContext(db: Queryable, tenantId: string, email: str
   );
   const contact = row.rows[0];
   if (!contact) return null;
+  const segments = Object.hasOwn(contact.properties ?? {}, "segments") ? [] : await contactSegments(db, tenantId, contact.id);
   return {
     ...(contact.properties ?? {}),
     ...(!Object.hasOwn(contact.properties ?? {}, "topics") ? { topics: contact.unsubscribed_at ? [] : contact.topics ?? [] } : {}),
-    ...(!Object.hasOwn(contact.properties ?? {}, "segments") ? { segments: contact.segments ?? [] } : {}),
+    ...(!Object.hasOwn(contact.properties ?? {}, "segments") ? { segments } : {}),
     id: contact.id,
     email: contact.email,
     first_name: contact.first_name,

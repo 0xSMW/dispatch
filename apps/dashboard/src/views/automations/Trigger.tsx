@@ -16,7 +16,7 @@ export function triggerSources(options?: StepOptions): RuleSources {
   return {
     properties: options?.propertiesReady === false ? undefined : options?.contactProperties,
     topics: options?.topicsReady === false ? undefined : options?.topics,
-    segments: options?.segmentsReady === false ? undefined : options?.segments,
+    segments: options?.segmentsReady === false ? undefined : options?.staticSegments ?? options?.segments,
   };
 }
 

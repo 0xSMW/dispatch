@@ -52,6 +52,7 @@ export function Automations() {
   const sources = {
     topics: !topics.loading && !topics.error ? topics.rows.map((row) => ({ value: row.id, label: row.name })) : undefined,
     segments: !segments.loading && !segments.error ? segments.rows.map((row) => ({ value: row.id, label: row.name })) : undefined,
+    staticSegments: !segments.loading && !segments.error ? segments.rows.filter((row) => row.type !== "dynamic").map((row) => ({ value: row.id, label: row.name })) : undefined,
   };
   const cannotStart = (row: Automation) => {
     const config = automationTrigger(row);
@@ -205,6 +206,7 @@ function CreateAutomation({ onClose }: { onClose: () => void }) {
     events: events.rows.map((row) => row.name),
     topics: topics.rows.map((row) => ({ value: row.id, label: row.name })),
     segments: segments.rows.map((row) => ({ value: row.id, label: row.name })),
+    staticSegments: segments.rows.filter((row) => row.type !== "dynamic").map((row) => ({ value: row.id, label: row.name })),
     contactProperties: properties.rows,
     topicsReady: !topics.loading && !topics.error,
     segmentsReady: !segments.loading && !segments.error,

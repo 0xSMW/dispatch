@@ -28,6 +28,19 @@ function client() {
 }
 
 describe("appendEvent", () => {
+  it("preserves affected provider recipients without mutating supplied event data", async () => {
+    const db = client();
+    const data = { sandbox: false };
+    const recipients = ["real@fixture.net"];
+    const event = await appendEvent(db, {
+      tenantId: "tenant_1", requestId: "req_1", emailId: "email_1",
+      type: "email.delivered", providerEventId: "provider:delivery:real",
+      data, recipients, mode: "delivery", provider: "ses",
+    });
+    expect(event?.data).toEqual({ sandbox: false, recipients: ["real@fixture.net"] });
+    expect(data).toEqual({ sandbox: false });
+    expect(recipients).toEqual(["real@fixture.net"]);
+  });
   it("persists real provider attribution even after retry routing becomes sandbox", async () => {
     const db = client();
     const query = db.query.getMockImplementation()!;

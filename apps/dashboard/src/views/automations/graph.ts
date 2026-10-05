@@ -642,7 +642,7 @@ export function emailIssue(value: unknown): string | null {
   return emailPattern.test(text) ? null : "Use a plain address, such as ada@example.com.";
 }
 
-export type Rule = { type: "rule"; field: string; operator: string; value?: unknown } | { type: "and" | "or"; rules: Rule[] };
+export type Rule = { type: "rule"; field: string; operator: string; value?: unknown; scope?: { automation_id: string; broadcast_id?: never } | { broadcast_id: string; automation_id?: never }; window?: string } | { type: "and" | "or"; rules: Rule[] };
 
 export function ruleIssue(rule: unknown, fields: ContextField[] = [], manualTypes: Record<string, PropertyType> = {}, location = ""): string | null {
   const value = rule as Partial<Rule> | undefined;

@@ -257,8 +257,15 @@ export type RecipientType = "sent" | "delivered" | "opened" | "clicked" | "bounc
 
 export type Operator = "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "contains" | "not_contains" | "starts_with" | "ends_with" | "within" | "not_within" | "exists" | "is_empty";
 export type Rule =
-  | { type: "rule"; field: string; operator: Operator; value?: unknown }
+  | { type: "rule"; field: string; operator: Operator; value?: unknown; scope?: { automation_id: string; broadcast_id?: never } | { broadcast_id: string; automation_id?: never }; window?: string }
   | { type: "and" | "or"; rules: Rule[] };
+
+export type Segment = Row & {
+  object: "segment"; id: string; name: string; description?: string | null;
+  type: "static" | "dynamic"; rule: Rule | null; contacts?: number | null;
+  created_at: string; updated_at: string;
+};
+export type SegmentPreview = { count: number; sample: Row[] };
 
 export type StepType = "trigger" | "send_email" | "delay" | "wait_for_event" | "condition" | "add_to_segment" | "contact_update" | "contact_delete" | "exit" | "filter" | "branch";
 export type ConnectionType = "default" | "condition_met" | "condition_not_met" | "timeout" | "event_received" | "branch";
@@ -1087,20 +1094,24 @@ class ContactProperties extends Resource {
 }
 
 class Segments extends Resource {
-  create(payload: { name: string; description?: string }) {
-    return this.client.call<Row>("POST", "/segments", wire(payload));
+  create(payload: { name: string; description?: string; rule?: Rule | null }) {
+    return this.client.call<Segment>("POST", "/segments", wire(payload));
   }
 
   list(page: Page = {}) {
-    return this.client.call<List>("GET", `/segments${query(page)}`);
+    return this.client.call<List<Segment>>("GET", `/segments${query(page)}`);
   }
 
   get(id: string) {
-    return this.client.call<Row>("GET", `/segments/${seg(id)}`);
+    return this.client.call<Segment>("GET", `/segments/${seg(id)}`);
   }
 
-  update(id: string, payload: { name?: string; description?: string }) {
-    return this.client.call<Row>("PATCH", `/segments/${seg(id)}`, wire(payload));
+  update(id: string, payload: { name?: string; description?: string; rule?: Rule | null }) {
+    return this.client.call<Segment>("PATCH", `/segments/${seg(id)}`, wire(payload));
+  }
+
+  preview(rule: Rule) {
+    return this.client.call<SegmentPreview>("POST", "/segments/preview", { rule });
   }
 
   remove(id: string) {

@@ -266,12 +266,15 @@ type Topic struct {
 }
 
 type Segment struct {
-	Object    string `json:"object,omitempty"`
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Contacts  int    `json:"contacts,omitempty"`
-	CreatedAt string `json:"created_at,omitempty"`
-	UpdatedAt string `json:"updated_at,omitempty"`
+	Object      string  `json:"object,omitempty"`
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	Description *string `json:"description,omitempty"`
+	Type        string  `json:"type"`
+	Rule        *Rule   `json:"rule"`
+	Contacts    *int    `json:"contacts,omitempty"`
+	CreatedAt   string  `json:"created_at,omitempty"`
+	UpdatedAt   string  `json:"updated_at,omitempty"`
 }
 
 type Suppression struct {
@@ -648,6 +651,15 @@ type TopicSubscriptionInput struct {
 type SegmentInput struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
+	// Nil omits rule; json.RawMessage("null") explicitly converts to static.
+	Rule any `json:"rule,omitempty"`
+}
+
+type SegmentUpdate struct {
+	Name        *string `json:"name,omitempty"`
+	Description *string `json:"description,omitempty"`
+	// Nil omits rule; json.RawMessage("null") explicitly converts to static.
+	Rule any `json:"rule,omitempty"`
 }
 
 type BroadcastInput struct {
@@ -676,11 +688,27 @@ type AutomationStep struct {
 // Value retains JSON booleans, numbers, strings, and arrays without coercion.
 // Nil omits Value; json.RawMessage("null") preserves an explicit JSON null.
 type Rule struct {
-	Type     string `json:"type"`
-	Field    string `json:"field,omitempty"`
-	Operator string `json:"operator,omitempty"`
-	Value    any    `json:"value,omitempty"`
-	Rules    []Rule `json:"rules,omitempty"`
+	Type     string           `json:"type"`
+	Field    string           `json:"field,omitempty"`
+	Operator string           `json:"operator,omitempty"`
+	Value    any              `json:"value,omitempty"`
+	Rules    []Rule           `json:"rules,omitempty"`
+	Scope    *EngagementScope `json:"scope,omitempty"`
+	Window   string           `json:"window,omitempty"`
+}
+
+type EngagementScope struct {
+	AutomationID string `json:"automation_id,omitempty"`
+	BroadcastID  string `json:"broadcast_id,omitempty"`
+}
+
+type SegmentPreview struct {
+	Count  int       `json:"count"`
+	Sample []Contact `json:"sample"`
+}
+
+func (c *Client) PreviewSegment(rule Rule) (*SegmentPreview, error) {
+	return post[SegmentPreview](c, "/segments/preview", Map{"rule": rule})
 }
 
 type ExitConfig struct{}

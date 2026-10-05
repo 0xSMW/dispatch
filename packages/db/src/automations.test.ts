@@ -178,6 +178,10 @@ function fake(run: {
       return { rows: [] };
     }
     if (text.includes("from contact_properties")) return { rows: [] };
+    if (text.startsWith("select id from segments")) return { rows: [] };
+    if (text.startsWith("select s.id from segments s join contacts c")) {
+      return { rows: (state.contacts.find((contact) => contact.id === params[1])?.segments ?? []).map((id) => ({ id })) };
+    }
     if (text.includes("(deleted_at is not null) as deleted from contacts")) {
       const found = state.contacts.find((contact) => contact.email.toLowerCase() === String(params[1]).toLowerCase());
       return { rows: found ? [{ ...contactRow(found), deleted: Boolean(found.deleted) }] : [] };
