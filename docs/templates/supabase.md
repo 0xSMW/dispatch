@@ -84,7 +84,7 @@ function verifyUrl(projectRef: string, emailData: { token_hash: string; email_ac
 }
 
 async function send(to: string, id: string, variables: Record<string, string>) {
-  const response = await fetch(`${process.env.DISPATCH_BASE_URL}/emails`, {
+  const response = await fetch(`${process.env.DISPATCH_API_URL}/emails`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${process.env.DISPATCH_API_KEY}`,

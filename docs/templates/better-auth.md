@@ -14,9 +14,11 @@ Do not `await` the Dispatch call inside the hook. Better Auth treats a slow hook
 
 `sendVerificationOTP` receives `{ email, otp, type }`. `type` is `sign-in`, `email-verification`, or `forget-password`. All three use `one-time-code`. The address is `email`, not `user.email`.
 
+Set `DISPATCH_API_URL` to your Dispatch API base URL (without a trailing slash), `DISPATCH_API_KEY` to a sending key, and `DISPATCH_FROM` to an address on a verified domain.
+
 ```ts
 async function send(to: string, id: string, variables: Record<string, string>) {
-  const response = await fetch(`${process.env.DISPATCH_BASE_URL}/emails`, {
+  const response = await fetch(`${process.env.DISPATCH_API_URL}/emails`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${process.env.DISPATCH_API_KEY}`,

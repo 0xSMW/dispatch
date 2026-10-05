@@ -51,7 +51,7 @@ export async function handleClerk(request: Request) {
   };
   if (!email.to_email_address || !email.subject || !email.body) return;
   if (email.delivered_by_clerk) return;
-  const response = await fetch(`${process.env.DISPATCH_BASE_URL}/emails`, {
+  const response = await fetch(`${process.env.DISPATCH_API_URL}/emails`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${process.env.DISPATCH_API_KEY}`,

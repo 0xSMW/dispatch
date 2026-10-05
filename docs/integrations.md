@@ -4,7 +4,9 @@ Connect Stripe, Clerk, Supabase Database Webhooks or a Standard Webhooks sender 
 
 ## Create a receiver
 
-In **Settings > Integrations** (`/settings/integrations`), choose a provider, give the integration a name and enter its signing secret. Supabase uses a shared header secret instead. Copy the receiver URL when it is shown, then configure the provider to POST to that exact URL.
+In **Settings > Integrations** (`/settings/integrations`), use a provider's **Connect** tile, give the integration a name and enter its signing secret. Supabase uses a shared header secret instead. Each tile links to its receiver setup guide. Copy the receiver URL when it is shown, then configure the provider to POST to that exact URL. Dismissing the one-time display or leaving the page clears it; rotate if you lose the URL.
+
+The same page links to outgoing Webhooks, SMTP, Auth.js and Better Auth setup. Viewers can follow these links and inspect existing integrations, but only full-access users see Connect or other mutation controls.
 
 The same setup uses an authenticated API request. This Stripe example assumes `DISPATCH_API_URL`, a full-access `DISPATCH_API_KEY` and the endpoint's `STRIPE_WEBHOOK_SECRET` are already set:
 
@@ -91,6 +93,8 @@ curl --fail-with-body --silent --show-error \
 ```
 
 The response is `{object:"list",has_more:false,data:[...]}`. The default is the most recent 20 deliveries; the maximum is 100. Rows contain delivery and provider-event IDs, `status`, `event_name`, `contact_id`, a sanitized `error` and `created_at`. They contain no request body, URL token or signing material.
+
+In the dashboard, **View** shows mapped events and the last 20 deliveries. **Refresh deliveries** fetches current history. A matched contact links to its audience detail; unmatched or failed requests need not have a contact.
 
 - `processed`: the mapped contact/event effects committed.
 - `ignored`: no applicable mapping or contact effect, with a sanitized reason where available.

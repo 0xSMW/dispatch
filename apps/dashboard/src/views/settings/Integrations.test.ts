@@ -28,7 +28,7 @@ afterEach(() => {
 });
 
 describe("Integrations", () => {
-  it("lists integrations and links to existing sending routes and pinned recipes", async () => {
+  it("lists integrations with eight setup tiles and links to existing sending routes and pinned recipes", async () => {
     const fetch = stubApi(routes());
     show(h(Integrations), "/settings/integrations");
     expect(await screen.findByText("Billing")).toBeTruthy();
@@ -37,6 +37,35 @@ describe("Integrations", () => {
     expect(screen.getAllByRole("link", { name: "SMTP" }).every((link) => link.getAttribute("href") === "/settings/smtp")).toBe(true);
     expect(screen.getByRole("link", { name: "Auth.js recipe" }).getAttribute("href")).toMatch(/templates\/authjs.md$/);
     expect(screen.getByRole("link", { name: "Better Auth recipe" }).getAttribute("href")).toMatch(/templates\/better-auth.md$/);
+    for (const [provider, label] of [["stripe", "Stripe"], ["clerk", "Clerk"], ["supabase", "Supabase"], ["webhook", "Standard Webhooks"]]) {
+      expect(screen.getByRole("heading", { name: label })).toBeTruthy();
+      expect(screen.getByRole("button", { name: `Connect ${label}` })).toBeTruthy();
+      expect(screen.getByRole("link", { name: `${label} setup guide` }).getAttribute("href")).toMatch(new RegExp(`templates/${provider}.md#receiver-setup$`));
+    }
+    for (const label of ["Outgoing webhooks", "SMTP", "Auth.js", "Better Auth"]) {
+      expect(screen.getByRole("heading", { name: label })).toBeTruthy();
+    }
+  });
+
+  it.each([
+    ["stripe", "Stripe", { map_plan: false }],
+    ["clerk", "Clerk", { delete_contact: false }],
+    ["supabase", "Supabase", { secret_header: "x-webhook-secret" }],
+    ["webhook", "Standard Webhooks", {}],
+  ])("opens %s setup tiles with provider-specific fields and a working create payload", async (provider, label, settings) => {
+    const fetch = stubApi({ "GET /integrations": list([]), "POST /integrations": { ...created, provider } });
+    show(h(Integrations), "/settings/integrations");
+    fireEvent.click(screen.getByRole("button", { name: `Connect ${label}` }));
+    expect(screen.getByLabelText("Provider")).toHaveProperty("value", provider);
+    expect(screen.getByRole("link", { name: "Open provider setup guide" }).getAttribute("href")).toMatch(new RegExp(`templates/${provider}.md#receiver-setup$`));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "New integration" } });
+    fireEvent.change(screen.getByLabelText(provider === "supabase" ? "Shared secret" : "Signing secret"), { target: { value: "synthetic-secret" } });
+    fireEvent.click(screen.getByRole("button", { name: /Create integration/ }));
+    expect(await screen.findByText(created.url)).toBeTruthy();
+    expect(bodyOf(fetch, "POST /integrations")).toEqual({
+      name: "New integration", provider, secret: "synthetic-secret", settings,
+      ...(provider === "webhook" ? { slug: "webhook" } : {}),
+    });
   });
 
   it("allows viewer GET inspection and last20 history without write controls or leaked extra fields", async () => {
@@ -45,7 +74,7 @@ describe("Integrations", () => {
       "GET /integrations/int_1/deliveries": (url: URL) => {
         expect(url.searchParams.get("limit")).toBe("20");
         return list([{
-          id: "del_1", status: "failed", event_name: "stripe.invoice.payment_failed", created_at: row.created_at,
+          id: "del_1", status: "failed", event_name: "stripe.invoice.payment_failed", contact_id: "con_1", created_at: row.created_at,
           error: "raw_secret_exception", body: { secret: "body_secret" }, token: "delivery_token",
         }]);
       },
@@ -55,11 +84,35 @@ describe("Integrations", () => {
     fireEvent.click(await screen.findByRole("button", { name: "View Billing" }));
     expect(await screen.findByText("Delivery failed")).toBeTruthy();
     expect(screen.getByText("Last 20 deliveries")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "View contact" }).getAttribute("href")).toBe("/audience/contacts/con_1");
     expect(screen.queryByRole("button", { name: "Add integration" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Connect / })).toBeNull();
+    for (const label of ["Stripe", "Clerk", "Supabase", "Standard Webhooks"]) {
+      expect(screen.getByRole("link", { name: `${label} setup guide` })).toBeTruthy();
+    }
+    expect(screen.getByRole("link", { name: "Open provider setup guide" }).getAttribute("href")).toMatch(/templates\/stripe.md#receiver-setup$/);
     for (const action of ["Edit Billing", "Rotate Billing", "Delete Billing"]) expect(screen.queryByRole("button", { name: action })).toBeNull();
     for (const secret of ["hidden_secret", "hidden_url", "hidden_token", "raw_secret_exception", "body_secret", "delivery_token"]) {
       expect(document.body.textContent).not.toContain(secret);
     }
+    expect(calls(fetch).every((call) => call.startsWith("GET "))).toBe(true);
+  });
+
+  it("shows delivery contact links without inventing a contact for unmatched attempts", async () => {
+    const fetch = stubApi({
+      ...routes(), "GET /integrations/int_1/deliveries": list([
+        { id: "del_1", status: "processed", event_name: "stripe.invoice.paid", contact_id: "con_1", error: null, created_at: row.created_at },
+        { id: "del_2", status: "ignored", event_name: null, contact_id: null, error: "no_contact", created_at: row.created_at },
+      ]),
+    });
+    show(h(Integrations), "/settings/integrations");
+    fireEvent.click(await screen.findByRole("button", { name: "View Billing" }));
+    const contact = await screen.findByRole("link", { name: "View contact" });
+    expect(contact.getAttribute("href")).toBe("/audience/contacts/con_1");
+    expect(screen.getAllByRole("link", { name: "View contact" })).toHaveLength(1);
+    expect(screen.getByText("No matching contact")).toBeTruthy();
+    fireEvent.click(contact);
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(calls(fetch).every((call) => call.startsWith("GET "))).toBe(true);
   });
 

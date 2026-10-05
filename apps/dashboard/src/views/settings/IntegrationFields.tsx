@@ -6,7 +6,7 @@ export const providers = [
   { value: "clerk", label: "Clerk" },
   { value: "supabase", label: "Supabase" },
   { value: "webhook", label: "Standard Webhooks" },
-];
+] satisfies Array<{ value: IntegrationInput["provider"]; label: string }>;
 
 // Deliberately browser-local: provider adapters contain server-only crypto and database code.
 export const mappedEvents = {

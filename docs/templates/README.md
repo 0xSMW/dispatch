@@ -13,4 +13,6 @@ For lifecycle events, start with a receiver in [Settings > Integrations](../inte
 
 The manual recipes map payloads onto template aliases and call `POST /emails`, or send app events for an automation. Auth.js and Better Auth remain code-owned sending integrations. Clerk renders its own authentication messages; it has no Dispatch authentication template. A Supabase lifecycle webhook is not an Auth Send Email Hook.
 
+All examples use `DISPATCH_API_URL` for the API base URL, without a trailing slash, and `DISPATCH_API_KEY` for authentication. Receiver management needs full access; direct email sends can use a sending key. Manual handlers also use `DISPATCH_FROM` for a verified sender where indicated.
+
 Review template variables, publication, sender and business timing before enabling an automation. In particular, a Stripe receiver supplies a hosted invoice link, not a billing-portal card-update session. See [Failed payment](../automations/failed-payment.md).

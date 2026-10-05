@@ -141,7 +141,7 @@ type Invoice = {
 type Subscription = { customer: string; trial_end: number | null };
 
 async function send(to: string, id: string, variables: Record<string, unknown>, key: string) {
-  const response = await fetch(`${process.env.DISPATCH_BASE_URL}/emails`, {
+  const response = await fetch(`${process.env.DISPATCH_API_URL}/emails`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${process.env.DISPATCH_API_KEY}`,

@@ -15,19 +15,23 @@ import { useMutation } from "../../hooks/useMutation";
 import { useResource } from "../../hooks/useResource";
 import { docsBase } from "../../lib/docs";
 import { useCan, useClient } from "../../shell/session";
-import type { Integration, IntegrationCreated, InboundDelivery, List } from "../../types";
+import type { Integration, IntegrationCreated, IntegrationInput, InboundDelivery, List } from "../../types";
 import { settingsTabs } from "../tabs";
 import { IntegrationFields, integrationDraft, integrationPayload, MappedEvents, providers, validDraft } from "./IntegrationFields";
 import "../../styles/settings.css";
 
 type Credentials = { name: string; token: string; url: string; location: string };
 
+function setupGuide(provider: IntegrationInput["provider"]) {
+  return `${docsBase()}templates/${provider}.md#receiver-setup`;
+}
+
 export function Integrations() {
   const client = useClient();
   const can = useCan();
   const location = useLocation();
   const list = useList<Integration>("/integrations");
-  const [adding, setAdding] = useState(false);
+  const [adding, setAdding] = useState<IntegrationInput["provider"] | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   const [editing, setEditing] = useState<Integration | null>(null);
   const [deleting, setDeleting] = useState<Integration | null>(null);
@@ -38,7 +42,7 @@ export function Integrations() {
   const generation = useRef(0);
   useEffect(() => {
     setCredentials(null);
-    setAdding(false);
+    setAdding(null);
     setSelected(null);
     setEditing(null);
     setDeleting(null);
@@ -55,7 +59,42 @@ export function Integrations() {
     <div className="page">
       <PageHeader title="Settings" />
       <Tabs tabs={settingsTabs} />
-      <Panel title="Integrations" actions={can ? <button type="button" onClick={() => { setCredentials(null); setAdding(true); }}>Add integration</button> : null}>
+      <Panel title="Integration setup">
+        <div className="integrationGrid">
+          {providers.map((provider) => <div key={provider.value} className="integrationCard">
+            <h3>{provider.label}</h3>
+            <p className="muted">Receive provider events, update contacts, and start automations.</p>
+            <div className="toolbar">
+              {can ? <button type="button" className="secondary" onClick={() => {
+                setCredentials(null);
+                setAdding(provider.value);
+              }}>Connect {provider.label}</button> : null}
+              <a href={setupGuide(provider.value)} target="_blank" rel="noreferrer">{provider.label} setup guide</a>
+            </div>
+          </div>)}
+          <div className="integrationCard">
+            <h3>Outgoing webhooks</h3>
+            <p className="muted">Deliver Dispatch events to your application.</p>
+            <Link to="/webhooks">Outgoing webhooks</Link>
+          </div>
+          <div className="integrationCard">
+            <h3>SMTP</h3>
+            <p className="muted">Send email through the relay.</p>
+            <Link to="/settings/smtp">SMTP</Link>
+          </div>
+          <div className="integrationCard">
+            <h3>Auth.js</h3>
+            <p className="muted">Send verification links from your application.</p>
+            <a href={`${docsBase()}templates/authjs.md`} target="_blank" rel="noreferrer">Auth.js recipe</a>
+          </div>
+          <div className="integrationCard">
+            <h3>Better Auth</h3>
+            <p className="muted">Send password reset, verification, and one-time codes.</p>
+            <a href={`${docsBase()}templates/better-auth.md`} target="_blank" rel="noreferrer">Better Auth recipe</a>
+          </div>
+        </div>
+      </Panel>
+      <Panel title="Integrations" actions={can ? <button type="button" onClick={() => { setCredentials(null); setAdding("stripe"); }}>Add integration</button> : null}>
         <div className="stack">
           <p className="muted">Receive provider events to update contacts and start automations. Signing secrets and receiver URLs are never available through inspection.</p>
           {!can ? <p className="note">Read-only access. An administrator can create or change integrations.</p> : null}
@@ -82,13 +121,7 @@ export function Integrations() {
           </div> : null}
         </div>
       </Panel>
-      <Panel title="Sending integrations"><div className="stack">
-        <p><Link to="/webhooks">Outgoing webhooks</Link> — deliver Dispatch events to your application.</p>
-        <p><Link to="/settings/smtp">SMTP</Link> — send email through the relay.</p>
-        <p><a href={`${docsBase()}templates/authjs.md`} target="_blank" rel="noreferrer">Auth.js recipe</a> — send verification links from your application.</p>
-        <p><a href={`${docsBase()}templates/better-auth.md`} target="_blank" rel="noreferrer">Better Auth recipe</a> — password reset, verification, and one-time codes.</p>
-      </div></Panel>
-      {can && adding ? <IntegrationForm onClose={() => setAdding(false)} onCreated={(result) => { setAdding(false); reveal(result); }} onSaved={() => void list.reload()} /> : null}
+      {can && adding ? <IntegrationForm provider={adding} onClose={() => setAdding(null)} onCreated={(result) => { setAdding(null); reveal(result); }} onSaved={() => void list.reload()} /> : null}
       {can && editing ? <IntegrationForm integration={editing} onClose={() => setEditing(null)} onCreated={reveal}
         onSaved={() => { setEditing(null); void list.reload(); }} /> : null}
       {selected ? <IntegrationDetail id={selected} onClose={() => setSelected(null)} /> : null}
@@ -119,11 +152,11 @@ export function Integrations() {
   );
 }
 
-function IntegrationForm({ integration, onClose, onCreated, onSaved }: {
-  integration?: Integration; onClose: () => void; onCreated: (row: IntegrationCreated) => void; onSaved: () => void;
+function IntegrationForm({ integration, provider = "stripe", onClose, onCreated, onSaved }: {
+  integration?: Integration; provider?: IntegrationInput["provider"]; onClose: () => void; onCreated: (row: IntegrationCreated) => void; onSaved: () => void;
 }) {
   const client = useClient();
-  const [value, setValue] = useState(() => integrationDraft(integration));
+  const [value, setValue] = useState(() => ({ ...integrationDraft(integration), provider: integration?.provider ?? provider }));
   const [failed, setFailed] = useState(false);
   const active = useRef(true);
   useEffect(() => {
@@ -147,6 +180,7 @@ function IntegrationForm({ integration, onClose, onCreated, onSaved }: {
     onSubmit={() => { setFailed(false); void save.mutate(); }} submitLabel={integration ? "Save" : "Create integration"}
     submitDisabled={!validDraft(value, Boolean(integration))} submitting={save.isLoading} size="large">
     {failed ? <p role="alert">Integration could not be saved. Check the configuration and try again.</p> : null}
+    <p><a href={setupGuide(value.provider)} target="_blank" rel="noreferrer">Open provider setup guide</a></p>
     <IntegrationFields value={value} onChange={setValue} integration={integration} disabled={save.isLoading} />
   </Modal>;
 }
@@ -166,6 +200,7 @@ function IntegrationDetail({ id, onClose }: { id: string; onClose: () => void })
       {resource.loading ? <Skeleton lines={3} /> : resource.error ? <Failed message={resource.error} onRetry={resource.reload} /> : row ? <>
         <p>Provider: {providers.find((provider) => provider.value === row.provider)?.label}</p>
         <p>Namespace: <code>{row.slug}</code></p>
+        <p><a href={setupGuide(row.provider)} target="_blank" rel="noreferrer">Open provider setup guide</a></p>
         <p>Last received: {row.last_received_at ? <Time value={row.last_received_at} /> : "Never"}</p>
         {row.provider === "stripe" ? <p>Plan storage: {row.settings.map_plan ? "On" : "Off"}. Restricted customer key: {row.has_restricted_key ? "Configured" : "Not configured"}.</p> : null}
         {row.provider === "clerk" ? <p>On user deletion: {row.settings.delete_contact ? "Delete contact" : "Retain contact and history"}.</p> : null}
@@ -176,10 +211,11 @@ function IntegrationDetail({ id, onClose }: { id: string; onClose: () => void })
       <button type="button" className="secondary" disabled={deliveries.loading} onClick={() => void deliveries.reload()}>Refresh deliveries</button>
       {deliveries.loading ? <Skeleton lines={3} /> : deliveries.error ? <Failed message={deliveries.error} onRetry={deliveries.reload} />
         : !deliveries.data?.data.length ? <p className="muted">No deliveries yet.</p>
-          : <table><thead><tr><th>Received</th><th>Status</th><th>Event</th><th>Result</th></tr></thead><tbody>
+          : <table><thead><tr><th>Received</th><th>Status</th><th>Event</th><th>Contact</th><th>Result</th></tr></thead><tbody>
             {deliveries.data.data.slice(0, 20).map((delivery) => <tr key={delivery.id}>
               <td><Time value={delivery.created_at} /></td><td><Badge value={delivery.status} /></td>
               <td><code>{delivery.event_name}</code></td>
+              <td>{delivery.contact_id ? <Link to={`/audience/contacts/${encodeURIComponent(delivery.contact_id)}`} onClick={onClose}>View contact</Link> : "—"}</td>
               <td>{delivery.error ? failureReasons[delivery.error] ?? "Delivery failed" : "—"}</td>
             </tr>)}
           </tbody></table>}
