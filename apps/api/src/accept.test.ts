@@ -1,4 +1,4 @@
-import "@dispatchmail/core/env";
+import { acceptTargets } from "./accept-targets.js";
 import {
   createServer,
   type IncomingMessage,
@@ -13,45 +13,41 @@ import {
   expect,
   it,
 } from "vitest";
-import {
-  id,
-  keyHash,
-  makeKey,
-  ProviderError,
-  renderTemplate,
-  sign,
-  verify,
-  type Provider,
-  type ProviderEmail,
-} from "@dispatchmail/core";
-import { appendEvent, connect, contactColumns, dispatchContactWrite, emit, executeAutomationRun, fireEvent, migrate, reconcileBroadcastSent, retryTx, tx, unsubscribeToken, updateContact, type ContactRow, type Db } from "@dispatchmail/db";
+import type { Provider, ProviderEmail } from "@dispatchmail/core";
+import type { ContactRow, Db } from "@dispatchmail/db";
 import type { Storage } from "@dispatchmail/storage";
-import { contactContext } from "../../../packages/db/src/automations.js";
-import { createImport, claimImports, importBatch } from "../../../packages/db/src/imports.js";
-import { runImport } from "../../worker/src/imports.js";
 import { Readable } from "node:stream";
-import { deliverJob, type Job } from "../../worker/src/deliver.js";
-import { applySesEvent } from "../../worker/src/events.js";
+import type { Job } from "../../worker/src/deliver.js";
 import type { FastifyInstance } from "fastify";
 
-// Live tests against a real Postgres and Redis, named in the environment or the local .env:
-// TEST_DATABASE_URL (a database these tests may empty), TEST_REDIS_URL, and optionally
-// TEST_ADMIN_DATABASE_URL, a database on the same server used to create the test one when it is
-// missing. Without the first two, every test here is skipped.
-const databaseUrl = process.env.TEST_DATABASE_URL ?? "";
-const redisUrl = process.env.TEST_REDIS_URL ?? "";
-const live = Boolean(databaseUrl && redisUrl);
-if (process.env.REQUIRE_INTEGRATION_TESTS === "true" && !live) {
-  throw new Error(
-    "TEST_DATABASE_URL and TEST_REDIS_URL are required for integration tests",
-  );
+// Capture explicit targets before .env loading. Validate before hooks or client creation:
+// only the disposable loopback database/Redis are allowed, never inherited targets.
+const supplied = {
+  TEST_DATABASE_URL: process.env.TEST_DATABASE_URL,
+  TEST_REDIS_URL: process.env.TEST_REDIS_URL,
+  TEST_ADMIN_DATABASE_URL: process.env.TEST_ADMIN_DATABASE_URL,
+  REQUIRE_INTEGRATION_TESTS: process.env.REQUIRE_INTEGRATION_TESTS,
+};
+await import("@dispatchmail/core/env");
+const targets = acceptTargets(process.env, supplied);
+const live = targets !== undefined;
+const databaseUrl = targets?.databaseUrl ?? "";
+const adminUrl = targets?.adminUrl ?? "";
+const databaseName = live ? "dispatch_test" : "";
+if (targets) {
+  process.env.DATABASE_URL = targets.databaseUrl;
+  process.env.REDIS_URL = targets.redisUrl;
 }
-const databaseName = live ? new URL(databaseUrl).pathname.slice(1) : "";
-const adminUrl =
-  process.env.TEST_ADMIN_DATABASE_URL ??
-  (live
-    ? Object.assign(new URL(databaseUrl), { pathname: "/postgres" }).toString()
-    : "");
+
+// Runtime fixture helpers load only after approval, so their dependencies cannot
+// load ambient targets or initialize a client before the guard.
+const { id, keyHash, makeKey, ProviderError, renderTemplate, sign, verify } = await import("@dispatchmail/core");
+const { appendEvent, connect, contactColumns, dispatchContactWrite, emit, executeAutomationRun, fireEvent, migrate, reconcileBroadcastSent, retryTx, tx, unsubscribeToken, updateContact } = await import("@dispatchmail/db");
+const { contactContext } = await import("../../../packages/db/src/automations.js");
+const { createImport, claimImports, importBatch } = await import("../../../packages/db/src/imports.js");
+const { runImport } = await import("../../worker/src/imports.js");
+const { deliverJob } = await import("../../worker/src/deliver.js");
+const { applySesEvent } = await import("../../worker/src/events.js");
 
 let db: Db;
 let app: FastifyInstance;
@@ -80,8 +76,6 @@ function takeTurn() {
 
 beforeAll(async () => {
   if (!live) return;
-  process.env.DATABASE_URL = databaseUrl;
-  process.env.REDIS_URL = redisUrl;
   process.env.RATE_LIMIT_PER_SECOND = "1000";
   // The per-address limit on sign-in would refuse a burst before the per-email lockout sees it.
   process.env.AUTH_RATE_LIMIT_PER_SECOND = "1000";
