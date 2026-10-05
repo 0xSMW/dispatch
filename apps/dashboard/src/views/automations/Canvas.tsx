@@ -55,9 +55,11 @@ export interface CanvasProps {
   run?: Map<string, RunStep>;
   /** Puts the side panel under the canvas, for narrow places such as the run drawer. */
   stacked?: boolean;
+  /** Editor-only workspace: contextual inspector over the full canvas. Other consumers stay unchanged. */
+  immersive?: boolean;
 }
 
-export function Canvas({ tree, actions, disabled = false, errors = {}, options, onEvent, onTrigger, run, stacked = false }: CanvasProps) {
+export function Canvas({ tree, actions, disabled = false, errors = {}, options, onEvent, onTrigger, run, stacked = false, immersive = false }: CanvasProps) {
   const editable = Boolean(actions) && !disabled && !run;
   const [selected, setSelected] = useState<string | null>(() => (run ? runFocus(tree, run) : null));
   const [adding, setAdding] = useState<Slot | null>(null);
@@ -72,8 +74,13 @@ export function Canvas({ tree, actions, disabled = false, errors = {}, options, 
     setAdding(slot);
   }, []);
   const close = () => {
+    const label = selected === tree.trigger ? "Trigger" : selected ? `Step ${selected}` : null;
     setSelected(null);
     setAdding(null);
+    if (immersive && label) {
+      [...(viewRef.current?.querySelectorAll<HTMLButtonElement>(".canvas button") ?? [])]
+        .find((button) => button.getAttribute("aria-label") === label)?.focus();
+    }
   };
 
   function pick(type: StepType) {
@@ -101,12 +108,11 @@ export function Canvas({ tree, actions, disabled = false, errors = {}, options, 
     section.focus();
   }, [shownPanel]);
 
-  let panel: ReactNode;
+  let panel: ReactNode = null;
   const found = selected && selected !== tree.trigger ? locate(tree, selected) : null;
   if (adding && editable) {
     panel = (
-      <section className="canvasPanel" aria-label="Add a step">
-        <PanelHeader title="Add a step" onClose={close} />
+      <Inspector immersive={immersive} label="Add a step" header={<PanelHeader title="Add a step" onClose={close} />}>
         {pickerGroups.map((group) => (
           <div key={group.name} className="pickerGroup" role="group" aria-label={group.name}>
             <h3>{group.name}</h3>
@@ -119,14 +125,15 @@ export function Canvas({ tree, actions, disabled = false, errors = {}, options, 
           </div>
         ))}
         {listAt(tree, adding.path).slice(adding.index).some((node) => node.type !== "exit") ? <p className="fieldHint">Exit can only be added at the end of a path, so following steps are not discarded.</p> : null}
-      </section>
+      </Inspector>
     );
   } else if (selected && selected === tree.trigger) {
     const issues = errors[tree.trigger] ?? {};
     const config = treeTrigger(tree);
     panel = (
-      <section className="canvasPanel" aria-label="Trigger settings">
+      <Inspector immersive={immersive} label="Trigger settings" header={
         <PanelHeader title={triggerLabels[config.type]} tone={stepTones.trigger} icon={stepIcons.trigger} detail={tree.trigger} onClose={close} />
+      }>
         {run ? (
           <p className="muted">
             {triggerSummary(config, triggerSources(options))}
@@ -145,7 +152,7 @@ export function Canvas({ tree, actions, disabled = false, errors = {}, options, 
             />
           </div>
         )}
-      </section>
+      </Inspector>
     );
   } else if (found) {
     const { node, path, index, list } = found;
@@ -154,8 +161,7 @@ export function Canvas({ tree, actions, disabled = false, errors = {}, options, 
     panel = (
       // Keyed by step: fields that hold their own text, such as a rule's number, must not carry
       // one step's value over to the next step of the same type.
-      <section key={node.key} className="canvasPanel" aria-label={`Step ${node.key} settings`}>
-        <PanelHeader
+      <Inspector key={node.key} immersive={immersive} label={`Step ${node.key} settings`} header={<PanelHeader
           title={stepLabels[node.type]}
           tone={stepTones[node.type]}
           icon={stepIcons[node.type]}
@@ -179,7 +185,7 @@ export function Canvas({ tree, actions, disabled = false, errors = {}, options, 
               ) : null}
             </>
           }
-        />
+        />}>
         {run ? (
           <RunResult node={node} result={result} />
         ) : (
@@ -190,9 +196,9 @@ export function Canvas({ tree, actions, disabled = false, errors = {}, options, 
             {issues[stepError]}
           </p>
         ) : null}
-      </section>
+      </Inspector>
     );
-  } else {
+  } else if (!immersive) {
     panel = (
       <section className="canvasPanel empty" aria-label="Step settings">
         <p className="dim">
@@ -203,7 +209,14 @@ export function Canvas({ tree, actions, disabled = false, errors = {}, options, 
   }
 
   return (
-    <div ref={viewRef} className={stacked ? "canvasView stacked" : "canvasView"}>
+    <div ref={viewRef} className={["canvasView", stacked ? "stacked" : "", immersive ? "immersive" : ""].filter(Boolean).join(" ")}
+      onKeyDown={(event) => {
+        if (immersive && shownPanel && event.key === "Escape" && !event.defaultPrevented) {
+          event.preventDefault();
+          event.stopPropagation();
+          close();
+        }
+      }}>
       <div className="canvas">
         <Loaded>
           <Suspense fallback={<div className="canvasLoading"><Skeleton lines={4} /></div>}>
@@ -224,6 +237,16 @@ export function Canvas({ tree, actions, disabled = false, errors = {}, options, 
       </div>
       {panel}
     </div>
+  );
+}
+
+/** Only the immersive editor separates fixed inspector controls from scrolling fields. */
+function Inspector({ immersive, label, header, children }: { immersive: boolean; label: string; header: ReactNode; children: ReactNode }) {
+  return (
+    <section className="canvasPanel" aria-label={label}>
+      {header}
+      {immersive ? <div className="canvasPanelBody">{children}</div> : children}
+    </section>
   );
 }
 

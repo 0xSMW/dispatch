@@ -41,8 +41,9 @@ function Where() {
   return h("p", { "data-testid": "location" }, `${location.pathname}${location.search}`);
 }
 
+// Existing list-editor regressions explicitly select List; default-Canvas cases pass the bare URL.
 // A data router, because the editor's leave guard uses `useBlocker`.
-function open(path = "/automations/automation_1/editor") {
+function open(path = "/automations/automation_1/editor?view=list") {
   const router = createMemoryRouter(
     [
       {
@@ -79,6 +80,172 @@ describe("AutomationEditor", () => {
     sessionStorage.clear();
     vi.unstubAllGlobals();
   });
+  it.each([
+    { role: "full", width: 1440 }, { role: "viewer", width: 1440 },
+    { role: "full", width: 390 }, { role: "viewer", width: 390 },
+  ])("updates the measured toolbar/notices anchor on observer and resize events for $role at $width", async ({ role, width }) => {
+    if (role === "viewer") signIn("viewer", ["read"]);
+    vi.stubGlobal("innerWidth", width);
+    // Synthetic rectangles validate measurement wiring, NOT rendered geometry or responsive fit.
+    // Real wrapped-toolbar/short-viewport/scroll evidence must come from supervisor Chrome.
+    let controlsBottom = 160;
+    let workspaceTop = 40;
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+      if (this.classList.contains("automationControls")) return new DOMRect(12, workspaceTop + 12, width - 24, controlsBottom - workspaceTop - 12);
+      if (this.classList.contains("automationEditor")) return new DOMRect(0, workspaceTop, width, 480);
+      return new DOMRect();
+    });
+    const observers: Array<{ targets: Set<Element>; notify: () => void; disconnect: ReturnType<typeof vi.fn> }> = [];
+    vi.stubGlobal("ResizeObserver", class {
+      targets = new Set<Element>();
+      disconnect = vi.fn();
+      constructor(callback: ResizeObserverCallback) {
+        observers.push({ targets: this.targets, notify: () => callback([], this as unknown as ResizeObserver), disconnect: this.disconnect });
+      }
+      observe(target: Element) { this.targets.add(target); }
+      unobserve(target: Element) { this.targets.delete(target); }
+    });
+    const fetch = api((url) => url.pathname === "/automations/automation_1" ? { body: {
+      ...automation, status: "paused",
+      steps: [automation.steps[0], { key: "delay", type: "delay", config: { duration: "1 hour" } },
+        { key: "update", type: "contact_update", config: { first_name: "Ada", properties: { plan: "pro" } } }],
+      connections: [{ from: "trigger", to: "delay" }, { from: "delay", to: "update" }],
+    } } : undefined);
+    open("/automations/automation_1/editor");
+    await screen.findByRole("button", { name: "Step delay" });
+    const workspace = document.querySelector<HTMLElement>(".automationEditor")!;
+    const controls = document.querySelector(".automationControls")!;
+    const observer = observers.find((item) => item.targets.has(controls))!;
+    expect(observer.targets.has(workspace)).toBe(true);
+    expect(controls.textContent).toContain("Paused. Runs hold their place.");
+    expect(workspace.style.getPropertyValue("--canvas-controls-bottom")).toBe("120px");
+    fireEvent.click(screen.getByRole("button", { name: "Step delay" }));
+    expect(screen.getByRole("region", { name: "Step delay settings" })).toBeTruthy();
+    controlsBottom = 232; // Simulate a notice/toolbar size change delivered by ResizeObserver.
+    observer.notify();
+    expect(workspace.style.getPropertyValue("--canvas-controls-bottom")).toBe("192px");
+    fireEvent.click(screen.getByRole("button", { name: "Step update" }));
+    const panel = screen.getByRole("region", { name: "Step update settings" });
+    expect(workspace.style.getPropertyValue("--canvas-controls-bottom")).toBe("192px");
+    expect(within(panel).getByLabelText("Properties")).toHaveProperty("disabled", role === "viewer");
+    // A node change keeps the same inherited anchor instead of measuring its form height.
+    const body = panel.querySelector(".canvasPanelBody")!;
+    expect(body.contains(within(panel).getByRole("button", { name: "Close panel" }))).toBe(false);
+    controlsBottom = 150;
+    workspaceTop = 60;
+    fireEvent(window, new Event("resize"));
+    expect(workspace.style.getPropertyValue("--canvas-controls-bottom")).toBe("90px");
+    fireEvent.click(within(panel).getByRole("button", { name: "Close panel" }));
+    expect(document.querySelector(".canvasPanel")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Step delay" }));
+    expect(workspace.style.getPropertyValue("--canvas-controls-bottom")).toBe("90px");
+    fireEvent.click(screen.getByRole("button", { name: "List" }));
+    expect(observer.disconnect).toHaveBeenCalledOnce();
+    expect(workspace.style.getPropertyValue("--canvas-controls-bottom")).toBe("");
+    controlsBottom = 260;
+    fireEvent(window, new Event("resize"));
+    expect(workspace.style.getPropertyValue("--canvas-controls-bottom")).toBe("");
+    fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
+    expect(workspace.style.getPropertyValue("--canvas-controls-bottom")).toBe("200px");
+    expect(screen.getByRole("region", { name: "Step delay settings" })).toBeTruthy();
+    const activeObserver = [...observers].reverse().find((item) => item.targets.has(controls))!;
+    cleanup();
+    expect(activeObserver.disconnect).toHaveBeenCalledOnce();
+    expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH" || init?.method === "POST")).toBe(false);
+  });
+
+  it.each(["full", "viewer"])("defaults to an immersive Canvas with reachable compact controls for %s", async (role) => {
+    if (role === "viewer") signIn("viewer", ["read"]);
+    const fetch = api();
+    open("/automations/automation_1/editor");
+    expect(await screen.findByRole("button", { name: "Step welcome" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Canvas" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "List" }).getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByTestId("location").textContent).toBe("/automations/automation_1/editor");
+    expect(document.querySelector(".automationEditor.immersive .automationHeader")).toBeTruthy();
+    expect(document.querySelector(".builderName")).toBeNull();
+    expect(document.querySelector(".canvasView.immersive")).toBeTruthy();
+    expect(document.querySelector(".canvasPanel")).toBeNull();
+    expect(screen.getByLabelText("Name")).toHaveProperty("value", "Welcome");
+    expect(screen.getByLabelText("Name")).toHaveProperty("disabled", role === "viewer");
+    expect(screen.getByRole("button", { name: "API" })).toBeTruthy();
+    expect(screen.getByRole("navigation", { name: "Learn more" })).toBeTruthy();
+    expect(screen.getByLabelText("Date range")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Step welcome" }));
+    const panel = screen.getByRole("region", { name: "Step welcome settings" });
+    expect(within(panel).getByLabelText("Subject")).toHaveProperty("disabled", role === "viewer");
+    fireEvent.click(within(panel).getByRole("button", { name: "Close panel" }));
+    expect(screen.queryByRole("region", { name: "Step welcome settings" })).toBeNull();
+    if (role === "viewer") {
+      expect(screen.queryByRole("button", { name: /^(Save|Start|Actions)$/ })).toBeNull();
+      fireEvent.keyDown(document.body, { key: "s", metaKey: true });
+    } else {
+      expect(screen.getByRole("button", { name: "Save" })).toHaveProperty("disabled", true);
+      expect(screen.getByRole("button", { name: "Start" })).toBeTruthy();
+    }
+    expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH" || init?.method === "POST")).toBe(false);
+  });
+
+  it.each(["canvas", "list"])("preserves a dirty draft, selected step, date URL and %s choice across view/tab round-trips", async (choice) => {
+    const fetch = api((url) => url.pathname.endsWith("/runs/metrics") ? { body: {
+      total: 0, totals: { running: 0, completed: 0, failed: 0, cancelled: 0 }, data: [],
+    } } : undefined);
+    const router = open("/automations/automation_1/editor?range=7d");
+    fireEvent.click(await screen.findByRole("button", { name: "Step welcome" }));
+    const panel = screen.getByRole("region", { name: "Step welcome settings" });
+    fireEvent.change(within(panel).getByLabelText("Subject"), { target: { value: "Draft subject" } });
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Draft name" } });
+    fireEvent.click(screen.getByRole("button", { name: "List" }));
+    expect(new URLSearchParams(router.state.location.search).get("view")).toBe("list");
+    const card = screen.getByRole("article", { name: "Step welcome" });
+    expect(within(card).getByLabelText("Subject")).toHaveProperty("value", "Draft subject");
+    fireEvent.change(within(card).getByLabelText("Subject"), { target: { value: "Newer draft" } });
+    if (choice === "canvas") fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
+    for (const tab of ["Runs", "Metrics"]) {
+      fireEvent.click(screen.getByRole("tab", { name: tab }));
+      await (tab === "Runs" ? screen.findByText("No runs") : screen.findByLabelText("Runs by status"));
+      expect(document.querySelector(".automationEditor.immersive")).toBeNull();
+      expect(new URLSearchParams(router.state.location.search).get("view")).toBe(choice);
+      expect(new URLSearchParams(router.state.location.search).get("range")).toBe("7d");
+      expect(screen.queryByRole("region", { name: "Step welcome settings" })).toBeNull();
+      fireEvent.click(screen.getByRole("tab", { name: "Builder" }));
+      expect(screen.getByRole("button", { name: choice === "canvas" ? "Canvas" : "List" }).getAttribute("aria-pressed")).toBe("true");
+      expect(screen.getByLabelText("Name")).toHaveProperty("value", "Draft name");
+      expect(screen.getByText("Unsaved changes")).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Save" })).toHaveProperty("disabled", false);
+      const selected = screen.getByRole(choice === "canvas" ? "region" : "article", {
+        name: choice === "canvas" ? "Step welcome settings" : "Step welcome",
+      });
+      expect(within(selected).getByLabelText("Subject")).toHaveProperty("value", "Newer draft");
+    }
+    if (choice === "list") fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
+    expect(screen.getByRole("region", { name: "Step welcome settings" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Step welcome" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Close panel" }));
+    fireEvent.click(screen.getByRole("button", { name: "Step welcome" }));
+    expect(within(screen.getByRole("region", { name: "Step welcome settings" })).getByLabelText("Subject")).toHaveProperty("value", "Newer draft");
+    expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
+    void router.navigate("/automations");
+    expect(await screen.findByText("Leave without saving?")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /^Stay/ }));
+    expect(screen.getByText("Unsaved changes")).toBeTruthy();
+  });
+
+  it("retains compact name validation and trims the saved name without rebuilding a newer draft", async () => {
+    const fetch = api((url, init) => init.method === "PATCH" ? { body: { ...automation, ...JSON.parse(String(init.body)) } } : undefined);
+    open("/automations/automation_1/editor");
+    const name = await screen.findByLabelText("Name");
+    fireEvent.change(name, { target: { value: " " } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("Enter a name.")).toBeTruthy();
+    expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
+    fireEvent.change(name, { target: { value: "  Renamed  " } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await screen.findByText("Saved");
+    expect(JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "PATCH")![1]!.body)).name).toBe("Renamed");
+    expect(screen.getByLabelText("Name")).toHaveProperty("value", "  Renamed  ");
+  });
+
   it("uses a status-only update when resuming a clean paused graph", async () => {
     const fetch = api((url, init) => url.pathname === "/automations/automation_1" ? {
       body: { ...automation, status: init.method === "PATCH" ? "enabled" : "paused", version: 2 },
@@ -119,7 +286,7 @@ describe("AutomationEditor", () => {
     expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
   });
 
-  it.each(["", "?view=canvas"])("offers enrollment for an enabled native flow in the %s builder", async (query) => {
+  it.each(["?view=list", "?view=canvas"])("offers enrollment for an enabled native flow in the %s builder", async (query) => {
     const config = { type: "contact_created" };
     api((url) => url.pathname === "/automations/automation_1" ? { body: {
       ...automation, status: "enabled", trigger_config: config,
@@ -427,7 +594,7 @@ describe("AutomationEditor", () => {
 
     void router.navigate("/automations");
     expect(await screen.findByText("Leave without saving?")).toBeTruthy();
-    expect(screen.getByTestId("location").textContent).toBe("/automations/automation_1/editor");
+    expect(screen.getByTestId("location").textContent).toBe("/automations/automation_1/editor?view=list");
   });
 
   it.each(["Disable the automation before changing its steps", "Pause or stop the automation before changing its steps"])
@@ -491,7 +658,7 @@ describe("AutomationEditor", () => {
     expect(screen.getByLabelText("Event")).toHaveProperty("disabled", true);
   });
 
-  it.each(["", "?view=canvas"])("saves a Marketing draft without a topic but requires one before starting in %s", async (query) => {
+  it.each(["?view=list", "?view=canvas"])("saves a Marketing draft without a topic but requires one before starting in %s", async (query) => {
     const fetch = api((url, init) => {
       if (url.pathname === "/templates") return list([{ id: "tpl_1", name: "Welcome", kind: "transactional" }]);
       if (url.pathname === "/topics") return list([{ id: "topic_1", name: "News" }]);
@@ -500,8 +667,9 @@ describe("AutomationEditor", () => {
       return undefined;
     });
     open(`/automations/automation_1/editor${query}`);
-    if (query) fireEvent.click(await screen.findByRole("button", { name: "Step welcome" }));
-    const panel = within(await screen.findByRole(query ? "region" : "article", { name: query ? "Step welcome settings" : "Step welcome" }));
+    const canvas = query === "?view=canvas";
+    if (canvas) fireEvent.click(await screen.findByRole("button", { name: "Step welcome" }));
+    const panel = within(await screen.findByRole(canvas ? "region" : "article", { name: canvas ? "Step welcome settings" : "Step welcome" }));
     fireEvent.click(panel.getByRole("radio", { name: "Marketing" }));
     fireEvent.click(screen.getByRole("button", { name: "Start" }));
     expect(await panel.findByText("Choose a topic before starting a Marketing email.")).toBeTruthy();

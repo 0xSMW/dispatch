@@ -5,6 +5,238 @@
   max-width: none;
 }
 
+/* The flat mobile menu scrolls within its grid track, not across the whole page. */
+.app > .sidebar {
+  min-width: 0;
+}
+
+/* Only the Canvas builder opts into the full main workspace. The global menu stays visible. */
+.app.automationWorkspace {
+  height: 100dvh;
+  min-height: 0;
+}
+
+.automationWorkspace > .main {
+  min-height: 0;
+}
+
+.automationWorkspace > .main > .content {
+  flex: 1;
+  min-height: 0;
+  max-width: none;
+  padding: 0;
+  display: flex;
+}
+
+.automationEditor [hidden] {
+  display: none !important;
+}
+
+.automationControls,
+.automationNavigation {
+  display: contents;
+}
+
+.automationEditor.immersive {
+  --canvas-overlay-gap: 12px;
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  gap: 0;
+  display: block;
+}
+
+.automationEditor.immersive > .automationControls {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  z-index: 5;
+  display: grid;
+  gap: 6px;
+  max-height: 40%;
+  overflow: auto;
+  /* Empty gaps do not steal pan/zoom input from the canvas. */
+  pointer-events: none;
+}
+
+.automationEditor.immersive > .automationControls > * {
+  pointer-events: auto;
+}
+
+.automationHeader,
+.immersive .automationNavigation {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.automationHeader .backLink {
+  flex: none;
+  font-size: 12px;
+}
+
+.automationHeader .automationName {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+
+.automationHeader .automationName input {
+  min-height: 32px;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.automationTitle,
+.automationHeader .automationName label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.automationActions {
+  gap: 6px;
+}
+
+.automationActions button {
+  min-height: 30px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.immersive .automationNavigation .learnLinks {
+  margin-left: auto;
+}
+
+.automationEditor.immersive > .builder,
+.automationEditor.immersive .automationCanvas {
+  height: 100%;
+  min-height: 0;
+  display: block;
+}
+
+/* Explicit editor opt-in. Preview/run canvases keep their original grid and side panel. */
+.canvasView.immersive {
+  --canvas-control-height: 32px;
+  --canvas-panel-top: calc(var(--canvas-controls-bottom, 0px) + var(--canvas-overlay-gap, 12px));
+  position: relative;
+  display: block;
+  height: 100%;
+  min-height: 0;
+}
+
+.canvasView.immersive > .canvas {
+  height: 100%;
+  border: 0;
+  border-radius: 0;
+}
+
+.canvasView.immersive > .canvasPanel {
+  position: absolute;
+  z-index: 4;
+  top: var(--canvas-panel-top);
+  right: var(--canvas-overlay-gap, 12px);
+  width: min(380px, calc(100% - 2 * var(--canvas-overlay-gap, 12px)));
+  /* Natural height for short forms; long bodies use all space above the graph controls. */
+  max-height: calc(100% - var(--canvas-panel-top) - var(--canvas-control-height) - 2 * var(--canvas-overlay-gap, 12px));
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 0;
+  overflow: hidden;
+  overscroll-behavior: contain;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 12%);
+}
+
+.canvasView.immersive .canvasPanel > .stepHeader {
+  flex-shrink: 0;
+  padding: 14px 16px 10px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.canvasView.immersive .canvasPanelBody {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-height: 0;
+  padding: 14px 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+/* The inspector never covers zoom and Fit, including on a narrow screen. */
+.canvasView.immersive .react-flow__controls {
+  right: auto;
+  left: var(--canvas-overlay-gap, 12px);
+  bottom: var(--canvas-overlay-gap, 12px);
+  margin: 0;
+  display: flex;
+  flex-direction: row;
+  height: var(--canvas-control-height);
+}
+
+.canvasView.immersive .react-flow__controls-button {
+  box-sizing: border-box;
+  width: 30px;
+  height: 30px;
+  min-height: 30px;
+  border-bottom: 0;
+  border-right: 1px solid var(--border);
+}
+
+.canvasView.immersive .react-flow__controls-button:last-child {
+  border-right: 0;
+}
+
+@media (max-width: 860px) {
+  .app.automationWorkspace {
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 620px) {
+  .automationEditor.immersive,
+  .canvasView.immersive {
+    --canvas-overlay-gap: 8px;
+  }
+
+  .automationEditor.immersive > .automationControls {
+    top: 8px;
+    left: 8px;
+    right: 8px;
+  }
+
+  .automationHeader .automationName {
+    flex-basis: 140px;
+  }
+
+  .automationActions {
+    width: 100%;
+  }
+
+  .automationEditor.immersive .notice {
+    flex-wrap: wrap;
+    padding: 8px 10px;
+    font-size: 12px;
+  }
+
+  .automationEditor.immersive .notice span {
+    flex-basis: 100%;
+  }
+}
+
 .builderBar {
   display: flex;
   align-items: end;

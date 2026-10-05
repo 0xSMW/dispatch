@@ -33,19 +33,19 @@ import { Shortcuts } from "./Shortcuts";
 import { useSession } from "./session";
 import { useTheme } from "./theme";
 
-/** Send, Engage, then Settings; transactional sending needs no lifecycle setup. */
+/** One shared menu for desktop, mobile, and every role. */
 export const nav = [
   { to: "/emails", label: "Emails", icon: Mail },
+  { to: "/broadcasts", label: "Broadcasts", icon: Megaphone },
+  { to: "/automations", label: "Automations", icon: GitBranch },
   { to: "/templates", label: "Templates", icon: FileText },
-  { to: "/domains", label: "Domains", icon: Globe2 },
+  { to: "/audience", label: "Audience", icon: Users },
   { to: "/metrics", label: "Metrics", icon: BarChart3 },
+  { to: "/domains", label: "Domains", icon: Globe2 },
   { to: "/logs", label: "Logs", icon: ScrollText },
   { to: "/api-keys", label: "API keys", icon: KeyRound },
   { to: "/webhooks", label: "Webhooks", icon: Webhook },
   { to: "/timeline", label: "Timeline", icon: Activity },
-  { to: "/broadcasts", label: "Broadcasts", icon: Megaphone },
-  { to: "/automations", label: "Automations", icon: GitBranch },
-  { to: "/audience", label: "Audience", icon: Users },
   { to: "/events", label: "Events", icon: Zap },
   { to: "/settings", label: "Settings", icon: Settings },
 ] as const;
@@ -60,6 +60,9 @@ export function EventsRedirect() {
 export function Shell() {
   const { session } = useSession();
   const location = useLocation();
+  const params = new URLSearchParams(location.search);
+  const workspace = /^\/automations\/[^/]+\/editor\/?$/.test(location.pathname)
+    && params.get("tab") !== "runs" && params.get("tab") !== "metrics" && params.get("view") !== "list";
   const [panel, setPanel] = useState<"api" | "keys" | null>(null);
   const open = (next: "api" | "keys") => () => {
     if (!panel && !dialogOpen()) setPanel(next);
@@ -71,7 +74,7 @@ export function Shell() {
   }
 
   return (
-    <div className="app">
+    <div className={workspace ? "app automationWorkspace" : "app"}>
       <aside className="sidebar">
         <div className="brand">
           <span className="brandMark" aria-hidden>
@@ -80,16 +83,11 @@ export function Shell() {
           <span>Dispatch</span>
         </div>
         <nav aria-label="Main">
-          {["Send", "Engage", "Settings"].map((group, index) => (
-            <div key={group} role="group" aria-label={group}>
-              {index < 2 ? <p className="dim">{group}</p> : null}
-              {nav.slice(index === 0 ? 0 : index === 1 ? 8 : 12, index === 0 ? 8 : index === 1 ? 12 : 13).map(({ to, label, icon: Icon }) => (
-                <NavLink key={to} to={to} className={({ isActive }) => (isActive ? "navItem active" : "navItem")}>
-                  <Icon size={16} />
-                  <span>{label}</span>
-                </NavLink>
-              ))}
-            </div>
+          {nav.map(({ to, label, icon: Icon }) => (
+            <NavLink key={to} to={to} className={({ isActive }) => (isActive ? "navItem active" : "navItem")}>
+              <Icon size={16} />
+              <span>{label}</span>
+            </NavLink>
           ))}
         </nav>
         <div className="sidebarFoot">

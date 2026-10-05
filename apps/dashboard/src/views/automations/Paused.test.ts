@@ -20,7 +20,7 @@ const automation = {
   created_at: "2026-09-01T00:00:00.000Z",
 };
 
-function open(query = "") {
+function open(query = "?view=list") {
   const router = createMemoryRouter([{
     element: h(SessionProvider, null, h(Outlet)),
     children: [{ path: "/automations/:id/editor", element: h(AutomationEditor) }],
@@ -62,7 +62,7 @@ describe("Paused automation editing", () => {
 
   it.each(["list", "canvas"])("allows editing and step controls in the paused %s builder", async (view) => {
     api();
-    open(view === "canvas" ? "?view=canvas" : "");
+    open(`?view=${view}`);
     expect(await screen.findByText("Paused. Runs hold their place. New triggers are not started.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Resume" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Stop and cancel runs" })).toBeTruthy();
@@ -83,7 +83,7 @@ describe("Paused automation editing", () => {
   it.each(["list", "canvas"])("keeps a viewer's paused %s builder read-only", async (view) => {
     signIn("sess_viewer", ["read"]);
     const fetch = api();
-    open(view === "canvas" ? "?view=canvas" : "");
+    open(`?view=${view}`);
     await screen.findByText("Paused. Runs hold their place. New triggers are not started.");
     expect(screen.queryByRole("button", { name: /^(Save|Resume|Pause|Stop and cancel runs)$/ })).toBeNull();
     expect(screen.getByLabelText("Name")).toHaveProperty("disabled", true);
@@ -149,6 +149,35 @@ describe("Paused automation editing", () => {
     expect(body(writes(fetch)[1]!)).toEqual(body(writes(fetch)[0]!));
     expect(body(writes(fetch)[1]!).steps[1].config).toEqual({ duration: "4 days" });
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it.each(["Save", "Resume"])("retains paused draft impact confirmation across immersive inspector dismissal before %s", async (action) => {
+    const fetch = api((url) => url.searchParams.has("dry_run")
+      ? { body: { stranded_runs: 2, by_step: { wait: 2 } } } : undefined);
+    open("");
+    fireEvent.click(await screen.findByRole("button", { name: "Step wait" }));
+    const panel = screen.getByRole("region", { name: "Step wait settings" });
+    fireEvent.click(within(panel).getByRole("button", { name: "Remove step" }));
+    fireEvent.click(screen.getByRole("button", { name: "List" }));
+    expect(screen.queryByRole("article", { name: "Step wait" })).toBeNull();
+    fireEvent.click(screen.getByRole("tab", { name: "Runs" }));
+    await screen.findByText("No runs yet");
+    fireEvent.click(screen.getByRole("tab", { name: "Builder" }));
+    expect(screen.getByRole("button", { name: "List" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Step send" }));
+    fireEvent.click(screen.getByRole("button", { name: "Close panel" }));
+    expect(document.querySelector(".canvasPanel")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: action }));
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("2 runs are waiting at steps you removed or changed. They will stop.")).toBeTruthy();
+    expect(writes(fetch)).toHaveLength(1);
+    expect(saves(fetch)).toHaveLength(0);
+    expect(body(writes(fetch)[0]!).steps.map((step: { key: string }) => step.key)).toEqual(["trigger", "send"]);
+    fireEvent.click(within(dialog).getByRole("button", { name: action === "Resume" ? /^Save and resume/ : /^Save changes/ }));
+    await waitFor(() => expect(saves(fetch)).toHaveLength(1));
+    expect(body(saves(fetch)[0]!)).toEqual(body(writes(fetch)[0]!));
+    expect(body(saves(fetch)[0]!).status).toBe(action === "Resume" ? "enabled" : undefined);
   });
 
   it("cancels the stranded-run confirmation without saving", async () => {

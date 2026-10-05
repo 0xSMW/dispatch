@@ -76,20 +76,37 @@ describe("Shell keys", () => {
     vi.unstubAllGlobals();
   });
 
-  it("groups Send and Engage in their exact order with Settings last for full and viewer sessions", () => {
-    signIn("viewer", ["read"]);
+  it.each([
+    { role: "full", width: 1440 }, { role: "viewer", width: 1440 },
+    { role: "full", width: 390 }, { role: "viewer", width: 390 },
+  ])("shares one flat original-order menu for $role at $width", ({ role, width }) => {
+    vi.stubGlobal("innerWidth", width);
+    if (role === "viewer") signIn("viewer", ["read"]);
     open("/events");
-    expect(nav.map((item) => item.label)).toEqual([
-      "Emails", "Templates", "Domains", "Metrics", "Logs", "API keys", "Webhooks", "Timeline",
-      "Broadcasts", "Automations", "Audience", "Events", "Settings",
-    ]);
-    const main = within(screen.getByRole("navigation", { name: "Main" }));
-    expect(within(main.getByRole("group", { name: "Send" })).getAllByRole("link").map((link) => link.textContent))
-      .toEqual(["Emails", "Templates", "Domains", "Metrics", "Logs", "API keys", "Webhooks", "Timeline"]);
-    expect(within(main.getByRole("group", { name: "Engage" })).getAllByRole("link").map((link) => link.textContent))
-      .toEqual(["Broadcasts", "Automations", "Audience", "Events"]);
+    const labels = ["Emails", "Broadcasts", "Automations", "Templates", "Audience", "Metrics", "Domains",
+      "Logs", "API keys", "Webhooks", "Timeline", "Events", "Settings"];
+    expect(nav.map((item) => item.label)).toEqual(labels);
+    const menu = screen.getByRole("navigation", { name: "Main" });
+    const main = within(menu);
+    expect(main.getAllByRole("link").map((link) => link.textContent)).toEqual(labels);
+    expect([...menu.children].map((child) => child.tagName)).toEqual(labels.map(() => "A"));
+    expect(main.queryAllByRole("group")).toHaveLength(0);
+    expect(main.queryByText("Send")).toBeNull();
+    expect(main.queryByText("Engage")).toBeNull();
+    expect(main.getAllByRole("link").map((link) => link.getAttribute("href"))).toEqual(nav.map((item) => item.to));
     expect(main.getByRole("link", { name: "Events" }).getAttribute("href")).toBe("/events");
     expect(main.queryByRole("link", { name: "Goals" })).toBeNull();
+  });
+
+  it.each([
+    ["/automations/a/editor", true], ["/automations/a/editor?view=canvas", true],
+    ["/automations/a/editor?view=list", false], ["/automations/a/editor?tab=runs", false],
+    ["/automations/a/editor?tab=metrics&view=canvas", false], ["/automations", false],
+    ["/templates/a/editor", false], ["/events", false],
+  ])("scopes workspace chrome to the Canvas builder at %s", (path, workspace) => {
+    open(path as string);
+    expect(document.querySelector(".app")?.classList.contains("automationWorkspace")).toBe(workspace);
+    expect(screen.getByRole("navigation", { name: "Main" })).toBeTruthy();
   });
 
   it("replaces the old Events route while preserving search and hash", async () => {

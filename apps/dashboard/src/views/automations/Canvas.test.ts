@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter, Outlet, RouterProvider } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,9 +7,13 @@ import { SessionProvider } from "../../shell/session";
 import { h, mockFetch, signIn, type Reply } from "../../testing";
 import { AutomationEditor } from "./AutomationEditor";
 import { Canvas, type CanvasProps } from "./Canvas";
-import { insertStep, keys, toTree, type Graph, type Tree } from "./graph";
+import { insertStep, keys, toTree, updateNode, type Graph, type Tree } from "./graph";
 import type { RunStep, StepActions } from "./Steps";
 import { zeroEmails } from "./EmailMetrics";
+
+// Keep this a source-file read, not Vite's browser asset-URL transform.
+const sourceUrl = import.meta.url;
+const canvasStyles = readFileSync(new URL("../../styles/canvas.css", sourceUrl), "utf8");
 
 // jsdom has no layout engine. React Flow needs these two to mount; with them it renders nodes
 // and edges from the sizes and handles `layout()` gives, but nothing is measured, panned, or zoomed.
@@ -63,6 +68,142 @@ afterEach(() => {
 });
 
 describe("Canvas", () => {
+  it("declares a natural-height, measured top-right immersive panel with a full usable-height cap and independently scrolling body", () => {
+    // CSS contract only. jsdom cannot establish compact/long rendered heights or real overlap.
+    const panel = canvasStyles.match(/\.canvasView\.immersive > \.canvasPanel\s*\{([^}]+)\}/)![1]!;
+    expect(panel).toContain("top: var(--canvas-panel-top)");
+    expect(panel).toContain("right: var(--canvas-overlay-gap, 12px)");
+    expect(panel).toContain("max-height: calc(100% - var(--canvas-panel-top) - var(--canvas-control-height) - 2 * var(--canvas-overlay-gap, 12px))");
+    expect(panel).not.toMatch(/(?:^|\n)\s*(?:bottom|height):/);
+    expect(panel).not.toMatch(/max-height:\s*(?:50|45)%/);
+    expect(panel).toContain("overflow: hidden");
+    expect(canvasStyles).toContain("--canvas-panel-top: calc(var(--canvas-controls-bottom, 0px) + var(--canvas-overlay-gap, 12px))");
+    const header = canvasStyles.match(/\.canvasView\.immersive .canvasPanel > \.stepHeader\s*\{([^}]+)\}/)![1]!;
+    expect(header).toContain("flex-shrink: 0");
+    expect(header).not.toContain("sticky");
+    const body = canvasStyles.match(/\.canvasView\.immersive .canvasPanelBody\s*\{([^}]+)\}/)![1]!;
+    expect(body).toContain("min-height: 0");
+    expect(body).toContain("overflow-y: auto");
+    const controls = canvasStyles.match(/\.canvasView\.immersive .react-flow__controls\s*\{([^}]+)\}/)![1]!;
+    expect(controls).toContain("height: var(--canvas-control-height)");
+    expect(controls).toContain("flex-direction: row");
+    expect(canvasStyles).not.toContain("bottom: 48px");
+    expect(canvasStyles).not.toContain("max-height: 45%");
+  });
+  it("lets the flat mobile menu shrink inside its grid track", () => {
+    // Source contract; the actual narrow viewport is verified separately in Chrome.
+    expect(canvasStyles.match(/\.app > \.sidebar\s*\{([^}]+)\}/)![1]!).toContain("min-width: 0");
+  });
+
+  it.each(["full", "viewer"])("keeps Delay and Update contact header/close/actions outside the fields body for %s", async (role) => {
+    if (role === "viewer") signIn("viewer", ["read"]);
+    const editable = role === "full";
+    const actions = spies();
+    const formTree = toTree([
+      { key: "trigger", type: "trigger", config: { event_name: "user.created" } },
+      { key: "delay", type: "delay", config: { duration: "1 hour" } },
+      { key: "update", type: "contact_update", config: { first_name: "Ada", properties: { plan: "pro" } } },
+    ], [{ from: "trigger", to: "delay" }, { from: "delay", to: "update" }]).tree;
+    show({ tree: formTree, immersive: true, actions, disabled: !editable });
+    for (const key of ["delay", "update"]) {
+      fireEvent.click(await screen.findByRole("button", { name: `Step ${key}` }));
+      const panel = screen.getByRole("region", { name: `Step ${key} settings` });
+      expect([...panel.children].map((child) => child.className)).toEqual(["stepHeader", "canvasPanelBody"]);
+      const body = panel.querySelector(".canvasPanelBody")!;
+      const header = panel.querySelector(".stepHeader")!;
+      expect(body.querySelectorAll("input, select, textarea").length).toBeGreaterThan(0);
+      for (const control of body.querySelectorAll("input, select, textarea")) expect(control).toHaveProperty("disabled", !editable);
+      const close = within(panel).getByRole("button", { name: "Close panel" });
+      expect(header.contains(close)).toBe(true);
+      expect(body.contains(close)).toBe(false);
+      if (editable) {
+        for (const label of ["Move up", "Move down", "Remove step"]) {
+          expect(header.contains(within(panel).getByRole("button", { name: label }))).toBe(true);
+        }
+      } else expect(within(panel).queryByRole("button", { name: "Remove step" })).toBeNull();
+      expect(document.querySelector(".react-flow__controls")).toBeTruthy();
+      fireEvent.scroll(body, { target: { scrollTop: 200 } });
+      expect(header.contains(close)).toBe(true); // Structural check; no claim of visible geometry.
+      fireEvent.click(close);
+      expect(document.querySelector(".canvasPanel")).toBeNull();
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Trigger" }));
+    expect(screen.getByRole("region", { name: "Trigger settings" }).querySelector(".canvasPanelBody")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Close panel" }));
+    if (editable) {
+      fireEvent.click(screen.getByRole("button", { name: "Add step after delay" }));
+      const picker = screen.getByRole("region", { name: "Add a step" });
+      const close = within(picker).getByRole("button", { name: "Close panel" });
+      expect(picker.querySelector(".canvasPanelBody")!.contains(close)).toBe(false);
+    } else {
+      expect(screen.queryByRole("button", { name: "Add step after delay" })).toBeNull();
+      expect(actions.change).not.toHaveBeenCalled();
+      expect(actions.insert).not.toHaveBeenCalled();
+    }
+  });
+
+  it("opts into a contextual inspector without changing default or stacked consumers", async () => {
+    const view = show();
+    await screen.findByRole("button", { name: "Trigger" });
+    expect(document.querySelector(".canvasView")?.className).toBe("canvasView");
+    expect(screen.getByRole("region", { name: "Step settings" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Trigger" }));
+    expect(screen.getByRole("region", { name: "Trigger settings" }).querySelector(".canvasPanelBody")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Close panel" }));
+    view.rerender(h(SessionProvider, null, h(Canvas, { tree, stacked: true })));
+    expect(document.querySelector(".canvasView")?.className).toBe("canvasView stacked");
+    expect(screen.getByRole("region", { name: "Step settings" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Trigger" }));
+    expect(screen.getByRole("region", { name: "Trigger settings" }).querySelector(".canvasPanelBody")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Close panel" }));
+    view.rerender(h(SessionProvider, null, h(Canvas, { tree, immersive: true })));
+    expect(document.querySelector(".canvasView")?.className).toBe("canvasView immersive");
+    expect(document.querySelector(".canvasPanel")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Trigger" }));
+    const panel = screen.getByRole("region", { name: "Trigger settings" });
+    expect(within(panel).getByLabelText("Event")).toHaveProperty("disabled", true);
+    fireEvent.click(within(panel).getByRole("button", { name: "Close panel" }));
+    expect(document.querySelector(".canvasPanel")).toBeNull();
+  });
+
+  it("dismisses and reopens the immersive inspector with draft edits, move controls and graph controls intact", async () => {
+    const actions = spies();
+    const view = show({ immersive: true, actions });
+    const node = await screen.findByRole("button", { name: "Step pause" });
+    expect(document.querySelector(".canvasPanel")).toBeNull();
+    const controls = document.querySelector(".react-flow__controls")!;
+    expect(within(controls as HTMLElement).getAllByRole("button")).toHaveLength(3);
+    expect(document.querySelector(".react-flow__node.draggable")).toBeNull();
+    fireEvent.click(node);
+    let panel = screen.getByRole("region", { name: "Step pause settings" });
+    fireEvent.change(within(panel).getByLabelText("Duration"), { target: { value: "3 hours" } });
+    const change = actions.change.mock.calls[0]![1] as (node: Tree["steps"][number]) => Tree["steps"][number];
+    const edited = updateNode(tree, "pause", change);
+    view.rerender(h(SessionProvider, null, h(Canvas, { tree: edited, immersive: true, actions })));
+    fireEvent.click(within(panel).getByRole("button", { name: "Move up" }));
+    expect(actions.move).toHaveBeenCalledWith([], 1, -1);
+    fireEvent.click(within(panel).getByRole("button", { name: "Close panel" }));
+    expect(document.querySelector(".canvasPanel")).toBeNull();
+    expect(document.activeElement).toBe(node);
+    expect(document.querySelector(".react-flow__controls")).toBe(controls);
+    fireEvent.click(node);
+    panel = screen.getByRole("region", { name: "Step pause settings" });
+    expect(within(panel).getByLabelText("Duration")).toHaveProperty("value", "3 hours");
+    fireEvent.keyDown(within(panel).getByLabelText("Duration"), { key: "Escape" });
+    expect(document.querySelector(".canvasPanel")).toBeNull();
+    expect(document.activeElement).toBe(node);
+    fireEvent.click(screen.getByRole("button", { name: "Add step after welcome" }));
+    expect(screen.getByRole("region", { name: "Add a step" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Branch" }));
+    expect(actions.insert).toHaveBeenCalledWith([], 1, "branch", "branch_1");
+    view.rerender(h(SessionProvider, null, h(Canvas, { tree: insertStep(edited, [], 1, "branch", "branch_1"), immersive: true, actions })));
+    const branch = screen.getByRole("region", { name: "Step branch_1 settings" });
+    expect(within(branch).getAllByLabelText("Path label")).toHaveLength(2);
+    fireEvent.change(within(branch).getAllByLabelText("Path label")[0]!, { target: { value: "Paid" } });
+    expect(actions.change).toHaveBeenLastCalledWith("branch_1", expect.any(Function));
+    expect(within(branch).getByRole("button", { name: "Add path" })).toBeTruthy();
+  });
+
   it("shows shared email counts in builder and run nodes without loading metrics per node", async () => {
     const options = { templates: [], segments: [], events: [], emailCounts: { welcome: { ...zeroEmails, sent: 4, opened: 2, clicked: 1 } } };
     const view = show({ actions: spies(), options });
@@ -226,7 +367,7 @@ describe("Canvas", () => {
   });
 
   it("is read-only without actions or when disabled: no +, no move or remove, fields disabled", async () => {
-    for (const props of [{}, { actions: spies(), disabled: true }]) {
+    for (const props of [{}, { actions: spies(), disabled: true }, { immersive: true }, { immersive: true, actions: spies(), disabled: true }]) {
       const view = show(props);
       await screen.findByRole("button", { name: "Step welcome" });
       expect(screen.queryAllByRole("button", { name: /^Add step/ })).toHaveLength(0);
@@ -308,7 +449,7 @@ describe("AutomationEditor on the canvas", () => {
 
   it("shares manual date types and send mappings across list and canvas without wire metadata", async () => {
     const fetch = api((url, init) => init.method === "PATCH" ? { body: { ...automation, ...JSON.parse(String(init.body)) } } : undefined);
-    open("/automations/automation_1/editor");
+    open("/automations/automation_1/editor?view=list");
     const card = await screen.findByRole("article", { name: "Step pro" });
     fireEvent.change(within(card).getByLabelText("Type"), { target: { value: "date" } });
     fireEvent.change(within(card).getByLabelText("Value"), { target: { value: "2026-10-04" } });
@@ -349,7 +490,7 @@ describe("AutomationEditor on the canvas", () => {
     const fetch = api((url, init) =>
       url.pathname === "/automations/automation_1" && init.method === "PATCH" ? { body: { ...automation, ...JSON.parse(String(init.body)) } } : undefined,
     );
-    open("/automations/automation_1/editor");
+    open("/automations/automation_1/editor?view=list");
     await screen.findByRole("article", { name: "Step welcome" });
     expect(screen.getByRole("button", { name: "List" }).getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
@@ -435,5 +576,7 @@ describe("AutomationEditor on the canvas", () => {
     expect(within(drawer).getByRole("button", { name: "Step pro" }).className).toContain("tint skipped");
     const panel = within(drawer).getByRole("region", { name: "Step welcome settings" });
     expect(within(panel).getByText("Template tpl_1 not found")).toBeTruthy();
+    expect(drawer.querySelector(".canvasView.stacked")).toBeTruthy();
+    expect(drawer.querySelector(".canvasView.immersive")).toBeNull();
   });
 });

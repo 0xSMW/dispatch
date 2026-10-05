@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { GitBranch, Zap } from "lucide-react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { BookOpen, ChevronLeft, Code2, GitBranch, Zap } from "lucide-react";
 import { Badge } from "../../components/Badge";
 import { Code } from "../../components/Code";
 import { DateRange } from "../../components/DateRange";
@@ -14,7 +14,8 @@ import { Skeleton } from "../../components/Skeleton";
 import { Tabs } from "../../components/Tabs";
 import { toast } from "../../components/Toast";
 import { useHotkey } from "../../hooks/useHotkey";
-import { shortcuts } from "../../lib/shortcuts";
+import { dialogOpen, shortcuts } from "../../lib/shortcuts";
+import { learnLinks } from "../../lib/docs";
 import { useList } from "../../hooks/useList";
 import { useMutation } from "../../hooks/useMutation";
 import { useResource } from "../../hooks/useResource";
@@ -78,15 +79,20 @@ export function AutomationEditor() {
   const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const tab = params.get("tab") === "runs" ? "runs" : params.get("tab") === "metrics" ? "metrics" : "builder";
-  // List is the default; both views edit the same tree.
-  const view = params.get("view") === "canvas" ? "canvas" : "list";
+  // Canvas is the default; an explicit List choice survives tab and date changes.
+  const view = params.get("view") === "list" ? "list" : "canvas";
   const setView = (next: "list" | "canvas") =>
     setParams((previous) => {
       const params = new URLSearchParams(previous);
-      if (next === "canvas") params.set("view", "canvas");
-      else params.delete("view");
+      params.set("view", next);
       return params;
     });
+  const setTab = (next: string) => setParams((previous) => {
+    const params = new URLSearchParams(previous);
+    if (next === "builder") params.delete("tab");
+    else params.set("tab", next);
+    return params;
+  });
   const automation = useResource<Automation>(`/automations/${id}`);
   const row = automation.data;
   const emailMetrics = useEmailMetrics(id);
@@ -105,6 +111,31 @@ export function AutomationEditor() {
   const enrollmentJob = params.get("enroll_job");
   const [deleting, setDeleting] = useState(false);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
+  const workspaceRef = useRef<HTMLDivElement>(null);
+  const controlsRef = useRef<HTMLDivElement>(null);
+  const immersive = tab === "builder" && view === "canvas" && !problem;
+
+  useLayoutEffect(() => {
+    const workspace = workspaceRef.current;
+    const controls = controlsRef.current;
+    if (!immersive || !workspace || !controls) return;
+    // Includes wrapped controls and visible notices, including their scroll-constrained height.
+    // Keep this on the workspace so the mounted Canvas inherits it without resetting selection.
+    const measure = () => {
+      const bottom = Math.max(0, controls.getBoundingClientRect().bottom - workspace.getBoundingClientRect().top);
+      workspace.style.setProperty("--canvas-controls-bottom", `${bottom}px`);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(controls);
+    observer.observe(workspace);
+    window.addEventListener("resize", measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+      workspace.style.removeProperty("--canvas-controls-bottom");
+    };
+  }, [immersive, automation.error]);
 
   // What the API has stored, for the run drawer. The draft may hold unsaved edits.
   const stored = useMemo(() => (row ? toTree(row.steps ?? [], row.connections ?? []) : null), [row]);
@@ -281,172 +312,184 @@ export function AutomationEditor() {
 
   if (automation.error) return <Failed message={automation.error} onRetry={() => void automation.reload()} />;
 
+  const headerActions = (
+    row ? (
+      <>
+        <Badge value={row.status ?? (row.enabled ? "enabled" : "disabled")} />
+        {can && canEnroll(row) ? <button type="button" className="secondary" onClick={() => setEnrolling(true)}>Enroll contacts</button> : null}
+        {!locked && draft ? <span className="dim saveState">{dirty ? "Unsaved changes" : "Saved"}</span> : null}
+        {!locked ? (
+          <button type="button" className="secondary" disabled={!dirty || busy || Boolean(confirmation)} onClick={() => submit(false)}>
+            Save
+          </button>
+        ) : null}
+        {!can ? null : enabled ? (
+          <button type="button" className="secondary" disabled={busy} onClick={() => void pause.mutate()}>
+            Pause
+          </button>
+        ) : (
+          <button type="button" disabled={busy || Boolean(confirmation) || !draft || triggerPending || Boolean(resourceWarning)} aria-busy={busy} onClick={() => submit(true)}>
+            {paused ? "Resume" : "Start"}
+          </button>
+        )}
+        {can && (enabled || paused) ? (
+          <button type="button" className="secondary" disabled={busy} onClick={() => setStopping(true)}>
+            Stop and cancel runs
+          </button>
+        ) : null}
+        {can ? (
+          <Menu
+            items={[
+              { label: "Duplicate", onSelect: () => void duplicate.mutate() },
+              "divider",
+              { label: "Delete automation", danger: true, onSelect: () => setDeleting(true) },
+            ]}
+          />
+        ) : null}
+      </>
+    ) : null
+  );
+  const notices = (
+    <>
+      {enabled && can ? (
+        <div className="notice" role="status">
+          <span>Enabled automations cannot be edited. Pause it to change its steps while keeping runs, or duplicate it and edit the copy.</span>
+          <button type="button" className="secondary small" onClick={() => void pause.mutate()} disabled={busy}>
+            Pause
+          </button>
+          <button type="button" className="secondary small" onClick={() => void duplicate.mutate()} disabled={duplicate.isLoading}>
+            Duplicate
+          </button>
+        </div>
+      ) : null}
+      {paused ? (
+        <div className="notice" role="status">
+          <span>Paused. Runs hold their place. New triggers are not started.</span>
+        </div>
+      ) : null}
+      {problem ? (
+        <div className="notice warning" role="status">
+          <span>
+            {problem} The list builder cannot edit this automation without losing steps. Change it through the API or CLI. You can still pause, resume, start and stop it here.
+          </span>
+        </div>
+      ) : null}
+      {apiError ? (
+        <div className="alert" role="alert">
+          {apiError}
+        </div>
+      ) : null}
+      {view === "canvas" && resourceWarning ? (
+        <div className="notice warning" role="status">{resourceWarning}. Change the trigger before starting this automation.</div>
+      ) : null}
+    </>
+  );
+  const nameField = draft ? (
+    <Field
+      className="automationName"
+      label="Name"
+      value={draft.name}
+      onChange={(name) => {
+        if (locked) return;
+        setConfirmation(null);
+        setDraft({ ...draft, name });
+      }}
+      error={checked ? nameIssue : null}
+      disabled={locked}
+      required
+    />
+  ) : <Skeleton width="medium" />;
+
   return (
-    <div className="page">
-      <PageHeader
-        back={{ to: "/automations", label: "Automations" }}
-        icon={<GitBranch size={20} />}
-        tone={enabled ? "success" : "neutral"}
-        label="Automation"
-        title={row ? row.name : <Skeleton width="medium" />}
-        actions={
-          row ? (
-            <>
-              <Badge value={row.status ?? (row.enabled ? "enabled" : "disabled")} />
-              {can && canEnroll(row) ? <button type="button" className="secondary" onClick={() => setEnrolling(true)}>Enroll contacts</button> : null}
-              {!locked && draft ? <span className="dim saveState">{dirty ? "Unsaved changes" : "Saved"}</span> : null}
-              {!locked ? (
-                <button type="button" className="secondary" disabled={!dirty || busy || Boolean(confirmation)} onClick={() => submit(false)}>
-                  Save
-                </button>
-              ) : null}
-              {!can ? null : enabled ? (
-                <button type="button" className="secondary" disabled={busy} onClick={() => void pause.mutate()}>
-                  Pause
-                </button>
-              ) : (
-                <button type="button" disabled={busy || Boolean(confirmation) || !draft || triggerPending || Boolean(resourceWarning)} aria-busy={busy} onClick={() => submit(true)}>
-                  {paused ? "Resume" : "Start"}
-                </button>
-              )}
-              {can && (enabled || paused) ? (
-                <button type="button" className="secondary" disabled={busy} onClick={() => setStopping(true)}>
-                  Stop and cancel runs
-                </button>
-              ) : null}
-              {can ? (
-                <Menu
-                  items={[
-                    { label: "Duplicate", onSelect: () => void duplicate.mutate() },
-                    "divider",
-                    { label: "Delete automation", danger: true, onSelect: () => setDeleting(true) },
-                  ]}
-                />
-              ) : null}
-            </>
-          ) : null
-        }
-      />
+    <div ref={workspaceRef} className={immersive ? "page automationEditor immersive" : "page automationEditor"}>
+      <div ref={controlsRef} className="automationControls">
+        {immersive ? (
+          <header className="automationHeader">
+            <Link className="backLink" to="/automations"><ChevronLeft size={14} /> Automations</Link>
+            <h1 className="automationTitle">{draft?.name ?? row?.name ?? "Automation"}</h1>
+            {nameField}
+            <div className="toolbar automationActions">
+              {headerActions}
+              <button type="button" className="ghost small" title={`API reference (${shortcuts.api.keys[0]})`} onClick={() => {
+                if (!dialogOpen()) document.dispatchEvent(new KeyboardEvent("keydown", { key: shortcuts.api.combo, bubbles: true }));
+              }}><Code2 size={14} aria-hidden /> API</button>
+            </div>
+          </header>
+        ) : (
+          <PageHeader
+            back={{ to: "/automations", label: "Automations" }}
+            icon={<GitBranch size={20} />}
+            tone={enabled ? "success" : "neutral"}
+            label="Automation"
+            title={row ? row.name : <Skeleton width="medium" />}
+            actions={headerActions}
+          />
+        )}
+        <div className="automationNavigation">
+          <Tabs
+            tabs={[
+              { id: "builder", label: "Builder" },
+              { id: "runs", label: "Runs" },
+              { id: "metrics", label: "Metrics" },
+            ]}
+            value={tab}
+            onChange={setTab}
+          />
+          {immersive && draft ? <>
+            <ViewSwitch value={view} onChange={setView} />
+            <DateRange />
+            <nav className="learnLinks" aria-label="Learn more">
+              <span className="muted"><BookOpen size={14} aria-hidden /> Learn</span>
+              {learnLinks("automations").map(({ label, href }) => (
+                <a key={href} className="learnChip" href={href} target="_blank" rel="noopener noreferrer">{label}</a>
+              ))}
+            </nav>
+          </> : null}
+        </div>
+        {immersive && draft && row ? notices : null}
+      </div>
 
-      <Tabs
-        tabs={[
-          { id: "builder", label: "Builder" },
-          { id: "runs", label: "Runs" },
-          { id: "metrics", label: "Metrics" },
-        ]}
-        value={tab}
-        onChange={(next) => setParams(next === "builder" ? {} : { tab: next })}
-      />
-
-      {tab === "runs" && id ? (
-        <Runs automationId={id} tree={stored?.tree ?? null} options={options} />
-      ) : tab === "metrics" && id ? (
-        <RunMetrics automationId={id} tree={stored?.tree ?? null} names={options.templateNames} emails={emailMetrics} />
-      ) : !draft || !row ? (
-        <Skeleton lines={6} />
-      ) : (
+      {tab === "runs" && id ? <Runs automationId={id} tree={stored?.tree ?? null} options={options} /> : null}
+      {tab === "metrics" && id ? <RunMetrics automationId={id} tree={stored?.tree ?? null} names={options.templateNames} emails={emailMetrics} /> : null}
+      {!draft || !row ? (tab === "builder" ? <Skeleton lines={6} /> : null) : (
         <ReentryContext.Provider value={{ value: draft.reentry, onChange: (reentry) => {
           if (locked) return;
           setConfirmation(null);
           setApiError(null);
           setDraft((current) => current ? { ...current, reentry } : current);
         } }}>
-        <div className={view === "canvas" && !problem ? "builder wide" : "builder"}>
-          {enabled && can ? (
-            <div className="notice" role="status">
-              <span>Enabled automations cannot be edited. Pause it to change its steps while keeping runs, or duplicate it and edit the copy.</span>
-              <button type="button" className="secondary small" onClick={() => void pause.mutate()} disabled={busy}>
-                Pause
-              </button>
-              <button type="button" className="secondary small" onClick={() => void duplicate.mutate()} disabled={duplicate.isLoading}>
-                Duplicate
-              </button>
-            </div>
-          ) : null}
-          {paused ? (
-            <div className="notice" role="status">
-              <span>Paused. Runs hold their place. New triggers are not started.</span>
-            </div>
-          ) : null}
-          {problem ? (
-            <div className="notice warning" role="status">
-              <span>
-                {problem} The list builder cannot edit this automation without losing steps. Change it through the API or CLI. You can still pause, resume, start and stop it here.
-              </span>
-            </div>
-          ) : null}
-          {apiError ? (
-            <div className="alert" role="alert">
-              {apiError}
-            </div>
-          ) : null}
-          {view === "canvas" && resourceWarning ? (
-            <div className="notice warning" role="status">{resourceWarning}. Change the trigger before starting this automation.</div>
-          ) : null}
+          {/* Keep the builder mounted across tabs/views: the draft and contextual selection survive. */}
+          <div hidden={tab !== "builder"} className={view === "canvas" && !problem ? "builder wide" : "builder"}>
+            {!immersive && tab === "builder" ? notices : null}
+            {!immersive && tab === "builder" ? <div className="form builderName">{nameField}</div> : null}
+            {!immersive && tab === "builder" && !problem ? <div className="toolbar"><ViewSwitch value={view} onChange={setView} /><DateRange /></div> : null}
 
-          <div className="form builderName">
-            <Field
-              label="Name"
-              value={draft.name}
-              onChange={(name) => {
-                if (locked) return;
-                setConfirmation(null);
-                setDraft({ ...draft, name });
-              }}
-              error={checked ? nameIssue : null}
-              disabled={locked}
-              required
-            />
-          </div>
+            {view === "list" || problem ? (
+              <article className="stepCard" aria-label="Trigger">
+                <header className="stepHeader">
+                  <Tile tone="accent"><Zap size={14} /></Tile>
+                  <div className="stepTitle">
+                    <strong>{triggerLabels[treeTrigger(draft.tree).type]}</strong>
+                    <span className="dim">{triggerSummary(treeTrigger(draft.tree), triggerSources(options))}</span>
+                    <span className="mono dim">{draft.tree.trigger}</span>
+                  </div>
+                </header>
+                <div className="form">
+                  <TriggerForm config={treeTrigger(draft.tree)} onChange={(config) => edit((tree) => setTrigger(tree, config))}
+                    options={options} errors={errors[draft.tree.trigger]} disabled={locked} />
+                </div>
+              </article>
+            ) : null}
 
-          {problem ? null : <div className="toolbar"><ViewSwitch value={view} onChange={setView} /><DateRange /></div>}
-
-          {/* The canvas draws the trigger as its first node and edits it in its side panel. */}
-          {view === "list" || problem ? (
-          <article className="stepCard" aria-label="Trigger">
-            <header className="stepHeader">
-              <Tile tone="accent">
-                <Zap size={14} />
-              </Tile>
-              <div className="stepTitle">
-                <strong>{triggerLabels[treeTrigger(draft.tree).type]}</strong>
-                <span className="dim">{triggerSummary(treeTrigger(draft.tree), triggerSources(options))}</span>
-                <span className="mono dim">{draft.tree.trigger}</span>
+            {problem ? <Code value={{ steps: row.steps, connections: row.connections ?? [] }} /> : <>
+              <div className="automationCanvas" hidden={view !== "canvas"}>
+                <Canvas immersive tree={draft.tree} actions={locked ? undefined : actions} disabled={locked}
+                  errors={errors} options={options} onTrigger={(config) => edit((tree) => setTrigger(tree, config))} />
               </div>
-            </header>
-            <div className="form">
-              <TriggerForm
-                config={treeTrigger(draft.tree)}
-                onChange={(config) => edit((tree) => setTrigger(tree, config))}
-                options={options}
-                errors={errors[draft.tree.trigger]}
-                disabled={locked}
-              />
-            </div>
-          </article>
-          ) : null}
-
-          {problem ? (
-            <Code value={{ steps: row.steps, connections: row.connections ?? [] }} />
-          ) : view === "canvas" ? (
-            <Canvas
-              tree={draft.tree}
-              actions={locked ? undefined : actions}
-              disabled={locked}
-              errors={errors}
-              options={options}
-              onTrigger={(config) => edit((tree) => setTrigger(tree, config))}
-            />
-          ) : (
-            <StepList
-              nodes={draft.tree.steps}
-              actions={locked ? undefined : actions}
-              disabled={locked}
-              errors={errors}
-              options={options}
-            />
-          )}
-        </div>
+              {view === "list" ? <StepList nodes={draft.tree.steps} actions={locked ? undefined : actions}
+                disabled={locked} errors={errors} options={options} /> : null}
+            </>}
+          </div>
         </ReentryContext.Provider>
       )}
 
