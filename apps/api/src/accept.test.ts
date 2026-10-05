@@ -244,8 +244,53 @@ describe.skipIf(!live)("accept", () => {
         const topicExpected = operator === "contains" || operator === "exists" ? contacts.filter((contact) => contact !== b) : [b];
         expect(await selected(tenant, leaf("contact.topics", operator, topicValue))).toEqual(topicExpected);
       }
+      expect((await call(fullKey, "PATCH", `/segments/${dynamic.json.id}`, { name: "Refreshed eligible" })).status).toBe(200);
+      expect((await call(fullKey, "GET", `/segments/${dynamic.json.id}`)).json).toMatchObject({ type: "dynamic", contacts: 0, rule });
+      expect((await post(fullKey, `/contacts/${a}/segments/${dynamic.json.id}`, {})).status).toBe(409);
+      expect((await post(fullKey, `/segments/${dynamic.json.id}/contacts`, { email: "must-not-create@fixture.net" })).status).toBe(409);
+      expect((await db.query("select id from contacts where tenant_id=$1 and email='must-not-create@fixture.net'", [tenant])).rows).toEqual([]);
+      expect((await call(fullKey, "DELETE", `/segments/${dynamic.json.id}/contacts/${a}`)).status).toBe(409);
+      expect((await call(fullKey, "PATCH", `/segments/${staticList.json.id}`, { rule: leaf("contact.email", "exists") })).status).toBe(409);
+      expect((await call(fullKey, "DELETE", `/contacts/${a}/segments/${staticList.json.id}`)).status).toBe(200);
+      // Removing members does not permit invalidating a saved filter dependency.
+      expect((await call(fullKey, "PATCH", `/segments/${staticList.json.id}`, { rule: leaf("contact.email", "exists") })).status).toBe(409);
+      expect((await call(fullKey, "PATCH", `/segments/${dynamic.json.id}`, { rule: null })).status).toBe(200);
+      expect((await call(fullKey, "GET", `/segments/${dynamic.json.id}/contacts`)).json.data).toEqual([]);
       const otherKey = await seedTenant();
       expect((await call(otherKey, "GET", `/contacts?segment_id=${dynamic.json.id}`)).status).toBe(404);
+    });
+
+    it.each(["membership", "conversion"] as const)("serializes %s-first membership/conversion conflicts without partial writes", async (first) => {
+      const { tenant, contacts } = await fixture();
+      const segment = await post(fullKey, "/segments", { name: "Lock fixture" });
+      expect(segment.status).toBe(200);
+      const { addContactSegment, staticSegment, updateSegment } = await import("@dispatchmail/db");
+      let ready!: () => void, release!: () => void, started!: () => void;
+      const locked = new Promise<void>((resolve) => { ready = resolve; });
+      const resume = new Promise<void>((resolve) => { release = resolve; });
+      const competing = new Promise<void>((resolve) => { started = resolve; });
+      const rule = leaf("contact.email", "exists");
+      const owner = tx(db, async (client) => {
+        await staticSegment(client, tenant, segment.json.id);
+        ready();
+        await resume;
+        if (first === "membership") await addContactSegment(client, tenant, contacts[0]!, segment.json.id);
+        else await updateSegment(client, tenant, segment.json.id, { rule });
+      });
+      await locked;
+      const challenger = tx(db, async (client) => {
+        started();
+        if (first === "membership") return updateSegment(client, tenant, segment.json.id, { rule });
+        return addContactSegment(client, tenant, contacts[0]!, segment.json.id);
+      }).then(() => null, (error: unknown) => error);
+      await competing;
+      release();
+      await owner;
+      expect(await challenger).toMatchObject({ name: "conflict", statusCode: 409 });
+      const detail = await call(fullKey, "GET", `/segments/${segment.json.id}`);
+      expect(detail.json).toMatchObject({ type: first === "membership" ? "static" : "dynamic" });
+      expect((await db.query("select contact_id from segment_contacts where tenant_id=$1 and segment_id=$2", [tenant,segment.json.id])).rows)
+        .toEqual(first === "membership" ? [{ contact_id: contacts[0] }] : []);
     });
 
     it("attributes all email facts by contact or legacy recipient without cross-recipient sandbox leakage", async () => {
