@@ -110,7 +110,7 @@ const pages: Record<string, Omit<Reference, "prompt">> = {
       }),
     ],
   },
-  "/automations/events": {
+  "/events": {
     title: "Events",
     calls: [
       get("/events", "List event definitions", "dispatch.events.list()"),
@@ -144,6 +144,7 @@ const pages: Record<string, Omit<Reference, "prompt">> = {
       get("/template-library", "List the default templates", "dispatch.templates.library.list()"),
       get("/template-library/automations", "List lifecycle presets", "dispatch.templates.library.automations()"),
       get("/template-library/automations/onboarding-drip", "Preview a lifecycle preset", 'dispatch.templates.library.automation("onboarding-drip")'),
+      post("/template-library/automations/onboarding-drip/install", "Install disabled, then review and enable", 'dispatch.templates.library.installAutomation("onboarding-drip", { from: "Acme <hello@acme.com>", topicId: "topic_123" })', { from: "Acme <hello@acme.com>", topic_id: "topic_123" }),
       post("/template-library/welcome/install", "Install one", 'dispatch.templates.library.install("welcome")'),
     ],
   },
@@ -326,7 +327,7 @@ const goals: Record<string, string> = {
   Events: "Help me define and send an app event in Dispatch, including the fields its automation needs.",
   Automation: "Help me inspect an automation's graph and runs, and explain pause, resume, and stop before changing its status.",
   Templates: "Help me create a reusable Dispatch email template and declare its required variables and optional fallbacks.",
-  "Template library": "Help me compare Dispatch library templates and lifecycle preset definitions, including their events, properties, and freshness filters. Do not assume a preset installer is available.",
+  "Template library": "Help me choose and install a Dispatch lifecycle preset with a verified sender. Newsletter welcome requires a live tenant topic at installation; other Marketing presets may install disabled without one. Review reused emails and the disabled automation before enabling.",
   Template: "Help me inspect a Dispatch template's versions, variables, tracking, and Transactional or Marketing kind.",
   "Template editor": "Help me edit and render a Dispatch template draft with test variables before publishing it.",
   Contacts: "Help me add and inspect Dispatch contacts while preserving their consent preferences.",
@@ -382,6 +383,7 @@ function decode(value: string): string {
 
 /** The reference for a location, with route params such as `:id` filled in. Null for a page with none. */
 export function referenceFor(pathname: string): Reference | null {
+  if (pathname === "/automations/events") pathname = "/events";
   for (const [pattern, reference] of Object.entries(references)) {
     const match = matchPath(pattern, pathname);
     if (!match) continue;
@@ -424,7 +426,7 @@ export function sdk(call: Call, apiUrl: string) {
   ].join("\n");
 }
 
-type Arguments = "none" | "query" | "id" | "body" | "idBody" | "idQuery" | "send" | "share" | "publish" | "links" | "event" | "recipients" | "schedule" | "emails" | "unsuppress" | "render";
+type Arguments = "none" | "query" | "id" | "body" | "idBody" | "idQuery" | "send" | "share" | "publish" | "links" | "event" | "recipients" | "schedule" | "emails" | "unsuppress" | "render" | "install";
 type FlatCall = [python: string | null, go: string | null, args: Arguments];
 
 // These clients are flat, not translations of the TypeScript namespace. Null means unsupported.
@@ -473,6 +475,7 @@ const flatCalls: Record<string, FlatCall> = {
   "GET /template-library/automations": ["template_library_automations", "TemplateLibraryAutomations", "none"],
   "GET /template-library/automations/:slug": ["template_library_automation", "TemplateLibraryAutomation", "id"],
   "POST /template-library/:slug/install": ["install_template", "InstallTemplate", "id"],
+  "POST /template-library/automations/:slug/install": ["template_library_install_automation", "TemplateLibraryInstallAutomation", "install"],
   "GET /contacts": ["contacts", "Contacts", "query"],
   "POST /contacts": ["create_contact", "CreateContact", "body"],
   "GET /contacts/stats": [null, null, "none"],
@@ -550,6 +553,10 @@ function flatCall(call: Call, language: "python" | "go"): string | null {
       case "id": input = id; break;
       case "body": input = value(body); break;
       case "idBody": input = `${id}, ${value(body)}`; break;
+      case "install": input = language === "python"
+        ? `${id}, **${value(body)}`
+        : `${id}, dispatch.AutomationInstallInput{${Object.entries(body).map(([key, item]) => `${({ from: "From", topic_id: "TopicID", name: "Name" } as Record<string, string>)[key]}: ${value(item)}`).join(", ")}}`;
+        break;
       case "idQuery": input = `${id}${query.size || language === "go" ? `, ${queryArgs()}` : ""}`; break;
       case "send": input = `${value(body)}${language === "go" ? ', ""' : ""}`; break;
       case "share": input = `${id}, ${value(body.expires_in ?? "")}`; break;

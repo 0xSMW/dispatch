@@ -19,7 +19,7 @@ describe("version-aware public documentation", () => {
 
   it("targets the planned anchors in shipped public guides", () => {
     const expected = {
-      automations: ["automations.md#triggers", "automations.md#conditions"],
+      automations: ["automations.md#triggers", "automations.md#conditions", "automations/README.md"],
       templates: ["templates.md#variables", "templates.md#visual-editor", "templates.md#brand"],
       audience: ["audience.md#properties", "audience.md#segments", "audience.md#topics"],
       domains: ["domains.md#dns-records", "domains.md#route-53", "deliverability/README.md"],
@@ -47,7 +47,7 @@ describe("version-aware public documentation", () => {
     expect(learnLinks("automations", { "automations.md": "## Triggers\n" }, "")).toEqual([
       { label: "Triggers", href: `${docsBase("")}automations.md#triggers` },
     ]);
-    expect(learnLinks("automations").some(({ label }) => label === "Lifecycle recipes")).toBe(false);
+    expect(learnLinks("automations").some(({ label }) => label === "Lifecycle recipes")).toBe(true);
   });
 
   it("does not mistake example headings inside fenced code for anchors", () => {

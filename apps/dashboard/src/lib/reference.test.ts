@@ -7,7 +7,7 @@ import { curl, go, llmsLinks, python, referenceFor, references, sdk } from "./re
 
 // The signed-in routes in main.tsx, read from the source so a new page cannot skip the reference.
 const source = readFileSync(new URL("../main.tsx", import.meta.url), "utf8");
-const publicPaths = new Set(["login", "shared", "unsubscribe", "*", "settings"]);
+const publicPaths = new Set(["login", "shared", "unsubscribe", "*", "settings", "automations/events"]);
 const routes = [...source.matchAll(/path: "([^"]+)"/g)].map((match) => match[1]!).filter((path) => !publicPaths.has(path));
 const calls = Object.keys(references).flatMap((path) => referenceFor(path.replace(/:[a-z_]+/g, "resource_123"))!.calls);
 const apiUrl = "https://api.acme.test";
@@ -68,14 +68,16 @@ describe("API reference", () => {
       .toHaveLength(2);
   });
 
-  it("lists and previews presets without advertising their unshipped installer", () => {
+  it("lists, previews and installs presets through the actual clients", () => {
     const library = references["/templates/library"]!;
     expect(library.calls.map((call) => call.path)).toContain("/template-library/automations");
     expect(library.calls.map((call) => call.path)).toContain("/template-library/automations/onboarding-drip");
-    expect(calls.some((call) => /\/template-library\/automations\/.*\/install/.test(call.path))).toBe(false);
+    expect(calls.some((call) => /\/template-library\/automations\/.*\/install/.test(call.path))).toBe(true);
     const detail = library.calls.find((call) => call.path.endsWith("/onboarding-drip"))!;
     expect(python(detail, apiUrl)).toContain('client.template_library_automation("onboarding-drip")');
     expect(go(detail, apiUrl)).toContain('client.TemplateLibraryAutomation("onboarding-drip")');
+    expect(referenceFor("/events")!.title).toBe("Events");
+    expect(referenceFor("/automations/events")).toEqual(referenceFor("/events"));
   });
 
   it("runs every TypeScript example against the actual SDK and checks its request", async () => {

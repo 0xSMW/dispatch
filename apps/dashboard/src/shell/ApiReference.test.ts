@@ -47,7 +47,7 @@ describe("ApiReference", () => {
     fireEvent.click(within(drawer).getByRole("button", { name: "Copy prompt" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith(prompt));
     expect(prompt).not.toContain("sess_test");
-    expect(prompt).toContain("Do not assume a preset installer is available");
+    expect(prompt).toContain("Newsletter welcome requires a live tenant topic at installation");
   });
 
   it("shows an explicit cURL fallback when a flat SDK cannot render the draft", () => {
