@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { signWebhook } from "@dispatchmail/core";
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
-import { Dispatch, WebhookVerificationError, type Automation, type AutomationCreate, type AutomationDryRun, type AutomationUpdate, type AutomationStatus, type AutomationReentry, type AutomationTriggerConfig, type AutomationExitReason, type AutomationPreset, type AutomationPresetDetail, type ContactActivity, type ImportColumnMap, type List, type Operator, type PropertyType, type PropertyValue, type Result, type Rule, type SendEmailConfig } from "./index.js";
+import { Dispatch, WebhookVerificationError, type Automation, type AutomationCreate, type AutomationDryRun, type AutomationUpdate, type AutomationStatus, type AutomationReentry, type AutomationTriggerConfig, type AutomationExitReason, type AutomationPreset, type AutomationPresetDetail, type ContactActivity, type ImportColumnMap, type List, type Operator, type PropertyType, type PropertyValue, type Result, type Rule, type SendEmailConfig, type TemplateCreate, type TemplateUpdate } from "./index.js";
 
 const base = "http://localhost:3100";
 
@@ -480,6 +480,39 @@ describe("transport", () => {
     globalThis.fetch = vi.fn(async () => new Response(JSON.stringify("oops"), { status: 500, statusText: "Internal Server Error" })) as never;
     const result = await new Dispatch({ apiKey: "sk_test" }).logs.list();
     expect(result.error).toEqual({ name: "application_error", statusCode: 500, message: "Internal Server Error" });
+  });
+});
+
+describe("template tracking", () => {
+  const createCases: Array<{ tracking: string; input: TemplateCreate; body: { name: string; track?: boolean } }> = [
+    { tracking: "true", input: { name: "Welcome", track: true }, body: { name: "Welcome", track: true } },
+    { tracking: "false", input: { name: "Welcome", track: false }, body: { name: "Welcome", track: false } },
+    { tracking: "omitted", input: { name: "Welcome" }, body: { name: "Welcome" } }
+  ];
+  const updateCases: Array<{ tracking: string; input: TemplateUpdate; body: { subject: string; track?: boolean } }> = [
+    { tracking: "true", input: { subject: "Welcome back", track: true }, body: { subject: "Welcome back", track: true } },
+    { tracking: "false", input: { subject: "Welcome back", track: false }, body: { subject: "Welcome back", track: false } },
+    { tracking: "omitted", input: { subject: "Welcome back" }, body: { subject: "Welcome back" } }
+  ];
+
+  it.each(createCases)("preserves $tracking tracking in template create request JSON", async ({ input, body }) => {
+    const fetch = stub({ id: "template_1" });
+    await new Dispatch({ apiKey: "sk_test" }).templates.create(input);
+    const sent = request(fetch);
+    expect(sent.url).toBe(`${base}/templates`);
+    expect(sent.method).toBe("POST");
+    expect(sent.body).toEqual(body);
+    expect(Object.hasOwn(sent.body, "track")).toBe(Object.hasOwn(body, "track"));
+  });
+
+  it.each(updateCases)("preserves $tracking tracking in template update request JSON", async ({ input, body }) => {
+    const fetch = stub({ id: "template_1" });
+    await new Dispatch({ apiKey: "sk_test" }).templates.update("welcome", input);
+    const sent = request(fetch);
+    expect(sent.url).toBe(`${base}/templates/welcome`);
+    expect(sent.method).toBe("PATCH");
+    expect(sent.body).toEqual(body);
+    expect(Object.hasOwn(sent.body, "track")).toBe(Object.hasOwn(body, "track"));
   });
 });
 

@@ -161,6 +161,7 @@ export type TemplateCreate = {
   text?: string;
   react?: unknown;
   variables?: Array<string | TemplateVariable>;
+  track?: boolean;
   publish?: boolean;
   source?: { kind: string; path?: string; slug?: string; version?: string; send_kind?: SendKind };
 };

@@ -918,6 +918,109 @@ describe.skipIf(!live)("accept", () => {
       return { status: response.statusCode, json: response.json() };
     }
     const harmless = { object: "form_submission", message: "Thank you. Check your email if confirmation is needed." };
+    it("preflights minted management IDs without credentials or existence lookup while preserving full/viewer/unauthenticated/foreign CRUD guards", async () => {
+      const { form } = await fixture();
+      const dashboard = (process.env.CORS_ORIGINS ?? "http://localhost:5173,http://127.0.0.1:5173")
+        .split(",").map((value) => value.trim()).filter(Boolean)[0]!;
+      expect(form.id).toMatch(/^form_[0-9a-f]{32}$/);
+      expect(form.allowed_origins).not.toContain(dashboard);
+      const preflight = (formId: string, method: string, suppliedOrigin = dashboard) => app.inject({
+        method: "OPTIONS", url: `/forms/${formId}`, headers: {
+          origin: suppliedOrigin, "access-control-request-method": method,
+          "access-control-request-headers": "authorization,content-type",
+        },
+      });
+      for (const formId of [form.id, id("form")]) {
+        for (const method of ["GET", "PATCH", "DELETE"]) {
+          const response = await preflight(formId, method);
+          expect(response.statusCode).toBe(204);
+          expect(response.headers["access-control-allow-origin"]).toBe(dashboard);
+          expect(String(response.headers["access-control-allow-methods"]).split(",").map((value) => value.trim())).toContain(method);
+          expect(response.headers["access-control-allow-headers"]).toContain("authorization");
+          expect(response.headers["access-control-allow-headers"]).toContain("content-type");
+        }
+      }
+      const refused = await preflight(form.id, "PATCH", "https://dashboard.evil");
+      expect(refused.headers["access-control-allow-origin"]).toBeUndefined();
+      expect(refused.headers["access-control-allow-methods"]).toBeUndefined();
+      const foreign = await seedTenant();
+      for (const method of ["GET", "PATCH", "DELETE"] as const) {
+        const payload = method === "PATCH" ? { name: "Forbidden change" } : undefined;
+        expect((await app.inject({ method, url: `/forms/${form.id}`, payload })).statusCode).toBe(401);
+        expect((await call(foreign, method, `/forms/${form.id}`, payload)).status).toBe(404);
+      }
+      const viewer = await teammate("Viewer");
+      const read = await signInAs(viewer.email, viewer.password);
+      expect((await call(read.token, "GET", "/forms")).status).toBe(200);
+      expect((await call(read.token, "GET", `/forms/${form.id}`)).json.id).toBe(form.id);
+      expect((await post(read.token, "/forms", {})).status).toBe(403);
+      expect((await call(read.token, "PATCH", `/forms/${form.id}`, { name: "Forbidden change" })).status).toBe(403);
+      expect((await call(read.token, "DELETE", `/forms/${form.id}`)).status).toBe(403);
+      const admin = await teammate("Admin");
+      const full = await signInAs(admin.email, admin.password);
+      const created = await post(full.token, "/forms", { name: "Dashboard form", topic_ids: form.topic_ids,
+        from_email: form.from_email, allowed_origins: [origin] });
+      expect(created.status).toBe(200);
+      expect((await call(full.token, "GET", "/forms")).json.data.some((row: { id: string }) => row.id === created.json.id)).toBe(true);
+      expect((await call(full.token, "GET", `/forms/${created.json.id}`)).json.name).toBe("Dashboard form");
+      expect((await call(full.token, "PATCH", `/forms/${created.json.id}`, { name: "Edited form" })).json.name).toBe("Edited form");
+      expect((await call(full.token, "GET", `/forms/${created.json.id}`)).json.name).toBe("Edited form");
+      expect((await call(full.token, "DELETE", `/forms/${created.json.id}`)).status).toBe(200);
+      expect((await call(full.token, "GET", `/forms/${created.json.id}`)).status).toBe(404);
+      expect((await preflight(created.json.id, "PATCH")).statusCode).toBe(204);
+    });
+    it("keeps public-key preflights exact-origin and POST/content-type-only even for dashboard origins and rejects unknown/deleted keys", async () => {
+      const { form } = await fixture();
+      const dashboard = (process.env.CORS_ORIGINS ?? "http://localhost:5173,http://127.0.0.1:5173")
+        .split(",").map((value) => value.trim()).filter(Boolean)[0]!;
+      expect(form.key).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      const preflight = (key: string, suppliedOrigin: string | undefined, method = "POST", headers = "content-type") => app.inject({
+        method: "OPTIONS", url: `/forms/${key}`, headers: {
+          ...(suppliedOrigin === undefined ? {} : { origin: suppliedOrigin }),
+          "access-control-request-method": method, "access-control-request-headers": headers,
+        },
+      });
+      const notStored = await preflight(form.key, dashboard);
+      expect(notStored.statusCode).toBe(403);
+      expect(notStored.headers["access-control-allow-origin"]).toBeUndefined();
+      const notStoredPost = await app.inject({ method: "POST", url: `/forms/${form.key}`, headers: { origin: dashboard },
+        payload: { email: "not-stored-origin@fixture.net", website: "bot" } });
+      expect(notStoredPost.statusCode).toBe(403);
+      expect(notStoredPost.headers["access-control-allow-origin"]).toBeUndefined();
+      expect((await call(fullKey, "PATCH", `/forms/${form.id}`, { allowed_origins: [origin, dashboard] })).status).toBe(200);
+      for (const allowed of [origin, dashboard]) {
+        const response = await preflight(form.key, allowed);
+        expect(response.statusCode).toBe(204);
+        expect(response.headers["access-control-allow-origin"]).toBe(allowed);
+        expect(response.headers["access-control-allow-methods"]).toBe("POST");
+        expect(response.headers["access-control-allow-headers"]).toBe("content-type");
+        expect(response.headers["access-control-allow-credentials"]).toBeUndefined();
+      }
+      for (const suppliedOrigin of [undefined, "null", `${origin}.evil`, "https://disallowed.example"]) {
+        const response = await preflight(form.key, suppliedOrigin);
+        expect(response.statusCode).toBe(403);
+        expect(response.headers["access-control-allow-origin"]).toBeUndefined();
+      }
+      for (const method of ["GET", "PATCH", "DELETE"]) {
+        const response = await preflight(form.key, dashboard, method);
+        expect(response.statusCode).toBe(403);
+        expect(response.headers["access-control-allow-origin"]).toBeUndefined();
+        expect(response.headers["access-control-allow-methods"]).toBeUndefined();
+      }
+      for (const headers of ["authorization", "content-type,authorization", "content-type,x-request-id", "content-type,x-extra"]) {
+        const response = await preflight(form.key, dashboard, "POST", headers);
+        expect(response.statusCode).toBe(403);
+        expect(response.headers["access-control-allow-origin"]).toBeUndefined();
+      }
+      const unknown = "A".repeat(43);
+      expect((await preflight(unknown, dashboard)).statusCode).toBe(404);
+      expect((await submit(unknown, "unknown-key@fixture.net")).status).toBe(404);
+      expect((await call(fullKey, "DELETE", `/forms/${form.id}`)).status).toBe(200);
+      const deleted = await preflight(form.key, dashboard);
+      expect(deleted.statusCode).toBe(404);
+      expect(deleted.headers["access-control-allow-origin"]).toBeUndefined();
+      expect((await submit(form.key, "deleted-key@fixture.net")).status).toBe(404);
+    });
     it("guards management, exact origin/preflight, encodings, allowlists, 16KB and honeypot with uniform address responses", async () => {
       const { form } = await fixture();
       expect((await app.inject({ method: "GET", url: `/forms/${form.key}` })).statusCode).toBe(401);
@@ -977,14 +1080,20 @@ describe.skipIf(!live)("accept", () => {
       expect((await submit(form.key, "concurrent@fixture.net")).status).toBe(200);
       expect((await db.query("select count(*)::int as count from emails")).rows[0].count).toBe(4);
     });
-    it("applies a route-wide per-IP public limit rather than a different bucket for each public key", async () => {
+    it.each(["POST", "OPTIONS"] as const)("applies a route-wide per-IP public limit to %s rather than a different bucket for each public key", async (method) => {
       const { form } = await fixture();
+      const other = await post(fullKey, "/forms", { name: "Other rate-limited form", topic_ids: form.topic_ids,
+        from_email: form.from_email, allowed_origins: [origin] });
+      expect(other.status).toBe(200);
       const previous = process.env.PUBLIC_RATE_LIMIT_PER_SECOND;
       process.env.PUBLIC_RATE_LIMIT_PER_SECOND = "1";
       try {
-        const responses = await Promise.all(Array.from({ length: 5 }, () => app.inject({
-          method: "POST", url: `/forms/${form.key}`, remoteAddress: "192.0.2.144",
-          headers: { origin }, payload: { email: "ip-limit@fixture.net", website: "bot" },
+        const responses = await Promise.all(Array.from({ length: 5 }, (_, index) => app.inject({
+          method, url: `/forms/${index % 2 ? other.json.key : form.key}`, remoteAddress: "192.0.2.144",
+          headers: { origin, ...(method === "OPTIONS" ? {
+            "access-control-request-method": "POST", "access-control-request-headers": "content-type",
+          } : {}) },
+          ...(method === "POST" ? { payload: { email: "ip-limit@fixture.net", website: "bot" } } : {}),
         })));
         expect(responses.some((response) => response.statusCode === 429)).toBe(true);
         expect((await db.query("select count(*)::int as count from contacts")).rows[0].count).toBe(0);

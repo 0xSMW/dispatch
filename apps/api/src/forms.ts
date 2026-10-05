@@ -63,6 +63,9 @@ export function registerForms(app: FastifyInstance, deps: {
     if (!await deleteForm(db, request.auth!.tenant_id, formId)) throw new ApiError("not_found", 404, "Form not found");
     return { object: "form", id: formId, deleted: true };
   });
+  // Minted management IDs cannot overlap the 43-character public keys. Let the
+  // global CORS hook answer dashboard preflights without a public-origin lookup.
+  app.options("/forms/:id(^form_[0-9a-f]{32}$)", async (_request, reply) => reply.code(204).send());
   app.register(async (scope) => {
     scope.addContentTypeParser("application/x-www-form-urlencoded", { parseAs: "string", bodyLimit: 16 * 1024 }, (_request, body, done) => {
       const entries = new URLSearchParams(String(body));
