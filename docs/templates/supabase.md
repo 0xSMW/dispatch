@@ -1,6 +1,33 @@
-# Supabase send-email hook
+# Supabase
+
+## Receiver setup
+
+For user lifecycle events, use **Database Webhooks**, not the Auth Send Email Hook. Create a Supabase integration in **Settings > Integrations**, or use:
+
+```sh
+jq -n --arg secret "$SUPABASE_WEBHOOK_SECRET" \
+  '{provider:"supabase",name:"Supabase users",secret:$secret,settings:{secret_header:"x-dispatch-secret"}}' |
+curl --fail-with-body --silent --show-error "$DISPATCH_API_URL/integrations" \
+  -H "Authorization: Bearer $DISPATCH_API_KEY" \
+  -H "Content-Type: application/json" --data-binary @-
+```
+
+Create returns flat, top-level `token` and `url` once. Configure Database Webhooks for `auth.users` **INSERT** and **UPDATE**, POST to that URL with a JSON body, and add `x-dispatch-secret` with the exact shared secret used above. If you choose another header, set its name in `settings.secret_header`. This is shared-header authentication, not an Auth Hook `v1,whsec_...` signature.
+
+Normal GETs never return the URL or secrets. Rotate with `POST /integrations/:id/rotate` and replace the URL in Supabase. [Body-free delivery history](../integrations.md#delivery-history-and-replay-retention) shows `processed`, `ignored` or `failed`. Supabase Database Webhooks have no signing timestamp or delivery ID: replay identity is a hash of the raw body plus `commit_timestamp` when present. **Replay protection lasts only while the delivery key is retained**, with `LOG_RETENTION_DAYS` defaulting to 30 days. Use HTTPS, protect the shared header and keep longer-lived business deduplication if needed.
+
+| Database payload | Dispatch event | Contact mapping |
+| --- | --- | --- |
+| `schema:"auth"`, `table:"users"`, `type:"INSERT"` | `supabase.user.created` | `record.email`, `record.id` as `properties.supabase_user_id`, and metadata first/last names |
+| Same table with `type:"UPDATE"` | `supabase.user.updated` | Same fields; existing preferences are preserved |
+
+The receiver supports these two operations, not DELETE or arbitrary tables. Event data includes `user_id`, `email`, mapped names and properties, not passwords, tokens or the whole auth record. Missing email is ignored with `no_contact`. Deleted Dispatch contacts are not revived. Receiving these events does not send verification, recovery or magic-link mail automatically.
+
+## Manual Auth Send Email Hook alternative
 
 Checked against the Send Email Hook guide on 2026-10-01. The body is `{ user, email_data }`. The inputs table on that page says `email`. The JSON schema and the hook samples use `email_data`. Use `email_data`.
+
+Configure this as a separate **Auth Send Email Hook** pointing to your own verified handler below, not `/inbound/{token}`. It sends authentication messages through `POST /emails`; it is not the Database Webhooks lifecycle receiver.
 
 `user.email` is the account email. `email_data.email_action_type` picks the template.
 

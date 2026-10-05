@@ -2721,7 +2721,7 @@
       "post": {
         "operationId": "createIntegration", "summary": "Create encrypted integration credentials", "tags": ["Integrations"], "x-scope": "full",
         "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IntegrationInput" } } } },
-        "responses": { "200": { "description": "Integration plus token and receiver URL, shown once. Signed receiver activation is a separate deployment capability.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreatedIntegration" } } } } }
+        "responses": { "200": { "description": "Integration plus token and active signed receiver URL, shown once.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreatedIntegration" } } } } }
       }
     },
     "/integrations/{id}": {
@@ -2746,6 +2746,26 @@
         "responses": { "200": { "description": "Bounded recent delivery list.", "content": { "application/json": { "schema": { "type": "object", "properties": {
           "object": { "const": "list" }, "has_more": { "const": false }, "data": { "type": "array", "items": { "$ref": "#/components/schemas/InboundDelivery" } }
         } } } } } } }
+    },
+    "/inbound/{token}": {
+      "parameters": [{ "name": "token", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "post": {
+        "operationId": "receiveInbound", "summary": "Receive an authenticated provider webhook", "tags": ["Integrations"], "security": [],
+        "description": "Public, per-IP/route rate limited, maximum 1 MB. Verifies the untouched bytes with Stripe/Svix/Standard Webhooks (300-second past/future tolerance) or the Supabase configured shared header. Known integrations record body-free failures. Successful/ignored verified identities deduplicate within LOG_RETENTION_DAYS (default 30); bounded pruning expires replay protection. Contact changes, history, triggers, provider event/wait effects and canonical delivery commit together. Failed attempts roll back the canonical key and return retryable 503. Normal integration reads never return this URL/token or secrets.",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "additionalProperties": true } } } },
+        "responses": {
+          "200": { "description": "Processed, ignored or duplicate without repeated effects.", "content": { "application/json": { "schema": {
+            "type": "object", "properties": { "object": { "const": "inbound_delivery" }, "status": { "enum": ["processed", "ignored"] },
+              "event_name": { "type": ["string", "null"] }, "contact_id": { "type": ["string", "null"] },
+              "error": { "type": "string" }, "duplicate": { "type": "boolean" } }
+          } } } },
+          "400": { "description": "Invalid signature, expired/future timestamp or malformed verified payload." },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "413": { "description": "Body exceeds 1 MB." },
+          "429": { "description": "Public route/IP rate exceeded." },
+          "503": { "description": "Retryable preparation or rolled-back processing failure." }
+        }
+      }
     },
     "/settings": {
       "get": {
@@ -19471,7 +19491,7 @@
       } },
       "IntegrationInput": { "type": "object", "additionalProperties": false, "required": ["provider", "name", "secret"], "properties": {
         "provider": { "enum": ["stripe", "clerk", "supabase", "webhook"] }, "name": { "type": "string", "minLength": 1, "maxLength": 120 },
-        "slug": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$", "description": "Provider prefix for named providers; explicit nonreserved slug for webhook." },
+        "slug": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$", "description": "Provider prefix for named providers. Standard Webhooks defaults to webhook; tenant-unique and nonreserved (not stripe, clerk or supabase)." },
         "secret": { "type": "string", "minLength": 1, "maxLength": 4096, "writeOnly": true }, "settings": { "$ref": "#/components/schemas/IntegrationSettings" }
       } },
       "IntegrationUpdate": { "type": "object", "additionalProperties": false, "properties": {
@@ -19488,7 +19508,7 @@
         "token": { "type": "string" }, "url": { "type": "string", "format": "uri" }
       } }] },
       "InboundDelivery": { "type": "object", "properties": {
-        "id": { "type": "string" }, "integration_id": { "type": "string" }, "provider_event_id": { "type": "string" }, "status": { "type": "string" },
+        "id": { "type": "string" }, "integration_id": { "type": "string" }, "provider_event_id": { "type": "string" }, "status": { "enum": ["processed", "ignored", "failed"] },
         "event_name": { "type": ["string", "null"] }, "contact_id": { "type": ["string", "null"] }, "error": { "type": ["string", "null"] }, "created_at": { "type": "string", "format": "date-time" }
       } },
       "ContactTopic": {

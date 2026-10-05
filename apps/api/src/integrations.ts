@@ -5,7 +5,7 @@ import {
 } from "@dispatchmail/db";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 
-// Management only. Signed receiver activation belongs to the next L8 owner.
+// Public receiver registration is separate so management never bypasses authentication.
 export function registerIntegrations(app: FastifyInstance, deps: {
   db: Db; secret: string; publicUrl: string; paging: (request: FastifyRequest) => PagingParams;
 }) {
@@ -17,8 +17,11 @@ export function registerIntegrations(app: FastifyInstance, deps: {
     const page = await paginate<IntegrationRecord>(db, { table: "integrations", tenantId: request.auth!.tenant_id, select: integrationColumns }, paging(request));
     return { ...page, data: page.data.map(presentIntegration) };
   });
-  app.post("/integrations", async (request) => created(await retryTx(db, (client) =>
-    createIntegration(client, request.auth!.tenant_id, integrationSchema.parse(request.body), secret))));
+  app.post("/integrations", async (request, reply) => {
+    reply.header("cache-control", "no-store");
+    return created(await retryTx(db, (client) =>
+      createIntegration(client, request.auth!.tenant_id, integrationSchema.parse(request.body), secret)));
+  });
   app.get("/integrations/:id", async (request) =>
     getIntegration(db, request.auth!.tenant_id, (request.params as { id: string }).id));
   app.patch("/integrations/:id", async (request) => retryTx(db, (client) =>
@@ -28,10 +31,14 @@ export function registerIntegrations(app: FastifyInstance, deps: {
     if (!await deleteIntegration(db, request.auth!.tenant_id, integrationId)) throw new ApiError("not_found", 404, "Integration not found");
     return { object: "integration", id: integrationId, deleted: true };
   });
-  app.post("/integrations/:id/rotate", async (request) => created(await retryTx(db, (client) =>
-    rotateIntegration(client, request.auth!.tenant_id, (request.params as { id: string }).id))));
+  app.post("/integrations/:id/rotate", async (request, reply) => {
+    reply.header("cache-control", "no-store");
+    return created(await retryTx(db, (client) =>
+      rotateIntegration(client, request.auth!.tenant_id, (request.params as { id: string }).id)));
+  });
   app.get("/integrations/:id/deliveries", async (request) => ({
     object: "list", has_more: false, data: (await listDeliveries(db, request.auth!.tenant_id,
-      (request.params as { id: string }).id, paging(request).limit)).map(({ tenant_id: _tenant, ...row }) => row),
+      (request.params as { id: string }).id,
+      (request.query as { limit?: string }).limit === undefined ? 20 : paging(request).limit)).map(({ tenant_id: _tenant, ...row }) => row),
   }));
 }

@@ -12,6 +12,11 @@ export type Deleted = {
   id: string;
   deleted: true;
 };
+export type Integration = import("@dispatchmail/core").Integration;
+export type IntegrationInput = import("@dispatchmail/core").IntegrationInput;
+export type IntegrationUpdate = import("@dispatchmail/core").IntegrationUpdate;
+export type IntegrationCreated = Integration & { token: string; url: string };
+export type InboundDelivery = Omit<import("@dispatchmail/core").InboundDelivery, "tenant_id">;
 
 export type Settings = { import_trigger_automations: boolean; sandbox_domains: string[]; confirmation_daily_limit: number };
 

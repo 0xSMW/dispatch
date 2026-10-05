@@ -20,7 +20,7 @@ const secretName = /pass|secret|token|api_?key|restricted_key|authorization/i;
 export const linkFields = new Set(["url", "download_url", "raw"]);
 
 // Unsubscribe, click, open, file, and share links carry a token that acts without a session.
-const tokenLink = /https?:\/\/[^\s"'<>()]+\/(?:unsubscribe|confirm|click|open|files|shared)(?:[/?][^\s"'<>()]*)?/g;
+const tokenLink = /https?:\/\/[^\s"'<>()]+\/(?:unsubscribe|confirm|inbound|click|open|files|shared)(?:[/?][^\s"'<>()]*)?/g;
 
 /**
  * A URL cut to its scheme and host, for a read-only user. The path or the user part of a webhook
@@ -95,7 +95,8 @@ export function logBodies(input: {
   body: unknown;
   responseText: string | null;
 }) {
-  if (input.route === "/confirm/:token" || (input.route === "/forms/:id" && input.method === "POST"))
+  if (input.route === "/inbound/:token" || input.route?.startsWith("/integrations")
+    || input.route === "/confirm/:token" || (input.route === "/forms/:id" && input.method === "POST"))
     return { request_body: null, response_body: null };
   const response = parseJson(input.responseText);
   if (skipBodies(input.method, input.route, response)) {

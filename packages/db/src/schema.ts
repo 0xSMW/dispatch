@@ -1097,4 +1097,7 @@ create table if not exists inbound_deliveries (
   created_at timestamptz not null default now(), unique (integration_id, provider_event_id)
 );
 create index if not exists inbound_deliveries_created_idx on inbound_deliveries (tenant_id, integration_id, created_at, id);
+
+-- Global bounded retention scans follow the worker's ordinary log retention cadence.
+create index if not exists inbound_deliveries_retention_idx on inbound_deliveries (created_at, id);
 `;

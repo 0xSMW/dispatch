@@ -1,5 +1,33 @@
 # Clerk
 
+## Receiver setup
+
+For user lifecycle events, create a Clerk integration in **Settings > Integrations**, or use:
+
+```sh
+jq -n --arg secret "$CLERK_WEBHOOK_SECRET" \
+  '{provider:"clerk",name:"Clerk users",secret:$secret,settings:{delete_contact:false}}' |
+curl --fail-with-body --silent --show-error "$DISPATCH_API_URL/integrations" \
+  -H "Authorization: Bearer $DISPATCH_API_KEY" \
+  -H "Content-Type: application/json" --data-binary @-
+```
+
+The response includes flat, top-level `token` and `url` once. Configure a Clerk webhook endpoint with that URL, subscribe to `user.created`, `user.updated` and `user.deleted`, and save the endpoint's signing secret in Dispatch. If the endpoint must exist to obtain its secret, replace a private temporary secret with `PATCH /integrations/:id` before accepting deliveries. Dispatch verifies Clerk's `svix-id`, `svix-timestamp` and `svix-signature` against the original bytes with a 300-second tolerance.
+
+Normal GETs do not return the URL or credentials. `POST /integrations/:id/rotate` returns a replacement URL once; update the endpoint in Clerk. [Delivery history](../integrations.md#delivery-history-and-replay-retention) is body-free, with `processed`, `ignored` and `failed` results. Its replay keys expire with `LOG_RETENTION_DAYS` (default 30 days).
+
+| Provider event | Dispatch event | Contact mapping |
+| --- | --- | --- |
+| `user.created` | `clerk.user.created` | Primary email, first and last names, `properties.clerk_user_id` |
+| `user.updated` | `clerk.user.updated` | Same fields; existing preferences are preserved |
+| `user.deleted` | `clerk.user.deleted` | Resolve the existing contact by `clerk_user_id`; retain it and its history by default |
+
+The receiver never picks an arbitrary secondary email for a phone-only or missing-primary-email user, and never revives a deleted contact. Creation/update event data includes `user_id`, `email`, mapped names and properties; deletion data includes `user_id`. Explicit `settings.delete_contact: true` opts into ordinary contact deletion, not privacy erasure. Deletion does not create a missing contact.
+
+This receiver does **not** forward Clerk-rendered authentication emails. Lifecycle events and authentication message delivery are separate configurations.
+
+## Manual authentication email alternative
+
 There is no Clerk template in the library. Clerk renders the email. Dispatch only delivers the HTML Clerk already produced.
 
 Turn **Delivered by Clerk** off on each template you want to send yourself. The switch is per template. Clerk's email template settings, updated 2026-09-30, say to listen for `emails.created`. The deliverability page from the same day says `email.created`. Subscribe to the name your dashboard's event catalog shows. Both pages describe the same handoff.

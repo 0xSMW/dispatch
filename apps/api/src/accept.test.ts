@@ -17,6 +17,7 @@ import type { Provider, ProviderEmail, Rule } from "@dispatchmail/core";
 import type { ContactRow, Db } from "@dispatchmail/db";
 import type { Storage } from "@dispatchmail/storage";
 import { Readable } from "node:stream";
+import { createHmac } from "node:crypto";
 import type { Job } from "../../worker/src/deliver.js";
 import type { FastifyInstance } from "fastify";
 
@@ -116,6 +117,261 @@ afterAll(async () => {
 });
 
 describe.skipIf(!live)("accept", () => {
+  // Authored during wave8 engineering. Execute only in the final guarded local block.
+  describe("signed inbound receivers", () => {
+    const signingSecret = "synthetic-inbound-signing-secret";
+    const standardSecret = `whsec_${Buffer.from("synthetic-standard-key").toString("base64")}`;
+    let previousPublicLimit: string | undefined;
+    beforeEach(() => {
+      previousPublicLimit = process.env.PUBLIC_RATE_LIMIT_PER_SECOND;
+      process.env.PUBLIC_RATE_LIMIT_PER_SECOND = "1000";
+    });
+    afterEach(() => {
+      if (previousPublicLimit === undefined) delete process.env.PUBLIC_RATE_LIMIT_PER_SECOND;
+      else process.env.PUBLIC_RATE_LIMIT_PER_SECOND = previousPublicLimit;
+    });
+    async function integration(provider = "webhook", settings = {}, slug?: string) {
+      const response = await post(fullKey, "/integrations", {
+        provider, name: `Inbound ${provider}`, secret: provider === "clerk" || provider === "webhook" ? standardSecret : signingSecret,
+        settings, ...(slug ? { slug } : {}),
+      });
+      expect(response.status, JSON.stringify(response.json)).toBe(200);
+      return response.json;
+    }
+    function signed(provider: string, body: string, identity: string, time = Math.floor(Date.now() / 1000)) {
+      if (provider === "stripe") return { "stripe-signature": `t=${time},v1=${createHmac("sha256", signingSecret).update(`${time}.`).update(body).digest("hex")}` };
+      if (provider === "supabase") return { "x-webhook-secret": signingSecret };
+      const family = provider === "clerk" ? "svix" : "webhook";
+      return { [`${family}-id`]: identity, [`${family}-timestamp`]: String(time),
+        [`${family}-signature`]: `v1,${createHmac("sha256", Buffer.from(standardSecret.slice(6), "base64")).update(`${identity}.${time}.`).update(body).digest("base64")}` };
+    }
+    async function receive(row: any, payload: unknown, identity = id("provider"), options: { raw?: string; time?: number; headers?: Record<string, string> } = {}) {
+      const body = options.raw ?? JSON.stringify(payload);
+      const response = await app.inject({ method: "POST", url: `/inbound/${row.token}`,
+        headers: { "content-type": "application/json", "user-agent": "dispatch-inbound-fixture",
+          ...signed(row.provider, body, identity, options.time), ...options.headers }, payload: body });
+      return { status: response.statusCode, json: response.json(), body: response.body };
+    }
+    function payload(provider: string, identity: string, email = "signed@example.com") {
+      if (provider === "stripe") return { id: identity, type: "customer.created", data: { object: { id: "cus_fixture", email } } };
+      if (provider === "clerk") return { type: "user.created", data: { id: "user_fixture", primary_email_address_id: "primary",
+        email_addresses: [{ id: "primary", email_address: email }], first_name: "Ada" } };
+      if (provider === "supabase") return { type: "INSERT", schema: "auth", table: "users", commit_timestamp: "2026-10-05T00:00:00Z",
+        record: { id: "supabase_fixture", email, raw_user_meta_data: { first_name: "Ada" }, encrypted_password: "must-not-persist" } };
+      return { event: "signed", email, data: { value: 1 }, contact: { first_name: "Ada", properties: { source: "receiver" } } };
+    }
+    it("protects full/viewer/send-key/tenant management, encrypts credentials and rotates URL tokens once", async () => {
+      const row = await integration("stripe", { stripe_restricted_key: "rk_test_fixture" });
+      const stored = (await db.query("select * from integrations where id=$1", [row.id])).rows[0];
+      expect(stored.secret).not.toContain(signingSecret);
+      expect(stored.settings.stripe_restricted_key).not.toContain("rk_test_fixture");
+      expect(stored.token_hash).not.toBe(row.token);
+      const viewer = await teammate("Viewer");
+      const session = await signInAs(viewer.email, viewer.password);
+      for (const path of ["/integrations", `/integrations/${row.id}`, `/integrations/${row.id}/deliveries`]) {
+        const response = await call(session.token, "GET", path);
+        expect(response.status).toBe(200);
+        expect(JSON.stringify(response.json)).not.toMatch(/stripe_restricted_key|token_hash|"secret"|"token"|"url"/);
+      }
+      for (const [method, path, body] of [
+        ["POST", "/integrations", { provider: "webhook", name: "Forbidden", secret: standardSecret }],
+        ["PATCH", `/integrations/${row.id}`, { name: "Forbidden" }],
+        ["DELETE", `/integrations/${row.id}`, undefined],
+        ["POST", `/integrations/${row.id}/rotate`, {}],
+      ] as const) expect((await call(session.token, method, path, body)).status).toBe(403);
+      const foreign = await seedTenant();
+      for (const path of [`/integrations/${row.id}`, `/integrations/${row.id}/deliveries`])
+        expect((await call(foreign, "GET", path)).status).toBe(404);
+      expect((await post(foreign, `/integrations/${row.id}/rotate`, {})).status).toBe(404);
+      const sendKey = await post(fullKey, "/api-keys", { name: "Sending only", permission: "sending_access" });
+      expect(sendKey.status).toBe(200);
+      expect((await call(sendKey.json.token, "GET", "/integrations")).status).toBe(401);
+      const rotated = await post(fullKey, `/integrations/${row.id}/rotate`, {});
+      expect(rotated.status).toBe(200);
+      expect(rotated.json.token).not.toBe(row.token);
+      expect((await receive(row, payload("stripe", "evt_old"))).status).toBe(404);
+      expect((await receive(rotated.json, payload("stripe", "evt_new"))).status).toBe(200);
+      expect((await call(fullKey, "DELETE", `/integrations/${row.id}`)).status).toBe(200);
+      expect((await receive(rotated.json, payload("stripe", "evt_deleted"))).status).toBe(404);
+    });
+    it.each(["stripe", "clerk", "supabase", "webhook"])("authenticates actual %s raw bytes and concurrent replays commit one contact/event/delivery", async provider => {
+      const row = await integration(provider);
+      const identity = id("provider");
+      const data = payload(provider, identity);
+      const raw = ` ${JSON.stringify(data)}\n`;
+      const results = await Promise.all(Array.from({ length: 8 }, () => receive(row, data, identity, { raw })));
+      expect(results.map(result => result.status)).toEqual(Array(8).fill(200));
+      expect(results.filter(result => !result.json.duplicate)).toHaveLength(1);
+      expect((await db.query("select id from contacts where email='signed@example.com'")).rows).toHaveLength(1);
+      const events = (await db.query("select name, data from custom_events where name not like '@%'")).rows;
+      expect(events).toHaveLength(1);
+      expect(events[0].name).toBe(provider === "stripe" ? "stripe.customer.created" : provider === "webhook" ? "webhook.signed" : `${provider}.user.created`);
+      expect(JSON.stringify(events)).not.toContain("must-not-persist");
+      const history = await call(fullKey, "GET", `/integrations/${row.id}/deliveries`);
+      expect(history.json.data).toHaveLength(1);
+      expect(history.json.data[0]).toMatchObject({ status: "processed", event_name: events[0].name, contact_id: expect.any(String), error: null });
+      expect(Object.keys(history.json.data[0]).sort()).toEqual(["contact_id", "created_at", "error", "event_name", "id", "integration_id", "provider_event_id", "status"]);
+    });
+    it.each(["stripe", "clerk", "webhook"])("rejects %s invalid/stale/future signatures without consuming the canonical identity", async provider => {
+      const row = await integration(provider);
+      const identity = id("provider");
+      const data = payload(provider, identity);
+      expect((await receive(row, data, identity, { headers: provider === "stripe" ? { "stripe-signature": "invalid" }
+        : { [`${provider === "clerk" ? "svix" : "webhook"}-signature`]: "invalid" } })).status).toBe(400);
+      for (const offset of [-301, 301]) expect((await receive(row, data, identity, { time: Math.floor(Date.now() / 1000) + offset })).status).toBe(400);
+      expect((await db.query("select id from contacts")).rows).toHaveLength(0);
+      expect((await receive(row, data, identity)).status).toBe(200);
+      const history = (await call(fullKey, "GET", `/integrations/${row.id}/deliveries`)).json.data;
+      expect(history.filter((item: any) => item.status === "failed")).toHaveLength(3);
+      expect(history.filter((item: any) => item.status === "processed")).toHaveLength(1);
+      expect(history.filter((item: any) => item.status === "failed").every((item: any) =>
+        item.provider_event_id.startsWith("attempt:") && item.error === "invalid_signature")).toBe(true);
+    });
+    it("enforces Supabase configured shared secret, unknown tokens, public 1MB cap and per-route/IP limit", async () => {
+      const row = await integration("supabase", { secret_header: "x-fixture-secret" });
+      const data = payload("supabase", "unused");
+      expect((await receive(row, data)).status).toBe(400);
+      expect((await receive(row, data, "unused", { headers: { "x-fixture-secret": signingSecret } })).status).toBe(200);
+      expect((await receive({ ...row, token: "unknown-token" }, data)).status).toBe(404);
+      const oversized = await app.inject({ method: "POST", url: `/inbound/${row.token}`, headers: { "content-type": "application/json" },
+        payload: "x".repeat(1024 * 1024 + 1) });
+      expect(oversized.statusCode).toBe(413);
+      const previous = process.env.PUBLIC_RATE_LIMIT_PER_SECOND;
+      process.env.PUBLIC_RATE_LIMIT_PER_SECOND = "1";
+      try {
+        const requests = await Promise.all(Array.from({ length: 3 }, () => app.inject({ method: "POST", url: `/inbound/${row.token}`,
+          remoteAddress: "192.0.2.88", headers: { "content-type": "application/json", "x-fixture-secret": signingSecret }, payload: JSON.stringify(data) })));
+        expect(requests.some(response => response.statusCode === 429)).toBe(true);
+      } finally {
+        if (previous === undefined) delete process.env.PUBLIC_RATE_LIMIT_PER_SECOND;
+        else process.env.PUBLIC_RATE_LIMIT_PER_SECOND = previous;
+      }
+    });
+    it("rolls back contact/history/triggers/event and canonical key on a mid-transaction failure, then retry commits once", async () => {
+      const row = await integration();
+      const automationId = await contactFlow({ type: "contact_created" }, [{ key: "exit", type: "exit", config: {} }]);
+      const identity = "rollback_fixture";
+      const data = { event: "rollback", email: "rollback@example.com", data: { source: "fixture" } };
+      await db.query(`create function inbound_test_failure() returns trigger language plpgsql as $$
+        begin if NEW.name = 'webhook.rollback' then raise exception 'synthetic failure'; end if; return NEW; end $$;
+        create trigger inbound_test_failure before insert on custom_events for each row execute function inbound_test_failure()`);
+      try {
+        expect((await receive(row, data, identity)).status).toBe(503);
+        for (const table of ["contacts", "contact_changes", "custom_events", "automation_runs", "automation_enrollments"])
+          expect((await db.query(`select count(*)::int count from ${table}`)).rows[0].count).toBe(0);
+        expect((await db.query("select id from inbound_deliveries where provider_event_id=$1", [identity])).rows).toHaveLength(0);
+        expect((await call(fullKey, "GET", `/integrations/${row.id}/deliveries`)).json.data[0]).toMatchObject({ status: "failed", error: "processing_failed" });
+      } finally { await db.query("drop trigger inbound_test_failure on custom_events; drop function inbound_test_failure()"); }
+      expect((await receive(row, data, identity)).status).toBe(200);
+      expect((await receive(row, data, identity)).json.duplicate).toBe(true);
+      expect(await flowRuns(automationId)).toHaveLength(1);
+      expect((await db.query("select id from contacts")).rows).toHaveLength(1);
+      expect((await db.query("select id from custom_events where name='webhook.rollback'")).rows).toHaveLength(1);
+      const history = (await call(fullKey, "GET", `/integrations/${row.id}/deliveries`)).json.data;
+      expect(history.map((item: any) => item.status).sort()).toEqual(["failed", "processed"]);
+    });
+    it.each(["rotation", "deletion"])("rechecks authenticated integration after a real %s lock race, without partial effects", async mode => {
+      const row = await integration();
+      const blocker = await db.connect();
+      let pending: ReturnType<typeof receive> | undefined;
+      try {
+        await blocker.query("begin");
+        const pid = (await blocker.query("select pg_backend_pid() pid")).rows[0].pid;
+        await blocker.query("select id from integrations where id=$1 for update", [row.id]);
+        pending = receive(row, { event: "race", email: "race@example.com", data: {} }, "race");
+        let waiting = false;
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          waiting = (await db.query(`select 1 from pg_stat_activity
+            where datname=current_database() and wait_event_type='Lock'
+              and $1::int=any(pg_blocking_pids(pid)) and query like '%from integrations%for update%'`, [pid])).rows.length > 0;
+          if (waiting) break;
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        expect(waiting, "Receiver must reach the actual integration row lock").toBe(true);
+        if (mode === "rotation") {
+          const { inboundTokenHash } = await import("@dispatchmail/db");
+          await blocker.query("update integrations set token_hash=$2 where id=$1", [row.id, inboundTokenHash("synthetic-replacement-token")]);
+        } else await blocker.query("update integrations set deleted_at=now() where id=$1", [row.id]);
+        await blocker.query("commit");
+        expect((await pending).status).toBe(404);
+        expect((await db.query("select id from contacts where email='race@example.com'")).rows).toHaveLength(0);
+        expect((await db.query("select id from inbound_deliveries where integration_id=$1", [row.id])).rows).toHaveLength(0);
+      } finally {
+        await blocker.query("rollback");
+        blocker.release();
+        if (pending) await pending;
+      }
+    });
+    it("preserves opt-outs/pending/preferences/properties, ignores tombstones and ambiguous provider IDs, and never upserts deletion", async () => {
+      const row = await integration("clerk");
+      const topic = await post(fullKey, "/topics", { name: "Keep preference", default_subscription: "opt_out" });
+      const person = await post(fullKey, "/contacts", { email: "signed@example.com", unsubscribed: true, properties: { keep: "value" } });
+      expect((await call(fullKey, "PATCH", `/contacts/${person.json.id}/topics`, { topics: [{ id: topic.json.id, subscription: "opt_out" }] })).status).toBe(200);
+      const topicBefore = (await db.query("select * from topic_subscriptions")).rows;
+      expect((await receive(row, payload("clerk", "create"), "create")).status).toBe(200);
+      expect((await call(fullKey, "GET", `/contacts/${person.json.id}`)).json).toMatchObject({
+        unsubscribed: true, properties: { keep: "value", clerk_user_id: "user_fixture" },
+      });
+      expect((await db.query("select * from topic_subscriptions")).rows).toEqual(topicBefore);
+      expect((await receive(row, { type: "user.deleted", data: { id: "user_fixture" } }, "retain")).json.status).toBe("processed");
+      expect((await call(fullKey, "GET", `/contacts/${person.json.id}`)).status).toBe(200);
+      await call(fullKey, "PATCH", `/integrations/${row.id}`, { settings: { delete_contact: true } });
+      expect((await receive(row, { type: "user.deleted", data: { id: "user_fixture" } }, "delete")).json.status).toBe("processed");
+      expect((await call(fullKey, "GET", `/contacts/${person.json.id}`)).status).toBe(404);
+      expect((await receive(row, payload("clerk", "update"), "tombstone")).json).toMatchObject({ status: "ignored", error: "no_contact" });
+      expect((await receive(row, { type: "user.deleted", data: { id: "unresolved" } }, "no_create")).json.status).toBe("ignored");
+      const other = await post(fullKey, "/contacts", { email: "other@example.com", properties: { clerk_user_id: "duplicate" } });
+      await post(fullKey, "/contacts", { email: "third@example.com", properties: { clerk_user_id: "duplicate" } });
+      expect((await receive(row, { type: "user.deleted", data: { id: "duplicate" } }, "ambiguous")).json.error).toBe("ambiguous_contact");
+      expect((await call(fullKey, "GET", `/contacts/${other.json.id}`)).status).toBe(200);
+      expect((await db.query("select id from contact_changes where contact_id=$1", [person.json.id])).rows.length).toBeGreaterThan(0);
+    });
+    it("supports default/custom tenant-unique webhook namespaces, ignores unsupported events and prunes only bounded aged history", async () => {
+      const row = await integration();
+      expect(row.slug).toBe("webhook");
+      const custom = await integration("webhook", {}, "billing");
+      expect((await receive(custom, { event: "invoice.paid", email: "billing@example.com", data: {} }, "billing")).json.event_name).toBe("billing.invoice.paid");
+      expect((await receive(row, { event: "@contact_created", email: "unsafe@example.com", data: {} }, "reserved")).json.status).toBe("ignored");
+      expect((await post(fullKey, "/integrations", { provider: "webhook", name: "Duplicate", slug: "billing", secret: standardSecret })).status).toBe(409);
+      for (const slug of ["stripe", "clerk", "supabase", "under_score"])
+        expect((await post(fullKey, "/integrations", { provider: "webhook", name: "Invalid", slug, secret: standardSecret })).status).toBe(400);
+      const stripe = await integration("stripe");
+      expect((await receive(stripe, { id: "unsupported", type: "unknown" })).json).toMatchObject({ status: "ignored", error: "unsupported_event" });
+      await db.query("update inbound_deliveries set created_at=now()-interval '40 days' where integration_id=$1", [custom.id]);
+      const { pruneInboundDeliveries } = await import("@dispatchmail/db");
+      expect(await pruneInboundDeliveries(db, 30, 1, 1)).toBe(1);
+      expect((await call(fullKey, "GET", `/integrations/${custom.id}/deliveries`)).json.data).toHaveLength(0);
+      expect((await receive(custom, { event: "invoice.paid", email: "billing@example.com", data: {} }, "billing")).json.duplicate).toBeUndefined();
+      expect((await db.query("select id from custom_events where name='billing.invoice.paid'")).rows).toHaveLength(2);
+    });
+    it("runs the installed Failed payment preset with actual receiver amount/pay link and paid-event wait recovery, without replay reminders", async () => {
+      const installed = await post(fullKey, "/template-library/automations/failed-payment/install", { from: "hello@dispatch-fixture.net" });
+      expect(installed.status).toBe(200);
+      const automationId = installed.json.automation.id;
+      expect((await call(fullKey, "PATCH", `/automations/${automationId}`, { status: "enabled" })).status).toBe(200);
+      const row = await integration("stripe", { map_plan: true });
+      const invoice = { id: "in_receiver", customer: "cus_receiver", customer_email: "invoice@example.com",
+        amount_due: 7342, currency: "usd", hosted_invoice_url: "https://invoice.example/in_receiver", number: "INV-RECEIVER-73",
+        lines: { data: [{ price: { lookup_key: "pro" } }] } };
+      const failed = { id: "evt_failure", type: "invoice.payment_failed", data: { object: invoice } };
+      expect((await receive(row, failed)).status).toBe(200);
+      const [run] = await flowRuns(automationId);
+      expect(run).toBeDefined();
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      const emails = (await db.query("select html, automation_step_key from emails where automation_id=$1", [automationId])).rows;
+      expect(emails).toHaveLength(1);
+      expect(emails[0].html).toContain("$73.42");
+      expect(emails[0].html).toContain("https://invoice.example/in_receiver");
+      expect((await db.query("select state, wait_event from automation_runs where id=$1", [run.id])).rows[0])
+        .toEqual({ state: "waiting", wait_event: "stripe.invoice.paid" });
+      expect((await receive(row, failed)).json.duplicate).toBe(true);
+      expect((await receive(row, { id: "evt_recovery", type: "invoice.paid", data: { object: { ...invoice, customer_email: undefined } } })).status).toBe(200);
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect((await db.query("select state, exit_reason from automation_runs where id=$1", [run.id])).rows[0]).toEqual({ state: "done", exit_reason: "exit" });
+      expect((await db.query("select id from emails where automation_id=$1", [automationId])).rows).toHaveLength(1);
+      expect((await db.query("select properties from contacts where email='invoice@example.com'")).rows[0].properties).toMatchObject({ stripe_customer_id: "cus_receiver", plan: "pro" });
+    });
+  });
   describe("signup forms confirmation", () => {
     const origin = "https://signup.example";
     async function fixture(double_opt_in = true) {

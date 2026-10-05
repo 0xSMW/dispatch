@@ -4,9 +4,31 @@
 
 Notify about a failed invoice, wait for payment and follow up on timeouts.
 
-## App-owned state and events
+## Connect the Stripe receiver first
 
-No contact property is declared. Manually produce stripe.invoice.payment_failed through the SDK today with actual billing strings: AMOUNT, UPDATE_PAYMENT_URL, INVOICE_NUMBER, invoice_id. Produce stripe.invoice.paid with invoice_id after confirmed payment. Your app owns deduplication, ordering and billing truth.
+Create a Stripe integration in **Settings > Integrations**, or through `POST /integrations`:
+
+```sh
+jq -n --arg secret "$STRIPE_WEBHOOK_SECRET" \
+  '{provider:"stripe",name:"Stripe billing",secret:$secret,settings:{map_plan:false}}' |
+curl --fail-with-body --silent --show-error "$DISPATCH_API_URL/integrations" \
+  -H "Authorization: Bearer $DISPATCH_API_KEY" \
+  -H "Content-Type: application/json" --data-binary @-
+```
+
+The response has flat, top-level `token` and `url`, shown once. Configure that URL as the Stripe endpoint, save its signing secret in Dispatch and subscribe to `invoice.payment_failed` and `invoice.paid`. See [Stripe setup](../templates/stripe.md#receiver-setup) for initial secret handoff and contact lookup. Normal GETs never return credentials; `POST /integrations/:id/rotate` returns a replacement URL that must replace the old one in Stripe.
+
+The receiver records `stripe.invoice.payment_failed` and `stripe.invoice.paid`. Invoice payloads include `AMOUNT` formatted from `amount_due`, `INVOICE_NUMBER`, `invoice_id` and `PLAN` when available. **Receiver `UPDATE_PAYMENT_URL` comes from `hosted_invoice_url`**, not a billing-portal card-update session. Review the payment-failed and card-update-reminder button wording so it describes paying/viewing an invoice, or use the manual producer below to supply your app's card-update link. Missing invoice numbers or URLs are empty strings, not preview fallbacks.
+
+Inspect [body-free delivery history](../integrations.md#delivery-history-and-replay-retention). Verified duplicate successful deliveries do not repeat effects while their replay keys remain retained. Delivery keys are pruned with `LOG_RETENTION_DAYS` (default 30 days); a redelivery after pruning can apply again. This does not provide invoice-level business deduplication or event ordering.
+
+Receiver creation does not install or enable this preset. Review the graph and billing policy below before enabling.
+
+## State and event ownership
+
+No contact property is declared by this preset. Stripe receiver events use the `stripe.*` namespace; app-defined events and internal reserved `@` contact-trigger keys are separate. Optional receiver plan storage is controlled by `settings.map_plan`, not preset installation.
+
+Alternatively, manually produce `stripe.invoice.payment_failed` through the existing events API/SDK with actual `AMOUNT`, `UPDATE_PAYMENT_URL`, `INVOICE_NUMBER` and `invoice_id` values, then produce `stripe.invoice.paid` after confirmed payment. Your app owns deduplication, ordering and billing truth. Do not produce the same business event manually and through the receiver without duplicate prevention.
 
 Installation creates missing compatible definitions, not values or a producer. Existing property types and declared event-field types must be compatible; conflicts return 409 rather than silent rewrites.
 
@@ -78,7 +100,7 @@ value(await dispatch.automations.update(id, { status: "enabled" }));
 
 Missing library copies are installed published. Reused edited or draft copies are never overwritten, repaired or auto-published. Inspect the published version; render a draft with real variables using `dispatch.templates.render(templateId, variables, { draft: true })` and check its error. Publish only an explicitly approved draft with `dispatch.templates.publish(templateId)`. Review [Brand](../templates.md#brand), consent, sender, topics and business timing before the separate enable call. Server next_steps are guidance, not assurance that arbitrary caller data or edited copies are ready.
 
-## App calls
+## Manual app-event alternative
 
 These real SDK functions use the value error-checking helper in [offline examples](../../examples/lifecycle/recipes.ts). Importing makes no requests. Invoking changes data and can trigger email after enabling.
 
@@ -98,7 +120,7 @@ export async function invoicePaid(dispatch: Dispatch, email: string, invoiceId: 
 }
 ```
 
-The schema type-checks supplied keys but does not require every declared key. Preview samples are not production fallbacks; missing printed payment data can fail rendering. Validate real values in your producer. Today these are manual app-owned event calls, not an automatically connected Stripe integration. Future authenticated receiver setup must verify Stripe signatures, deduplicate provider events and map billing truth before forwarding; the preset installs no receiver. See [billing integration](../templates/stripe.md) and [Python/Go examples](../../examples/lifecycle/README.md).
+Here `invoice.updatePaymentUrl` is an app-owned billing-portal card-update link, unlike the receiver's hosted invoice pay link. Create and protect portal access in your billing application. The schema type-checks supplied keys but does not require every declared key. Preview samples are not production fallbacks; missing printed payment data can fail rendering. Validate real values in your producer. These calls are the manual alternative to the receiver, not SDK integration-management methods. The preset installs no receiver. See [billing integration](../templates/stripe.md) and [Python/Go examples](../../examples/lifecycle/README.md).
 
 Inspect `dispatch.automations.runs.list(id)` and `dispatch.automations.runs.get(id, runId)` for outputs and filter exits; queued does not mean delivered.
 

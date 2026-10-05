@@ -6,6 +6,10 @@ export * from "./forms.js";
 export * from "./consent.js";
 export * from "./inbound/management.js";
 export * from "./inbound/security.js";
+export * from "./inbound/application.js";
+export * from "./inbound/receiver.js";
+export * from "./inbound/deliveries.js";
+export { fireEventWithClient } from "./automations.js";
 export { assertSendKinds } from "./send-kinds.js";
 export { migrate } from "./migration.js";
 // Compiler and bounded read helpers share the fixed contacts alias c.

@@ -108,6 +108,7 @@ import { registerBroadcasts } from "./broadcasts.js";
 import { registerUnsubscribe } from "./unsubscribe.js";
 import { registerForms } from "./forms.js";
 import { registerIntegrations } from "./integrations.js";
+import { registerReceiver } from "./receiver.js";
 import {
   installLibraryTemplate,
   libraryEntry,
@@ -274,6 +275,7 @@ app.addHook("preHandler", async (request, reply) => {
     path.startsWith("/files/") ||
     path.startsWith("/shared/") ||
     path.startsWith("/unsubscribe/")
+    || (request.method === "POST" && request.routeOptions.url === "/inbound/:token")
     || (request.routeOptions.config as { public?: boolean }).public === true
   ) {
     // Keyed on the route pattern. Keyed on the path, every token in /unsubscribe/:token or
@@ -949,6 +951,7 @@ registerBroadcasts(app, { db, paging });
 registerUnsubscribe(app, { db, secret: appSecret });
 registerForms(app, { db, paging, secret: appSecret, appUrl, publicUrl });
 registerIntegrations(app, { db, paging, secret: appSecret, publicUrl });
+registerReceiver(app, { db, secret: appSecret });
 
 registerAutomations(app, { db, paging });
 registerEvents(app, { db, paging });

@@ -87,11 +87,16 @@ describe("encrypted inbound management", () => {
     expect(db.query.mock.calls[0]![1][4]).toBe(provider);
   });
 
-  it.each([undefined, "stripe", "clerk", "supabase"])("rejects missing/reserved webhook slug %s before writes", async slug => {
+  it.each(["stripe", "clerk", "supabase"])("rejects reserved webhook slug %s before writes", async slug => {
     const db = mock();
     await expect(createIntegration(db.client, "tenant_test", { ...input, provider: "webhook", slug }, appSecret))
       .rejects.toMatchObject({ name: "validation_error", statusCode: 400 });
     expect(db.query).not.toHaveBeenCalled();
+  });
+  it("defaults Standard Webhooks to the compatible webhook namespace", async () => {
+    const db = mock([row()]);
+    await createIntegration(db.client, "tenant_test", { ...input, provider: "webhook" }, appSecret);
+    expect(db.query.mock.calls[0]![1][4]).toBe("webhook");
   });
 
   it("accepts an explicit custom webhook prefix and explicit deletion policy", async () => {

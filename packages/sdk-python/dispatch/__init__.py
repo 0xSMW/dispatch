@@ -1093,6 +1093,28 @@ class Dispatch:
     def delete_form(self, form_id: str) -> Json:
         return self._request("DELETE", _path("forms", form_id))
 
+    # Credentials appear only in create/rotate responses, never ordinary GETs.
+    def integrations(self, **query: Any) -> Json:
+        return self._request("GET", _query("/integrations", query))
+
+    def integration(self, integration_id: str) -> Json:
+        return self._request("GET", _path("integrations", integration_id))
+
+    def create_integration(self, integration: Json) -> Json:
+        return self._request("POST", "/integrations", integration)
+
+    def update_integration(self, integration_id: str, integration: Json) -> Json:
+        return self._request("PATCH", _path("integrations", integration_id), integration)
+
+    def delete_integration(self, integration_id: str) -> Json:
+        return self._request("DELETE", _path("integrations", integration_id))
+
+    def rotate_integration(self, integration_id: str) -> Json:
+        return self._request("POST", _path("integrations", integration_id, "rotate"), {})
+
+    def integration_deliveries(self, integration_id: str, **query: Any) -> Json:
+        return self._request("GET", _query(_path("integrations", integration_id, "deliveries"), query))
+
     # Segments
     def segments(self, **query: Any) -> Json:
         return self._request("GET", _query("/segments", query))

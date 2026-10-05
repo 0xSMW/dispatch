@@ -9,7 +9,7 @@ export const integrationSettingsSchema = z.object({
 export const integrationSchema = z.object({
   provider: z.enum(["stripe", "clerk", "supabase", "webhook"]),
   name: z.string().trim().min(1).max(120),
-  slug: z.string().regex(/^[a-z][a-z0-9_-]{0,63}$/).optional(),
+  slug: z.string().regex(/^[a-z][a-z0-9-]{0,62}$/).optional(),
   secret: z.string().min(1).max(4096),
   settings: integrationSettingsSchema.default({}),
 }).strict();
@@ -26,5 +26,8 @@ export type Integration = Omit<IntegrationRecord, "tenant_id" | "deleted_at" | "
 };
 export type InboundDelivery = {
   id: string; tenant_id: string; integration_id: string; provider_event_id: string;
-  status: string; event_name: string | null; contact_id: string | null; error: string | null; created_at: string;
+  status: "processed" | "ignored" | "failed"; event_name: string | null; contact_id: string | null; error: string | null; created_at: string;
+};
+export type InboundResult = {
+  status: InboundDelivery["status"]; eventName: string | null; contactId: string | null; reason?: string;
 };

@@ -15,6 +15,17 @@ const apiUrl = "https://api.acme.test";
 afterEach(() => vi.unstubAllGlobals());
 
 describe("API reference", () => {
+  it("uses shipped integrations client methods and a concrete credential-safe Agent prompt", () => {
+    const reference = referenceFor("/settings/integrations")!;
+    expect(reference.prompt).toMatch(/^Help me inspect Dispatch inbound integrations/);
+    expect(reference.prompt).not.toContain("undefined");
+    const create = reference.calls.find(call => call.method === "POST" && call.path === "/integrations")!;
+    expect(python(create, apiUrl)).toContain("client.create_integration(");
+    expect(go(create, apiUrl)).toContain("client.CreateIntegration(dispatch.IntegrationInput{");
+    const history = reference.calls.find(call => call.path.includes("/deliveries"))!;
+    expect(python(history, apiUrl)).toContain("client.integration_deliveries(");
+    expect(go(history, apiUrl)).toContain("client.IntegrationDeliveries(");
+  });
   it("covers every signed-in route", () => {
     expect(routes.length).toBeGreaterThan(30);
     expect(routes.filter((path) => !(`/${path}` in references))).toEqual([]);

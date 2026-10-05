@@ -38,6 +38,7 @@ import { Forms } from "./views/forms/Forms";
 import { Brand } from "./views/settings/Brand";
 import { General } from "./views/settings/General";
 import { Smtp } from "./views/settings/Smtp";
+import { Integrations } from "./views/settings/Integrations";
 import { Team } from "./views/settings/Team";
 import { UnsubscribePage } from "./views/settings/UnsubscribePage";
 import { Usage } from "./views/settings/Usage";
@@ -115,6 +116,7 @@ export const routes = [
           { path: "settings/general", element: <General /> },
           { path: "settings/team", element: <Team /> },
           { path: "settings/smtp", element: <Smtp /> },
+          { path: "settings/integrations", element: <Integrations /> },
           { path: "settings/brand", element: <Brand /> },
           { path: "settings/unsubscribe-page", element: <UnsubscribePage /> },
 

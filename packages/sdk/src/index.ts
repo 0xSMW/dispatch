@@ -515,6 +515,7 @@ export class Dispatch {
   readonly segments = new Segments(this);
   readonly topics = new Topics(this);
   readonly forms = new Forms(this);
+  readonly integrations = new Integrations(this);
   readonly suppressions = new Suppressions(this);
   readonly broadcasts = new Broadcasts(this);
   readonly automations = new Automations(this);
@@ -1386,6 +1387,38 @@ class Forms extends Resource {
   create(input: FormInput) { return this.client.call<SignupForm>("POST", "/forms", wire(input)); }
   update(id: string, input: Partial<FormInput>) { return this.client.call<SignupForm>("PATCH", `/forms/${seg(id)}`, wire(input)); }
   remove(id: string) { return this.client.call<Deleted>("DELETE", `/forms/${seg(id)}`); }
+}
+export type IntegrationSettings = {
+  mapPlan?: boolean; deleteContact?: boolean; secretHeader?: string; stripeRestrictedKey?: string | null;
+};
+export type IntegrationInput = {
+  provider: "stripe" | "clerk" | "supabase" | "webhook"; name: string; secret: string;
+  slug?: string; settings?: IntegrationSettings;
+};
+export type IntegrationUpdate = Partial<Pick<IntegrationInput, "name" | "secret" | "settings">>;
+export type Integration = Row & {
+  object: "integration"; provider: IntegrationInput["provider"]; name: string; slug: string;
+  settings: { map_plan?: boolean; delete_contact?: boolean; secret_header?: string };
+  has_restricted_key: boolean; last_received_at: string | null; created_at: string; updated_at: string;
+};
+export type CreatedIntegration = Integration & { token: string; url: string };
+export type InboundDelivery = Row & {
+  integration_id: string; provider_event_id: string; status: "processed" | "ignored" | "failed";
+  event_name: string | null; contact_id: string | null; error: string | null; created_at: string;
+};
+function integrationWire(input: IntegrationInput | IntegrationUpdate) {
+  return { ...wire(input), ...(input.settings === undefined ? {} : { settings: wire(input.settings) }) };
+}
+class Integrations extends Resource {
+  list(page: Page = {}) { return this.client.call<List<Integration>>("GET", `/integrations${query(page)}`); }
+  get(id: string) { return this.client.call<Integration>("GET", `/integrations/${seg(id)}`); }
+  create(input: IntegrationInput) { return this.client.call<CreatedIntegration>("POST", "/integrations", integrationWire(input)); }
+  update(id: string, input: IntegrationUpdate) { return this.client.call<Integration>("PATCH", `/integrations/${seg(id)}`, integrationWire(input)); }
+  remove(id: string) { return this.client.call<Deleted>("DELETE", `/integrations/${seg(id)}`); }
+  rotate(id: string) { return this.client.call<CreatedIntegration>("POST", `/integrations/${seg(id)}/rotate`, {}); }
+  deliveries(id: string, options: { limit?: number } = {}) {
+    return this.client.call<List<InboundDelivery>>("GET", `/integrations/${seg(id)}/deliveries${query(options)}`);
+  }
 }
 
 class Single extends Resource {

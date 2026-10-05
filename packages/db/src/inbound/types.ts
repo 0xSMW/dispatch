@@ -1,4 +1,6 @@
 import { contactSchema } from "@dispatchmail/core";
+import type { InboundResult, IntegrationRecord } from "@dispatchmail/core";
+import type { Queryable } from "../index.js";
 
 /** The receiver must keep these bytes unchanged until verification completes. */
 export type RawBody = string | Uint8Array;
@@ -28,6 +30,18 @@ export type Mapping =
   // Retention and deletion are lookup-only: neither may create or revive a contact.
   | { action: "retain" | "delete"; lookup: ContactLookup; event: InboundEvent }
   | { action: "ignored"; reason: "unsupported_event" | "invalid_payload" | "no_contact" };
+
+export type InboundDependencies = {
+  /** Decrypted optional key, used only during preparation outside transaction retries. */
+  stripeRestrictedKey?: string | null;
+  customerTransport?: (url: string, init: RequestInit) => Promise<Response>;
+};
+export type PrepareInbound = (integration: IntegrationRecord, payload: unknown, dependencies?: InboundDependencies) => Promise<Mapping>;
+export type ApplyInbound = (client: Queryable, integration: IntegrationRecord, mapping: Mapping, requestId: string) => Promise<InboundResult>;
+export type ReceiveInboundInput = {
+  integration: IntegrationRecord; tokenHash: string; providerEventId: string;
+  mapping: Mapping; requestId: string;
+};
 
 export function object(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)

@@ -287,6 +287,16 @@ const pages: Record<string, Omit<Reference, "prompt">> = {
       patch("/settings", "Update settings", "dispatch.settings.update({ importTriggerAutomations: false })", { import_trigger_automations: false }),
     ],
   },
+  "/settings/integrations": {
+    title: "Integrations",
+    calls: [
+      get("/integrations", "List credential-free integrations", "dispatch.integrations.list()"),
+      post("/integrations", "Create an integration; save its URL once", 'dispatch.integrations.create({ provider: "webhook", name: "App", secret: "SIGNING_SECRET" })',
+        { provider: "webhook", name: "App", secret: "SIGNING_SECRET" }),
+      get("/integrations/:id/deliveries?limit=20", "Inspect body-free recent deliveries", 'dispatch.integrations.deliveries(":id", { limit: 20 })'),
+      post("/integrations/:id/rotate", "Replace its URL token", 'dispatch.integrations.rotate(":id")', {}),
+    ],
+  },
   "/settings/usage": {
     title: "Usage",
     calls: [get("/usage", "Usage counters", "dispatch.usage.get()"), get("/system", "Sending quota and system state", "dispatch.system.get()")],
@@ -345,6 +355,7 @@ const goals: Record<string, string> = {
   "API key": "Help me review a Dispatch API key's usage and explain revocation before removing it.",
   Webhooks: "Help me configure an outgoing Dispatch webhook for the events my app needs and verify its signatures.",
   Webhook: "Help me inspect Dispatch webhook deliveries and explain signing-secret rotation before making changes.",
+  Integrations: "Help me inspect Dispatch inbound integrations and body-free deliveries, explain provider signatures and one-time URL rotation, and preserve consent and deleted contacts.",
   "General settings": "Help me review Dispatch import-trigger defaults and sandbox domains before changing settings.",
   Usage: "Help me inspect Dispatch usage counters and sending quota.",
   Team: "Help me inspect Dispatch memberships, sessions, and audit logs with my current permissions.",
@@ -426,7 +437,7 @@ export function sdk(call: Call, apiUrl: string) {
   ].join("\n");
 }
 
-type Arguments = "none" | "query" | "id" | "body" | "idBody" | "idQuery" | "send" | "share" | "publish" | "links" | "event" | "recipients" | "schedule" | "emails" | "unsuppress" | "render" | "install";
+type Arguments = "none" | "query" | "id" | "body" | "idBody" | "idQuery" | "send" | "share" | "publish" | "links" | "event" | "recipients" | "schedule" | "emails" | "unsuppress" | "render" | "install" | "integration";
 type FlatCall = [python: string | null, go: string | null, args: Arguments];
 
 // These clients are flat, not translations of the TypeScript namespace. Null means unsupported.
@@ -508,6 +519,13 @@ const flatCalls: Record<string, FlatCall> = {
   "GET /webhooks/:id": ["webhook", "Webhook", "id"],
   "GET /webhooks/:id/events": ["webhook_events", "WebhookEvents", "idQuery"],
   "POST /webhooks/:id/signing-secret/rotate": ["rotate_webhook_secret", "RotateWebhookSecret", "id"],
+  "GET /integrations": ["integrations", "Integrations", "query"],
+  "POST /integrations": ["create_integration", "CreateIntegration", "integration"],
+  "GET /integrations/:id": ["integration", "Integration", "id"],
+  "PATCH /integrations/:id": ["update_integration", "UpdateIntegration", "idBody"],
+  "DELETE /integrations/:id": ["delete_integration", "DeleteIntegration", "id"],
+  "POST /integrations/:id/rotate": ["rotate_integration", "RotateIntegration", "id"],
+  "GET /integrations/:id/deliveries": ["integration_deliveries", "IntegrationDeliveries", "idQuery"],
   "GET /settings": ["settings", "Settings", "none"],
   "PATCH /settings": ["update_settings", "UpdateSettings", "body"],
   "GET /usage": ["usage", "Usage", "none"],
@@ -552,6 +570,9 @@ function flatCall(call: Call, language: "python" | "go"): string | null {
       case "query": input = queryArgs(); break;
       case "id": input = id; break;
       case "body": input = value(body); break;
+      case "integration": input = language === "python" ? value(body)
+        : `dispatch.IntegrationInput{Provider: ${value(body.provider)}, Name: ${value(body.name)}, Secret: ${value(body.secret)}${body.slug ? `, Slug: ${value(body.slug)}` : ""}}`;
+        break;
       case "idBody": input = `${id}, ${value(body)}`; break;
       case "install": input = language === "python"
         ? `${id}, **${value(body)}`

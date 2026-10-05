@@ -731,17 +731,37 @@ export async function fireEvent(
       `select ${contactColumns} from contacts where tenant_id = $1 and lower(email) = lower($2) and deleted_at is null`,
       [tenantId, email]
     ) : null;
-    const runs = await startRuns(client, tenantId, fired, { triggerType: "event", key: input.name, contact: contactRow?.rows[0] ?? null });
+    return applyEvent(client, tenantId, fired, contactRow?.rows[0] ?? null, contact);
+  });
+}
 
-    const waiting = await client.query<{
-      id: string;
-      next_step_key: string | null;
-      trigger: string;
-      steps: Array<Record<string, unknown>>;
-      connections: unknown[] | null;
-      wait_config: { filter_rule?: Rule } | null;
-    }>(
-      `select r.id, r.next_step_key, a.trigger, a.steps, a.connections,
+// Receivers own the transaction and resolve contacts without implicit creation or revival.
+export async function fireEventWithClient(
+  client: Queryable, tenantId: string, requestId: string,
+  input: { name: string; email?: string | null; data: Record<string, unknown> },
+  contact: ContactRow,
+) {
+  if (input.name.startsWith("@")) throw new ApiError("validation_error", 400, "Reserved event name");
+  const fired = await recordEvent(client, tenantId, requestId, { ...input, email: contact.email.toLowerCase() });
+  return applyEvent(client, tenantId, fired, contact, await contactContext(client, tenantId, contact.email));
+}
+
+async function applyEvent(
+  client: Queryable, tenantId: string, fired: import("./contact-triggers.js").FiredEvent,
+  contactRow: ContactRow | null, contact: Record<string, unknown> | null,
+) {
+  const email = fired.email;
+  const runs = await startRuns(client, tenantId, fired, { triggerType: "event", key: fired.name, contact: contactRow });
+
+  const waiting = await client.query<{
+    id: string;
+    next_step_key: string | null;
+    trigger: string;
+    steps: Array<Record<string, unknown>>;
+    connections: unknown[] | null;
+    wait_config: { filter_rule?: Rule } | null;
+  }>(
+    `select r.id, r.next_step_key, a.trigger, a.steps, a.connections,
          (select s.data->'wait_config' from automation_steps s
           where s.tenant_id = r.tenant_id and s.run_id = r.id and s.state = 'waiting'
           order by s.created_at desc, s.id desc limit 1) as wait_config
@@ -756,19 +776,18 @@ export async function fireEvent(
          )
        order by r.id
        for update of r`,
-      [tenantId, input.name, email]
-    );
-    const resumed = waiting.rows.filter((run) => matchesFilter(run, { event: eventContext(fired.data, fired.created_at), contact })).map((run) => run.id);
-    if (resumed.length > 0) {
-      await client.query(
-        `update automation_runs
+    [tenantId, fired.name, email]
+  );
+  const resumed = waiting.rows.filter((run) => matchesFilter(run, { event: eventContext(fired.data, fired.created_at), contact })).map((run) => run.id);
+  if (resumed.length > 0) {
+    await client.query(
+      `update automation_runs
          set state = 'ready', resume_at = null, wait_event = null, resume_data = $3, updated_at = now()
          where tenant_id = $1 and id = any($2)`,
-        [tenantId, resumed, JSON.stringify({ event_id: fired.id })]
-      );
-    }
-    return { event: fired, runs, resumed };
-  });
+      [tenantId, resumed, JSON.stringify({ event_id: fired.id })]
+    );
+  }
+  return { event: fired, runs, resumed };
 }
 
 function matchesFilter(

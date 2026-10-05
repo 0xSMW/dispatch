@@ -56,7 +56,7 @@ export async function createIntegration(
   const parsed = integrationSchema.safeParse(input);
   if (!parsed.success) throw new ApiError("validation_error", 400, "Invalid integration");
   const data = parsed.data;
-  if (data.provider === "webhook" && (!data.slug || reservedSlugs.has(data.slug))) {
+  if (data.provider === "webhook" && reservedSlugs.has(data.slug ?? "webhook")) {
     throw new ApiError("validation_error", 400, "Choose a nonreserved webhook slug");
   }
   if (data.provider !== "webhook" && data.slug !== undefined && data.slug !== data.provider) {

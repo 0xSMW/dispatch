@@ -1,8 +1,60 @@
 # Stripe
 
-Checked against the Invoice object and the subscription webhook list on 2026-10-01. `data.object` is the Invoice for the invoice events, and the Subscription for `customer.subscription.trial_will_end`.
+## Receiver setup
 
-Money fields are integers in the smallest currency unit. `amount_paid` of `4900` with currency `usd` is `$49.00`. Divide by 100 for two-decimal currencies. Do not divide for a zero-decimal currency such as `jpy`. The template wants a formatted string in `TOTAL`, `AMOUNT_DUE`, and each line's `amount`. It does not format money itself.
+Create a Stripe integration in **Settings > Integrations**, or use the API:
+
+```sh
+jq -n --arg secret "$STRIPE_WEBHOOK_SECRET" \
+  '{provider:"stripe",name:"Stripe billing",secret:$secret,settings:{map_plan:false}}' |
+curl --fail-with-body --silent --show-error "$DISPATCH_API_URL/integrations" \
+  -H "Authorization: Bearer $DISPATCH_API_KEY" \
+  -H "Content-Type: application/json" --data-binary @-
+```
+
+Create returns safe integration fields plus flat, top-level `token` and `url` once. Configure that URL as the Stripe webhook endpoint and set `secret` to that endpoint's signing secret. If you create the Dispatch receiver before Stripe gives you the endpoint secret, use a private temporary secret, configure the endpoint, then replace `secret` through `PATCH /integrations/:id` before accepting deliveries. The receiver verifies `Stripe-Signature` over raw bytes with a 300-second timestamp tolerance.
+
+Normal GETs never return the URL or credentials. Rotate with `POST /integrations/:id/rotate` to obtain a replacement URL; replace the old URL in Stripe. See [management and body-free delivery history](../integrations.md#delivery-history-and-replay-retention), including the `LOG_RETENTION_DAYS` replay bound (default 30 days).
+
+### Mapped events and contacts
+
+Subscribe only to the supported events you need:
+
+| Stripe events | Dispatch events |
+| --- | --- |
+| `customer.created`, `customer.updated`, `customer.deleted` | `stripe.customer.created`, `stripe.customer.updated`, `stripe.customer.deleted` |
+| `customer.subscription.created`, `.updated`, `.deleted`, `.paused`, `.resumed`, `.trial_will_end` | Each complete provider name prefixed with `stripe.` |
+| `checkout.session.completed`, `.async_payment_succeeded`, `.async_payment_failed` | Each complete provider name prefixed with `stripe.` |
+| `invoice.created`, `.finalized`, `.paid`, `.payment_succeeded`, `.payment_failed`, `.payment_action_required`, `.voided`, `.marked_uncollectible` | Each complete provider name prefixed with `stripe.` |
+
+Contacts store `stripe_customer_id`. An email in the payload can identify the contact; events with only a customer ID can resolve an existing contact by that property. Optionally set `settings.stripe_restricted_key` to a Stripe restricted key with customer read permission for customer-email lookup. GET returns only `has_restricted_key`, never the key. Missing or ambiguous contact matches are ignored rather than selecting an arbitrary contact; deleted contacts are not revived. `customer.deleted` retains an existing contact rather than creating or deleting one.
+
+### Receiver invoice variables
+
+Invoice events supply actual billing values to the event payload:
+
+| Variable | Source |
+| --- | --- |
+| `AMOUNT`, `AMOUNT_DUE` | `amount_due`, formatted in the invoice currency |
+| `UPDATE_PAYMENT_URL`, `INVOICE_URL`, `PAY_URL`, `RECEIPT_URL` | `hosted_invoice_url`, or an empty string when absent |
+| `INVOICE_NUMBER`, `RECEIPT_NUMBER` | `number`, or an empty string |
+| `invoice_id` | Invoice `id` |
+| `TOTAL` | Formatted `amount_paid` |
+| `PLAN` | First available price lookup key in provider line order, or an empty string |
+
+They also include `LINE_ITEMS`, `PDF_URL`, `ISSUED_AT`, `DUE_DATE`, `PAID_AT` and `NEXT_RETRY_AT`. Subscription events include `subscription_id`, `status` and `TRIAL_END_DATE`; checkout events include `checkout_session_id`. `PLAN` is available in event data, but storing it as `contact.properties.plan` requires `settings.map_plan: true`.
+
+The receiver's **`UPDATE_PAYMENT_URL` is a hosted invoice pay link**, not a card-update billing portal. Review and adjust button copy to describe paying or viewing the invoice. The receiver does not create billing-portal sessions or supply an app-owned `ACTION_URL` for trial emails. Missing values are not replaced by preview samples. Install and review [Failed payment](../automations/failed-payment.md) separately; enabling a receiver does not enable that preset.
+
+Waits match contact and event name, not `invoice_id`. Stripe remains the billing source of truth; this integration does not cancel subscriptions.
+
+## Manual email alternative
+
+Keep a code-owned, signature-verified handler when you need custom recipient lookup, app-owned billing links or direct template sends. Do not also route the same events into an enabled receiver-driven flow without business deduplication.
+
+`data.object` is the Invoice for invoice events, and the Subscription for `customer.subscription.trial_will_end`.
+
+Money fields are integers in Stripe's currency units. `amount_paid` of `4900` with currency `usd` is `$49.00`. The template wants formatted strings in `TOTAL`, `AMOUNT_DUE`, and each line's `amount`; it does not format money itself. The helper below handles zero-decimal and three-decimal currencies and Stripe's legacy ISK/UGX representation.
 
 `customer_email` is a snapshot of the customer's email once the invoice is finalized. It can be null. `hosted_invoice_url` stays null until the invoice is finalized. `invoice_pdf` is the PDF URL.
 
@@ -13,15 +65,20 @@ Money fields are integers in the smallest currency unit. `amount_paid` of `4900`
 | `invoice.payment_failed` | `payment-failed` | `AMOUNT` from `amount_due`, `UPDATE_PAYMENT_URL` from your billing portal, `INVOICE_URL` from `hosted_invoice_url` |
 | `customer.subscription.trial_will_end` | `trial-ending` | `TRIAL_END_DATE` from `trial_end`, `ACTION_URL` from your billing page |
 
-`UPDATE_PAYMENT_URL` and `ACTION_URL` are not Stripe fields. Stripe's hosted invoice page is a receipt or a pay page, not the page where the customer changes a card or cancels. Build those two URLs in the app. `trial_end` is a unix timestamp in seconds. Format it with a timezone. The subscription object does not include the email unless you expanded `customer`. Retrieve the customer and read `email`.
+In this manual alternative, `UPDATE_PAYMENT_URL` is your app's billing-portal card-update link and `ACTION_URL` is your app's billing page. Neither is a Stripe payload field. This intentionally differs from the receiver's hosted-invoice `UPDATE_PAYMENT_URL`. Create any portal session in your billing application and protect the entry point appropriately. `trial_end` is a unix timestamp in seconds. Format it with a timezone. The subscription object does not include the email unless you expanded `customer`. Retrieve the customer and read `email`.
 
 A line item uses `description`, `quantity`, and `amount`. Format `amount` the same way as `amount_paid`. Quantity can be a number.
 
 ```ts
 function money(amount: number, currency: string) {
-  const zeroDecimal = new Set(["bif", "clp", "djf", "gnf", "jpy", "kmf", "krw", "mga", "pyg", "rwf", "ugx", "vnd", "vuv", "xaf", "xof", "xpf"]);
-  const major = zeroDecimal.has(currency.toLowerCase()) ? amount : amount / 100;
-  return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(major);
+  const code = currency.toUpperCase();
+  const zeroDecimal = new Set(["BIF", "CLP", "DJF", "GNF", "JPY", "KMF", "KRW", "MGA", "PYG", "RWF", "VND", "VUV", "XAF", "XOF", "XPF"]);
+  const digits = zeroDecimal.has(code) ? 0 : ["BHD", "JOD", "KWD", "OMR", "TND"].includes(code) ? 3 : 2;
+  const displayDigits = ["ISK", "UGX"].includes(code) ? 0 : digits;
+  return new Intl.NumberFormat("en-US", {
+    style: "currency", currency: code,
+    minimumFractionDigits: displayDigits, maximumFractionDigits: displayDigits,
+  }).format(amount / 10 ** digits);
 }
 
 function when(unix: number | null) {
@@ -61,7 +118,7 @@ function lineItems(lines: Line[], currency: string) {
 
 `RECEIPT_NUMBER` is required, and `number` is null on a draft. Send `receipt` from `invoice.paid`, after Stripe has assigned the number. Skip the send when `customer_email` is null.
 
-## The webhook handler
+### The manual webhook handler
 
 One handler covers the four events. Verify the Stripe signature before this runs. `billingUrl` and `portalUrl` are pages in your own app.
 

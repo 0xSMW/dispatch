@@ -25,6 +25,8 @@ import {
   executeAutomationRun,
   claimAutomationRuns,
   processEnrollmentJobs,
+  pruneInboundDeliveries,
+  pruneInboundDeliveriesIfDue,
   tx,
   type Queryable,
 } from "@dispatchmail/db";
@@ -53,6 +55,7 @@ const provider = (process.env.SES_PROVIDER || "fake") === "ses" ? createSesProvi
 const pollState = { last: 0 };
 const logPrune = { last: 0 };
 const changesPrune = { last: 0 };
+const inboundPrune = { last: 0 };
 const claimCursor = { normal: "", bulk: "" };
 
 export async function tick(options: { durable?: boolean } = {}) {
@@ -77,6 +80,7 @@ export async function tick(options: { durable?: boolean } = {}) {
   const enrollments = await alone("enrollments", () => processEnrollmentJobs(db));
   await alone("log pruning", () => options.durable ? pruneLogs(db, undefined, undefined, 1) : pruneLogsIfDue(db, logPrune));
   await alone("contact change pruning", () => options.durable ? pruneContactChanges(db, undefined, undefined, 1) : pruneContactChangesIfDue(db, changesPrune));
+  await alone("inbound delivery pruning", () => options.durable ? pruneInboundDeliveries(db, undefined, undefined, 1) : pruneInboundDeliveriesIfDue(db, inboundPrune));
   return { jobs: jobs.length, runs: runs.length, attempts, broadcasts: broadcasts ?? 0, imports: imports ?? 0, enrollments: enrollments ?? 0 };
 }
 

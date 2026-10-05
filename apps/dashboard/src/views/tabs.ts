@@ -28,6 +28,7 @@ export const settingsTabs: Tab[] = [
   { id: "team", label: "Team", to: "/settings/team" },
   { id: "usage", label: "Usage", to: "/settings/usage" },
   { id: "smtp", label: "SMTP", to: "/settings/smtp" },
+  { id: "integrations", label: "Integrations", to: "/settings/integrations" },
   { id: "brand", label: "Brand", to: "/settings/brand" },
   { id: "unsubscribe-page", label: "Unsubscribe page", to: "/settings/unsubscribe-page" },
 ];

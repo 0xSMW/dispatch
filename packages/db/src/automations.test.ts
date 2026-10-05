@@ -7,7 +7,7 @@ const emit = vi.hoisted(() => vi.fn());
 vi.mock("./emails.js", () => ({ ingestEmail }));
 vi.mock("./events.js", () => ({ emit }));
 
-const { executeAutomationRun, fireEvent, stepLimit, contactContext, eventContext, mappedVariables, walker, stepOutcome } = await import("./automations.js");
+const { executeAutomationRun, fireEvent, fireEventWithClient, stepLimit, contactContext, eventContext, mappedVariables, walker, stepOutcome } = await import("./automations.js");
 
 type StepRow = { step_key: string | null; step_index: number; type: string; state: string; data: Record<string, unknown>; error?: string };
 type Contact = {
@@ -802,6 +802,21 @@ describe("typed automation context", () => {
 });
 
 describe("fireEvent", () => {
+  it("applies receiver events with its resolved contact without nested transactions or contact writes", async () => {
+    const contact = contactRow({ id: "contact_receiver", email: "receiver@example.com" });
+    const query = vi.fn(async (sql: string) => {
+      if (sql.includes("insert into custom_events")) return { rows: [{
+        id: "ce_receiver", name: "stripe.invoice.paid", email: contact.email, data: {}, created_at: "2026-10-05T00:00:00Z",
+      }] };
+      if (sql.includes("from contacts")) return { rows: [contact] };
+      return { rows: [] };
+    });
+    const result = await fireEventWithClient({ query } as unknown as import("./index.js").Queryable,
+      "tenant_1", "req_receiver", { name: "stripe.invoice.paid", data: {} }, contact);
+    expect(result).toMatchObject({ event: { id: "ce_receiver" }, runs: [], resumed: [] });
+    expect(query.mock.calls.some(([sql]) => /^(begin|commit|rollback)$|insert into contacts|update contacts|for update$/.test(sql))).toBe(false);
+    expect(query.mock.calls.find(([sql]) => sql.includes("for update of r"))).toBeDefined();
+  });
   it("starts matching automations and wakes only waiting runs whose filter passes", async () => {
     const waitStep = (rule: unknown) => ({
       trigger: "user.created",
@@ -812,7 +827,7 @@ describe("fireEvent", () => {
       connections: [{ from: "start", to: "wait" }]
     });
     const query = vi.fn(async (sql: string, _params: unknown[] = []) => {
-      if (sql.includes("insert into custom_events")) return { rows: [{ id: "ce_9", name: "plan.changed", data: { plan: "free" } }] };
+      if (sql.includes("insert into custom_events")) return { rows: [{ id: "ce_9", name: "plan.changed", email: "ada@example.com", data: { plan: "free" } }] };
       if (sql.includes("from contacts")) return { rows: [{ ...contactRow({ id: "contact_1", email: "ada@example.com" }), deleted_at: null }] };
       if (sql.includes("from automations")) return { rows: [{
         id: "automation_2", trigger: "plan.changed", trigger_type: "event", reentry: "every_time",
@@ -855,7 +870,7 @@ describe("fireEvent", () => {
   function contactDb(existing: Found[], inserted = true) {
     let current = existing[0] ? { ...existing[0] } : undefined;
     const query = vi.fn(async (sql: string, params: unknown[] = []) => {
-      if (sql.includes("insert into custom_events")) return { rows: [{ id: "ce_1", name: "user.created", data: {} }] };
+      if (sql.includes("insert into custom_events")) return { rows: [{ id: "ce_1", name: params[3], email: params[4], data: {} }] };
       if (sql.includes("from contacts")) return { rows: current && (!sql.includes("deleted_at is null") || !current.deleted_at) ? [{ ...current }] : [] };
       if (sql.includes("insert into contacts")) {
         if (!inserted) {
