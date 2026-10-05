@@ -38,6 +38,7 @@ function fake(run: {
   deleted?: boolean;
   paused_at?: string | null;
   version?: number;
+  segmentRule?: import("@dispatchmail/core").Rule | null;
   guards?: Array<{ filter: string; rule: import("@dispatchmail/core").Rule }>;
   onStep?: (text: string, state: ReturnType<typeof fake>["state"]) => void;
 }) {
@@ -227,7 +228,7 @@ function fake(run: {
       if (params[8] !== null) found.unsubscribed_at = params[8] ? "2026-10-04T00:00:00Z" : null;
       return { rows: [contactRow(found)] };
     }
-    if (text.startsWith("select id") && text.includes("from segments")) return { rows: [{ id: params[1], type: "static" }] };
+    if (text.startsWith("select id") && text.includes("from segments")) return { rows: [{ id: params[1], rule: run.segmentRule ?? null }] };
     if (text.startsWith("insert into segment_contacts")) return { rows: [{ id: "member_1", contact_id: params[3], segment_id: params[2] }] };
     if (text.startsWith("insert into contact_changes") || text.includes("from automations")) return { rows: [] };
     throw new Error(`unexpected query: ${text}`);
@@ -349,6 +350,22 @@ describe("flow control execution", () => {
 });
 
 describe("executeAutomationRun", () => {
+  it.each(["missing", "live", "deleted"])("refuses dynamic membership before touching a %s step contact", async (kind) => {
+    const contacts = kind === "missing" ? [] : [{ id: "contact_1", email: "ada@example.com", deleted: kind === "deleted" }];
+    const { db, state, query } = fake({
+      steps: [{ key: "start", type: "trigger", config: { event_name: "e" } },
+        { key: "tag", type: "add_to_segment", config: { segment_id: "segment_1" } }],
+      connections: [{ from: "start", to: "tag" }], contacts,
+      segmentRule: { type: "rule", field: "contact.email", operator: "exists" },
+    });
+    await executeAutomationRun(db, "tenant_1", "run_1");
+    expect(state.run).toMatchObject({ state: "failed", error: "Dynamic segments do not accept membership writes" });
+    expect(state.steps).toMatchObject([{ step_key: "tag", state: "failed" }]);
+    expect(state.contacts).toEqual(contacts);
+    expect(query.mock.calls.some(([sql]) => sql.includes("from contacts") || sql.includes("insert into contacts")
+      || sql.includes("insert into segment_contacts") || sql.includes("insert into contact_changes"))).toBe(false);
+    expect(query.mock.calls.some(([sql]) => sql.includes("from segments") && sql.includes("for update"))).toBe(true);
+  });
   it.each(["pause", "version"])("holds the next step after %s changes without repeating the completed step", async (change) => {
     let interrupted = false;
     const { db, state } = fake({

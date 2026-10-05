@@ -1,7 +1,6 @@
 import multipart from "@fastify/multipart";
 import { ApiError, contactImportSchema, id, importStatuses } from "@dispatchmail/core";
 import {
-  assertImportRefs,
   createImport,
   cancelImport,
   findImport,
@@ -62,7 +61,6 @@ export function registerImports(
         }
         if (!stored) throw new ApiError("validation_error", 422, "file is required");
         const input = contactImportSchema.parse(fields);
-        await assertImportRefs(db, tenantId, input.segments, input.topics);
         const row = await createImport(db, {
           id: importId,
           tenantId,

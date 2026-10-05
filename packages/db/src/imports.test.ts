@@ -30,6 +30,7 @@ function batchClient(options: {
   automations?: boolean;
 } = {}) {
   return client((sql, params) => {
+    if (sql.startsWith("select id, rule from segments")) return [{ id: params[1], rule: null }];
     if (sql.includes("insert into contacts (")) return options.inserted ?? [];
     if (sql.includes("deleted_at from contacts")) return options.prior ?? [];
     if (sql.includes("update contacts c set")) return options.updated ?? [];
@@ -55,6 +56,36 @@ function batchClient(options: {
 }
 
 describe("contact import queries", () => {
+  it("refuses dynamic import creation and batches before contact, topic or history writes", async () => {
+    const db = client(() => [{ id: "segment_1", rule: { type: "rule", field: "contact.email", operator: "exists" } }]);
+    await expect(createImport(db, {
+      id: job.id, tenantId: job.tenant_id, storageKey: "key", columnMap: {}, onConflict: "upsert",
+      segments: [{ id: "segment_1" }], topics: [], triggerAutomations: true,
+    })).rejects.toMatchObject({ name: "conflict", statusCode: 409 });
+    await expect(importBatch(db, { ...job, segments: [{ id: "segment_1" }], trigger_automations: true },
+      [contact("a@fixture.net")])).rejects.toMatchObject({ name: "conflict", statusCode: 409 });
+    expect(db.queries).toHaveLength(2);
+    expect(db.queries.every(({ sql }) => sql.includes("from segments") && sql.includes("for update"))).toBe(true);
+  });
+  it.each([false, true])("holds import creation locks through the pool transaction with dynamic=%s", async (dynamic) => {
+    const db = client((sql, params) => sql.startsWith("select id, rule from segments")
+      ? [{ id: params[1], rule: dynamic ? { type: "rule", field: "contact.email", operator: "exists" } : null }]
+      : sql.includes("count(*) from segments") ? [{ segments: 1, topics: 0 }]
+      : sql.startsWith("insert into contact_imports") ? [{ id: params[0] }] : []);
+    const release = vi.fn();
+    const pool = { query: db.query, connect: async () => ({ query: db.query, release }) } as unknown as Queryable;
+    const pending = createImport(pool, {
+      id: job.id, tenantId: job.tenant_id, storageKey: "key", columnMap: {}, onConflict: "upsert",
+      segments: [{ id: "segment_1" }], topics: [], triggerAutomations: false,
+    });
+    if (dynamic) await expect(pending).rejects.toMatchObject({ statusCode: 409 });
+    else expect(await pending).toMatchObject({ id: job.id });
+    expect(db.queries[0].sql).toBe("begin");
+    expect(db.queries[1].sql).toContain("for update");
+    expect(db.queries.at(-1)!.sql).toBe(dynamic ? "rollback" : "commit");
+    expect(db.queries.some(({ sql }) => sql.startsWith("insert into contact_imports"))).toBe(!dynamic);
+    expect(release).toHaveBeenCalledOnce();
+  });
   it("presents counts with every key and builds the storage key", () => {
     expect(presentImport({ id: "import_1", status: "queued", counts: { total: 1 } as never, error: null, created_at: "2026-10-01", completed_at: null })).toEqual({
       object: "contact_import",
@@ -120,8 +151,8 @@ describe("contact import queries", () => {
       segments: [{ id: "segment_1" }], topics: [{ id: "topic_1", subscription: "opt_in" }] }, [contact(before.email, "Ignored")])).toEqual({
       created: 0, updated: 0, skipped: 1, ids: [], rows: [],
     });
-    expect(db.queries[2].params[6]).toBe(false);
-    expect(db.queries).toHaveLength(3);
+    expect(db.queries[3].params[6]).toBe(false);
+    expect(db.queries).toHaveLength(4);
   });
 
   it("does not query or trigger anything for an empty batch", async () => {

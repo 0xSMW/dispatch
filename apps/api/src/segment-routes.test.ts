@@ -9,15 +9,13 @@ const rule = { type: "rule", field: "contact.score", operator: "gte", value: 3 }
 const contact = { id: "contact_1", email: "a@fixture.net", first_name: null, last_name: null, properties: { score: 4 },
   unsubscribed_at: null, created_at: timestamp, updated_at: timestamp };
 
-async function fixture() {
+async function fixture(segmentRow = { id: "segment_1", name: "Filter", description: null, rule, created_at: timestamp, updated_at: timestamp as string | Date }) {
   const query = vi.fn(async (sql: string, _params?: unknown[]) => {
     if (sql.startsWith("insert into segments")) return { rows: [{
       id: _params![0], name: _params![2], description: null, rule: null, created_at: timestamp, updated_at: timestamp,
     }] };
     if (sql.includes("from contact_properties")) return { rows: [{ key: "score", type: "number" }] };
-    if (sql.includes("from segments") && !sql.includes("join")) return { rows: [{
-      id: "segment_1", name: "Filter", description: null, rule, created_at: timestamp, updated_at: timestamp,
-    }] };
+    if (sql.includes("from segments") && !sql.includes("join")) return { rows: [{ ...segmentRow }] };
     if (sql.startsWith("with matched")) return { rows: [{ count: "1", sample: [contact] }] };
     if (sql.startsWith("select count(*)")) return { rows: [{ count: "1" }] };
     if (sql.includes("select c.id, c.id as contact_id")) return { rows: [{ ...contact, contact_id: contact.id }] };
@@ -39,6 +37,20 @@ async function fixture() {
 }
 
 describe("dynamic segment route wiring", () => {
+  it("separates same-second rule revisions changed outside this API's count cache", async () => {
+    const segmentRow = { id: "segment_1", name: "Filter", description: null, rule,
+      created_at: timestamp, updated_at: new Date("2026-10-05T00:00:00.001Z") };
+    const { app, query } = await fixture(segmentRow);
+    try {
+      await app.inject({ method: "GET", url: "/segments/segment_1" });
+      segmentRow.updated_at = new Date("2026-10-05T00:00:00.002Z");
+      await app.inject({ method: "GET", url: "/segments/segment_1" });
+      segmentRow.rule = { ...rule, value: 5 };
+      await app.inject({ method: "GET", url: "/segments/segment_1" });
+      await app.inject({ method: "GET", url: "/segments/segment_1" });
+      expect(query.mock.calls.filter(([sql]) => sql.startsWith("select count(*)"))).toHaveLength(3);
+    } finally { await app.close(); }
+  });
   it.each([undefined, null])("binds SQL NULL, not JSON null, for static creation with rule %s", async (value) => {
     const { app, query } = await fixture();
     try {

@@ -82,24 +82,29 @@ export async function createImport(
     triggerAutomations?: boolean;
   },
 ) {
-  await assertImportRefs(db, input.tenantId, input.segments, input.topics);
-  const triggerAutomations = input.triggerAutomations ?? (await settings(db, input.tenantId)).import_trigger_automations;
-  const row = await db.query<ImportRow>(
-    `insert into contact_imports (id, tenant_id, storage_key, column_map, on_conflict, segments, topics, trigger_automations)
-     values ($1, $2, $3, $4, $5, $6, $7, $8)
-     returning ${importColumns}`,
-    [
-      input.id,
-      input.tenantId,
-      input.storageKey,
-      JSON.stringify(input.columnMap),
-      input.onConflict,
-      JSON.stringify(input.segments),
-      JSON.stringify(input.topics),
-      triggerAutomations,
-    ],
-  );
-  return row.rows[0];
+  const create = async (client: Queryable) => {
+    await assertImportRefs(client, input.tenantId, input.segments, input.topics);
+    const triggerAutomations = input.triggerAutomations ?? (await settings(client, input.tenantId)).import_trigger_automations;
+    const row = await client.query<ImportRow>(
+      `insert into contact_imports (id, tenant_id, storage_key, column_map, on_conflict, segments, topics, trigger_automations)
+       values ($1, $2, $3, $4, $5, $6, $7, $8)
+       returning ${importColumns}`,
+      [
+        input.id,
+        input.tenantId,
+        input.storageKey,
+        JSON.stringify(input.columnMap),
+        input.onConflict,
+        JSON.stringify(input.segments),
+        JSON.stringify(input.topics),
+        triggerAutomations,
+      ],
+    );
+    return row.rows[0];
+  };
+  // Keep static-target locks through insertion. A supplied client already belongs
+  // to the caller's transaction; a pool needs its own transaction.
+  return "connect" in db ? tx(db as Db, create) : create(db);
 }
 
 export async function findImport(db: Queryable, tenantId: string, importId: string) {

@@ -116,6 +116,22 @@ describe("Segments", () => {
     expect(calls(fetch)).toContain("GET /segments/seg_live");
   });
 
+  it.each(["static", "dynamic"])("uses fresh detail type after a listed %s segment was converted elsewhere", async (listedType) => {
+    const listed = listedType === "static" ? vip : { ...dynamic, id: vip.id, name: vip.name };
+    const currentType = listedType === "static" ? "dynamic" : "static";
+    stubApi({
+      "GET /segments": list([listed]),
+      "GET /segments/seg_vip": { ...listed, type: currentType, rule: currentType === "dynamic" ? rule : null, contacts: 1 },
+      "GET /segments/seg_vip/contacts": list([{ id: "c_1", contact_id: "c_1", email: "ada@example.com", created_at: vip.created_at }]),
+    });
+    show(h(Segments), "/audience/segments");
+    fireEvent.click(await screen.findByText("VIP"));
+    const dialog = await screen.findByRole("dialog");
+    await within(dialog).findByText(`${currentType === "dynamic" ? "Filter" : "Static list"} · 1 contacts`);
+    expect(within(dialog).getByRole("columnheader", { name: currentType === "dynamic" ? "Created" : "Added" })).toBeTruthy();
+    expect(Boolean(within(dialog).queryByRole("button", { name: "Add contact" }))).toBe(currentType === "static");
+  });
+
   it("edits a dynamic filter without fetching over a user's changed draft", async () => {
     const fetch = stubApi({ ...choices, "GET /segments": list([dynamic]), "GET /segments/seg_live": { ...dynamic, contacts: 5 }, "PATCH /segments/seg_live": dynamic });
     show(h(Segments), "/audience/segments");
@@ -173,6 +189,24 @@ describe("Segments", () => {
     fireEvent.submit(confirm.querySelector("form")!);
     await waitFor(() => expect(bodyOf(fetch, "PATCH /segments/seg_live")).toEqual({ name: "Live", description: "", rule: null }));
     expect(calls(fetch).some((call) => call.startsWith("DELETE"))).toBe(false);
+  });
+
+  it.each(["count", "type"])("refuses conversion if the confirmed %s changed before submit", async (change) => {
+    let current = { ...dynamic, contacts: 5 };
+    const fetch = stubApi({ ...choices, "GET /segments": list([dynamic]), "GET /segments/seg_live": () => current });
+    show(h(Segments), "/audience/segments");
+    fireEvent.click(within((await screen.findByText("Live")).closest("tr")!).getByRole("button", { name: "Actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+    const dialog = await screen.findByRole("dialog", { name: "Edit segment" });
+    fireEvent.change(within(dialog).getAllByLabelText("Type")[0]!, { target: { value: "static" } });
+    fireEvent.submit(dialog.querySelector("form")!);
+    const confirm = await screen.findByRole("dialog", { name: "Convert segment" });
+    current = { ...current, ...(change === "count" ? { contacts: 6 } : { type: "static" }) };
+    fireEvent.change(within(confirm).getByLabelText("Confirmation phrase"), { target: { value: "Convert Live" } });
+    fireEvent.submit(confirm.querySelector("form")!);
+    await waitFor(() => expect(calls(fetch).filter((call) => call === "GET /segments/seg_live")).toHaveLength(3));
+    await waitFor(() => expect((within(confirm).getByRole("button", { name: /Confirm conversion/ }) as HTMLButtonElement).disabled).toBe(false));
+    expect(calls(fetch).some((call) => /^(PATCH|DELETE)/.test(call))).toBe(false);
   });
 
   it("lets viewers read filters and preview but not create, edit, convert or mutate members", async () => {

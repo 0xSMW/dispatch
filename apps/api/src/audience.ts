@@ -531,7 +531,7 @@ export function registerAudience(
     });
     const contacts = segment.rule == null
       ? await segmentCount(db, request.auth!.tenant_id, segment.id)
-      : await counts.get(request.auth!.tenant_id, segment.id, String(segment.updated_at), () => segmentCount(db, request.auth!.tenant_id, segment.id));
+      : await counts.get(request.auth!.tenant_id, segment.id, JSON.stringify([segment.updated_at, segment.rule]), () => segmentCount(db, request.auth!.tenant_id, segment.id));
     return presentSegment({ ...segment, contacts });
   });
 

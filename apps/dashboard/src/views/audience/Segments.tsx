@@ -333,7 +333,7 @@ function SegmentContacts({ segment, onClose, onChange }: { segment: Segment; onC
           columns={[
             { header: "Email", cell: (row) => <Link to={`/audience/contacts/${row.contact_id}`}>{row.email}</Link> },
             { header: "Name", cell: (row) => fullName(row) },
-            { header: segment.type === "dynamic" ? "Created" : "Added", cell: (row) => <Time value={row.created_at} /> },
+            { header: (detail.data?.type ?? segment.type) === "dynamic" ? "Created" : "Added", cell: (row) => <Time value={row.created_at} /> },
             {
               header: "",
               key: "remove",

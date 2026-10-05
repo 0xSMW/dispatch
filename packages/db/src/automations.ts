@@ -11,6 +11,7 @@ import { subscriptionLinks, unsubscribeVariables } from "./unsubscribe.js";
 import { emitRunEvent } from "./run-events.js";
 import { assertSendKinds } from "./send-kinds.js";
 import { contactSegments } from "./segment-matches.js";
+import { staticSegment } from "./segment-writes.js";
 import {
   ApiError,
   durationSeconds,
@@ -630,11 +631,7 @@ async function executeStep(db: Queryable, run: AutomationRun, step: Step, option
     const config = step.config as StepConfig<"add_to_segment">;
     const email = config.email ?? run.email;
     if (!email) throw new ApiError("validation_error", 422, "add_to_segment step needs an email");
-    const segment = await db.query("select id from segments where tenant_id = $1 and id = $2 and deleted_at is null", [
-      run.tenant_id,
-      config.segment_id
-    ]);
-    if (!segment.rows[0]) throw new ApiError("not_found", 404, "Segment not found");
+    await staticSegment(db, run.tenant_id, config.segment_id);
     const contact = await stepContact(db, run.tenant_id, email, run.request_id, run.id);
     if (contact.deleted) return { skipped: "contact_deleted", email };
     const member = await addContactSegment(db, run.tenant_id, contact.id, config.segment_id);

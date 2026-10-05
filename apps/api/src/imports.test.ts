@@ -12,6 +12,7 @@ function fakeDb(refs = { segments: 1, topics: 1 }, options: { settings?: Record<
     counts: { total: 3, created: 2 }, error: null, created_at: "2026-10-01", completed_at: "2026-10-01" as string | null }];
   const query = vi.fn(async (sql: string, params: unknown[] = []) => {
     queries.push({ sql, params });
+    if (sql.startsWith("select id, rule from segments")) return { rows: refs.segments ? [{ id: params[1], rule: null }] : [] };
     if (sql.includes("count(*) from segments")) return { rows: [refs] };
     if (sql.includes("select settings from tenants")) return { rows: [{ settings: options.settings ?? {} }] };
     if (sql.startsWith("insert into contact_imports")) {

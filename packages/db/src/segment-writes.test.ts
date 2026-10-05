@@ -49,4 +49,13 @@ describe("segment write locks", () => {
       .rejects.toMatchObject({ statusCode: 422 });
     expect(query).not.toHaveBeenCalled();
   });
+  it("refuses dynamic Add to segment steps and locks distinct static targets in order", async () => {
+    const step = (segment_id: string) => ({ key: segment_id, type: "add_to_segment" as const, config: { segment_id } });
+    const dynamic = database([[{ id: "s", rule }]]);
+    await expect(assertSegmentSteps(dynamic.db, "t", [step("s")])).rejects.toMatchObject({ statusCode: 409 });
+    expect(dynamic.query).toHaveBeenCalledTimes(1);
+    const staticLists = database([[{ id: "a", rule: null }], [{ id: "z", rule: null }]]);
+    await assertSegmentSteps(staticLists.db, "t", [step("z"), step("a"), step("z")]);
+    expect(staticLists.query.mock.calls.map((call) => call[1])).toEqual([["t", "a"], ["t", "z"]]);
+  });
 });

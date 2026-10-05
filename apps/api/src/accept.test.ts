@@ -254,11 +254,173 @@ describe.skipIf(!live)("accept", () => {
       expect((await call(fullKey, "DELETE", `/contacts/${a}/segments/${staticList.json.id}`)).status).toBe(200);
       // Removing members does not permit invalidating a saved filter dependency.
       expect((await call(fullKey, "PATCH", `/segments/${staticList.json.id}`, { rule: leaf("contact.email", "exists") })).status).toBe(409);
+      // Old manually stored membership must not survive dynamic-to-static conversion.
+      await db.query("insert into segment_contacts (id,tenant_id,segment_id,contact_id) values ($1,$2,$3,$4)",
+        [id("member"),tenant,dynamic.json.id,a]);
       expect((await call(fullKey, "PATCH", `/segments/${dynamic.json.id}`, { rule: null })).status).toBe(200);
       expect((await call(fullKey, "GET", `/segments/${dynamic.json.id}/contacts`)).json.data).toEqual([]);
       const otherKey = await seedTenant();
       expect((await call(otherKey, "GET", `/contacts?segment_id=${dynamic.json.id}`)).status).toBe(404);
     });
+
+    it("refuses every dynamic composite write, import, saved step and trigger without side effects", async () => {
+      const { tenant, contacts } = await fixture();
+      const topic = await post(fullKey, "/topics", { name: "Rollback topic", default_subscription: "opt_out" });
+      const dynamic = await post(fullKey, "/segments", { name: "Refusal filter", rule: leaf("contact.email", "exists") });
+      const staticList = await post(fullKey, "/segments", { name: "Rollback list" });
+      expect((await call(fullKey, "DELETE", `/contacts/${contacts[2]}`)).status).toBe(200);
+      const createdFlow = await contactFlow({ type: "contact_added" });
+      const snapshot = async () => (await db.query(`select
+        (select jsonb_agg(to_jsonb(c) order by id) from contacts c where tenant_id=$1) as contacts,
+        (select jsonb_agg(to_jsonb(s) order by id) from segment_contacts s where tenant_id=$1) as members,
+        (select jsonb_agg(to_jsonb(s) order by id) from topic_subscriptions s where tenant_id=$1) as topics,
+        (select count(*) from contact_changes where tenant_id=$1) as history,
+        (select count(*) from custom_events where tenant_id=$1) as events,
+        (select count(*) from automation_runs where tenant_id=$1) as runs,
+        (select count(*) from automation_enrollments where tenant_id=$1) as enrollments,
+        (select count(*) from contact_imports where tenant_id=$1) as imports,
+        (select count(*) from automations where tenant_id=$1) as automations`, [tenant])).rows[0];
+      const before = await snapshot();
+      for (const email of ["new-refusal@fixture.net", "segment-a@fixture.net", "segment-c@fixture.net"]) {
+        const result = await post(fullKey, "/contacts", {
+          email, first_name: "Must roll back", properties: { score: 100 },
+          segments: [{ id: staticList.json.id }, { id: dynamic.json.id }],
+          topics: [{ id: topic.json.id, subscription: "opt_in" }],
+        });
+        expect(result.status).toBe(409);
+        expect(await snapshot()).toEqual(before);
+        expect((await post(fullKey, `/segments/${dynamic.json.id}/contacts`, { email })).status).toBe(409);
+        expect(await snapshot()).toEqual(before);
+      }
+      for (const method of ["POST", "DELETE"] as const) {
+        expect((await call(fullKey, method, `/contacts/${contacts[0]}/segments/${dynamic.json.id}`, {})).status).toBe(409);
+        expect(await snapshot()).toEqual(before);
+      }
+      expect((await call(fullKey, "DELETE", `/segments/${dynamic.json.id}/contacts/${contacts[0]}`)).status).toBe(409);
+      const boundary = "segment-refusal";
+      const upload = await app.inject({
+        method: "POST", url: "/contacts/imports", headers: {
+          authorization: `Bearer ${fullKey}`, "content-type": `multipart/form-data; boundary=${boundary}`,
+        },
+        payload: `--${boundary}\r\nContent-Disposition: form-data; name="segments"\r\n\r\n${JSON.stringify([{ id: dynamic.json.id }])}\r\n`
+          + `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="refusal.csv"\r\nContent-Type: text/csv\r\n\r\nemail\nnew-import@fixture.net\n\r\n--${boundary}--\r\n`,
+      });
+      expect(upload.statusCode).toBe(409);
+      await expect(createImport(db, {
+        id: id("import"), tenantId: tenant, storageKey: "unused-refusal", columnMap: {},
+        onConflict: "upsert", segments: [{ id: dynamic.json.id }], topics: [], triggerAutomations: true,
+      })).rejects.toMatchObject({ statusCode: 409 });
+      const steps = [{ key: "start", type: "trigger", config: { type: "contact_added" } },
+        { key: "join", type: "add_to_segment", config: { segment_id: dynamic.json.id } }];
+      const graph = { steps, connections: [{ from: "start", to: "join", type: "default" }] };
+      expect((await post(fullKey, "/automations", { name: "Refused add", ...graph })).status).toBe(409);
+      expect((await call(fullKey, "PATCH", `/automations/${createdFlow}`, graph)).status).toBe(409);
+      expect((await post(fullKey, "/automations", {
+        name: "Refused trigger", steps: [{ key: "start", type: "trigger", config: { type: "segment_added", segment_id: dynamic.json.id } }],
+        connections: [],
+      })).status).toBe(422);
+      expect(await snapshot()).toEqual(before);
+    });
+
+    it("fails a queued import after target conversion before writing contacts or history", async () => {
+      const { tenant, contacts } = await fixture();
+      const segment = await post(fullKey, "/segments", { name: "Queued import target" });
+      const queued = await createImport(db, {
+        id: id("import"), tenantId: tenant, storageKey: "unused-queued-import", columnMap: {},
+        onConflict: "upsert", segments: [{ id: segment.json.id }], topics: [], triggerAutomations: true,
+      });
+      const job = (await claimImports(db, 1))[0]!;
+      expect(job.id).toBe(queued!.id);
+      expect((await call(fullKey, "PATCH", `/segments/${segment.json.id}`, { rule: leaf("contact.email", "exists") })).status).toBe(200);
+      const before = (await db.query("select first_name,properties,updated_at from contacts where id=$1", [contacts[0]])).rows[0];
+      await runImport(db, { stream: async () => Readable.from(["email,first_name\nsegment-a@fixture.net,Must not update\nnew-queued-import@fixture.net,Must not create\n"]) }, job, { batchSize: 2 });
+      expect((await call(fullKey, "GET", `/contacts/imports/${job.id}`)).json)
+        .toMatchObject({ status: "failed", error: "Dynamic segments do not accept membership writes", counts: { created: 0, updated: 0 } });
+      expect((await db.query("select first_name,properties,updated_at from contacts where id=$1", [contacts[0]])).rows[0]).toEqual(before);
+      expect((await db.query("select id from contacts where tenant_id=$1 and email='new-queued-import@fixture.net'", [tenant])).rows).toEqual([]);
+      expect((await db.query("select id from contact_changes where request_id=$1", [job.id])).rows).toEqual([]);
+      expect((await db.query("select id from custom_events where request_id=$1", [job.id])).rows).toEqual([]);
+    });
+
+    it("rechecks converted targets on automation enable and execution without reviving deleted contacts", async () => {
+      const { tenant, contacts } = await fixture();
+      const list = await post(fullKey, "/segments", { name: "Converted automation target" });
+      const step = { key: "join", type: "add_to_segment", config: { segment_id: list.json.id } };
+      const executable = await contactFlow({ type: "contact_added" }, [step]);
+      const saved = await post(fullKey, "/automations", {
+        name: "Disabled saved join", steps: [
+          { key: "start", type: "trigger", config: { type: "contact_added" } }, step,
+        ], connections: [{ from: "start", to: "join", type: "default" }],
+      });
+      const triggered = await contactFlow({ type: "segment_added", segment_id: list.json.id });
+      expect((await call(fullKey, "PATCH", `/segments/${list.json.id}`, { rule: leaf("contact.email", "exists") })).status).toBe(200);
+      expect((await call(fullKey, "PATCH", `/automations/${saved.json.id}`, { status: "enabled" })).status).toBe(409);
+      const { fireContactTrigger } = await import("@dispatchmail/db");
+      const contact = (await db.query<ContactRow>(`select ${contactColumns} from contacts where tenant_id=$1 and id=$2`, [tenant, contacts[0]])).rows[0]!;
+      expect(await tx(db, (client) => fireContactTrigger(client, tenant, "refused-trigger", {
+        triggerType: "segment_added", key: `@segment.added:${list.json.id}`, contact,
+      }))).toEqual({ event: null, runs: [] });
+      expect((await call(fullKey, "PATCH", `/automations/${triggered}`, { status: "paused" })).status).toBe(200);
+      expect((await call(fullKey, "PATCH", `/automations/${triggered}`, { status: "enabled" })).status).toBe(422);
+      const added = await post(fullKey, "/contacts", { email: "converted-step@fixture.net" });
+      const run = (await flowRuns(executable))[0]!;
+      expect(run).toBeDefined();
+      await call(fullKey, "DELETE", `/contacts/${added.json.id}`);
+      const before = (await db.query("select first_name,properties,deleted_at from contacts where id=$1", [added.json.id])).rows[0];
+      await executeAutomationRun(db, tenant, run.id);
+      expect((await db.query("select state,error from automation_runs where id=$1", [run.id])).rows[0])
+        .toEqual({ state: "failed", error: "Dynamic segments do not accept membership writes" });
+      expect((await db.query("select first_name,properties,deleted_at from contacts where id=$1", [added.json.id])).rows[0]).toEqual(before);
+      expect((await db.query("select id from segment_contacts where tenant_id=$1 and segment_id=$2", [tenant, list.json.id])).rows).toEqual([]);
+      expect((await db.query("select id from contact_changes where tenant_id=$1 and field=$2", [tenant, `segments.${list.json.id}`])).rows).toEqual([]);
+    });
+
+    it("allows stored viewers to preview and page dynamic contacts while counts expire and conversions stay read-only", async () => {
+      const { tenant } = await fixture();
+      const viewer = await teammate("Viewer");
+      const session = await signInAs(viewer.email, viewer.password);
+      expect(session.status).toBe(200);
+      const rule = leaf("contact.email", "starts_with", "paged-");
+      for (let index = 0; index < 13; index++)
+        expect((await post(fullKey, "/contacts", { email: `paged-${index}@fixture.net` })).status).toBe(200);
+      const segment = await post(fullKey, "/segments", { name: "Viewer paging", rule });
+      const preview = await post(session.token, "/segments/preview", { rule });
+      expect(preview.status).toBe(200);
+      expect(preview.json.count).toBe(13);
+      expect(preview.json.sample).toHaveLength(10);
+      const expected = (await db.query("select id,created_at from contacts where tenant_id=$1 and email like 'paged-%' order by created_at desc,id desc", [tenant])).rows;
+      for (const token of [fullKey, session.token]) {
+        let after = "", more = true;
+        const seen: string[] = [];
+        while (more) {
+          const page = await call(token, "GET", `/segments/${segment.json.id}/contacts?limit=4${after ? `&after=${after}` : ""}`);
+          expect(page.status).toBe(200);
+          expect(page.json.data.length).toBeGreaterThan(0);
+          for (const row of page.json.data) {
+            expect(row.id).toBe(row.contact_id);
+            expect(row.created_at).toBe(new Date(expected.find((contact) => contact.id === row.id)!.created_at).toISOString());
+            seen.push(row.id);
+          }
+          after = page.json.data.at(-1).id;
+          more = page.json.has_more;
+          expect(seen.length).toBeLessThanOrEqual(13);
+        }
+        expect(seen).toEqual(expected.map((row) => row.id));
+      }
+      expect((await call(session.token, "GET", `/segments/${segment.json.id}`)).json.contacts).toBe(13);
+      expect((await post(fullKey, "/contacts", { email: "paged-new@fixture.net" })).status).toBe(200);
+      expect((await call(session.token, "GET", `/segments/${segment.json.id}`)).json.contacts).toBe(13);
+      expect((await post(session.token, "/segments/preview", { rule })).json.count).toBe(14);
+      await new Promise((resolve) => setTimeout(resolve, 30_050));
+      expect((await call(session.token, "GET", `/segments/${segment.json.id}`)).json.contacts).toBe(14);
+      for (const [method, path, body] of [
+        ["POST", "/segments", { name: "Viewer cannot create" }],
+        ["PATCH", `/segments/${segment.json.id}`, { rule: null }],
+        ["DELETE", `/segments/${segment.json.id}`, undefined],
+        ["POST", `/segments/${segment.json.id}/contacts`, { email: "viewer@fixture.net" }],
+      ] as const) expect((await call(session.token, method, path, body)).status).toBe(403);
+      expect((await call(fullKey, "GET", `/segments/${segment.json.id}`)).json.type).toBe("dynamic");
+    }, 45_000);
 
     it.each(["membership", "conversion"] as const)("serializes %s-first membership/conversion conflicts without partial writes", async (first) => {
       const { tenant, contacts } = await fixture();
@@ -291,6 +453,102 @@ describe.skipIf(!live)("accept", () => {
       expect(detail.json).toMatchObject({ type: first === "membership" ? "static" : "dynamic" });
       expect((await db.query("select contact_id from segment_contacts where tenant_id=$1 and segment_id=$2", [tenant,segment.json.id])).rows)
         .toEqual(first === "membership" ? [{ contact_id: contacts[0] }] : []);
+    });
+
+    it("keeps import creation's static-target lock until the queued row commits", async () => {
+      const { tenant } = await fixture();
+      const segment = await post(fullKey, "/segments", { name: "Creation lock fixture" });
+      const { updateSegment } = await import("@dispatchmail/db");
+      let ready!: () => void, release!: () => void;
+      const locked = new Promise<void>((resolve) => { ready = resolve; });
+      const resume = new Promise<void>((resolve) => { release = resolve; });
+      let creatorPid = 0, conversionPid = 0;
+      const pool = { connect: async () => {
+        const client = await db.connect();
+        creatorPid = (await client.query("select pg_backend_pid() as pid")).rows[0].pid;
+        return {
+          query: async (sql: string, params?: unknown[]) => {
+            const result = await client.query(sql, params);
+            if (sql.startsWith("select id, rule from segments")) { ready(); await resume; }
+            return result;
+          },
+          release: () => client.release(),
+        };
+      } } as unknown as Db;
+      const creation = createImport(pool, {
+        id: id("import"), tenantId: tenant, storageKey: "unused-creation-lock", columnMap: {},
+        onConflict: "upsert", segments: [{ id: segment.json.id }], topics: [], triggerAutomations: false,
+      });
+      void creation.catch(() => ready());
+      await locked;
+      const conversion = tx(db, async (client) => {
+        conversionPid = (await client.query("select pg_backend_pid() as pid")).rows[0].pid;
+        return updateSegment(client, tenant, segment.json.id, { rule: leaf("contact.email", "exists") });
+      });
+      void conversion.catch(() => undefined);
+      try {
+        let blocked = false;
+        for (let attempt = 0; attempt < 100 && !blocked; attempt++) {
+          if (conversionPid) blocked = (await db.query("select $1::int = any(pg_blocking_pids($2::int)) as blocked", [creatorPid, conversionPid])).rows[0].blocked;
+          if (!blocked) await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect(blocked).toBe(true);
+      } finally { release(); await Promise.allSettled([creation, conversion]); }
+      const queued = await creation;
+      await conversion;
+      expect(queued).toMatchObject({ status: "queued", segments: [{ id: segment.json.id }] });
+      // Conversion after a valid queue commit is allowed; its worker must refuse
+      // the now-dynamic target rather than using the original validated type.
+      await expect(tx(db, (client) => importBatch(client, queued!, [
+        { email: "creation-lock@fixture.net", first_name: null, last_name: null, properties: {}, unsubscribed: false },
+      ]))).rejects.toMatchObject({ statusCode: 409 });
+    });
+
+    it.each(["import", "conversion"] as const)("serializes %s-first import/conversion and rolls back refused batch changes", async (first) => {
+      const { tenant } = await fixture();
+      const segment = await post(fullKey, "/segments", { name: "Import lock fixture" });
+      const job = await createImport(db, {
+        id: id("import"), tenantId: tenant, storageKey: "unused-lock", columnMap: {}, onConflict: "upsert",
+        segments: [{ id: segment.json.id }], topics: [], triggerAutomations: true,
+      });
+      const { staticSegment, updateSegment } = await import("@dispatchmail/db");
+      const rows = [{ email: "import-lock@fixture.net", first_name: "Imported", last_name: null, properties: {}, unsubscribed: false }];
+      let ready!: () => void, release!: () => void;
+      const locked = new Promise<void>((resolve) => { ready = resolve; });
+      const resume = new Promise<void>((resolve) => { release = resolve; });
+      let ownerPid = 0, challengerPid = 0;
+      const owner = tx(db, async (client) => {
+        ownerPid = (await client.query("select pg_backend_pid() as pid")).rows[0].pid;
+        await staticSegment(client, tenant, segment.json.id);
+        ready();
+        await resume;
+        if (first === "import") return importBatch(client, job!, rows);
+        return updateSegment(client, tenant, segment.json.id, { rule: leaf("contact.email", "exists") });
+      });
+      void owner.catch(() => ready());
+      await locked;
+      const challenger = tx(db, async (client) => {
+        challengerPid = (await client.query("select pg_backend_pid() as pid")).rows[0].pid;
+        if (first === "import") return updateSegment(client, tenant, segment.json.id, { rule: leaf("contact.email", "exists") });
+        return importBatch(client, job!, rows);
+      }).then(() => null, (error: unknown) => error);
+      try {
+        let blocked = false;
+        for (let attempt = 0; attempt < 100 && !blocked; attempt++) {
+          if (challengerPid) blocked = (await db.query("select $1::int = any(pg_blocking_pids($2::int)) as blocked", [ownerPid, challengerPid])).rows[0].blocked;
+          if (!blocked) await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect(blocked).toBe(true);
+      } finally { release(); await Promise.allSettled([owner, challenger]); }
+      await owner;
+      expect(await challenger).toMatchObject({ statusCode: 409 });
+      expect((await call(fullKey, "GET", `/segments/${segment.json.id}`)).json.type).toBe(first === "import" ? "static" : "dynamic");
+      expect((await db.query("select email from contacts where tenant_id=$1 and email=$2", [tenant, rows[0]!.email])).rows)
+        .toEqual(first === "import" ? [{ email: rows[0]!.email }] : []);
+      if (first === "conversion") {
+        expect((await db.query("select id from contact_changes where request_id=$1", [job!.id])).rows).toEqual([]);
+        expect((await db.query("select id from custom_events where request_id=$1", [job!.id])).rows).toEqual([]);
+      }
     });
 
     it("attributes all email facts by contact or legacy recipient without cross-recipient sandbox leakage", async () => {
@@ -403,6 +661,11 @@ describe.skipIf(!live)("accept", () => {
         Array.from({ length: 10 }, (_, index) => `contact_perf_${25000 + index * 2}`),
       );
       const { segmentCount, segmentFilter } = await import("@dispatchmail/db");
+      const indexes = (await db.query("select indexname,indexdef from pg_indexes where schemaname='public' and indexname=any($1::text[])",
+        [["emails_tenant_contact_created_idx", "email_recipients_tenant_address_idx"]])).rows;
+      expect(indexes).toHaveLength(2);
+      expect(indexes.find((index) => index.indexname === "emails_tenant_contact_created_idx")!.indexdef).toContain("(tenant_id, contact_id, created_at)");
+      expect(indexes.find((index) => index.indexname === "email_recipients_tenant_address_idx")!.indexdef).toContain("(tenant_id, lower(email))");
       await db.query("analyze contacts");
       const started = performance.now();
       expect(await segmentCount(db, tenant, segment.json.id)).toBe(12501);
@@ -410,7 +673,7 @@ describe.skipIf(!live)("accept", () => {
       const params: unknown[] = [tenant];
       const predicate = await segmentFilter(db, tenant, segment.json.id, (value) => { params.push(value); return `$${params.length}`; });
       const plan = await db.query(`explain (analyze, buffers) select count(*) from contacts c where c.tenant_id=$1 and c.deleted_at is null and (${predicate})`, params);
-      console.info("dynamic segment fixed performance", { contacts: 50000, rule, elapsed, plan: plan.rows });
+      console.info("dynamic segment fixed performance", { contacts: 50000, expectedCount: 12501, rule, indexes, elapsed, plan: plan.rows });
       expect(elapsed).toBeLessThan(500);
     });
   });
