@@ -16,6 +16,8 @@ type DefinitionRow = {
   schema: Record<string, string>;
   created_at: string;
   updated_at: string;
+  fired_count?: number;
+  last_fired_at?: string | null;
 };
 
 const definitionColumns = "id, name, schema, created_at, updated_at";
@@ -87,7 +89,13 @@ export function registerEvents(
 
   app.get("/events", async (request) => {
     const page = await paginate<DefinitionRow>(db, "event_schemas", request.auth!.tenant_id, paging(request), {
-      select: definitionColumns,
+      select: `${definitionColumns},
+        (select count(*)::integer from custom_events fired
+         where fired.tenant_id = event_schemas.tenant_id and fired.name = event_schemas.name
+           and fired.name not like '@%' and fired.deleted_at is null) as fired_count,
+        (select max(fired.created_at) from custom_events fired
+         where fired.tenant_id = event_schemas.tenant_id and fired.name = event_schemas.name
+           and fired.name not like '@%' and fired.deleted_at is null) as last_fired_at`,
       deletedCol: "deleted_at",
     });
     return { object: page.object, has_more: page.has_more, data: page.data.map(presentDefinition) };

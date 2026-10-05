@@ -7,25 +7,30 @@ import { permitted } from "./platform.js";
 import { loadLibrary, registerLibraryAutomations } from "./library.js";
 
 const writes = vi.hoisted(() => vi.fn(() => { throw new Error("Preset reads must not install templates"); }));
+const installer = vi.hoisted(() => vi.fn());
+const transaction = vi.hoisted(() => vi.fn(async (_db: unknown, run: (client: unknown) => unknown) => run({ query: () => ({ rows: [] }) })));
 vi.mock("@dispatchmail/db", async (original) => ({
   ...await original<typeof import("@dispatchmail/db")>(),
   installLibrary: writes,
+  installAutomation: installer,
+  tx: transaction,
 }));
 
-async function harness(permissions: string[] = ["full"], scope = "full") {
+async function harness(permissions: string[] = ["full"], scope = "full", install = false) {
   const library = await loadLibrary();
   const load = vi.fn(async () => library);
   const app = Fastify();
   // Use the production permission predicate without booting services/auth storage.
   app.addHook("preHandler", async (request) => {
+    Object.assign(request, { auth: { tenant_id: "tenant_1", permissions } });
     if (scope !== "full") throw new ApiError("restricted_api_key", 401, "Full access key required");
     if (!permitted(permissions, request.method, request.routeOptions.url ?? request.url)) {
       throw new ApiError("forbidden", 403, "Full permission required");
     }
   });
   app.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) =>
-    reply.status(error.statusCode ?? 500).send({ name: error.name, message: error.message }));
-  registerLibraryAutomations(app, load);
+    reply.status(error.name === "ZodError" ? 400 : error.statusCode ?? 500).send({ name: error.name === "ZodError" ? "validation_error" : error.name, message: error.message }));
+  registerLibraryAutomations(app, load, install ? {} as import("@dispatchmail/db").Db : undefined);
   // The production template preview has this wildcard: static preset routes win.
   app.get("/template-library/:slug", async () => ({ object: "template_library" }));
   return { app, load, library };
@@ -120,7 +125,7 @@ describe("automation preset read routes", () => {
 
   it("is wired into the existing server without bypassing global authentication", () => {
     const source = readFileSync(new URL("./server.ts", import.meta.url), "utf8");
-    expect(source).toContain("registerLibraryAutomations(app);");
+    expect(source).toContain("registerLibraryAutomations(app, loadLibrary, db);");
     expect(source).toContain("await authenticate(request);");
     expect(source).toContain('permitted(request.auth!.permissions ?? [], request.method, request.routeOptions.url ?? path)');
   });
@@ -144,7 +149,7 @@ describe("automation preset OpenAPI", () => {
       $ref: "#/components/schemas/AutomationPresetDetail",
     });
     expect(detail.get.responses["404"]).toEqual({ $ref: "#/components/responses/NotFound" });
-    expect(spec.paths["/template-library/automations/{slug}/install"]).toBeUndefined();
+    expect(spec.paths["/template-library/automations/{slug}/install"].post["x-scope"]).toBe("full");
   });
 
   it("documents exact preset fields, nullable template stage and guidance", () => {
@@ -158,5 +163,57 @@ describe("automation preset OpenAPI", () => {
     expect(schemas.LibraryTemplate.properties.stage).toMatchObject({ type: ["string", "null"] });
     expect(schemas.LibraryTemplate.properties.when).toEqual({ type: "string" });
     expect(schemas.LibraryTemplate.required).toEqual(expect.arrayContaining(["stage", "when"]));
+  });
+});
+
+describe("automation preset install route", () => {
+  it("owns the transaction and presents the existing full automation without changing resource arrays", async () => {
+    const { app, library } = await harness(["full"], "full", true);
+    const preset = library.automations.find((item) => item.slug === "onboarding-drip")!;
+    installer.mockResolvedValueOnce({
+      automation: { id: "automation_1", name: preset.name, trigger_type: "contact_created", trigger: "@contact.created",
+        steps: preset.steps, connections: preset.connections, enabled: false, reentry: "once", version: 0, created_at: "now", updated_at: "now" },
+      templates: { created: [], reused: [] }, events: [], properties: [], next_steps: ["Enable the automation"],
+    });
+    try {
+      const response = await app.inject({ method: "POST", url: `/template-library/automations/${preset.slug}/install`, payload: { from: "Acme <you@acme.com>", topic_id: "topic_1" } });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ automation: { object: "automation", id: "automation_1", status: "disabled", version: 0 },
+        templates: { created: [], reused: [] }, events: [], properties: [], next_steps: ["Enable the automation"] });
+      expect(installer.mock.calls.at(-1)!.slice(1)).toEqual([
+        "tenant_1", { object: "automation_preset", ...preset },
+        preset.templates.map((slug) => library.templates.find((entry) => entry.slug === slug)),
+        { from: "Acme <you@acme.com>", topic_id: "topic_1" }, library.version,
+      ]);
+    } finally { await app.close(); }
+  });
+
+  it.each([
+    { body: {}, status: 422, name: "validation_error" },
+    { body: { from: "" }, status: 422, name: "validation_error" },
+    { body: { from: "not an address" }, status: 400, name: "validation_error" },
+    { body: { from: "you@acme.com", name: "" }, status: 400, name: "validation_error" },
+    { body: { from: "you@acme.com", topic_id: 3 }, status: 400, name: "validation_error" },
+  ])("refuses invalid bodies before a transaction ($status)", async ({ body, status, name }) => {
+    const { app } = await harness(["full"], "full", true);
+    const before = transaction.mock.calls.length;
+    try {
+      const result = await app.inject({ method: "POST", url: "/template-library/automations/onboarding-drip/install", payload: body });
+      expect(result.statusCode).toBe(status);
+      expect(result.json().name).toBe(name);
+      expect(transaction.mock.calls.length).toBe(before);
+    } finally { await app.close(); }
+  });
+
+  it.each([
+    { permissions: ["read"], scope: "full", status: 403 },
+    { permissions: ["full"], scope: "send", status: 401 },
+  ])("inherits write restrictions ($status)", async ({ permissions, scope, status }) => {
+    const { app } = await harness(permissions, scope, true);
+    const before = transaction.mock.calls.length;
+    try {
+      expect((await app.inject({ method: "POST", url: "/template-library/automations/onboarding-drip/install", payload: { from: "you@acme.com" } })).statusCode).toBe(status);
+      expect(transaction.mock.calls.length).toBe(before);
+    } finally { await app.close(); }
   });
 });

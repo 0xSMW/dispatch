@@ -51,6 +51,15 @@ describe("event presenters", () => {
 });
 
 describe("event routes", () => {
+  it("lists tenant-scoped live firing counts and keeps zero/null and definition IDs", async () => {
+    const { app, query } = harness(() => ({ rows: [{ ...definition, fired_count: 0, last_fired_at: null }] }));
+    const result = await app.inject("/events");
+    expect(result.json().data).toEqual([{ object: "event", ...definition, fired_count: 0, last_fired_at: null }]);
+    expect(query.mock.calls[0]![0]).toContain("fired.tenant_id = event_schemas.tenant_id");
+    expect(query.mock.calls[0]![0]).toContain("fired.name = event_schemas.name");
+    expect(query.mock.calls[0]![0]).toContain("fired.name not like '@%' and fired.deleted_at is null");
+    expect(query.mock.calls[0]![1]).toEqual(["tenant_1", 21]);
+  });
   it("rejects a payload that breaks the event schema before firing", async () => {
     const { app } = harness((sql) => (sql.includes("from event_schemas") ? { rows: [definition] } : { rows: [] }));
     const response = await app.inject({

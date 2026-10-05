@@ -148,6 +148,47 @@ export type LibraryInstallEntry = {
   kind?: "transactional" | "marketing";
 };
 
+// The caller owns the transaction. Only the winning alias insert may publish a version.
+export async function installLibraryMissing(
+  db: Queryable,
+  tenantId: string,
+  entry: LibraryInstallEntry,
+  version = "1.0.0",
+): Promise<{ id: string; created: boolean }> {
+  const templateId = id("template");
+  const inserted = await db.query<{ id: string }>(
+    `insert into templates (id, tenant_id, name, alias, track)
+     values ($1, $2, $3, $4, $5)
+     on conflict (tenant_id, alias) where alias is not null and deleted_at is null
+     do nothing returning id`,
+    [templateId, tenantId, entry.name, entry.slug, entry.track ?? true],
+  );
+  if (!inserted.rows[0]) {
+    const existing = await db.query<{ id: string }>(
+      `select t.id from templates t
+       where t.tenant_id = $1 and t.alias = $2 and t.deleted_at is null
+         and exists (select 1 from template_versions v where v.tenant_id = $1 and v.template_id = t.id)
+       for update of t`,
+      [tenantId, entry.slug],
+    );
+    if (!existing.rows[0]) throw new ApiError("conflict", 409, `Template ${entry.slug} changed during installation`);
+    return { id: existing.rows[0].id, created: false };
+  }
+  const write: TemplateWrite = {
+    name: entry.name,
+    subject: entry.subject,
+    html: entry.html,
+    text: entry.text,
+    variables: entry.variables ?? [],
+    source: { kind: "library", slug: entry.slug, version, ...(entry.kind ? { send_kind: entry.kind } : {}) },
+  };
+  assertBlocks(write);
+  const versionId = id("version");
+  await insertVersion(db, tenantId, templateId, versionId, write, true);
+  await markPublished(db, tenantId, templateId, versionId);
+  return { id: inserted.rows[0].id, created: true };
+}
+
 export async function installLibrary(db: Queryable, tenantId: string, entries: LibraryInstallEntry[], version = "1.0.0") {
   for (const entry of entries) {
     const existing = await db.query<{ id: string; source: { kind?: string } | null }>(

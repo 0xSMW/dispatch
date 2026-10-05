@@ -863,7 +863,7 @@ app.post("/templates/:id/publish", async (request) => {
   return presentTemplate(row);
 });
 
-registerLibraryAutomations(app);
+registerLibraryAutomations(app, loadLibrary, db);
 
 app.get("/template-library", async () => {
   return listLibrary(await loadLibrary());

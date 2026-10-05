@@ -1266,6 +1266,11 @@ export const automationSchema = z
       reentry: reentry ?? (parsed.trigger_type === "event" ? "every_time" : "once") };
   });
 export type AutomationInput = z.input<typeof automationSchema>;
+export const automationInstallSchema = z.object({
+  name: automationSchema.innerType().shape.name.optional(),
+  from: baseSendSchema.shape.from.unwrap(),
+  topic_id: z.string().min(1).optional(),
+});
 
 export const automationUpdateSchema = z
   .object({

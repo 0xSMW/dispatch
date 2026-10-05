@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   automationGraphSchema,
+  automationInstallSchema,
   automationIssues,
   automationSchema,
   automationStopSchema,
@@ -13,6 +14,20 @@ import {
   stepConfigs,
   type Rule
 } from "./index.js";
+
+describe("preset installation input", () => {
+  it("accepts existing sender syntax and optional name/topic fields", () => {
+    expect(automationInstallSchema.parse({ from: "Acme <hello@acme.com>", topic_id: "topic_1" }))
+      .toEqual({ from: "Acme <hello@acme.com>", topic_id: "topic_1" });
+  });
+  it.each([
+    {}, { from: "bad" }, { from: "hello@acme.com\r\nBcc: other@acme.com" },
+    { from: "hello@acme.com", name: "" }, { from: "hello@acme.com", name: "x".repeat(121) },
+    { from: "hello@acme.com", topic_id: "" }, { from: "hello@acme.com", topic_id: 3 },
+  ])("rejects malformed fields without graph initialization", (input) => {
+    expect(automationInstallSchema.safeParse(input).success).toBe(false);
+  });
+});
 
 const graph = {
   name: "Welcome series",

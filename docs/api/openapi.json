@@ -2650,7 +2650,9 @@
       "get": {
         "operationId": "getSettings",
         "summary": "Retrieve tenant settings",
-        "tags": ["Settings"],
+        "tags": [
+          "Settings"
+        ],
         "x-scope": "full",
         "responses": {
           "200": {
@@ -2659,24 +2661,49 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "required": ["object", "import_trigger_automations", "sandbox_domains"],
+                  "required": [
+                    "object",
+                    "import_trigger_automations",
+                    "sandbox_domains"
+                  ],
                   "properties": {
-                    "object": {"type": "string", "enum": ["settings"]},
-                    "import_trigger_automations": {"type": "boolean", "default": false},
-                    "sandbox_domains": {"type": "array", "maxItems": 50, "items": {"type": "string"}, "description": "Additional recipient domains and their subdomains that bypass the provider, even in production. Reserved test domains always bypass it. Separate from the SES account sandbox."}
+                    "object": {
+                      "type": "string",
+                      "enum": [
+                        "settings"
+                      ]
+                    },
+                    "import_trigger_automations": {
+                      "type": "boolean",
+                      "default": false
+                    },
+                    "sandbox_domains": {
+                      "type": "array",
+                      "maxItems": 50,
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Additional recipient domains and their subdomains that bypass the provider, even in production. Reserved test domains always bypass it. Separate from the SES account sandbox."
+                    }
                   }
                 }
               }
             }
           },
-          "401": {"$ref": "#/components/responses/Unauthorized"},
-          "403": {"$ref": "#/components/responses/Forbidden"}
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
         }
       },
       "patch": {
         "operationId": "updateSettings",
         "summary": "Update tenant settings",
-        "tags": ["Settings"],
+        "tags": [
+          "Settings"
+        ],
         "x-scope": "full",
         "requestBody": {
           "required": true,
@@ -2686,8 +2713,18 @@
                 "type": "object",
                 "additionalProperties": false,
                 "properties": {
-                  "import_trigger_automations": {"type": "boolean"},
-                  "sandbox_domains": {"type": "array", "maxItems": 50, "items": {"type": "string", "format": "hostname"}, "description": "Replace the tenant's additional sandbox recipient domains, including their subdomains. An empty array removes additions, not reserved test domains. Matching is case-insensitive and respects hostname boundaries."}
+                  "import_trigger_automations": {
+                    "type": "boolean"
+                  },
+                  "sandbox_domains": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "items": {
+                      "type": "string",
+                      "format": "hostname"
+                    },
+                    "description": "Replace the tenant's additional sandbox recipient domains, including their subdomains. An empty array removes additions, not reserved test domains. Matching is case-insensitive and respects hostname boundaries."
+                  }
                 }
               }
             }
@@ -2696,11 +2733,23 @@
         "responses": {
           "200": {
             "description": "Effective settings after merging the supplied keys.",
-            "content": {"application/json": {"schema": {"type": "object"}}}
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
           },
-          "400": {"$ref": "#/components/responses/BadRequest"},
-          "401": {"$ref": "#/components/responses/Unauthorized"},
-          "403": {"$ref": "#/components/responses/Forbidden"}
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
         }
       }
     },
@@ -3292,7 +3341,9 @@
             "in": "query",
             "required": false,
             "description": "Comma-separated automation IDs, 100 at most. Required for the step dimension.",
-            "schema": { "type": "string" }
+            "schema": {
+              "type": "string"
+            }
           },
           {
             "$ref": "#/components/parameters/RequestIdHeader"
@@ -11728,7 +11779,9 @@
             "in": "query",
             "required": false,
             "description": "Preview stranded-run counts without saving any changes.",
-            "schema": { "type": "boolean" }
+            "schema": {
+              "type": "boolean"
+            }
           },
           {
             "$ref": "#/components/parameters/RequestIdHeader"
@@ -11767,14 +11820,22 @@
                   "oneOf": [
                     {
                       "allOf": [
-                        { "$ref": "#/components/schemas/Automation" },
-                        { "$ref": "#/components/schemas/RequestId" }
+                        {
+                          "$ref": "#/components/schemas/Automation"
+                        },
+                        {
+                          "$ref": "#/components/schemas/RequestId"
+                        }
                       ]
                     },
                     {
                       "allOf": [
-                        { "$ref": "#/components/schemas/DryRun" },
-                        { "$ref": "#/components/schemas/RequestId" }
+                        {
+                          "$ref": "#/components/schemas/DryRun"
+                        },
+                        {
+                          "$ref": "#/components/schemas/RequestId"
+                        }
                       ]
                     }
                   ]
@@ -12525,7 +12586,7 @@
                     "data": {
                       "type": "array",
                       "items": {
-                        "$ref": "#/components/schemas/Event"
+                        "$ref": "#/components/schemas/EventListItem"
                       }
                     },
                     "request_id": {
@@ -15053,6 +15114,126 @@
         },
         "description": "Cancellation happens between pages. Runs already started remain queued or active."
       }
+    },
+    "/template-library/automations/{slug}/install": {
+      "post": {
+        "operationId": "installLibraryAutomation",
+        "summary": "Install a disabled lifecycle automation",
+        "tags": [
+          "Template library"
+        ],
+        "x-scope": "full",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "description": "Automation preset slug.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/RequestIdHeader"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutomationInstallInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Installed disabled; empty resource arrays are present.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "ratelimit-limit": {
+                "$ref": "#/components/headers/RateLimitLimit"
+              },
+              "ratelimit-remaining": {
+                "$ref": "#/components/headers/RateLimitRemaining"
+              },
+              "ratelimit-reset": {
+                "$ref": "#/components/headers/RateLimitReset"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/AutomationInstallation"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RequestId"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed body or schema validation error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Viewer writes forbidden, or sender domain unverified, deleted, foreign, or sending-disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "Name conflict or incompatible/tombstoned/concurrently changed dependencies; all writes roll back.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Missing sender: Choose a sender. Missing newsletter topic: Choose a topic. Invalid tenant-live topic or send-kind/trigger validation. No partial installation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        },
+        "description": "Requires full write permission and a verified sender. Newsletter welcome requires an explicit live same-tenant topic at installation; absence returns 422 Choose a topic without writes. Other Marketing presets allow topicless disabled installation, return Choose a topic for marketing steps, and cannot be enabled until configured. Every send step binds the selected sender; only Marketing sends bind the topic. Existing template content/source/publication/version history remain unchanged."
+      }
     }
   },
   "components": {
@@ -17157,11 +17338,23 @@
         "description": "Present on multi-recipient Marketing sends, in first-seen recipient order. Each email has one To recipient and its own unsubscribe link.",
         "items": {
           "type": "object",
-          "required": ["id", "to", "sandbox"],
+          "required": [
+            "id",
+            "to",
+            "sandbox"
+          ],
           "properties": {
-            "id": { "type": "string" },
-            "to": { "type": "string", "format": "email" },
-            "sandbox": { "type": "boolean", "description": "True when this split email's recipient is a sandbox recipient." }
+            "id": {
+              "type": "string"
+            },
+            "to": {
+              "type": "string",
+              "format": "email"
+            },
+            "sandbox": {
+              "type": "boolean",
+              "description": "True when this split email's recipient is a sandbox recipient."
+            }
           }
         }
       },
@@ -17335,11 +17528,28 @@
       },
       "EmailRecipient": {
         "type": "object",
-        "required": ["email", "kind", "sandbox"],
+        "required": [
+          "email",
+          "kind",
+          "sandbox"
+        ],
         "properties": {
-          "email": { "type": "string", "format": "email" },
-          "kind": { "type": "string", "enum": ["to", "cc", "bcc"] },
-          "status": { "type": "string", "description": "Stored recipient delivery status. For sandbox recipients, delivery is simulated." },
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "to",
+              "cc",
+              "bcc"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "description": "Stored recipient delivery status. For sandbox recipients, delivery is simulated."
+          },
           "sandbox": {
             "type": "boolean",
             "description": "True when the original recipient is at a reserved test domain or a tenant sandbox domain. The recipient never reaches the provider."
@@ -17604,8 +17814,19 @@
             "items": {
               "type": "object",
               "properties": {
-                "automation_id": { "type": ["string", "null"] },
-                "automation_step": { "type": ["string", "null"], "description": "Send-step key. Legacy automation emails can have no step key." }
+                "automation_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "automation_step": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Send-step key. Legacy automation emails can have no step key."
+                }
               },
               "additionalProperties": true
             },
@@ -18996,16 +19217,32 @@
             ]
           },
           "automation_id": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "Present on automation-run activity."
           },
           "run_id": {
-            "type": ["string", "null"],
+            "type": [
+              "string",
+              "null"
+            ],
             "description": "The run behind a started or completed activity row."
           },
           "exit_reason": {
-            "type": ["string", "null"],
-            "enum": ["completed", "exit", "filter", "stopped", "stranded", null],
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "completed",
+              "exit",
+              "filter",
+              "stopped",
+              "stranded",
+              null
+            ],
             "description": "The stored run exit reason on automation.run.completed activity only: completed (natural ending), exit (Exit step), filter (failed Filter or guard), stopped (cancellation), or stranded (waiting step removed or changed). Null on other activity and legacy terminal runs with no stored reason; never inferred from the state."
           },
           "created_at": {
@@ -19726,7 +19963,10 @@
         "properties": {
           "trigger_automations": {
             "type": "string",
-            "enum": ["true", "false"],
+            "enum": [
+              "true",
+              "false"
+            ],
             "description": "Overrides the tenant import_trigger_automations default. Omission resolves and stores that default when this import is created. Enabled imports dispatch actual creation, effective topic subscription and static segment additions, not contact updates. Started runs have bulk priority."
           },
           "file": {
@@ -21370,10 +21610,22 @@
       },
       "DryRun": {
         "type": "object",
-        "required": ["stranded_runs", "by_step"],
+        "required": [
+          "stranded_runs",
+          "by_step"
+        ],
         "properties": {
-          "stranded_runs": { "type": "integer", "minimum": 0 },
-          "by_step": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } }
+          "stranded_runs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "by_step": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
         }
       },
       "Automation": {
@@ -21884,6 +22136,19 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "fired_count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "List only: tenant-live non-internal firings matched by definition name."
+          },
+          "last_fired_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "List only: most recent live firing; null when never fired."
           }
         }
       },
@@ -23201,6 +23466,157 @@
                 "const": "automation_preset"
               }
             }
+          }
+        ]
+      },
+      "AutomationInstallInput": {
+        "type": "object",
+        "required": [
+          "from"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "description": "Defaults to the preset name; live name conflicts return 409."
+          },
+          "from": {
+            "type": "string",
+            "maxLength": 998,
+            "description": "Sender address, optionally Name <email>. Requires a live verified tenant domain with sending enabled."
+          },
+          "topic_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Live same-tenant topic, required for newsletter-welcome. Other Marketing presets may install disabled without it."
+          }
+        }
+      },
+      "AutomationInstallation": {
+        "type": "object",
+        "required": [
+          "automation",
+          "templates",
+          "events",
+          "properties",
+          "next_steps"
+        ],
+        "properties": {
+          "automation": {
+            "$ref": "#/components/schemas/Automation"
+          },
+          "templates": {
+            "type": "object",
+            "required": [
+              "created",
+              "reused"
+            ],
+            "properties": {
+              "created": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "slug"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "slug": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "reused": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "slug"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "slug": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "name"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "properties": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "key",
+                "type"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "key": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "string",
+                    "number",
+                    "boolean",
+                    "date"
+                  ]
+                }
+              }
+            }
+          },
+          "next_steps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "description": "Atomic disabled installation. Existing templates and compatible dependencies are reused unchanged; reused drafts are not published. Review before enabling."
+      },
+      "EventListItem": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Event"
+          },
+          {
+            "type": "object",
+            "required": [
+              "fired_count",
+              "last_fired_at"
+            ]
           }
         ]
       }

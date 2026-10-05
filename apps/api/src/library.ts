@@ -1,7 +1,8 @@
 import { readFile } from "node:fs/promises";
-import { ApiError, renderTemplate, type Connection, type EventInput, type PropertyInput, type Step, type TriggerConfig } from "@dispatchmail/core";
-import { installLibrary, type LibraryInstallEntry, type Queryable } from "@dispatchmail/db";
+import { ApiError, automationInstallSchema, renderTemplate, type Connection, type EventInput, type PropertyInput, type Step, type TriggerConfig } from "@dispatchmail/core";
+import { installAutomation, installLibrary, tx, type Db, type LibraryInstallEntry, type Queryable } from "@dispatchmail/db";
 import type { FastifyInstance } from "fastify";
+import { presentAutomation } from "./automations.js";
 
 export type LibraryStage = "acquisition" | "onboarding" | "retention" | "reengagement" | "dunning" | "reactivation";
 
@@ -92,10 +93,23 @@ export function libraryAutomation(library: LibraryFile, slug: string) {
 
 // Registered on the authenticated API, inheriting its full-key/read-role policy.
 // Listing a built-in graph never reads or writes tenant resources.
-export function registerLibraryAutomations(app: FastifyInstance, load = loadLibrary) {
+export function registerLibraryAutomations(app: FastifyInstance, load = loadLibrary, db?: Db) {
   app.get("/template-library/automations", async () => listLibraryAutomations(await load()));
   app.get("/template-library/automations/:slug", async (request) =>
     libraryAutomation(await load(), (request.params as { slug: string }).slug));
+  if (db) app.post("/template-library/automations/:slug/install", async (request) => {
+    const library = await load();
+    const preset = libraryAutomation(library, (request.params as { slug: string }).slug);
+    const sender = (request.body as { from?: unknown } | null)?.from;
+    if (sender === undefined || (typeof sender === "string" && !sender.trim())) {
+      throw new ApiError("validation_error", 422, "Choose a sender");
+    }
+    const input = automationInstallSchema.parse(request.body);
+    const entries = preset.templates.map((slug) => libraryEntry(library, slug));
+    const result = await tx(db, (client) =>
+      installAutomation(client, request.auth!.tenant_id, preset, entries, input, library.version));
+    return { ...result, automation: presentAutomation(result.automation) };
+  });
 }
 
 // What a library preview stands in for. A broadcast gives every recipient a name and an
