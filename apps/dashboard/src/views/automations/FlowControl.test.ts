@@ -227,7 +227,7 @@ describe("flow control editor and run integration", () => {
       if (url.pathname === "/contact-properties") return list(options.contactProperties);
       return list();
     });
-    openEditor();
+    openEditor("/automations/automation/editor?view=list");
     fireEvent.change(await screen.findByLabelText("Check"), { target: { value: "following" } });
     fireEvent.change(pathSettings(1).getByLabelText("Path label"), { target: { value: "Enterprise" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
