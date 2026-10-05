@@ -9,22 +9,33 @@ func Install(client *dispatch.Client, slug, sender, topicID, name string) (*disp
 	})
 }
 
-// Review reads the graph and every template; it never publishes reused drafts.
-func Review(client *dispatch.Client, installed *dispatch.AutomationInstallation) error {
-	if _, err := client.Automation(installed.Automation.ID); err != nil {
-		return err
+type Inspection struct {
+	Automation *dispatch.Automation
+	Templates  []*dispatch.Template
+}
+
+// Review returns the graph and every template; it never publishes reused drafts.
+func Review(client *dispatch.Client, installed *dispatch.AutomationInstallation) (*Inspection, error) {
+	automation, err := client.Automation(installed.Automation.ID)
+	if err != nil {
+		return nil, err
 	}
+	inspection := &Inspection{Automation: automation, Templates: []*dispatch.Template{}}
 	for _, item := range installed.Templates.Created {
-		if _, err := client.Template(item.ID); err != nil {
-			return err
+		template, err := client.Template(item.ID)
+		if err != nil {
+			return nil, err
 		}
+		inspection.Templates = append(inspection.Templates, template)
 	}
 	for _, item := range installed.Templates.Reused {
-		if _, err := client.Template(item.ID); err != nil {
-			return err
+		template, err := client.Template(item.ID)
+		if err != nil {
+			return nil, err
 		}
+		inspection.Templates = append(inspection.Templates, template)
 	}
-	return nil
+	return inspection, nil
 }
 
 // Enable is a separate, approved operation after reviewing next_steps/content.

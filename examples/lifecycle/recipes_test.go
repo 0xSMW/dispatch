@@ -15,9 +15,10 @@ type request struct {
 	body         map[string]any
 }
 type transport struct {
-	calls  []request
-	body   string
-	status int
+	calls     []request
+	body      string
+	responses map[string]string
+	status    int
 }
 
 func (tr *transport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -32,8 +33,12 @@ func (tr *transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if status == 0 {
 		status = 200
 	}
+	response := tr.body
+	if value, ok := tr.responses[req.URL.EscapedPath()]; ok {
+		response = value
+	}
 	return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": {"application/json"}},
-		Body: io.NopCloser(strings.NewReader(tr.body)), Request: req}, nil
+		Body: io.NopCloser(strings.NewReader(response)), Request: req}, nil
 }
 
 func offline() (*dispatch.Client, *transport) {
@@ -78,12 +83,25 @@ func TestAllSixInstallDisabled(t *testing.T) {
 
 func TestReviewAndExplicitEnable(t *testing.T) {
 	client, tr := offline()
+	tr.responses = map[string]string{
+		"/automations/auto_123": `{"id":"auto_123","status":"disabled","steps":[{"key":"welcome","type":"send_email"}]}`,
+		"/templates/tpl_new":    `{"id":"tpl_new","html":"<p>Welcome</p>","status":"published"}`,
+		"/templates/tpl_draft":  `{"id":"tpl_draft","html":"<p>Tenant-edited draft</p>","has_unpublished_versions":true}`,
+	}
 	var installed dispatch.AutomationInstallation
 	if err := json.Unmarshal([]byte(`{"automation":{"id":"auto_123"},"templates":{"created":[{"id":"tpl_new"}],"reused":[{"id":"tpl_draft"}]}}`), &installed); err != nil {
 		t.Fatal(err)
 	}
-	if err := Review(client, &installed); err != nil {
+	inspection, err := Review(client, &installed)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if inspection.Automation.ID != "auto_123" || inspection.Automation.Status != "disabled" ||
+		len(inspection.Automation.Steps) != 1 || len(inspection.Templates) != 2 ||
+		*inspection.Templates[0].HTML != "<p>Welcome</p>" ||
+		*inspection.Templates[1].HTML != "<p>Tenant-edited draft</p>" ||
+		!inspection.Templates[1].HasUnpublishedVersions {
+		t.Fatalf("review content unavailable: %+v", inspection)
 	}
 	for _, call := range tr.calls {
 		if call.method != "GET" {
@@ -99,6 +117,46 @@ func TestReviewAndExplicitEnable(t *testing.T) {
 	if tr.calls[3].body["status"] != "enabled" || tr.calls[3].method != "PATCH" {
 		t.Fatal("enable did not use ordinary status update")
 	}
+}
+
+func TestReviewErrorsReturnNoInspectionOrWrites(t *testing.T) {
+	for _, failure := range []string{"/automations/auto_123", "/templates/tpl_new", "/templates/tpl_draft"} {
+		t.Run(failure, func(t *testing.T) {
+			client, tr := offline()
+			tr.status = 404
+			tr.body = `{"name":"not_found","message":"Review resource missing"}`
+			installed := &dispatch.AutomationInstallation{}
+			if err := json.Unmarshal([]byte(`{"automation":{"id":"auto_123"},"templates":{"created":[{"id":"tpl_new"}],"reused":[{"id":"tpl_draft"}]}}`), installed); err != nil {
+				t.Fatal(err)
+			}
+			// Successful earlier reads return 200; only the selected resource fails.
+			client.HTTPClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				tr.status = 200
+				if req.URL.Path == failure {
+					tr.status = 404
+				}
+				return tr.RoundTrip(req)
+			})
+			inspection, err := Review(client, installed)
+			if inspection != nil || err == nil || !strings.Contains(err.Error(), "Review resource missing") {
+				t.Fatalf("partial review or error lost: %+v, %v", inspection, err)
+			}
+			for _, call := range tr.calls {
+				if call.method != "GET" {
+					t.Fatalf("failed review wrote: %+v", call)
+				}
+			}
+			if tr.calls[len(tr.calls)-1].path != failure {
+				t.Fatal("review continued after failed read")
+			}
+		})
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return fn(req)
 }
 
 func TestContactStateAndActualInvoice(t *testing.T) {

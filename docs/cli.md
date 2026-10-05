@@ -1065,11 +1065,20 @@ dispatch templates push [path] [options]
 
 #### `dispatch templates library`
 
-List the default template library (Dispatch only).
+List default templates and discover automation presets (Dispatch only). Listing
+and inspecting a preset do not install it.
 
 ```sh
 dispatch templates library
+dispatch templates library automations
+dispatch templates library automation onboarding-drip
 ```
+
+`automations` lists preset slugs, names, stages, descriptions and when to use them.
+`automation <slug>` returns the full preset definition. Use
+`dispatch automations create --preset <slug> --from <sender>` to install a disabled
+copy; Newsletter also requires `--topic <id>`. Other Marketing presets may install
+without a topic, but cannot enable until their Marketing steps have live topics.
 
 #### `dispatch templates add`
 

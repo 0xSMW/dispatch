@@ -47,7 +47,10 @@ inspection = review(client, installed)
 client := dispatch.New("") // Environment key and API URL.
 installed, err := Install(client, "onboarding-drip", "Acme <hello@acme.com>", "topic_123", "")
 if err != nil { return err }
-if err := Review(client, installed); err != nil { return err }
+inspection, err := Review(client, installed)
+if err != nil { return err }
+// Inspect inspection.Automation and inspection.Templates before approving enable.
+_ = inspection // Pass this to your app's review UI.
 // Stop here. Enable(client, installed.Automation.ID) is a separate approved call.
 ```
 

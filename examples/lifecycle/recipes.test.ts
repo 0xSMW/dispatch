@@ -136,6 +136,17 @@ describe("offline lifecycle examples using the actual TypeScript SDK", () => {
 });
 
 describe("public lifecycle recipe contracts", () => {
+  it("documents read-only CLI preset discovery separately from disabled installation", () => {
+    const text = readFileSync(resolve(root, "docs/cli.md"), "utf8");
+    const section = text.split("#### `dispatch templates library`")[1].split("#### `dispatch templates add`")[0];
+    expect(section).toContain("dispatch templates library automations");
+    expect(section).toContain("dispatch templates library automation onboarding-drip");
+    expect(section).toContain("do not install");
+    expect(section).toContain("dispatch automations create --preset <slug> --from <sender>");
+    expect(section).toContain("Newsletter also requires `--topic <id>`");
+    expect(section).toContain("cannot enable until their Marketing steps have live topics");
+  });
+
   it("typechecks every recipe's actual TypeScript blocks against SDK source without emitting files", () => {
     const options: ts.CompilerOptions = {
       target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext,
