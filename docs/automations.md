@@ -37,6 +37,8 @@ The API returns `202` after storing the event and runs. The worker executes the 
 
 An event definition under `/events` is optional. If you define a payload schema, Dispatch checks fired payloads against it. Creating a definition does not fire an event.
 
+`GET /events` list rows include `fired_count` and nullable `last_fired_at` for live fired events in your tenant. An unused definition has `0` and `null`; null is not the current time. Internal contact events and deleted fired rows are excluded. These counts describe recorded events, not successful email delivery.
+
 When a fired event names a new email address, Dispatch creates a subscribed contact before starting runs. It also fills missing first and last names from the payload, without replacing names already present. A deleted contact is not revived. Other payload fields remain event data; they are not automatically stored as contact properties.
 
 Event names starting with `@` are reserved and refused by event sending, event definitions, event triggers, and Wait for event configs. Internal contact triggers use a separate namespace and are hidden from `/fired-events`. They cannot start an event-triggered automation or satisfy a Wait for event step.
@@ -511,3 +513,19 @@ Calling Stop with only the ID preserves enrollments.
 Starting again accepts future events; it does not resume stopped runs or replay missed triggers. Already queued emails are separate resources and are not cancelled by stopping the automation. Cancel eligible queued or scheduled emails through the [email API](api/README.md#sending).
 
 For run notifications, see [webhooks](webhooks.md).
+
+## Lifecycle presets
+
+Choose one of [six lifecycle recipes](automations/README.md) or a blank graph. Read-only listing and preview install nothing. Installation creates a disabled flow and missing compatible definitions, preserving reused templates unchanged. Newsletter requires a live topic at install; other Marketing presets may defer topics but cannot enable without them. Review app-owned fields/events, freshness, content and billing limits first.
+
+```sh
+dispatch automations create --preset onboarding-drip --from hello@acme.com --topic topic_123
+```
+
+Preset mode makes name optional and rejects custom graph, trigger, status and re-entry flags. Its --topic binds Marketing steps and the newsletter trigger. Blank/custom mode retains the topic_subscribed-trigger meaning of --topic.
+
+## Ask your agent
+
+```text
+Help me review Dispatch lifecycle presets and draft a disabled automation using the shipped API. Use the public documentation for my running Dispatch version and only shipped endpoints and SDK methods. Read DISPATCH_API_URL and DISPATCH_API_KEY from my environment; never print or embed the key. Respect my current permissions and ask for confirmation before sending email, publishing, deleting, or changing live configuration.
+```

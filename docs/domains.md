@@ -53,3 +53,13 @@ Publishing uses UPSERT with a TTL of 300 seconds. It can replace existing record
 Read the result's hosted zone, records-written count, and skipped records with reasons. Add or resolve skipped records manually, then run Doctor and Verify DNS. Publishing is not verification and does not wait for DNS propagation.
 
 See [AWS credentials and resources](aws.md) for the deployment-side setup.
+
+## Lifecycle senders
+
+[Lifecycle installation](automations/README.md) requires a live, verified, sending-enabled tenant domain. It accepts `Acme <hello@acme.com>` and binds the sender to every send step without changing reused templates. Recheck state before enabling: installation does not make verification or permissions permanent. This adds no contacts/topics to the ordinary Transactional send path.
+
+## Ask your agent
+
+```text
+Help me inspect sending domains and their verification status in Dispatch. Use the public documentation for my running Dispatch version and only shipped endpoints and SDK methods. Read DISPATCH_API_URL and DISPATCH_API_KEY from my environment; never print or embed the key. Respect my current permissions and ask for confirmation before sending email, publishing, deleting, or changing live configuration.
+```

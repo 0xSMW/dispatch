@@ -157,8 +157,18 @@ A Subscribed to topic trigger starts when effective receipt changes from off to 
 
 Give an ordinary send a `topic_id`, or choose a Topic on an automation send step, to make it Marketing. Dispatch adds one-click unsubscribe headers and fills the template's unsubscribe placeholders with signed, recipient-specific preference links. It rechecks opt-outs at delivery. Broadcasts are Marketing and respect global unsubscribes and any selected topic.
 
-Without a topic, an ordinary or automation send is Transactional and does not use marketing subscription checks. Use that for requested receipts or password resets, not to bypass a person's marketing preference.
+Without a topic, an ordinary send is Transactional and does not use marketing subscription checks. Automation steps store kind explicitly: a Marketing draft without a topic stays Marketing and cannot enable or resume without a live topic. Use that for requested receipts or password resets, not to bypass a person's marketing preference.
 
 Suppressions are separate from subscriptions: manual suppressions, permanent bounces, and complaints can block delivery regardless of topic preference. Open Suppressions from either Audience or Emails, or inspect them through the API.
 
 See [Marketing sending behavior](api/README.md#sending), [templates](templates.md#variables), and [unsubscribe webhooks](webhooks.md).
+
+## App-owned lifecycle state
+
+[Lifecycle recipes](automations/README.md) declare activated (boolean), plan (string), or last_active_at (date) as needed. Your app writes actual values at signup, activation, billing changes and meaningful activity. Payloads do not update properties; installed definitions do not populate state. Preserve consent rather than resetting subscription flags to make a flow run.
+
+## Ask your agent
+
+```text
+Help me add and inspect Dispatch contacts while preserving their consent preferences. Use the public documentation for my running Dispatch version and only shipped endpoints and SDK methods. Read DISPATCH_API_URL and DISPATCH_API_KEY from my environment; never print or embed the key. Respect my current permissions and ask for confirmation before sending email, publishing, deleting, or changing live configuration.
+```

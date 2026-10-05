@@ -116,3 +116,13 @@ Reference them with placeholders such as `{{{PRODUCT_NAME}}}` and `{{{BRAND_COLO
 Brand also sets the heading and description on the public unsubscribe page. It does not set a static unsubscribe URL: Marketing links are generated for each recipient.
 
 Brand is available through `GET /brand` and `PATCH /brand`. See [the API reference](api/README.md#routes) and [React Email's brand prop](react-email.md#brand-values).
+
+## Lifecycle library
+
+[Lifecycle recipes](automations/README.md) install an entire disabled flow. Library partitions by stage first, so staged Transactional onboarding and billing templates also appear under Lifecycle. Missing copies are created published; reused edited/draft aliases are never overwritten or auto-published. Inspect variables, kind and publication before enabling. Edit shared [Brand](#brand) values without rewriting content.
+
+## Ask your agent
+
+```text
+Help me create a reusable Dispatch email template and declare its required variables and optional fallbacks. Use the public documentation for my running Dispatch version and only shipped endpoints and SDK methods. Read DISPATCH_API_URL and DISPATCH_API_KEY from my environment; never print or embed the key. Respect my current permissions and ask for confirmation before sending email, publishing, deleting, or changing live configuration.
+```

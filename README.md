@@ -54,22 +54,82 @@ Open the dashboard to see it arrive in the email list. To try failures, send to 
 
 ### Send from code
 
+The same request in every language is `POST /emails`:
+
+```json
+{"from":"hello@example.com","to":"you@example.net","subject":"Welcome aboard","html":"<p>Thanks for signing up.</p>"}
+```
+
+#### TypeScript
+
+```sh
+pnpm add @dispatchmail/sdk
+```
+
 ```ts
 import { Dispatch } from "@dispatchmail/sdk";
 
-const dispatch = new Dispatch({ apiKey: process.env.DISPATCH_API_KEY });
+const dispatch = new Dispatch({ apiKey: process.env.DISPATCH_API_KEY, baseUrl: process.env.DISPATCH_API_URL });
 
-await dispatch.emails.send({
+const { data, error } = await dispatch.emails.send({
   from: "hello@example.com",
   to: "you@example.net",
   subject: "Welcome aboard",
   html: "<p>Thanks for signing up.</p>",
 });
+if (error) throw new Error(error.message);
 ```
 
-The Python SDK is in `packages/sdk-python` and the Go SDK in `packages/sdk-go`, with runnable programs in `examples/`. The `dispatch` CLI does the same from your terminal. See [docs/cli.md](docs/cli.md).
+#### Python
+
+From a checkout:
+
+```sh
+python -m pip install ./packages/sdk-python
+```
+
+```python
+import os
+from dispatch import Dispatch
+
+dispatch = Dispatch(api_key=os.environ["DISPATCH_API_KEY"], base_url=os.environ["DISPATCH_API_URL"])
+email = dispatch.send({
+    "from": "hello@example.com",
+    "to": "you@example.net",
+    "subject": "Welcome aboard",
+    "html": "<p>Thanks for signing up.</p>",
+})
+# API errors raise DispatchError.
+```
+
+#### Go
+
+The module is `github.com/dispatch/dispatch-go`. To use the SDK from this checkout:
+
+```sh
+go mod edit -require=github.com/dispatch/dispatch-go@v0.0.0
+go mod edit -replace=github.com/dispatch/dispatch-go=./packages/sdk-go
+```
+
+```go
+import dispatch "github.com/dispatch/dispatch-go"
+
+client := dispatch.New("") // Reads DISPATCH_API_KEY and DISPATCH_API_URL.
+email, err := client.Send(dispatch.Map{
+    "from": "hello@example.com", "to": "you@example.net",
+    "subject": "Welcome aboard", "html": "<p>Thanks for signing up.</p>",
+}, "")
+if err != nil { return err }
+_ = email
+```
+
+Runnable programs are in `examples/`. The `dispatch` CLI does the same from your terminal. See [docs/cli.md](docs/cli.md).
 
 Ordinary sends are **Transactional** when you omit `topic_id` (`topicId` in TypeScript): no contact, topic, or automation is needed. Set it for **Marketing** to respect opt-outs and add recipient-specific unsubscribe links and one-click headers. There is no new `kind` field on the send API or `emails.send`. Automation steps store their kind explicitly; Marketing drafts can wait for a topic but cannot be enabled or resumed without one. See [sending](docs/api/README.md#sending) and [automations](docs/automations.md#transactional-or-marketing).
+
+### Optional lifecycle recipes
+
+Choose one of [six lifecycle recipes](docs/automations/README.md) for newsletter welcome, onboarding, upgrades, win-back, failed payment, or reactivation. Each installs disabled using a verified sender, preserves reused templates unchanged, and documents the app-owned fields/events and review before enabling. Newsletter requires a live topic at install; other Marketing flows can defer their topics but cannot enable without them. [Offline examples](examples/lifecycle/README.md) use the actual SDKs without sending during tests.
 
 ### Run it in production
 
