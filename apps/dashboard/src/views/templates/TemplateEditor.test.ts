@@ -56,6 +56,7 @@ describe("TemplateEditor", () => {
   it("shows read-only template kind and updates it from unsaved HTML without sending a kind field", async () => {
     const { fetch } = setup();
     await screen.findByLabelText("HTML");
+    expect(screen.getByRole("link", { name: "Edit brand" }).getAttribute("href")).toBe("/settings/brand");
     expect(screen.getByLabelText("Template kind")).toHaveProperty("disabled", true);
     expect(screen.getByLabelText("Template kind")).toHaveProperty("value", "Transactional");
     await editHtml('<a href="{{UNSUBSCRIBE_URL}}">Leave</a>');

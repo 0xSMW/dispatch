@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { automations } from "../../../../../packages/templates/library.json";
 import { framed } from "../../components/EmailFrame";
 import { h, signIn } from "../../testing";
 import { api, calls, list, renderAt } from "./harness";
@@ -88,7 +89,7 @@ describe("Library", () => {
     expect(screen.getByRole("link", { name: "Edit brand" }).getAttribute("href")).toBe("/settings/brand");
   });
 
-  it("filters lifecycle emails by stage, including transactional dunning, without requesting presets", async () => {
+  it("filters lifecycle emails by stage, including transactional dunning, alongside preset discovery", async () => {
     const lifecycle = [
       entry({ slug: "welcome", name: "Welcome", stage: "onboarding" }),
       entry({ slug: "payment-failed", name: "Payment failed", stage: "dunning", category: "billing" }),
@@ -96,21 +97,25 @@ describe("Library", () => {
     ];
     const fetch = api({
       "GET /template-library": list([...entries, ...lifecycle]),
+      "GET /template-library/automations": list(automations),
       ...Object.fromEntries([...entries, ...lifecycle].map((item) => [`GET /template-library/${item.slug}`, { ...item, rendered: { html: "<p>Preview</p>" } }])),
     });
     renderAt("/templates/library?tab=lifecycle", [{ path: "/templates/library", element: h(Library) }]);
     expect(await screen.findByRole("article", { name: "Payment failed" })).toBeTruthy();
     expect(screen.queryByRole("article", { name: "Password reset" })).toBeNull();
     expect(screen.getByRole("article", { name: "Newsletter" })).toBeTruthy();
+    await screen.findByRole("button", { name: automations[0]!.name });
+    expect(screen.getAllByRole("button", { name: "Install as automation" })).toHaveLength(6);
     fireEvent.change(screen.getByLabelText("Stage"), { target: { value: "dunning" } });
     expect(screen.getAllByRole("article")).toHaveLength(1);
     expect(screen.getByRole("article", { name: "Payment failed" })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Install as automation" })).toHaveLength(1);
     fireEvent.change(screen.getByLabelText("Stage"), { target: { value: "retention" } });
     expect(screen.getByText("No matching templates")).toBeTruthy();
     fireEvent.click(screen.getByRole("tab", { name: "Transactional" }));
     expect(screen.getAllByRole("article")).toHaveLength(2);
     expect(screen.queryByLabelText("Stage")).toBeNull();
-    expect(calls(fetch, "GET /template-library/automations")).toHaveLength(0);
+    expect(calls(fetch, "GET /template-library/automations")).toHaveLength(1);
   });
 
   it("lets viewers browse previews but does not offer installation", async () => {

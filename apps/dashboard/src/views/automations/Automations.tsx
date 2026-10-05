@@ -22,7 +22,7 @@ import { errorMessage } from "../../lib/client";
 import { learnLinks } from "../../lib/docs";
 import { useCan, useClient } from "../../shell/session";
 import type { Automation, ContactProperty, EventDefinition, Segment, Topic } from "../../types";
-import { automationTabs } from "../tabs";
+import { Presets } from "./Presets";
 import { automationTrigger, triggerIssues, triggerLabels, triggerSummary, triggerWarning, type TriggerConfig } from "./graph";
 import { ReentryContext, TriggerForm, triggerLoading, triggerSources, type Reentry } from "./Trigger";
 import { StopAutomation, isEnabled } from "./Stop";
@@ -61,6 +61,7 @@ export function Automations() {
   };
   const selection = useSelection(list.rows.map((row) => row.id));
   const [creating, setCreating] = useState(false);
+  const [choosing, setChoosing] = useState(false);
   const [stopping, setStopping] = useState<Automation | null>(null);
   const [enrolling, setEnrolling] = useState<Automation | null>(null);
   const [deleting, setDeleting] = useState<Automation[] | null>(null);
@@ -86,9 +87,8 @@ export function Automations() {
     <ListPage
       title="Automations"
       learn={learnLinks("automations")}
-      tabs={automationTabs}
       actions={
-        <button type="button" onClick={() => setCreating(true)}>
+        <button type="button" onClick={() => setChoosing(true)}>
           Create automation
         </button>
       }
@@ -105,7 +105,8 @@ export function Automations() {
         filters.status ? (
           <Empty title="No automations" body={`No automations are ${filters.status}.`} />
         ) : (
-          <Empty title="No automations" body="An automation runs steps when an event is received or a contact changes. Create one to get started." />
+          <Empty title="No automations" body="Start with a lifecycle stage or build your own automation."
+            action={can ? <button type="button" onClick={() => setChoosing(true)}>Choose a starting point</button> : null} />
         )
       }
       columns={[
@@ -153,6 +154,10 @@ export function Automations() {
         />
       )}
     >
+      <Presets onBlank={() => setCreating(true)} />
+      {choosing ? <Modal isOpen title="Choose a starting point" onClose={() => setChoosing(false)}>
+        <Presets onBlank={() => { setChoosing(false); setCreating(true); }} />
+      </Modal> : null}
       {creating && can ? <CreateAutomation onClose={() => setCreating(false)} /> : null}
       {enrolling ? <Enroll automation={enrolling} onClose={() => setEnrolling(null)} /> : null}
       {stopping ? <StopAutomation automation={stopping} onClose={() => setStopping(null)} onDone={() => void list.reload()} /> : null}

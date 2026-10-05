@@ -21,6 +21,7 @@ import {
   Sun,
   Users,
   Webhook,
+  Zap,
 } from "lucide-react";
 import { Menu } from "../components/Menu";
 import { useHotkey } from "../hooks/useHotkey";
@@ -32,21 +33,28 @@ import { Shortcuts } from "./Shortcuts";
 import { useSession } from "./session";
 import { useTheme } from "./theme";
 
-/** Sidebar order: sending and content first, then delivery and developer tools, then Settings. */
+/** Send, Engage, then Settings; transactional sending needs no lifecycle setup. */
 export const nav = [
   { to: "/emails", label: "Emails", icon: Mail },
-  { to: "/broadcasts", label: "Broadcasts", icon: Megaphone },
-  { to: "/automations", label: "Automations", icon: GitBranch },
   { to: "/templates", label: "Templates", icon: FileText },
-  { to: "/audience", label: "Audience", icon: Users },
-  { to: "/metrics", label: "Metrics", icon: BarChart3 },
   { to: "/domains", label: "Domains", icon: Globe2 },
+  { to: "/metrics", label: "Metrics", icon: BarChart3 },
   { to: "/logs", label: "Logs", icon: ScrollText },
   { to: "/api-keys", label: "API keys", icon: KeyRound },
   { to: "/webhooks", label: "Webhooks", icon: Webhook },
   { to: "/timeline", label: "Timeline", icon: Activity },
+  { to: "/broadcasts", label: "Broadcasts", icon: Megaphone },
+  { to: "/automations", label: "Automations", icon: GitBranch },
+  { to: "/audience", label: "Audience", icon: Users },
+  { to: "/events", label: "Events", icon: Zap },
   { to: "/settings", label: "Settings", icon: Settings },
 ] as const;
+
+/** Compatibility route retains query state without adding a history entry. */
+export function EventsRedirect() {
+  const location = useLocation();
+  return <Navigate to={`/events${location.search}${location.hash}`} replace />;
+}
 
 /** Layout for every signed-in page. Sends visitors without a session to `/login`. */
 export function Shell() {
@@ -72,11 +80,16 @@ export function Shell() {
           <span>Dispatch</span>
         </div>
         <nav aria-label="Main">
-          {nav.map(({ to, label, icon: Icon }) => (
-            <NavLink key={to} to={to} className={({ isActive }) => (isActive ? "navItem active" : "navItem")}>
-              <Icon size={16} />
-              <span>{label}</span>
-            </NavLink>
+          {["Send", "Engage", "Settings"].map((group, index) => (
+            <div key={group} role="group" aria-label={group}>
+              {index < 2 ? <p className="dim">{group}</p> : null}
+              {nav.slice(index === 0 ? 0 : index === 1 ? 8 : 12, index === 0 ? 8 : index === 1 ? 12 : 13).map(({ to, label, icon: Icon }) => (
+                <NavLink key={to} to={to} className={({ isActive }) => (isActive ? "navItem active" : "navItem")}>
+                  <Icon size={16} />
+                  <span>{label}</span>
+                </NavLink>
+              ))}
+            </div>
           ))}
         </nav>
         <div className="sidebarFoot">

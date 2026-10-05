@@ -18,6 +18,7 @@ import { docsBase } from "../../lib/docs";
 import type { LibraryDetail, LibraryTemplate, List, Rendered } from "../../types";
 import { templateTabs } from "../tabs";
 import { Preview, Thumb } from "./editor";
+import { Presets } from "../automations/Presets";
 
 // Local until the listing contract is added to the shared dashboard types.
 export type DiscoveryTemplate = LibraryTemplate & { stage?: string | null; when?: string };
@@ -110,6 +111,7 @@ export function Library() {
         <div className="stack">
           <p className="muted">Emails for each stage of the customer lifecycle. Marketing emails respect topic opt-outs; transactional emails are always sent.</p>
           <Select label="Stage" value={stage} onChange={(value) => filter("stage", value)} placeholder="All stages" options={stageOptions} />
+          <Presets stage={stage} />
         </div>
       ) : null}
       {library.error ? (

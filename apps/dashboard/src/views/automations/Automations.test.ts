@@ -2,8 +2,9 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { automations } from "../../../../../packages/templates/library.json";
 import { SessionProvider } from "../../shell/session";
-import { callAt, h, mockFetch, signIn } from "../../testing";
+import { h, mockFetch, signIn } from "../../testing";
 import { automationCsv, Automations } from "./Automations";
 
 const rows = [
@@ -35,17 +36,22 @@ describe("Automations", () => {
   });
 
   it("lists automations with the status filter from the URL, run counts, and status", async () => {
-    const fetch = mockFetch(() => ({ body: { object: "list", has_more: false, data: rows } }));
+    const fetch = mockFetch((url) => ({ body: { object: "list", has_more: false,
+      data: new URL(url).pathname === "/automations" ? rows : new URL(url).pathname === "/template-library/automations" ? automations : [] } }));
     open("/automations?status=enabled");
     expect(await screen.findByText("Welcome")).toBeTruthy();
-    expect(callAt(fetch).url).toBe("http://localhost:3100/automations?status=enabled&limit=40");
+    expect(String(fetch.mock.calls.find(([url]) => new URL(String(url)).pathname === "/automations")![0])).toBe("http://localhost:3100/automations?status=enabled&limit=40");
     expect(screen.getByText("1,204")).toBeTruthy();
     expect(screen.getByText("user.idle")).toBeTruthy();
     expect(screen.getAllByText("enabled").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Start blank" })).toBeTruthy();
+    await screen.findByRole("button", { name: automations[0]!.name });
+    expect(screen.getAllByRole("button", { name: "Install as automation" })).toHaveLength(6);
     const learn = within(screen.getByRole("navigation", { name: "Learn more" }));
     expect(learn.getByRole("link", { name: "Triggers" }).getAttribute("href")).toContain("automations.md#triggers");
     expect(learn.getByRole("link", { name: "Conditions" }).getAttribute("href")).toContain("automations.md#conditions");
-    expect(learn.queryByRole("link", { name: "Lifecycle recipes" })).toBeNull();
+    const recipes = learn.queryByRole("link", { name: "Lifecycle recipes" });
+    if (recipes) expect(recipes.getAttribute("href")).toContain("automations/README.md");
   });
   it("displays and exports paused status without treating it as disabled", async () => {
     const paused = { ...rows[0], status: "paused" as const, version: 2, steps: [] };
@@ -56,7 +62,7 @@ describe("Automations", () => {
     const row = screen.getByText("Welcome").closest("tr")!;
     expect(within(row).getByText("paused")).toBeTruthy();
     expect(screen.getByRole("option", { name: "paused" })).toBeTruthy();
-    expect(callAt(fetch).url).toContain("status=paused");
+    expect(String(fetch.mock.calls.find(([url]) => new URL(String(url)).pathname === "/automations")![0])).toContain("status=paused");
     expect(automationCsv.find((column) => column.header === "status")!.value(paused)).toBe("paused");
   });
 
@@ -101,6 +107,7 @@ describe("Automations", () => {
     });
     open();
     fireEvent.click(await screen.findByRole("button", { name: "Create automation" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Start blank" }));
     const dialog = screen.getByRole("dialog");
     fireEvent.change(within(dialog).getByLabelText(/Name/), { target: { value: "Onboarding" } });
     fireEvent.change(within(dialog).getByLabelText("Trigger event"), { target: { value: "user.created" } });
@@ -131,6 +138,7 @@ describe("Automations", () => {
     });
     open();
     fireEvent.click(await screen.findByRole("button", { name: "Create automation" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Start blank" }));
     const dialog = within(screen.getByRole("dialog"));
     fireEvent.change(dialog.getByLabelText("Name"), { target: { value: "Lifecycle" } });
     fireEvent.change(dialog.getByLabelText("Trigger"), { target: { value: config.type } });
@@ -174,6 +182,7 @@ describe("Automations", () => {
     const fetch = mockFetch((_raw, init) => init.method === "POST" ? { body: { id: "automation_3" } } : { body: { object: "list", has_more: false, data: [] } });
     open();
     fireEvent.click(await screen.findByRole("button", { name: "Create automation" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Start blank" }));
     const dialog = within(screen.getByRole("dialog"));
     fireEvent.change(dialog.getByLabelText("Name"), { target: { value: "Lifecycle" } });
     expect(dialog.getByLabelText("Run for each contact")).toHaveProperty("value", "every_time");

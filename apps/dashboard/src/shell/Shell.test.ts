@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { h, mockFetch, signIn } from "../testing";
 import { useResource } from "../hooks/useResource";
 import { SessionProvider } from "./session";
-import { Shell } from "./Shell";
+import { EventsRedirect, nav, Shell } from "./Shell";
 
 function Login() {
   const location = useLocation();
@@ -74,6 +74,38 @@ describe("Shell keys", () => {
     cleanup();
     sessionStorage.clear();
     vi.unstubAllGlobals();
+  });
+
+  it("groups Send and Engage in their exact order with Settings last for full and viewer sessions", () => {
+    signIn("viewer", ["read"]);
+    open("/events");
+    expect(nav.map((item) => item.label)).toEqual([
+      "Emails", "Templates", "Domains", "Metrics", "Logs", "API keys", "Webhooks", "Timeline",
+      "Broadcasts", "Automations", "Audience", "Events", "Settings",
+    ]);
+    const main = within(screen.getByRole("navigation", { name: "Main" }));
+    expect(within(main.getByRole("group", { name: "Send" })).getAllByRole("link").map((link) => link.textContent))
+      .toEqual(["Emails", "Templates", "Domains", "Metrics", "Logs", "API keys", "Webhooks", "Timeline"]);
+    expect(within(main.getByRole("group", { name: "Engage" })).getAllByRole("link").map((link) => link.textContent))
+      .toEqual(["Broadcasts", "Automations", "Audience", "Events"]);
+    expect(main.getByRole("link", { name: "Events" }).getAttribute("href")).toBe("/events");
+    expect(main.queryByRole("link", { name: "Goals" })).toBeNull();
+  });
+
+  it("replaces the old Events route while preserving search and hash", async () => {
+    function Destination() {
+      const location = useLocation();
+      const navigate = useNavigate();
+      return h("div", null, h("p", null, `${location.pathname}${location.search}${location.hash}`),
+        h("button", { onClick: () => navigate(-1) }, "Back"));
+    }
+    render(h(MemoryRouter, { initialEntries: ["/before", "/automations/events?limit=10&q=signup#recent"] },
+      h(Routes, null,
+        h(Route, { path: "/automations/events", element: h(EventsRedirect) }),
+        h(Route, { path: "*", element: h(Destination) }))));
+    expect(await screen.findByText("/events?limit=10&q=signup#recent")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(await screen.findByText("/before")).toBeTruthy();
   });
 
   it("opens the API reference for the page with A, filled with its ids", () => {

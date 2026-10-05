@@ -189,7 +189,8 @@ export function Contacts() {
           filtered ? (
             <Empty title="No contacts found" body="No contact matches these filters." />
           ) : (
-            <Empty title="No contacts" body="Add contacts by hand, import a CSV, or create them through the API." />
+            <Empty title="No contacts" body="Add contacts by hand, import a CSV, or create them through the API."
+              action={can ? <button type="button" onClick={() => setDialog("add")}>Add your first contact</button> : null} />
           )
         }
       />

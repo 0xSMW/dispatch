@@ -16,7 +16,7 @@ import { useFilters } from "../../hooks/useFilters";
 import { useList } from "../../hooks/useList";
 import { useMutation } from "../../hooks/useMutation";
 import { useAll } from "../../hooks/useResource";
-import { useClient } from "../../shell/session";
+import { useCan, useClient } from "../../shell/session";
 import type { Broadcast, List, Segment, Topic } from "../../types";
 
 export const broadcastStatuses = ["draft", "scheduled", "queued", "sent", "canceled"];
@@ -43,6 +43,7 @@ export function broadcastHref(row: Pick<Broadcast, "id" | "status">) {
 
 export function Broadcasts() {
   const client = useClient();
+  const can = useCan();
   const navigate = useNavigate();
   const filters = useFilters(["q", "status", "segment_id"]);
   const list = useList<Broadcast>("/broadcasts", filters);
@@ -78,7 +79,8 @@ export function Broadcasts() {
       list={list}
       noun="broadcasts"
       rowHref={broadcastHref}
-      empty={<Empty title="No broadcasts" body="Broadcasts are always Marketing. Send one email to a segment, respecting contact and topic opt-outs with an unsubscribe link and header." />}
+      empty={<Empty title="No broadcasts" body="Send a marketing email to a segment, respecting contact and topic opt-outs."
+        action={can ? <button type="button" onClick={() => setCreating(true)}>Create your first broadcast</button> : null} />}
       columns={[
         {
           header: "Name",

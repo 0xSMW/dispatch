@@ -444,6 +444,33 @@ export type Automation = {
   updated_at?: string;
 };
 
+export type AutomationPreset = {
+  object?: "automation_preset";
+  slug: string;
+  name: string;
+  stage: "acquisition" | "onboarding" | "retention" | "reengagement" | "dunning" | "reactivation";
+  description: string;
+  when: string;
+  trigger_config: import("./views/automations/graph").TriggerConfig;
+  reentry: "once" | "every_time";
+  events: Array<{ name: string; schema: Record<string, PropertyType> }>;
+  properties: Array<{ key: string; type: PropertyType }>;
+  steps: AutomationStep[];
+  connections: Array<{ from: string; to: string; type?: string; path?: string }>;
+  templates: string[];
+};
+
+export type AutomationInstallation = {
+  automation: Automation;
+  templates: {
+    created: Array<{ id: string; slug: string }>;
+    reused: Array<{ id: string; slug: string }>;
+  };
+  events: Array<{ id: string; name: string }>;
+  properties: Array<{ id: string; key: string; type: PropertyType }>;
+  next_steps: string[];
+};
+
 export type AutomationRun = {
   object?: "automation_run";
   id: string;
@@ -513,6 +540,8 @@ export type EventDefinition = {
   schema: Record<string, "string" | "number" | "boolean" | "date">;
   created_at: string;
   updated_at?: string;
+  fired_count?: number;
+  last_fired_at?: string | null;
 };
 
 // Logs, timeline, system

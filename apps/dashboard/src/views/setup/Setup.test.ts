@@ -35,7 +35,7 @@ describe("Setup", () => {
     const optional = screen.getByText("Lifecycle email (optional)").closest("details")!;
     expect(optional.hasAttribute("open")).toBe(false);
     expect(within(optional).getByRole("link", { name: "Set your brand" }).getAttribute("href")).toBe("/settings/brand");
-    expect(within(optional).getByRole("link", { name: "Send your first event" }).getAttribute("href")).toBe("/automations/events");
+    expect(within(optional).getByRole("link", { name: "Send your first event" }).getAttribute("href")).toBe("/events");
     expect(within(optional).getByRole("link", { name: "Browse lifecycle templates" }).getAttribute("href")).toBe("/templates/library?tab=lifecycle");
 
     fireEvent.click(screen.getByRole("button", { name: "Send a test email" }));

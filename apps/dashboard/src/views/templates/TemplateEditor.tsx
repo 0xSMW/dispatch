@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { AlertTriangle, CheckCircle2, Info } from "lucide-react";
 import { Badge } from "../../components/Badge";
 import { Drawer } from "../../components/Drawer";
@@ -252,6 +252,7 @@ export function TemplateEditor() {
       save={can ? draft.state : undefined}
       actions={
         <>
+          <Link className="button secondary" to="/settings/brand">Edit brand</Link>
           <button
             type="button"
             className="ghost"

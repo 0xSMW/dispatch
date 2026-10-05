@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { createBrowserRouter, Navigate, RouterProvider } from "react-router-dom";
 import { Login } from "./shell/Login";
 import { Root } from "./shell/Root";
-import { Shell } from "./shell/Shell";
+import { EventsRedirect, Shell } from "./shell/Shell";
 import { applyTheme } from "./shell/theme";
 import { AutomationEditor } from "./views/automations/AutomationEditor";
 import { Automations } from "./views/automations/Automations";
@@ -76,7 +76,8 @@ export const routes = [
           { path: "broadcasts/:id/editor", element: <BroadcastEditor /> },
 
           { path: "automations", element: <Automations /> },
-          { path: "automations/events", element: <Events /> },
+          { path: "events", element: <Events /> },
+          { path: "automations/events", element: <EventsRedirect /> },
           { path: "automations/:id/editor", element: <AutomationEditor /> },
 
           { path: "templates", element: <Templates /> },

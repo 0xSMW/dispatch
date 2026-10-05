@@ -17,11 +17,6 @@ export const audienceTabs: Tab[] = [
   { id: "suppressions", label: "Suppressions", to: "/emails/suppressions" },
 ];
 
-export const automationTabs: Tab[] = [
-  { id: "automations", label: "Automations", to: "/automations" },
-  { id: "events", label: "Events", to: "/automations/events" },
-];
-
 export const templateTabs: Tab[] = [
   { id: "templates", label: "Templates", to: "/templates" },
   { id: "library", label: "Library", to: "/templates/library" },

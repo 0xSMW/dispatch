@@ -29,6 +29,17 @@ import {
 } from "./graph";
 import { contextFields } from "../../lib/rules";
 import { sendKind } from "../../lib/emailKind";
+import { presets } from "../../../../../packages/templates/src/presets";
+
+it.each(presets)("shows and round-trips installed $slug shared terminal exits without merging executable steps", (preset) => {
+  const parsed = toTree(preset.steps, preset.connections);
+  expect(parsed.problem).toBeNull();
+  const graph = toGraph(parsed.tree);
+  expect(graph.steps.filter((step) => step.type === "exit")).toEqual(preset.steps.filter((step) => step.type === "exit"));
+  expect(graph.connections).toEqual(expect.arrayContaining(preset.connections));
+  expect(graph.connections).toHaveLength(preset.connections.length);
+  expect(new Set(graph.steps.map((step) => step.key)).size).toBe(graph.steps.length);
+});
 
 const normalized = (steps: Graph["steps"]) => steps.map((step) => step.type === "send_email"
   ? { ...step, config: { ...step.config, kind: sendKind(step.config) } } : step);

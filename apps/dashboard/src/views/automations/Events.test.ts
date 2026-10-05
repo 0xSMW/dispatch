@@ -4,7 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { h, mockFetch, signIn, wrapper } from "../../testing";
 import { Events, samplePayload, schemaIssue, toSchema } from "./Events";
 
-const definitions = [{ object: "event", id: "evdef_1", name: "user.upgraded", schema: { plan: "string", seats: "number" }, created_at: "2026-09-01T00:00:00.000Z" }];
+const definitions = [{ object: "event", id: "evdef_1", name: "user.upgraded", schema: { plan: "string", seats: "number" },
+  fired_count: 1204, last_fired_at: "2026-09-02T00:00:00.000Z", created_at: "2026-09-01T00:00:00.000Z" }];
 const fired = [{ object: "fired_event", id: "cevt_1", name: "user.upgraded", email: "ada@example.com", payload: { plan: "pro" }, request_id: "req_1", created_at: "2026-09-02T00:00:00.000Z" }];
 
 function api() {
@@ -38,9 +39,21 @@ describe("Events", () => {
     expect(screen.getByText(/with a new email address creates a contact/)).toBeTruthy();
     expect(screen.getAllByText("user.upgraded").length).toBe(2);
     expect(screen.getByText(": number")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Events" })).toBeTruthy();
+    expect(screen.getByText("1,204")).toBeTruthy();
+    expect(screen.queryByRole("tab", { name: "Automations" })).toBeNull();
     const paths = fetch.mock.calls.map(([url]) => String(url));
     expect(paths).toContain("http://localhost:3100/events?limit=40");
     expect(paths).toContain("http://localhost:3100/fired-events?limit=20");
+  });
+
+  it("renders zero counts and null last-fired as Never, not the current time", async () => {
+    mockFetch((url) => ({ body: { object: "list", has_more: false, data: new URL(url).pathname === "/events"
+      ? [{ ...definitions[0], fired_count: 0, last_fired_at: null }] : [] } }));
+    render(h(Events), { wrapper });
+    const row = (await screen.findByText("user.upgraded")).closest("tr")!;
+    expect(within(row).getByText("0")).toBeTruthy();
+    expect(within(row).getByText("Never")).toBeTruthy();
   });
 
   it("adds a definition with typed fields", async () => {

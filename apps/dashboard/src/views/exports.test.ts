@@ -7,9 +7,14 @@ import { broadcastCsv } from "./broadcasts/Broadcasts";
 import { domainCsv } from "./domains/Domains";
 import { keyCsv } from "./keys/Keys";
 import { webhookCsv } from "./webhooks/Webhooks";
+import * as tabs from "./tabs";
 
 // The CSV export each list page offers.
 describe("list exports", () => {
+  it("does not export obsolete automation Events tabs", () => {
+    expect("automationTabs" in tabs).toBe(false);
+    expect(Object.values(tabs).flat().some((tab) => tab.to === "/automations/events")).toBe(false);
+  });
   it("writes a header row and one line per row", () => {
     expect(toCsv([{ id: "seg_1", name: "VIP, gold", contacts: 3, created_at: "2026-09-01" }] as never[], segmentCsv)).toBe(
       'id,name,contacts,created_at\r\nseg_1,"VIP, gold",3,2026-09-01\r\n',

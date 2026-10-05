@@ -61,6 +61,13 @@ describe("Contacts", () => {
     expect(learn.getByRole("link", { name: "Topics" }).getAttribute("href")).toContain("audience.md#topics");
   });
 
+  it("offers an add-contact action in the unfiltered empty state", async () => {
+    api({ "GET /contacts": list([]) });
+    show(h(Contacts), "/audience");
+    fireEvent.click(await screen.findByRole("button", { name: "Add your first contact" }));
+    expect(screen.getByRole("dialog", { name: "Add contact" })).toBeTruthy();
+  });
+
   it("shows each contact's segments, three at most, with a count for the rest", async () => {
     const names = ["VIP", "Beta", "Trials", "Churned", "Staff"];
     api({

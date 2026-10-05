@@ -27,6 +27,8 @@ export type BranchPath = { key: string; label: string; rule: Rule };
 
 export type Node = {
   key: string;
+  /** Display identity for a repeated terminal Exit; serialization retains its stored key. */
+  sharedKey?: string;
   type: StepType;
   config: Record<string, unknown>;
   branches?: Partial<Record<Branch, Node[]>>;
@@ -255,12 +257,21 @@ export function toTree(steps: GraphStep[], connections: Connection[] = []): { tr
   const out = (from: string, type: string, path?: string) =>
     connections.find((connection) => connection.from === from && (connection.type ?? "default") === type && connection.path === path)?.to ?? null;
   const seen = new Set<string>();
+  const displayKeys = new Set(byKey.keys());
   let problem: string | null = null;
 
   const chain = (start: string | null): Node[] => {
     const list: Node[] = [];
     for (let key = start; key; ) {
       if (seen.has(key)) {
+        const shared = byKey.get(key);
+        if (shared?.type === "exit" && !connections.some((edge) => edge.from === key)) {
+          let displayKey = `${key}_lane`;
+          for (let index = 2; displayKeys.has(displayKey); index++) displayKey = `${key}_lane_${index}`;
+          displayKeys.add(displayKey);
+          list.push({ key: displayKey, sharedKey: key, type: "exit", config: { ...(shared.config ?? {}) } });
+          break;
+        }
         problem ??= `More than one path leads to step ${key}.`;
         break;
       }
@@ -343,8 +354,9 @@ export function toGraph(tree: Tree): Graph {
     }
     let previous = from;
     for (const node of list) {
-      steps.push({ key: node.key, type: node.type, config: cleanConfig(node) });
-      if (previous) connections.push({ from: previous.key, to: node.key, type: previous.type, ...(previous.path ? { path: previous.path } : {}) });
+      const key = node.type === "exit" ? node.sharedKey ?? node.key : node.key;
+      if (!steps.some((step) => step.key === key)) steps.push({ key, type: node.type, config: cleanConfig(node) });
+      if (previous) connections.push({ from: previous.key, to: key, type: previous.type, ...(previous.path ? { path: previous.path } : {}) });
       const branches = branchesOf(node);
       for (const branch of branches) walk(branchSteps(node, branch), { key: node.key, type: node.type === "branch" ? "branch" : branch, ...(node.type === "branch" ? { path: branch } : {}) });
       if (terminal(node)) break;

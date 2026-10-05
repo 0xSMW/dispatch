@@ -46,7 +46,7 @@ export function Setup() {
           {can ? (
             <ul>
               <li><Link to="/settings/brand">Set your brand</Link></li>
-              <li><Link to="/automations/events">Send your first event</Link></li>
+              <li><Link to="/events">Send your first event</Link></li>
               <li><Link to="/templates/library?tab=lifecycle">Browse lifecycle templates</Link></li>
             </ul>
           ) : (
