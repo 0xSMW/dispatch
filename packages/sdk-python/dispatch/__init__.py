@@ -470,6 +470,59 @@ class EventDefinitionInput(TypedDict, total=False):
     schema: dict[str, Literal["string", "number", "boolean", "date"]]
 
 
+class EventDefinition(TypedDict):
+    id: str
+    name: str
+    schema: dict[str, PropertyType]
+    object: NotRequired[str]
+    fired_count: NotRequired[int]
+    last_fired_at: NotRequired[str | None]
+
+
+class EventList(TypedDict):
+    object: Literal["list"]
+    has_more: bool
+    data: list[EventDefinition]
+    request_id: NotRequired[str]
+
+
+AutomationInstallInput = TypedDict("AutomationInstallInput", {
+    "from": str,
+    "name": NotRequired[str],
+    "topic_id": NotRequired[str],
+})
+
+
+class InstalledTemplate(TypedDict):
+    id: str
+    slug: str
+
+
+class InstallationTemplates(TypedDict):
+    created: list[InstalledTemplate]
+    reused: list[InstalledTemplate]
+
+
+class InstalledEvent(TypedDict):
+    id: str
+    name: str
+
+
+class InstalledProperty(TypedDict):
+    id: str
+    key: str
+    type: PropertyType
+
+
+class AutomationInstallation(TypedDict):
+    automation: Automation
+    templates: InstallationTemplates
+    events: list[InstalledEvent]
+    properties: list[InstalledProperty]
+    next_steps: list[str]
+    request_id: NotRequired[str]
+
+
 LibraryStage = Literal["acquisition", "onboarding", "retention", "reengagement", "dunning", "reactivation"]
 
 
@@ -839,6 +892,10 @@ class Dispatch:
     def template_library_automation(self, slug: str) -> AutomationPresetDetail:
         return cast(AutomationPresetDetail, self._request("GET", _path("template-library", "automations", slug)))
 
+    def template_library_install_automation(self, slug: str, **options: Any) -> AutomationInstallation:
+        """Install disabled. Pass from via **{"from": sender}; newsletter requires topic_id."""
+        return cast(AutomationInstallation, self._request("POST", _path("template-library", "automations", slug, "install"), options))
+
     def install_template(self, slug: str, options: Json | None = None) -> Json:
         return self._request("POST", _path("template-library", slug, "install"), options or {})
 
@@ -1148,14 +1205,14 @@ class Dispatch:
             body["email"] = email
         return self._request("POST", "/events/send", body)
 
-    def events(self, **query: Any) -> Json:
-        return self._request("GET", _query("/events", query))
+    def events(self, **query: Any) -> EventList:
+        return cast(EventList, self._request("GET", _query("/events", query)))
 
     def create_event(self, event: EventDefinitionInput | Json) -> Json:
         return self._request("POST", "/events", event)
 
-    def event(self, event: str) -> Json:
-        return self._request("GET", _path("events", event))
+    def event(self, event: str) -> EventDefinition:
+        return cast(EventDefinition, self._request("GET", _path("events", event)))
 
     def update_event(self, event: str, schema: Json) -> Json:
         return self._request("PATCH", _path("events", event), {"schema": schema})
@@ -1362,6 +1419,20 @@ __all__ = [
     "SendEmailConfig",
     "AutomationConnectionInput",
     "EventDefinitionInput",
+    "EventDefinition",
+    "EventList",
+    "AutomationInstallInput",
+    "AutomationInstallation",
+    "InstalledTemplate",
+    "InstallationTemplates",
+    "InstalledEvent",
+    "InstalledProperty",
+    "AutomationPreset",
+    "AutomationPresetDetail",
+    "AutomationPresetList",
+    "AutomationPresetEvent",
+    "AutomationPresetProperty",
+    "LibraryStage",
     "WebhookInput",
     "DomainInput",
     "AttachmentInput",

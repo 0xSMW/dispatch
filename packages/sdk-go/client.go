@@ -310,8 +310,8 @@ type Automation struct {
 	Trigger       *string                 `json:"trigger"`
 	TriggerConfig AutomationTriggerConfig `json:"trigger_config"`
 	Reentry       AutomationReentry       `json:"reentry"`
-	Steps         []any                   `json:"steps,omitempty"`
-	Connections   []any                   `json:"connections,omitempty"`
+	Steps         []any                   `json:"steps"`
+	Connections   []any                   `json:"connections"`
 	CreatedAt     string                  `json:"created_at,omitempty"`
 	UpdatedAt     string                  `json:"updated_at,omitempty"`
 }
@@ -762,6 +762,51 @@ type EventDefinitionInput struct {
 	Schema map[string]string `json:"schema,omitempty"`
 }
 
+// EventDefinition list rows include counts; detail responses may omit them.
+type EventDefinition struct {
+	Object      string            `json:"object,omitempty"`
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Schema      map[string]string `json:"schema"`
+	FiredCount  *int              `json:"fired_count,omitempty"`
+	LastFiredAt *string           `json:"last_fired_at"`
+}
+
+type AutomationInstallInput struct {
+	Name string `json:"name,omitempty"`
+	From string `json:"from"`
+	// TopicID is required for newsletter-welcome; otherwise it binds Marketing steps.
+	TopicID string `json:"topic_id,omitempty"`
+}
+
+type InstalledTemplate struct {
+	ID   string `json:"id"`
+	Slug string `json:"slug"`
+}
+
+type InstalledEvent struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type InstalledProperty struct {
+	ID   string `json:"id"`
+	Key  string `json:"key"`
+	Type string `json:"type"`
+}
+
+type AutomationInstallation struct {
+	Automation Automation `json:"automation"`
+	Templates  struct {
+		Created []InstalledTemplate `json:"created"`
+		Reused  []InstalledTemplate `json:"reused"`
+	} `json:"templates"`
+	Events     []InstalledEvent    `json:"events"`
+	Properties []InstalledProperty `json:"properties"`
+	NextSteps  []string            `json:"next_steps"`
+	RequestID  string              `json:"request_id,omitempty"`
+}
+
 type LibraryStage string
 
 const (
@@ -1183,6 +1228,10 @@ func (c *Client) TemplateLibraryAutomations() (*ListResponse[AutomationPreset], 
 
 func (c *Client) TemplateLibraryAutomation(slug string) (*AutomationPresetDetail, error) {
 	return get[AutomationPresetDetail](c, at("template-library", "automations", slug))
+}
+
+func (c *Client) TemplateLibraryInstallAutomation(slug string, input AutomationInstallInput) (*AutomationInstallation, error) {
+	return post[AutomationInstallation](c, at("template-library", "automations", slug, "install"), input)
 }
 
 func (c *Client) InstallTemplate(slug string) (*Template, error) {

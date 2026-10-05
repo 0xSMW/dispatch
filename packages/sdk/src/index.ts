@@ -384,6 +384,33 @@ export type EventSend = ({ contactId: string; email?: never } | { email: string;
 
 export type EventSchema = Record<string, "string" | "number" | "boolean" | "date">;
 
+export type Event = Row & {
+  name: string;
+  schema: EventSchema;
+  /** Included in list responses; unchanged detail responses may omit these. */
+  fired_count?: number;
+  last_fired_at?: string | null;
+};
+
+export type AutomationInstallInput = {
+  name?: string;
+  from: string;
+  /** Marketing topic; required for newsletter-welcome's subscription trigger. */
+  topicId?: string;
+};
+
+export type AutomationInstallation = {
+  automation: Automation;
+  templates: {
+    created: Array<{ id: string; slug: string }>;
+    reused: Array<{ id: string; slug: string }>;
+  };
+  events: Array<{ id: string; name: string }>;
+  properties: Array<{ id: string; key: string; type: PropertyType }>;
+  next_steps: string[];
+  request_id?: string;
+};
+
 export type LibraryStage = "acquisition" | "onboarding" | "retention" | "reengagement" | "dunning" | "reactivation";
 
 /** Read-only library definition. Template references are library slugs, not tenant IDs. */
@@ -877,6 +904,10 @@ class TemplateLibrary extends Resource {
     return this.client.call<AutomationPresetDetail>("GET", `/template-library/automations/${seg(slug)}`);
   }
 
+  installAutomation(slug: string, input: AutomationInstallInput) {
+    return this.client.call<AutomationInstallation>("POST", `/template-library/automations/${seg(slug)}/install`, wire(input));
+  }
+
   get(slug: string) {
     return this.client.call<Row>("GET", `/template-library/${seg(slug)}`);
   }
@@ -1268,19 +1299,19 @@ class Events extends Resource {
   }
 
   create(payload: { name: string; schema?: EventSchema }) {
-    return this.client.call<Row>("POST", "/events", wire(payload));
+    return this.client.call<Event>("POST", "/events", wire(payload));
   }
 
   get(idOrName: string) {
-    return this.client.call<Row>("GET", `/events/${seg(idOrName)}`);
+    return this.client.call<Event>("GET", `/events/${seg(idOrName)}`);
   }
 
   list(page: Page = {}) {
-    return this.client.call<List>("GET", `/events${query(page)}`);
+    return this.client.call<List<Event>>("GET", `/events${query(page)}`);
   }
 
   update(idOrName: string, payload: { schema: EventSchema }) {
-    return this.client.call<Row>("PATCH", `/events/${seg(idOrName)}`, wire(payload));
+    return this.client.call<Event>("PATCH", `/events/${seg(idOrName)}`, wire(payload));
   }
 
   remove(idOrName: string) {

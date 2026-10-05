@@ -59,12 +59,14 @@ function withTrigger(definition: Definition, options: { triggerType?: TriggerTyp
 }
 
 export const create = new Command("create")
-  .description("Create an automation from flags or a JSON definition")
+  .description("Create an automation from a preset, flags, or a JSON definition")
   .argument("[name]", "Automation name")
   .option("--name <name>", "Automation name (same as the positional argument)")
+  .option("--preset <slug>", "Install a library preset disabled (name defaults to the preset name)")
+  .option("--from <sender>", "Verified-domain sender for every preset email (required with --preset)")
   .option("--trigger <event>", "Event name that starts a run")
   .addOption(new Option("--trigger-type <type>", "What starts a run (defaults to event)").choices(triggerTypes))
-  .option("--topic <id>", "Topic ID for a topic_subscribed trigger")
+  .option("--topic <id>", "Preset Marketing topic (required for newsletter-welcome); otherwise topic_subscribed trigger topic")
   .option("--segment <id>", "Static segment ID for a segment_added trigger")
   .option("--steps <json>", "Steps as a JSON array")
   .option("--connections <json>", "Connections between steps as a JSON array")
@@ -81,12 +83,33 @@ export const create = new Command("create")
         'dispatch automations create Welcome --trigger-type contact_created --steps \'[{"type":"delay","duration":"1 hour"}]\'',
         'dispatch automations create Newsletter --trigger-type topic_subscribed --topic topic_123 --file newsletter.json',
         "dispatch automations create --file onboarding.json",
+        "dispatch automations create --preset onboarding-drip --from you@acme.com --topic topic_123",
+        "dispatch automations create --preset newsletter-welcome --from you@acme.com --topic topic_123",
       ],
     }),
   )
   .action(async (name, options, command) => {
+    if (options.preset !== undefined) {
+      await runCreate(command, {
+        prepare: async () => {
+          const incompatible = {
+            steps: options.steps, connections: options.connections, file: options.file,
+            trigger: options.trigger, "trigger-type": options.triggerType, segment: options.segment,
+            status: options.status, reentry: options.reentry,
+          };
+          const supplied = Object.entries(incompatible).filter(([, value]) => value !== undefined).map(([flag]) => `--${flag}`);
+          if (supplied.length) throw new CliError("validation_error", `--preset cannot be combined with ${supplied.join(", ")}`);
+          if (!options.from?.trim()) throw new CliError("missing_flags", "Missing required flag: --from");
+          return compact({ name: name ?? options.name, from: options.from, topicId: options.topic });
+        },
+        call: (api, input) => api.templates.library.installAutomation(options.preset!, input),
+        done: (result: { automation: { id: string } }) => `Created automation ${result.automation.id}`,
+      });
+      return;
+    }
     await runCreate(command, {
       prepare: async (globals) => {
+        if (options.from !== undefined) throw new CliError("validation_error", "--from requires --preset");
         const file = options.file ? (jsonFlag<Definition>(await read(options.file), "--file") ?? {}) : {};
         const definition: Definition = {
           ...file,

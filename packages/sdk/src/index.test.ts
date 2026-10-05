@@ -87,6 +87,64 @@ describe("automation preset library", () => {
   });
 });
 
+describe("automation preset installation", () => {
+  it.each([false, true])("posts encoded options and preserves the full aggregate (dependencies: %s)", async (dependencies) => {
+    const installation = {
+      automation: {
+        object: "automation", id: "auto_1", name: "Welcome", status: "disabled", version: 1,
+        trigger: null, trigger_config: { type: "contact_created" }, reentry: "once",
+        steps: [{ key: "trigger", type: "trigger", config: { type: "contact_created" } }],
+        connections: [], created_at: "2026-10-05T00:00:00Z", updated_at: "2026-10-05T00:00:00Z",
+      },
+      templates: { created: dependencies ? [{ id: "tpl_1", slug: "welcome" }] : [], reused: dependencies ? [{ id: "tpl_2", slug: "tips" }] : [] },
+      events: dependencies ? [{ id: "evt_1", name: "user.activated" }] : [],
+      properties: dependencies ? [{ id: "prop_1", key: "activated", type: "boolean" }] : [],
+      next_steps: ["Review the automation and its emails", "Enable the automation"], request_id: "req_install",
+    };
+    const fetch = stub(installation);
+    const result = await new Dispatch({ apiKey: "sk_test" }).templates.library.installAutomation("onboarding/drip ?#%", {
+      from: "Acme <you@acme.com>", ...(dependencies ? { name: "My onboarding", topicId: "topic_1" } : {}),
+    });
+    expectTypeOf(result).toEqualTypeOf<Result<import("./index.js").AutomationInstallation>>();
+    expect(result.data).toEqual(installation);
+    expect(JSON.parse(JSON.stringify(result.data))).toEqual(installation);
+    expect(request(fetch)).toMatchObject({
+      method: "POST", url: `${base}/template-library/automations/onboarding%2Fdrip%20%3F%23%25/install`,
+      body: { from: "Acme <you@acme.com>", ...(dependencies ? { name: "My onboarding", topic_id: "topic_1" } : {}) },
+    });
+    expect(request(fetch).headers.get("authorization")).toBe("Bearer sk_test");
+  });
+
+  it.each([
+    [403, "forbidden", "Access denied"], [404, "not_found", "Preset not found"],
+    [409, "conflict", "Name already exists"], [422, "validation_error", "Choose a topic"],
+  ])("preserves install errors (%s %s)", async (status, name, message) => {
+    const body = { name, message, request_id: "req_error" };
+    globalThis.fetch = vi.fn(async () => reply(body, { status: status as number, headers: { "x-request-id": "req_error" } }));
+    const result = await new Dispatch({ apiKey: "sk_test" }).templates.library.installAutomation("newsletter-welcome", { from: "you@acme.com" });
+    expect(result.data).toBeNull();
+    expect(result.error).toMatchObject({ ...body, statusCode: status });
+    expect(result.headers?.["x-request-id"]).toBe("req_error");
+  });
+
+  it("keeps list event counts and nullable timestamps without requiring them in details", async () => {
+    const rows: import("./index.js").Event[] = [
+      { id: "evt_0", name: "never", schema: {}, fired_count: 0, last_fired_at: null },
+      { id: "evt_1", name: "fired", schema: {}, fired_count: 3, last_fired_at: "2026-10-05T00:00:00Z" },
+    ];
+    const page = { object: "list", has_more: true, data: rows };
+    const fetch = stub(page);
+    const client = new Dispatch({ apiKey: "sk_test" });
+    const result = await client.events.list({ after: "evt_prev", limit: 2 });
+    expectTypeOf(result).toEqualTypeOf<Result<List<import("./index.js").Event>>>();
+    expect(result.data).toEqual(page);
+    expect(request(fetch).url).toBe(`${base}/events?after=evt_prev&limit=2`);
+    const detail: import("./index.js").Event = { id: "evt_0", name: "never", schema: {} };
+    stub(detail);
+    expect((await client.events.get("evt_0")).data).toEqual(detail);
+  });
+});
+
 describe("constructor", () => {
   it("reads the key, base URL, and user agent from options or the environment", async () => {
     vi.stubEnv("DISPATCH_API_KEY", "sk_env");

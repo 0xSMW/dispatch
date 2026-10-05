@@ -18,6 +18,7 @@ from dispatch import (
     AutomationInput, AutomationRun, AutomationRunEvent, AutomationRunList, AutomationStepInput,
     AutomationTriggerConfig, AutomationUpdateInput, BranchConfig, BranchPath, ContactActivity, ContactPropertyInput,
     AutomationPreset, AutomationPresetDetail, AutomationPresetEvent, AutomationPresetList, AutomationPresetProperty, LibraryStage,
+    AutomationInstallInput, AutomationInstallation, EventDefinition, EventList,
     Dispatch, DispatchError, ExitConfig, FilterConfig, ImportColumnMap, PredicateRule, RuleGroup,
     SendEmailConfig,
 )
@@ -238,6 +239,72 @@ class TestDispatch(unittest.TestCase):
             self.client.template_library_automation("missing")
         self.assertEqual(caught.exception.status, 404)
         self.assertEqual(caught.exception.body["name"], "not_found")
+
+    def test_template_library_install_automation(self):
+        for dependencies in (False, True):
+            with self.subTest(dependencies=dependencies):
+                aggregate = {
+                    "automation": {
+                        "object": "automation", "id": "auto_1", "name": "Welcome", "status": "disabled", "version": 1,
+                        "trigger": None, "trigger_config": {"type": "contact_created"}, "reentry": "once",
+                        "steps": [{"key": "trigger", "type": "trigger", "config": {"type": "contact_created"}}],
+                        "connections": [], "created_at": "2026-10-05T00:00:00Z", "updated_at": "2026-10-05T00:00:00Z",
+                    },
+                    "templates": {
+                        "created": [{"id": "tpl_1", "slug": "welcome"}] if dependencies else [],
+                        "reused": [{"id": "tpl_2", "slug": "tips"}] if dependencies else [],
+                    },
+                    "events": [{"id": "evt_1", "name": "user.activated"}] if dependencies else [],
+                    "properties": [{"id": "prop_1", "key": "activated", "type": "boolean"}] if dependencies else [],
+                    "next_steps": ["Review the automation and its emails", "Enable the automation"],
+                    "request_id": "req_install",
+                }
+                path = "/template-library/automations/onboarding%2Fdrip%20%3F%23%25/install"
+                Recorder.responses[("POST", path)] = (200, aggregate)
+                options = {"from": "Acme <you@acme.com>"}
+                if dependencies:
+                    options.update(name="Custom", topic_id="topic_1")
+                got = self.client.template_library_install_automation("onboarding/drip ?#%", **options)
+                self.assertEqual(got, aggregate)
+                self.assertEqual(json.loads(json.dumps(got)), aggregate)
+                self.assertEqual(Recorder.calls[-1]["method"], "POST")
+                self.assertEqual(Recorder.calls[-1]["path"], path)
+                self.assertEqual(Recorder.calls[-1]["body"], options)
+                self.assertEqual(Recorder.calls[-1]["headers"]["authorization"], "Bearer sk_test")
+        self.assertEqual(get_type_hints(Dispatch.template_library_install_automation)["return"], AutomationInstallation)
+        self.assertEqual(get_type_hints(AutomationInstallInput, include_extras=True)["topic_id"], NotRequired[str])
+        self.assertEqual(get_type_hints(AutomationInstallInput)["from"], str)
+        self.assertEqual(get_type_hints(AutomationInstallation)["automation"], Automation)
+        self.assertEqual(get_type_hints(AutomationInstallation, include_extras=True)["request_id"], NotRequired[str])
+
+    def test_template_library_install_errors(self):
+        for status, name, message in (
+            (403, "forbidden", "Access denied"), (404, "not_found", "Preset not found"),
+            (409, "conflict", "Name already exists"), (422, "validation_error", "Choose a topic"),
+        ):
+            with self.subTest(status=status):
+                body = {"name": name, "message": message, "request_id": "req_error"}
+                Recorder.responses[("POST", "/template-library/automations/newsletter-welcome/install")] = (status, body)
+                with self.assertRaises(DispatchError) as caught:
+                    self.client.template_library_install_automation("newsletter-welcome", **{"from": "you@acme.com"})
+                self.assertEqual(caught.exception.status, status)
+                self.assertEqual(caught.exception.body, body)
+                self.assertEqual(Recorder.calls[-1]["body"], {"from": "you@acme.com"})
+
+    def test_event_list_counts(self):
+        page = {"object": "list", "has_more": True, "data": [
+            {"id": "evt_0", "name": "never", "schema": {}, "fired_count": 0, "last_fired_at": None},
+            {"id": "evt_1", "name": "fired", "schema": {}, "fired_count": 3, "last_fired_at": "2026-10-05T00:00:00Z"},
+        ]}
+        path = "/events?after=evt_prev&limit=2"
+        Recorder.responses[("GET", path)] = (200, page)
+        self.assertEqual(self.client.events(after="evt_prev", limit=2), page)
+        detail = {"id": "evt_0", "name": "never", "schema": {}}
+        Recorder.responses[("GET", "/events/evt_0")] = (200, detail)
+        self.assertEqual(self.client.event("evt_0"), detail)
+        self.assertEqual(get_type_hints(Dispatch.events)["return"], EventList)
+        self.assertEqual(get_type_hints(EventDefinition, include_extras=True)["fired_count"], NotRequired[int])
+        self.assertEqual(get_type_hints(EventDefinition, include_extras=True)["last_fired_at"], NotRequired[str | None])
 
     def test_flow_config_contracts(self):
         self.assertEqual(get_args(get_type_hints(FilterConfig)["scope"]), ("next", "following"))
