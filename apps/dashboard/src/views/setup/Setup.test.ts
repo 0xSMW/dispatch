@@ -36,7 +36,9 @@ describe("Setup", () => {
     expect(optional.hasAttribute("open")).toBe(false);
     expect(within(optional).getByRole("link", { name: "Set your brand" }).getAttribute("href")).toBe("/settings/brand");
     expect(within(optional).getByRole("link", { name: "Send your first event" }).getAttribute("href")).toBe("/events");
-    expect(within(optional).getByRole("link", { name: "Browse lifecycle templates" }).getAttribute("href")).toBe("/templates/library?tab=lifecycle");
+    expect(within(optional).getByRole("link", { name: "Install a preset" }).getAttribute("href")).toBe("/templates/library?tab=lifecycle");
+    expect(within(optional).getByText("Presets install disabled from the Lifecycle library. Review the automation before enabling it.")).toBeTruthy();
+    expect(within(optional).queryByText(/when it ships/)).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Send a test email" }));
     const dialog = await screen.findByRole("dialog");

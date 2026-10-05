@@ -118,6 +118,23 @@ describe("Library", () => {
     expect(calls(fetch, "GET /template-library/automations")).toHaveLength(1);
   });
 
+  it.each(["transactional", "lifecycle"])("keeps empty %s library discovery available without configuration", async (tab) => {
+    const fetch = api({
+      "GET /template-library": list([]),
+      "GET /template-library/automations": list(automations),
+    });
+    renderAt(`/templates/library?tab=${tab}`, [{ path: "/templates/library", element: h(Library) }]);
+    expect(await screen.findByText("No library templates")).toBeTruthy();
+    expect(screen.getByText("The template library is empty on this install.")).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Transactional" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Lifecycle" })).toBeTruthy();
+    if (tab === "lifecycle") {
+      await screen.findByRole("button", { name: automations[0]!.name });
+      expect(screen.getAllByRole("button", { name: "Install as automation" })).toHaveLength(6);
+    }
+    expect(fetch.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+  });
+
   it("lets viewers browse previews but does not offer installation", async () => {
     signIn("sess_test", ["read"]);
     const fetch = setup();

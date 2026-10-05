@@ -53,6 +53,30 @@ describe("Automations", () => {
     const recipes = learn.queryByRole("link", { name: "Lifecycle recipes" });
     if (recipes) expect(recipes.getAttribute("href")).toContain("automations/README.md");
   });
+  it.each([["full"], ["read"]])("offers stage discovery without setup for %s access on an empty install", async (permission) => {
+    signIn("sess_test", [permission]);
+    const fetch = mockFetch((url) => ({ body: { object: "list", has_more: false,
+      data: new URL(url).pathname === "/template-library/automations" ? automations : [] } }));
+    open();
+    await screen.findByText("No automations");
+    expect(screen.getByText("Start with a lifecycle stage or build your own automation.")).toBeTruthy();
+    await screen.findByRole("button", { name: automations[0]!.name });
+    for (const name of ["Acquisition", "Onboarding", "Retention", "Re-engagement", "Dunning", "Reactivation"]) {
+      expect(screen.getByRole("region", { name })).toBeTruthy();
+    }
+    if (permission === "full") {
+      fireEvent.click(screen.getByRole("button", { name: "Choose a starting point" }));
+      const chooser = within(screen.getByRole("dialog"));
+      await chooser.findByRole("button", { name: automations[0]!.name });
+      fireEvent.click(chooser.getByRole("button", { name: "Start blank" }));
+      expect(within(screen.getByRole("dialog")).getByLabelText("Name")).toBeTruthy();
+    } else {
+      expect(screen.queryByRole("button", { name: "Choose a starting point" })).toBeNull();
+      expect(screen.getAllByRole("button", { name: "Preview automation" })).toHaveLength(6);
+    }
+    expect(fetch.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+  });
+
   it("displays and exports paused status without treating it as disabled", async () => {
     const paused = { ...rows[0], status: "paused" as const, version: 2, steps: [] };
     const fetch = mockFetch((raw) => ({ body: { object: "list", has_more: false,
