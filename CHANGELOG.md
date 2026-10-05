@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Complete API reference examples for signup forms, dynamic segment previews, scoped goal reports and version-guarded split winners. Keep new public guides' Agent prompts aligned with the canonical dashboard wording.
 - Add a local `@dispatchmail/mcp` stdio server using the official MCP and Dispatch TypeScript SDKs. Ten tools map to shipped APIs; read-only mode hides and rejects every write tool. Public LLM docs include the final agent, integration, goal and theme guides without internal plans.
 - Add stable weighted Split test steps, stored-run variant metrics and full-role pause/version-guarded winner controls. Keep zero-weight paths connected and preserve recorded decisions, keys and waits. Template Checks consolidates existing actual Source, variable, preview and publish warnings without changing safety or confirmation controls.
 

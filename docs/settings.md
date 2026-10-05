@@ -34,3 +34,9 @@ Dispatch always treats `example.com`, `example.net`, `example.org`, and their su
 Sandbox recipients never reach SES or another provider. Emails are accepted, rendered, and stored for inspection. All-sandbox emails have `sandbox: true` and record simulated `email.delivered` events with `data.sandbox: true`, without a real provider message ID. Mixed emails have `sandbox: false`; only real recipients are sent, and the API's `recipients` array identifies sandbox recipients individually. Sandbox events do not count toward real email metrics.
 
 This is not the SES account sandbox. AWS's sandbox restricts real sending until your account receives production access. Dispatch's sandbox-domain rule bypasses the provider even after that access is granted. Do not add a domain whose recipients should receive real email.
+
+## Ask your agent
+
+```text
+Help me review Dispatch import-trigger defaults and sandbox domains before changing settings. Use the public documentation for my running Dispatch version and only shipped endpoints and SDK methods. Read DISPATCH_API_URL and DISPATCH_API_KEY from my environment; never print or embed the key. Respect my current permissions and ask for confirmation before sending email, publishing, deleting, or changing live configuration.
+```

@@ -107,3 +107,9 @@ Delivery history and replay keys are pruned in bounded batches with log retentio
 ## Keep code-owned alternatives
 
 Receivers are optional. The provider guides retain manual verified handlers for custom mapping and direct email sends. Do not feed the same delivery through both a receiver and a manual producer unless you deliberately prevent duplicate events and mail. See [Failed payment](automations/failed-payment.md) before enabling a billing automation, especially its invoice-correlation and cancellation limits.
+
+## Ask your agent
+
+```text
+Help me inspect Dispatch inbound integrations and body-free deliveries, explain provider signatures and one-time URL rotation, and preserve consent and deleted contacts. Use the public documentation for my running Dispatch version and only shipped endpoints and SDK methods. Read DISPATCH_API_URL and DISPATCH_API_KEY from my environment; never print or embed the key. Respect my current permissions and ask for confirmation before sending email, publishing, deleting, or changing live configuration.
+```

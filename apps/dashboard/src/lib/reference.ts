@@ -21,6 +21,7 @@ const patch = (path: string, summary: string, sdk: string | null, body?: Record<
 const remove = (path: string, summary: string, sdk: string | null): Call => ({ method: "DELETE", path, summary, sdk });
 
 const email = { from: "Acme <hello@acme.com>", to: ["ada@example.com"], subject: "Hello", html: "<p>Hello</p>" };
+const segmentRule = { type: "rule", field: "contact.unsubscribed", operator: "eq", value: false };
 
 const pages: Record<string, Omit<Reference, "prompt">> = {
   "/goals": {
@@ -98,6 +99,7 @@ const pages: Record<string, Omit<Reference, "prompt">> = {
       get("/broadcasts/:id", "Retrieve a broadcast", 'dispatch.broadcasts.get(":id")'),
       get("/broadcasts/:id/recipients?type=opened", "Recipients by outcome", 'dispatch.broadcasts.recipients(":id", { type: "opened" })'),
       get("/broadcasts/:id/clicked-links", "Top clicked links", 'dispatch.broadcasts.clickedLinks(":id")'),
+      get("/goals/goal_123/metrics?broadcast_id=:id", "Goal conversions for this broadcast", 'dispatch.goals.metrics("goal_123", { broadcastId: ":id" })'),
       post("/broadcasts/:id/cancel", "Cancel a scheduled broadcast", 'dispatch.broadcasts.cancel(":id")'),
     ],
   },
@@ -140,6 +142,9 @@ const pages: Record<string, Omit<Reference, "prompt">> = {
       patch("/automations/:id", "Save steps, or start with status enabled", 'dispatch.automations.update(":id", { status: "enabled" })', { status: "enabled" }),
       get("/automations/:id/runs?limit=40", "List runs. Filters: status, start_date, end_date.", 'dispatch.automations.runs.list(":id", { limit: 40 })'),
       get("/automations/:id/runs/metrics", "Run counts by status and day", 'dispatch.automations.runs.metrics(":id")'),
+      get("/goals/goal_123/metrics?automation_id=:id", "Goal conversions for this automation", 'dispatch.goals.metrics("goal_123", { automationId: ":id" })'),
+      get("/automations/:id/steps/split_123/metrics", "Compare split variants; replace split_123 with the stored step key", 'dispatch.automations.splitMetrics(":id", "split_123")'),
+      post("/automations/:id/steps/split_123/winner", "Requires an already paused automation and its current version; resume separately only after success", 'dispatch.automations.pickWinner(":id", "split_123", { variant: "variant_b", version: 1 })', { variant: "variant_b", version: 1 }),
     ],
   },
 
@@ -207,6 +212,8 @@ const pages: Record<string, Omit<Reference, "prompt">> = {
     calls: [
       get("/segments", "List segments", "dispatch.segments.list()"),
       post("/segments", "Create a segment", 'dispatch.segments.create({ name: "Customers" })', { name: "Customers" }),
+      post("/segments/preview", "Preview a dynamic rule before saving it", `dispatch.segments.preview(${JSON.stringify(segmentRule)})`, { rule: segmentRule }),
+      patch("/segments/segment_123", "Convert to a dynamic segment; manual membership writes then become unavailable", `dispatch.segments.update("segment_123", { rule: ${JSON.stringify(segmentRule)} })`, { rule: segmentRule }),
     ],
   },
   "/audience/topics": {
@@ -219,10 +226,24 @@ const pages: Record<string, Omit<Reference, "prompt">> = {
       }),
     ],
   },
+  "/audience/forms": {
+    title: "Signup forms",
+    calls: [
+      get("/forms?limit=40", "List signup forms", "dispatch.forms.list({ limit: 40 })"),
+      post("/forms", "Create a double opt-in form with a live topic, verified sender and exact allowed origin", 'dispatch.forms.create({ name: "Newsletter", topicIds: ["topic_123"], fromEmail: "hello@acme.com", allowedOrigins: ["https://acme.com"] })',
+        { name: "Newsletter", topic_ids: ["topic_123"], from_email: "hello@acme.com", allowed_origins: ["https://acme.com"] }),
+      get("/forms/form_123", "Retrieve a form", 'dispatch.forms.get("form_123")'),
+      patch("/forms/form_123", "Update allowed origins", 'dispatch.forms.update("form_123", { allowedOrigins: ["https://acme.com"] })', { allowed_origins: ["https://acme.com"] }),
+      remove("/forms/form_123", "Delete a form", 'dispatch.forms.remove("form_123")'),
+    ],
+  },
 
   "/metrics": {
     title: "Metrics",
-    calls: [get("/emails/metrics?dimensions=period", "Sent, delivered, bounced, and complained counts", 'dispatch.emails.metrics({ dimensions: ["period"] })')],
+    calls: [
+      get("/emails/metrics?dimensions=period", "Sent, delivered, bounced, and complained counts", 'dispatch.emails.metrics({ dimensions: ["period"] })'),
+      get("/goals/goal_123/metrics", "Goal conversions across real-send cohorts; optionally scope by automation or broadcast", 'dispatch.goals.metrics("goal_123")'),
+    ],
   },
 
   "/domains": {
@@ -349,7 +370,7 @@ const goals: Record<string, string> = {
   "Broadcast editor": "Help me review a broadcast's content, links, and audience before scheduling it.",
   Automations: "Help me review Dispatch lifecycle presets and draft a disabled automation using the shipped API.",
   Events: "Help me define and send an app event in Dispatch, including the fields its automation needs.",
-  Automation: "Help me inspect an automation's graph and runs, and explain pause, resume, and stop before changing its status.",
+  Automation: "Help me inspect an automation's graph, runs, goal conversions and split variants. Explain pause, resume and stop, and require the current paused version before selecting a split winner.",
   Templates: "Help me create a reusable Dispatch email template and declare its required variables and optional fallbacks.",
   "Template library": "Help me choose and install a Dispatch lifecycle preset with a verified sender. Newsletter welcome requires a live tenant topic at installation; other Marketing presets may install disabled without one. Review reused emails and the disabled automation before enabling.",
   Template: "Help me inspect a Dispatch template's versions, variables, tracking, and Transactional or Marketing kind.",
@@ -357,8 +378,9 @@ const goals: Record<string, string> = {
   Contacts: "Help me add and inspect Dispatch contacts while preserving their consent preferences.",
   Contact: "Help me inspect a contact's activity and update only the fields I approve.",
   "Contact properties": "Help me declare typed contact properties in Dispatch for my app-owned state.",
-  Segments: "Help me organize contacts in a static Dispatch segment.",
+  Segments: "Help me organize contacts in static or rule-based dynamic Dispatch segments. Preview the supported typed rule and explain that dynamic membership is read-only before converting.",
   Topics: "Help me configure Dispatch marketing topics and explain opt-in and opt-out behavior.",
+  "Signup forms": "Help me configure a Dispatch signup form with live topics, a verified sender, exact allowed origins and scanner-safe double opt-in confirmation. Preserve consent and never put an API key in the public form.",
   Metrics: "Help me read Dispatch email metrics, excluding sandbox activity from real engagement.",
   Domains: "Help me inspect sending domains and their verification status in Dispatch.",
   "Add domain": "Help me add a Dispatch sending domain and explain the DNS records I need to publish.",
@@ -374,7 +396,7 @@ const goals: Record<string, string> = {
   Usage: "Help me inspect Dispatch usage counters and sending quota.",
   Team: "Help me inspect Dispatch memberships, sessions, and audit logs with my current permissions.",
   SMTP: "Help me find Dispatch SMTP relay settings and send transactional email without lifecycle setup.",
-  Brand: "Help me review Dispatch brand values used by email templates before changing them.",
+  Brand: "Help me review Dispatch brand values and safe theme tokens. Explain that saving does not rewrite installed emails; explicitly update library templates only after approval and preserve edited copies.",
   "Unsubscribe page": "Help me review Dispatch unsubscribe-page branding and marketing topics while preserving recipient consent.",
   Timeline: "Help me inspect recent Dispatch activity across resources.",
 };
@@ -451,7 +473,7 @@ export function sdk(call: Call, apiUrl: string) {
   ].join("\n");
 }
 
-type Arguments = "none" | "query" | "id" | "body" | "idBody" | "idQuery" | "send" | "share" | "publish" | "links" | "event" | "recipients" | "schedule" | "emails" | "unsuppress" | "render" | "install" | "integration" | "goal";
+type Arguments = "none" | "query" | "id" | "body" | "idBody" | "idQuery" | "send" | "share" | "publish" | "links" | "event" | "recipients" | "schedule" | "emails" | "unsuppress" | "render" | "install" | "integration" | "goal" | "form" | "rule" | "stepQuery" | "winner";
 type FlatCall = [python: string | null, go: string | null, args: Arguments];
 
 // These clients are flat, not translations of the TypeScript namespace. Null means unsupported.
@@ -493,6 +515,8 @@ const flatCalls: Record<string, FlatCall> = {
   "PATCH /automations/:id": ["update_automation", "UpdateAutomation", "idBody"],
   "GET /automations/:id/runs": ["automation_runs", "AutomationRuns", "idQuery"],
   "GET /automations/:id/runs/metrics": ["automation_run_metrics", "AutomationRunMetrics", "idQuery"],
+  "GET /automations/:id/steps/:key/metrics": ["automation_split_metrics", "AutomationSplitMetrics", "stepQuery"],
+  "POST /automations/:id/steps/:key/winner": ["pick_automation_winner", "PickAutomationWinner", "winner"],
   "GET /events": ["events", "Events", "query"],
   "POST /events/send": ["send_event", "SendEvent", "event"],
   "GET /fired-events": ["fired_events", "FiredEvents", "query"],
@@ -519,8 +543,15 @@ const flatCalls: Record<string, FlatCall> = {
   "POST /contact-properties": ["create_contact_property", "CreateContactProperty", "body"],
   "GET /segments": ["segments", "Segments", "query"],
   "POST /segments": ["create_segment", "CreateSegment", "body"],
+  "POST /segments/preview": ["preview_segment", "PreviewSegment", "rule"],
+  "PATCH /segments/:id": ["update_segment", "UpdateSegment", "idBody"],
   "GET /topics": ["topics", "Topics", "query"],
   "POST /topics": ["create_topic", "CreateTopic", "body"],
+  "GET /forms": ["forms", "Forms", "query"],
+  "POST /forms": ["create_form", "CreateForm", "form"],
+  "GET /forms/:id": ["form", "Form", "id"],
+  "PATCH /forms/:id": ["update_form", "UpdateForm", "idBody"],
+  "DELETE /forms/:id": ["delete_form", "DeleteForm", "id"],
   "GET /emails/metrics": ["email_metrics", "EmailMetrics", "query"],
   "GET /domains": ["domains", "Domains", "query"],
   "DELETE /domains/:id": ["delete_domain", "DeleteDomain", "id"],
@@ -597,12 +628,23 @@ function flatCall(call: Call, language: "python" | "go"): string | null {
       case "integration": input = language === "python" ? value(body)
         : `dispatch.IntegrationInput{Provider: ${value(body.provider)}, Name: ${value(body.name)}, Secret: ${value(body.secret)}${body.slug ? `, Slug: ${value(body.slug)}` : ""}}`;
         break;
+      case "form": input = language === "python" ? value(body)
+        : `dispatch.FormInput{Name: ${value(body.name)}, TopicIDs: ${strings(body.topic_ids)}, FromEmail: ${value(body.from_email)}, AllowedOrigins: ${strings(body.allowed_origins)}}`;
+        break;
+      case "rule": {
+        const rule = body.rule as Record<string, unknown>;
+        input = language === "python" ? value(rule)
+          : `dispatch.Rule{Type: ${value(rule.type)}, Field: ${value(rule.field)}, Operator: ${value(rule.operator)}, Value: ${value(rule.value)}}`;
+        break;
+      }
       case "idBody": input = `${id}, ${value(body)}`; break;
       case "install": input = language === "python"
         ? `${id}, **${value(body)}`
         : `${id}, dispatch.AutomationInstallInput{${Object.entries(body).map(([key, item]) => `${({ from: "From", topic_id: "TopicID", name: "Name" } as Record<string, string>)[key]}: ${value(item)}`).join(", ")}}`;
         break;
       case "idQuery": input = `${id}${query.size || language === "go" ? `, ${queryArgs()}` : ""}`; break;
+      case "stepQuery": input = `${id}, ${value(decode(match.params.key!))}${query.size || language === "go" ? `, ${queryArgs()}` : ""}`; break;
+      case "winner": input = `${id}, ${value(decode(match.params.key!))}, ${value(body.variant)}, ${value(body.version)}`; break;
       case "send": input = `${value(body)}${language === "go" ? ', ""' : ""}`; break;
       case "share": input = `${id}, ${value(body.expires_in ?? "")}`; break;
       case "publish": input = `${id}${language === "go" ? ', ""' : ""}`; break;

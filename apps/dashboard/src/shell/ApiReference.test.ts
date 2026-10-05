@@ -3,7 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { PageHeader } from "../components/PageHeader";
-import { llmsLinks, referenceFor } from "../lib/reference";
+import { curl, go, llmsLinks, python, referenceFor, sdk } from "../lib/reference";
 import { apiUrl, h, signIn } from "../testing";
 import { ApiReference } from "./ApiReference";
 import { SessionProvider } from "./session";
@@ -80,13 +80,17 @@ describe("ApiReference", () => {
     expect(within(drawer).queryByRole("tablist")).toBeNull();
   });
 
-  it.each([["full"], ["read"]])("opens from the header and retains the A shortcut with permissions %j", (permission) => {
+  it.each([["full"], ["read"]])("opens and copies all five Forms tabs from the header and A with permissions %j", async (permission) => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const fetch = vi.fn();
+    vi.stubGlobal("navigator", { clipboard: { writeText }, platform: "MacIntel" });
+    vi.stubGlobal("fetch", fetch);
     signIn("sess_reference_test", [permission]);
-    render(h(MemoryRouter, { initialEntries: ["/domains/domain_9"] },
+    render(h(MemoryRouter, { initialEntries: ["/audience/forms"] },
       h(SessionProvider, null,
         h(Routes, null, h(Route, { element: h(Shell) },
           h(Route, { path: "*", element: h("div", null,
-            h(PageHeader, { title: "Domain" }),
+            h(PageHeader, { title: "Signup forms" }),
             h("input", { "aria-label": "Page field" }),
           ) }),
         )),
@@ -95,10 +99,30 @@ describe("ApiReference", () => {
     fireEvent.keyDown(screen.getByLabelText("Page field"), { key: "a" });
     expect(screen.queryByRole("dialog")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "API" }));
-    expect(screen.getByRole("dialog", { name: "Domain" })).toBeTruthy();
+    let drawer = screen.getByRole("dialog", { name: "Signup forms" });
+    const reference = referenceFor("/audience/forms")!;
+    const create = reference.calls.find(call => call.method === "POST")!;
+    for (const [name, snippet] of [
+      ["cURL", curl(create, apiUrl)], ["TypeScript", sdk(create, apiUrl)],
+      ["Python", python(create, apiUrl)], ["Go", go(create, apiUrl)],
+    ]) {
+      fireEvent.click(within(drawer).getByRole("tab", { name: name! }));
+      const region = within(drawer).getByRole("region", { name: "POST /forms" });
+      expect(region.querySelector("code")!.textContent).toBe(snippet);
+      writeText.mockClear();
+      fireEvent.click(within(region).getByRole("button", { name: /^(Copy code|Copied)$/ }));
+      await waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith(snippet));
+    }
+    fireEvent.click(within(drawer).getByRole("tab", { name: "Agent" }));
+    writeText.mockClear();
+    fireEvent.click(within(drawer).getByRole("button", { name: "Copy prompt" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith(reference.prompt));
+    expect(writeText.mock.calls[0]![0]).not.toContain("sess_reference_test");
+    expect(fetch).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Close panel" }));
     expect(screen.queryByRole("dialog")).toBeNull();
     fireEvent.keyDown(document.body, { key: "a" });
-    expect(screen.getByRole("dialog", { name: "Domain" })).toBeTruthy();
+    drawer = screen.getByRole("dialog", { name: "Signup forms" });
+    expect(within(drawer).getByRole("tab", { name: "cURL" }).getAttribute("aria-selected")).toBe("true");
   });
 });

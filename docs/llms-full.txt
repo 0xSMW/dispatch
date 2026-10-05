@@ -4856,6 +4856,12 @@ Go exposes `Goals`, `Goal`, `CreateGoal`, `UpdateGoal`, `DeleteGoal` and `GoalMe
 
 The Goals page manages definitions. Automation Metrics, broadcast details and global Metrics show the same conversion report with a goal picker. Global Metrics also offers automation or broadcast scope selection.
 
+## Ask your agent
+
+```text
+Help me define retroactive event or contact-state goals and compare real-send conversion cohorts. Explain current eligibility and retained-history limits. Use the public documentation for my running Dispatch version and only shipped endpoints and SDK methods. Read DISPATCH_API_URL and DISPATCH_API_KEY from my environment; never print or embed the key. Respect my current permissions and ask for confirmation before sending email, publishing, deleting, or changing live configuration.
+```
+
 ---
 
 Source: [docs/integrations.md](integrations.md)
@@ -4969,6 +4975,12 @@ Delivery history and replay keys are pruned in bounded batches with log retentio
 ## Keep code-owned alternatives
 
 Receivers are optional. The provider guides retain manual verified handlers for custom mapping and direct email sends. Do not feed the same delivery through both a receiver and a manual producer unless you deliberately prevent duplicate events and mail. See [Failed payment](automations/failed-payment.md) before enabling a billing automation, especially its invoice-correlation and cancellation limits.
+
+## Ask your agent
+
+```text
+Help me inspect Dispatch inbound integrations and body-free deliveries, explain provider signatures and one-time URL rotation, and preserve consent and deleted contacts. Use the public documentation for my running Dispatch version and only shipped endpoints and SDK methods. Read DISPATCH_API_URL and DISPATCH_API_KEY from my environment; never print or embed the key. Respect my current permissions and ask for confirmation before sending email, publishing, deleting, or changing live configuration.
+```
 
 ---
 
@@ -5536,6 +5548,12 @@ Dispatch always treats `example.com`, `example.net`, `example.org`, and their su
 Sandbox recipients never reach SES or another provider. Emails are accepted, rendered, and stored for inspection. All-sandbox emails have `sandbox: true` and record simulated `email.delivered` events with `data.sandbox: true`, without a real provider message ID. Mixed emails have `sandbox: false`; only real recipients are sent, and the API's `recipients` array identifies sandbox recipients individually. Sandbox events do not count toward real email metrics.
 
 This is not the SES account sandbox. AWS's sandbox restricts real sending until your account receives production access. Dispatch's sandbox-domain rule bypasses the provider even after that access is granted. Do not add a domain whose recipients should receive real email.
+
+## Ask your agent
+
+```text
+Help me review Dispatch import-trigger defaults and sandbox domains before changing settings. Use the public documentation for my running Dispatch version and only shipped endpoints and SDK methods. Read DISPATCH_API_URL and DISPATCH_API_KEY from my environment; never print or embed the key. Respect my current permissions and ask for confirmation before sending email, publishing, deleting, or changing live configuration.
+```
 
 ---
 
@@ -6350,6 +6368,12 @@ The update locks each installed template and its latest version. Only a latest v
 The response is `{ "updated": [{ "id", "name", "slug" }], "skipped": [{ "id", "name", "slug", "reason" }] }`. TypeScript uses `dispatch.brand.updateLibrary()`, Go `UpdateLibraryTemplates()`, and Python `update_library_templates()`.
 
 There is one brand theme per tenant. Multiple themes and reusable tenant components are not supported.
+
+## Ask your agent
+
+```text
+Help me review Dispatch brand values and safe theme tokens. Explain that saving does not rewrite installed emails; explicitly update library templates only after approval and preserve edited copies. Use the public documentation for my running Dispatch version and only shipped endpoints and SDK methods. Read DISPATCH_API_URL and DISPATCH_API_KEY from my environment; never print or embed the key. Respect my current permissions and ask for confirmation before sending email, publishing, deleting, or changing live configuration.
+```
 
 ---
 

@@ -7,7 +7,7 @@ import { curl, go, llmsLinks, python, referenceFor, references, sdk } from "./re
 
 // The signed-in routes in main.tsx, read from the source so a new page cannot skip the reference.
 const source = readFileSync(new URL("../main.tsx", import.meta.url), "utf8");
-const publicPaths = new Set(["login", "shared", "unsubscribe", "*", "settings", "automations/events"]);
+const publicPaths = new Set(["login", "shared", "unsubscribe", "confirm/:token", "*", "settings", "automations/events"]);
 const routes = [...source.matchAll(/path: "([^"]+)"/g)].map((match) => match[1]!).filter((path) => !publicPaths.has(path));
 const calls = Object.keys(references).flatMap((path) => referenceFor(path.replace(/:[a-z_]+/g, "resource_123"))!.calls);
 const apiUrl = "https://api.acme.test";
@@ -15,6 +15,57 @@ const apiUrl = "https://api.acme.test";
 afterEach(() => vi.unstubAllGlobals());
 
 describe("API reference", () => {
+  it("maps newly shipped reference expressions through the actual TypeScript client without network", async () => {
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ object: "list", data: [], has_more: false }), { status: 200 }));
+    vi.stubGlobal("fetch", fetch);
+    const dispatch = new Dispatch({ apiKey: "reference_test", baseUrl: apiUrl });
+    const owned = calls.filter(call => /^\/forms(?:\/|\?|$)|\/segments\/preview|\/segments\/segment_123|\/steps\/split_123\/|\/goals\/goal_123\/metrics/.test(call.path));
+    expect(owned).toHaveLength(12);
+    for (const call of owned) {
+      fetch.mockClear();
+      await new Function("dispatch", `return ${call.sdk}`)(dispatch);
+      expect(fetch, call.sdk!).toHaveBeenCalledOnce();
+      const [url, init] = fetch.mock.calls[0]! as unknown as [string, RequestInit];
+      expect(init.method, call.sdk!).toBe(call.method);
+      expect(new URL(url).pathname, call.sdk!).toBe(call.path.split("?")[0]);
+      expect([...new URL(url).searchParams].sort(), call.sdk!).toEqual([...new URL(`${apiUrl}${call.path}`).searchParams].sort());
+      if (call.body) expect(JSON.parse(String(init.body)), call.sdk!).toEqual(call.body);
+    }
+  });
+
+  it("covers new Forms, dynamic segments, goal reports and guarded split contracts", () => {
+    const forms = references["/audience/forms"]!;
+    expect(forms.prompt).toContain("never put an API key in the public form");
+    const create = forms.calls.find(call => call.method === "POST")!;
+    expect(sdk(create, apiUrl)).toContain("dispatch.forms.create(");
+    expect(python(create, apiUrl)).toContain("client.create_form(");
+    expect(go(create, apiUrl)).toContain("dispatch.FormInput{");
+    const segments = references["/audience/segments"]!;
+    expect(segments.prompt).toContain("dynamic membership is read-only");
+    const preview = segments.calls.find(call => call.path === "/segments/preview")!;
+    expect(preview.body).toEqual({ rule: { type: "rule", field: "contact.unsubscribed", operator: "eq", value: false } });
+    expect(go(preview, apiUrl)).toContain('dispatch.Rule{Type: "rule"');
+    const automation = referenceFor("/automations/flow_123/editor")!;
+    const winner = automation.calls.find(call => call.path.endsWith("/winner"))!;
+    expect(winner.summary).toContain("already paused");
+    expect(python(winner, apiUrl)).toContain('client.pick_automation_winner("flow_123", "split_123", "variant_b", 1)');
+    expect(go(winner, apiUrl)).toContain('client.PickAutomationWinner("flow_123", "split_123", "variant_b", 1)');
+    expect(automation.calls.some(call => call.path === "/goals/goal_123/metrics?automation_id=flow_123")).toBe(true);
+    expect(referenceFor("/broadcasts/broadcast_9")!.calls.some(call => call.path === "/goals/goal_123/metrics?broadcast_id=broadcast_9")).toBe(true);
+    expect(references["/metrics"]!.calls.some(call => call.path === "/goals/goal_123/metrics")).toBe(true);
+  });
+
+  it("keeps newer public guide prompts equal to their canonical page prompts", () => {
+    const guides = [
+      ["goals.md", "/goals"], ["integrations.md", "/settings/integrations"],
+      ["templates/theme.md", "/settings/brand"], ["settings.md", "/settings/general"],
+      ["agent-tools.md", "/emails/send"],
+    ];
+    for (const [file, route] of guides) {
+      const guide = readFileSync(new URL(`../../../../docs/${file}`, import.meta.url), "utf8");
+      expect(guide.trimEnd().endsWith(`## Ask your agent\n\n\`\`\`text\n${references[route!]!.prompt}\n\`\`\``), file).toBe(true);
+    }
+  });
   it("exposes goals and explicit theme updates with three shipped client contracts", () => {
     const goals = referenceFor("/goals")!;
     expect(goals.prompt).not.toContain("undefined");
@@ -153,7 +204,8 @@ print(json.dumps(requests))
   });
 
   it("uses actual Go method names and syntactically valid complete programs", () => {
-    const client = readFileSync(new URL("../../../../packages/sdk-go/client.go", import.meta.url), "utf8");
+    const client = ["client.go", "forms.go", "goals.go"]
+      .map(file => readFileSync(new URL(`../../../../packages/sdk-go/${file}`, import.meta.url), "utf8")).join("\n");
     for (const call of calls) {
       const code = go(call, apiUrl);
       if (!code) continue;

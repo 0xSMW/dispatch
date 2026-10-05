@@ -54,3 +54,9 @@ const report = await dispatch.goals.metrics(goal!.id, {
 Go exposes `Goals`, `Goal`, `CreateGoal`, `UpdateGoal`, `DeleteGoal` and `GoalMetrics`. Python exposes `goals`, `goal`, `create_goal`, `update_goal`, `delete_goal` and `goal_metrics`. Go/Python query names are snake_case.
 
 The Goals page manages definitions. Automation Metrics, broadcast details and global Metrics show the same conversion report with a goal picker. Global Metrics also offers automation or broadcast scope selection.
+
+## Ask your agent
+
+```text
+Help me define retroactive event or contact-state goals and compare real-send conversion cohorts. Explain current eligibility and retained-history limits. Use the public documentation for my running Dispatch version and only shipped endpoints and SDK methods. Read DISPATCH_API_URL and DISPATCH_API_KEY from my environment; never print or embed the key. Respect my current permissions and ask for confirmation before sending email, publishing, deleting, or changing live configuration.
+```

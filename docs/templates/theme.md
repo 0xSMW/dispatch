@@ -17,3 +17,9 @@ The update locks each installed template and its latest version. Only a latest v
 The response is `{ "updated": [{ "id", "name", "slug" }], "skipped": [{ "id", "name", "slug", "reason" }] }`. TypeScript uses `dispatch.brand.updateLibrary()`, Go `UpdateLibraryTemplates()`, and Python `update_library_templates()`.
 
 There is one brand theme per tenant. Multiple themes and reusable tenant components are not supported.
+
+## Ask your agent
+
+```text
+Help me review Dispatch brand values and safe theme tokens. Explain that saving does not rewrite installed emails; explicitly update library templates only after approval and preserve edited copies. Use the public documentation for my running Dispatch version and only shipped endpoints and SDK methods. Read DISPATCH_API_URL and DISPATCH_API_KEY from my environment; never print or embed the key. Respect my current permissions and ask for confirmation before sending email, publishing, deleting, or changing live configuration.
+```
