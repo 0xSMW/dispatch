@@ -19,10 +19,12 @@ export const contactColumns =
   "id, email, first_name, last_name, properties, unsubscribed_at, created_at, updated_at";
 
 export function subscriptionStored(value: string) {
-  return value === "opt_out" || value === "unsubscribed" ? "unsubscribed" : "subscribed";
+  if (value === "pending") return "pending";
+  return value === "opt_in" || value === "subscribed" ? "subscribed" : "unsubscribed";
 }
 
-export function subscriptionWire(value: string): "opt_in" | "opt_out" {
+export function subscriptionWire(value: string): "opt_in" | "opt_out" | "pending" {
+  if (value === "pending") return "pending";
   return subscriptionStored(value) === "unsubscribed" ? "opt_out" : "opt_in";
 }
 

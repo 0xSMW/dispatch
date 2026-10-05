@@ -514,6 +514,7 @@ export class Dispatch {
   readonly contactProperties = new ContactProperties(this);
   readonly segments = new Segments(this);
   readonly topics = new Topics(this);
+  readonly forms = new Forms(this);
   readonly suppressions = new Suppressions(this);
   readonly broadcasts = new Broadcasts(this);
   readonly automations = new Automations(this);
@@ -1359,6 +1360,7 @@ export type TenantSettings = {
   object: "settings";
   import_trigger_automations: boolean;
   sandbox_domains: string[];
+  confirmation_daily_limit: number;
 };
 
 class Settings extends Resource {
@@ -1366,9 +1368,24 @@ class Settings extends Resource {
     return this.client.call<TenantSettings>("GET", "/settings");
   }
 
-  update(payload: { importTriggerAutomations?: boolean; sandboxDomains?: string[] }) {
+  update(payload: { importTriggerAutomations?: boolean; sandboxDomains?: string[]; confirmationDailyLimit?: number }) {
     return this.client.call<TenantSettings>("PATCH", "/settings", wire(payload));
   }
+}
+export type FormInput = {
+  name: string; topicIds: string[]; properties?: string[]; doubleOptIn?: boolean;
+  fromEmail: string; allowedOrigins: string[]; redirectUrl?: string | null;
+};
+export type SignupForm = Row & {
+  object: "form"; name: string; key: string; topic_ids: string[]; properties: string[];
+  double_opt_in: boolean; from_email: string; allowed_origins: string[]; redirect_url: string | null;
+};
+class Forms extends Resource {
+  list(page: Page = {}) { return this.client.call<List<SignupForm>>("GET", `/forms${query(page)}`); }
+  get(id: string) { return this.client.call<SignupForm>("GET", `/forms/${seg(id)}`); }
+  create(input: FormInput) { return this.client.call<SignupForm>("POST", "/forms", wire(input)); }
+  update(id: string, input: Partial<FormInput>) { return this.client.call<SignupForm>("PATCH", `/forms/${seg(id)}`, wire(input)); }
+  remove(id: string) { return this.client.call<Deleted>("DELETE", `/forms/${seg(id)}`); }
 }
 
 class Single extends Resource {

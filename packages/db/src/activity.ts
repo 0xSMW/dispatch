@@ -29,7 +29,7 @@ export const contactActivitySource = `(
     t.id, t.name, null::text, ts.updated_at, null::text, null::text, null::text
   from topic_subscriptions ts
   join topics t on t.tenant_id = ts.tenant_id and t.id = ts.topic_id
-  where ts.tenant_id = $1 and ts.contact_id = $2
+  where ts.tenant_id = $1 and ts.contact_id = $2 and ts.status <> 'pending'
   union all
   select ev.id, ev.tenant_id, ev.type, ev.email_id, e.subject, ev.email_id, ev.created_at, null::text, null::text, null::text
   from email_events ev

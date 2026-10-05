@@ -1053,4 +1053,48 @@ end $$;
 alter table segments add column if not exists rule jsonb;
 create index if not exists emails_tenant_contact_created_idx on emails (tenant_id, contact_id, created_at);
 create index if not exists email_recipients_tenant_address_idx on email_recipients (tenant_id, lower(email));
+-- Public consent and inbound management support. All effects use caller-owned transactions.
+alter table topic_subscriptions drop constraint if exists topic_subscriptions_status_check;
+alter table topic_subscriptions add constraint topic_subscriptions_status_check
+  check (status in ('subscribed', 'unsubscribed', 'pending'));
+create table if not exists forms (
+  id text primary key, tenant_id text not null references tenants(id),
+  name text not null, key text not null unique, topic_ids text[] not null, properties text[] not null default '{}',
+  double_opt_in boolean not null default true, from_email text not null, allowed_origins text[] not null,
+  redirect_url text, created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
+  deleted_at timestamptz
+);
+create index if not exists forms_tenant_created_idx on forms (tenant_id, created_at, id);
+-- The reservation helper locks the tenant counter first, then the address/form row.
+-- Day boundaries are UTC; address limits are a rolling 24 hours using database time.
+create table if not exists confirmation_days (
+  tenant_id text not null references tenants(id), day date not null, sends integer not null default 0,
+  primary key (tenant_id, day)
+);
+create table if not exists confirmation_sends (
+  tenant_id text not null references tenants(id), form_id text not null references forms(id),
+  email text not null, sent_at timestamptz not null default now(),
+  primary key (tenant_id, form_id, email)
+);
+create table if not exists confirmations (
+  id text primary key, tenant_id text not null references tenants(id), form_id text not null references forms(id),
+  contact_id text not null references contacts(id), topic_ids text[] not null,
+  expires_at timestamptz not null, used_at timestamptz, created_at timestamptz not null default now()
+);
+create index if not exists confirmations_contact_idx on confirmations (tenant_id, contact_id);
+create table if not exists integrations (
+  id text primary key, tenant_id text not null references tenants(id), provider text not null
+    check (provider in ('stripe', 'clerk', 'supabase', 'webhook')),
+  name text not null, slug text not null, token_hash text not null unique, secret text not null,
+  settings jsonb not null default '{}', last_received_at timestamptz,
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now(), deleted_at timestamptz,
+  unique (tenant_id, slug)
+);
+create table if not exists inbound_deliveries (
+  id text primary key, tenant_id text not null references tenants(id),
+  integration_id text not null references integrations(id), provider_event_id text not null,
+  status text not null, event_name text, contact_id text, error text,
+  created_at timestamptz not null default now(), unique (integration_id, provider_event_id)
+);
+create index if not exists inbound_deliveries_created_idx on inbound_deliveries (tenant_id, integration_id, created_at, id);
 `;

@@ -1232,6 +1232,7 @@ type Settings struct {
 	Object                   string   `json:"object"`
 	ImportTriggerAutomations bool     `json:"import_trigger_automations"`
 	SandboxDomains           []string `json:"sandbox_domains"`
+	ConfirmationDailyLimit   int      `json:"confirmation_daily_limit"`
 }
 
 func (c *Client) Settings() (*Settings, error) { return get[Settings](c, "/settings") }

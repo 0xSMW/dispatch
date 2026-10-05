@@ -170,6 +170,37 @@ Python uses `preview_segment(rule)`, `create_segment({"name": "Clicked", "rule":
 
 Topics describe categories of Marketing email, such as Product updates or Newsletters. They are preferences, not audience lists.
 
+Form submissions can create **Pending confirmation** preferences. Pending is not Opt in: Marketing ingest, receiving-topic rules, broadcast review and snapshots exclude it, even for topics that default to Opt in.
+
+## Signup forms
+
+Under Audience → Forms, choose live topics, declared properties, a sender on a verified sending-enabled domain, and exact allowed website origins. Double opt-in defaults on. Copy the HTML or browser fetch snippet; neither contains an API key.
+
+Management uses authenticated `GET/POST /forms` and `GET/PATCH/DELETE /forms/{id}`. Public submission uses `POST /forms/{key}`, with the random public **key**, not the management ID. Viewers can inspect forms and copy snippets but cannot create, change or delete them.
+
+Public JSON accepts `email`, optional `first_name` and `last_name`, a `properties` object containing only configured keys, and an empty `website` honeypot. A plain HTML form uses `properties.KEY` fields. Form-encoded numbers and `true`/`false` booleans are converted to their declared types. JSON uses native declared types. Requests are capped at 16 KB. An exact configured `Origin` is required; OPTIONS permits POST and `content-type` only. Missing or foreign origins are refused. The per-IP public limit applies to the route, not each key.
+
+Successful, duplicate, quota-refused and honeypot submissions receive the same message: “Thank you. Check your email if confirmation is needed.” They never reveal subscription state. Confirmation email is limited to one per address and form per rolling 24 hours, plus the tenant's [UTC daily cap](settings.md). Contact, pending consent, token, quota reservations and enqueue commit together; failed enqueue never grants receiving consent.
+
+Double opt-in sets the selected topics to Pending and sends the built-in `confirm-subscription` template. A globally opted-out or deleted contact requires confirmation even if the form has double opt-in off. Submission never revives a deleted contact. A new ordinary single-opt-in contact subscribes immediately.
+
+Confirmation links expire after seven days. Opening `/confirm/{token}` only displays the form and a Confirm button, without a session. The deliberate POST can revive the contact, clear its global opt-out and subscribe the original token-bound topics. Concurrent or repeated POSTs produce the actual topic transition once. Reusing a consumed link after a later opt-out cannot resubscribe. Tokens are purpose-scoped, tenant/form/contact-bound, and backed by durable single-use state. A form's configured HTTPS redirect is the only redirect destination; request fields and query strings cannot replace it.
+
+TypeScript management:
+
+```ts
+const result = await dispatch.forms.create({
+  name: "Newsletter", topicIds: ["topic_..."], fromEmail: "hello@your-verified-domain.com",
+  allowedOrigins: ["https://your-site.com"], doubleOptIn: true,
+});
+await dispatch.forms.list();
+await dispatch.forms.update(result.data!.id, { redirectUrl: "https://your-site.com/thanks" });
+```
+
+Python exposes `forms`, `form`, `create_form`, `update_form`, and `delete_form`, with snake_case inputs. Go exposes `Forms`, `Form`, `CreateForm`, `UpdateForm`, and `DeleteForm`; `FormInput.DoubleOptIn` is a pointer so nil preserves the server default. These clients manage forms. Browser snippets submit publicly without credentials.
+
+## Topic defaults and visibility
+
 Choose these settings when creating a topic:
 
 - **Defaults to Opt in:** a contact with no explicit preference receives the topic.

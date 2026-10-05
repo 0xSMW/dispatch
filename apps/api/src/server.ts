@@ -106,6 +106,8 @@ import { permitted, presentKey, readOnly, registerPlatform, type KeyRow } from "
 import { rateKey, rateLimitValue, sessionRateKey, sessionRateLimitValue, signins } from "./rate.js";
 import { registerBroadcasts } from "./broadcasts.js";
 import { registerUnsubscribe } from "./unsubscribe.js";
+import { registerForms } from "./forms.js";
+import { registerIntegrations } from "./integrations.js";
 import {
   installLibraryTemplate,
   libraryEntry,
@@ -272,6 +274,7 @@ app.addHook("preHandler", async (request, reply) => {
     path.startsWith("/files/") ||
     path.startsWith("/shared/") ||
     path.startsWith("/unsubscribe/")
+    || (request.routeOptions.config as { public?: boolean }).public === true
   ) {
     // Keyed on the route pattern. Keyed on the path, every token in /unsubscribe/:token or
     // /click/:token would get its own bucket and the limit would never apply.
@@ -944,6 +947,8 @@ registerLinks(app);
 
 registerBroadcasts(app, { db, paging });
 registerUnsubscribe(app, { db, secret: appSecret });
+registerForms(app, { db, paging, secret: appSecret, appUrl, publicUrl });
+registerIntegrations(app, { db, paging, secret: appSecret, publicUrl });
 
 registerAutomations(app, { db, paging });
 registerEvents(app, { db, paging });
@@ -1899,7 +1904,7 @@ function trustProxy(value = process.env.TRUST_PROXY) {
 
 // /unsubscribe/<token>, /shared/<token>, /files/<token>, /open/<token>.gif, /click/<token>
 function redactPath(url: string) {
-  return url.replace(/^\/(unsubscribe|shared|files|open|click)\/[^?]+/, "/$1/[token]");
+  return url.replace(/^\/(unsubscribe|confirm|inbound|shared|files|open|click)\/[^?]+/, "/$1/[token]");
 }
 
 async function rateLimit(request: FastifyRequest, reply: FastifyReply) {

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Add signup-form management and safe credential-free HTML/fetch snippets under Audience, Forms. Enforce verified senders, declared properties/live topics, exact origins, 16 KB bodies, honeypot/IP limits, rolling address/form cooldowns and configurable tenant UTC daily caps. Pending consent is not receiving. Seven-day purpose/scoped confirmation links only grant consent on deliberate POST, with transactional single-use state, explicit revival, once-only topic transitions and configured HTTPS redirects. Viewer email/log output hides confirmation links.
+- Prepare encrypted inbound integration management with hash-only one-time/rotated URL tokens and credential-free bounded delivery reads. Signed receiver activation remains a separate integration package.
+
 - Add SQL-backed dynamic segment filters, recipient-aware real email engagement, live preview, cached detail counts, and dynamic contact context/broadcast snapshots. Reuse the typed rule editor and expose filter/null conversion in the API and three SDKs. Refuse dynamic membership writes and guard conversions with segment row locks. Valid finite numeric/ISO values are supported; universal JavaScript legacy parsing is not promised.
 - Hold static-segment locks through import creation, recheck dynamic targets before automation contact writes or deleted-contact skips, preserve same-second filter revisions in count caching, and use current detail type for membership timestamps after conversion.
 

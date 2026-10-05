@@ -2,6 +2,10 @@ import pg from "pg";
 import { ApiError, id, list, type TemplateVariable } from "@dispatchmail/core";
 import { contactColumns, type ContactRow } from "./audience.js";
 export { settings, updateSettings } from "./settings.js";
+export * from "./forms.js";
+export * from "./consent.js";
+export * from "./inbound/management.js";
+export * from "./inbound/security.js";
 export { assertSendKinds } from "./send-kinds.js";
 export { migrate } from "./migration.js";
 // Compiler and bounded read helpers share the fixed contacts alias c.

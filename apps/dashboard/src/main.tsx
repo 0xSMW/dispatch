@@ -33,6 +33,8 @@ import { Metrics } from "./views/metrics/Metrics";
 import { NotFound } from "./views/NotFound";
 import { Shared } from "./views/public/Shared";
 import { Unsubscribe } from "./views/public/Unsubscribe";
+import { ConfirmPage } from "./views/public/ConfirmPage";
+import { Forms } from "./views/forms/Forms";
 import { Brand } from "./views/settings/Brand";
 import { General } from "./views/settings/General";
 import { Smtp } from "./views/settings/Smtp";
@@ -58,6 +60,7 @@ export const routes = [
       { path: "login", element: <Login /> },
       { path: "shared", element: <Shared /> },
       { path: "unsubscribe", element: <Unsubscribe /> },
+      { path: "confirm/:token", element: <ConfirmPage /> },
       {
         element: <Shell />,
         children: [
@@ -90,6 +93,7 @@ export const routes = [
           { path: "audience/properties", element: <Properties /> },
           { path: "audience/segments", element: <Segments /> },
           { path: "audience/topics", element: <Topics /> },
+          { path: "audience/forms", element: <Forms /> },
 
           { path: "metrics", element: <Metrics /> },
 

@@ -13,14 +13,14 @@ export const secretFields = new Set([
 
 // Any key that names a secret, in any case: a client may send `new_password` or `Password`, and
 // the route drops unknown keys without failing, so the body would keep it in plain text.
-const secretName = /pass|secret|token|api_?key|authorization/i;
+const secretName = /pass|secret|token|api_?key|restricted_key|authorization/i;
 
 // Also hidden from a read-only user: share links and signed file URLs grant access on their own
 // and outlive the session that reads them.
 export const linkFields = new Set(["url", "download_url", "raw"]);
 
 // Unsubscribe, click, open, file, and share links carry a token that acts without a session.
-const tokenLink = /https?:\/\/[^\s"'<>()]+\/(?:unsubscribe|click|open|files|shared)(?:[/?][^\s"'<>()]*)?/g;
+const tokenLink = /https?:\/\/[^\s"'<>()]+\/(?:unsubscribe|confirm|click|open|files|shared)(?:[/?][^\s"'<>()]*)?/g;
 
 /**
  * A URL cut to its scheme and host, for a read-only user. The path or the user part of a webhook
@@ -95,6 +95,8 @@ export function logBodies(input: {
   body: unknown;
   responseText: string | null;
 }) {
+  if (input.route === "/confirm/:token" || (input.route === "/forms/:id" && input.method === "POST"))
+    return { request_body: null, response_body: null };
   const response = parseJson(input.responseText);
   if (skipBodies(input.method, input.route, response)) {
     return { request_body: null, response_body: null };

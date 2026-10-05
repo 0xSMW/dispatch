@@ -19,7 +19,7 @@ describe("general settings", () => {
     fireEvent.change(screen.getByLabelText("Additional sandbox domains"), { target: { value: "demo.test\nqa.test" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
-    expect(JSON.parse(String(callAt(fetch, -1).init.body))).toEqual({ import_trigger_automations: true, sandbox_domains: ["demo.test", "qa.test"] });
+    expect(JSON.parse(String(callAt(fetch, -1).init.body))).toEqual({ import_trigger_automations: true, sandbox_domains: ["demo.test", "qa.test"], confirmation_daily_limit: 500 });
   });
 
   it("does not offer a save action to a viewer", async () => {

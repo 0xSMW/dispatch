@@ -24,7 +24,7 @@ import { PreferenceCard, previewBrand } from "../public/Preferences";
 import { audienceTabs } from "../tabs";
 import "../../styles/audience.css";
 
-const defaultLabel = (value: Topic["default_subscription"]) => (value === "opt_in" ? "Opt in" : "Opt out");
+const defaultLabel = (value: Topic["default_subscription"] | "pending") => (value === "pending" ? "Pending confirmation" : value === "opt_in" ? "Opt in" : "Opt out");
 
 /** Topics, with a live preview of the preference page beside the table. */
 export function Topics() {

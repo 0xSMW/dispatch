@@ -6,6 +6,7 @@ Settings apply to one tenant. Read them with `GET /settings` and change supplied
 |:--|:--|:--|
 | `import_trigger_automations` | `false` | The default for starting matching automations during contact imports. Each import can override it. |
 | `sandbox_domains` | `[]` | Up to 50 additional recipient hostnames, including their subdomains, whose emails are rendered and stored for testing rather than sent to the provider. |
+| `confirmation_daily_limit` | `500` | Signup confirmation emails per tenant per UTC day. Whole number from 0 to 100000. Zero disables confirmation sends. Per-address/form rolling 24-hour limits still apply. |
 
 Changes preserve keys you omit. Set `sandbox_domains` to an empty array to remove your additions. Reserved test domains remain sandbox domains regardless of this setting.
 

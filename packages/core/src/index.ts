@@ -1,4 +1,6 @@
 export { sandboxAddress } from "./sandbox.js";
+export * from "./forms.js";
+export * from "./integrations.js";
 export { awsCredentials } from "./aws.js";
 export { isIsoDate, propertyTypes, propertyValueMatches, type PropertyType } from "./properties.js";
 import { isIsoDate, propertyTypes, propertyValueMatches, type PropertyType } from "./properties.js";
@@ -295,6 +297,7 @@ const hostnamePattern = /^(?=.{3,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a
 
 export const settingsSchema = z.object({
   import_trigger_automations: z.boolean().default(false),
+  confirmation_daily_limit: z.number().int().min(0).max(100000).default(500),
   sandbox_domains: z.array(
     z.string().trim().toLowerCase().refine((value) => hostnamePattern.test(value), "Use a hostname"),
   ).max(50).default([]),

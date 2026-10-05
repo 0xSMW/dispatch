@@ -1077,6 +1077,22 @@ class Dispatch:
     def unsubscribe_topic(self, topic_id: str, email: str) -> Json:
         return self.subscribe_topic(topic_id, email, status="unsubscribed")
 
+    # Public signup form management (authenticated; browser submissions need no key).
+    def forms(self, **query: Any) -> Json:
+        return self._request("GET", _query("/forms", query))
+
+    def form(self, form_id: str) -> Json:
+        return self._request("GET", _path("forms", form_id))
+
+    def create_form(self, form: Json) -> Json:
+        return self._request("POST", "/forms", form)
+
+    def update_form(self, form_id: str, form: Json) -> Json:
+        return self._request("PATCH", _path("forms", form_id), form)
+
+    def delete_form(self, form_id: str) -> Json:
+        return self._request("DELETE", _path("forms", form_id))
+
     # Segments
     def segments(self, **query: Any) -> Json:
         return self._request("GET", _query("/segments", query))

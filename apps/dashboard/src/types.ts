@@ -13,7 +13,18 @@ export type Deleted = {
   deleted: true;
 };
 
-export type Settings = { import_trigger_automations: boolean; sandbox_domains: string[] };
+export type Settings = { import_trigger_automations: boolean; sandbox_domains: string[]; confirmation_daily_limit: number };
+
+export type Form = {
+  object: "form"; id: string; name: string; key: string; topic_ids: string[]; properties: string[];
+  double_opt_in: boolean; from_email: string; allowed_origins: string[]; redirect_url: string | null;
+  created_at: string; updated_at: string;
+};
+export type Confirmation = {
+  object: "confirmation"; form_name: string; confirmed: boolean;
+  brand: { product_name: string; logo_url: string | null; primary_color: string; background_color: string; text_color: string };
+};
+export type Confirmed = { object: "confirmation"; confirmed: true; redirect_url: string | null };
 
 // Emails
 
@@ -319,8 +330,8 @@ export type TopicSubscription = {
   email: string;
   first_name: string | null;
   last_name: string | null;
-  status: "subscribed" | "unsubscribed";
-  subscription: "opt_in" | "opt_out";
+  status: "subscribed" | "unsubscribed" | "pending";
+  subscription: "opt_in" | "opt_out" | "pending";
   created_at: string;
   updated_at: string;
 };
@@ -678,7 +689,7 @@ export type ContactActivity = {
 export type ContactSegment = { object: "segment"; id: string; name: string; type: "static" | "dynamic"; rule?: Segment["rule"]; created_at: string };
 
 /** `explicit` is false when the contact made no choice and `subscription` is the topic's default. */
-export type ContactTopic = { id: string; name: string; key: string; subscription: "opt_in" | "opt_out"; explicit?: boolean };
+export type ContactTopic = { id: string; name: string; key: string; subscription: "opt_in" | "opt_out" | "pending"; explicit?: boolean };
 
 export type ImportCounts = { total: number; created: number; updated: number; skipped: number; failed: number };
 
@@ -716,7 +727,7 @@ export type Preferences = {
   object: "unsubscribe";
   email: string;
   unsubscribed: boolean;
-  topics: Array<{ id: string; name: string; description: string | null; subscription: "opt_in" | "opt_out" }>;
+  topics: Array<{ id: string; name: string; description: string | null; subscription: "opt_in" | "opt_out" | "pending" }>;
   brand: { product_name: string; logo_url: string | null; color: string; text_color: string; title?: string | null; description?: string | null };
 };
 

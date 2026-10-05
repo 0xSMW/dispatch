@@ -5,7 +5,7 @@ import { settings, updateSettings } from "./settings.js";
 
 describe("tenant settings", () => {
   it("defaults imports off and sandbox additions to empty", () => {
-    expect(settingsSchema.parse({})).toEqual({ import_trigger_automations: false, sandbox_domains: [] });
+    expect(settingsSchema.parse({})).toEqual({ import_trigger_automations: false, sandbox_domains: [], confirmation_daily_limit: 500 });
   });
 
   it("validates and normalizes hostnames, caps additions, and refuses unknown keys", () => {

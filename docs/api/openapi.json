@@ -2646,6 +2646,107 @@
         }
       }
     },
+    "/forms": {
+      "get": {
+        "operationId": "listForms", "summary": "List signup forms", "tags": ["Forms"], "x-scope": "full",
+        "responses": { "200": { "description": "Tenant forms.", "content": { "application/json": { "schema": { "type": "object", "properties": {
+          "object": { "const": "list" }, "has_more": { "type": "boolean" }, "data": { "type": "array", "items": { "$ref": "#/components/schemas/Form" } }
+        } } } } } }
+      },
+      "post": {
+        "operationId": "createForm", "summary": "Create a signup form", "tags": ["Forms"], "x-scope": "full",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/FormInput" } } } },
+        "responses": { "200": { "description": "Created form with a random public key.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Form" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    },
+    "/forms/{id}": {
+      "parameters": [{ "name": "id", "in": "path", "required": true, "description": "Management ID for GET/PATCH/DELETE. Public random form key for POST/OPTIONS.", "schema": { "type": "string" } }],
+      "get": {
+        "operationId": "getForm", "summary": "Retrieve a signup form by management ID", "tags": ["Forms"], "x-scope": "full",
+        "responses": { "200": { "description": "Form.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Form" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "patch": {
+        "operationId": "updateForm", "summary": "Update a signup form by management ID", "tags": ["Forms"], "x-scope": "full",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/FormUpdate" } } } },
+        "responses": { "200": { "description": "Updated form.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Form" } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
+      },
+      "delete": {
+        "operationId": "deleteForm", "summary": "Soft delete a signup form by management ID", "tags": ["Forms"], "x-scope": "full",
+        "responses": { "200": { "description": "Deleted form; contacts and preferences are retained.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Deleted" } } } } }
+      },
+      "post": {
+        "operationId": "submitForm", "summary": "Submit a public signup form by its random key", "tags": ["Forms"], "security": [],
+        "description": "16 KB maximum. Origin must exactly match the form's allowed_origins. No API credentials. website is a honeypot and must be empty. Unknown fields/properties are refused. Responses are identical across address states and quota refusal. One confirmation per address/form per rolling 24 hours; tenant UTC daily cap defaults to 500. Failed enqueue rolls back contact, pending consent, token and reservations.",
+        "requestBody": { "required": true, "content": {
+          "application/json": { "schema": { "$ref": "#/components/schemas/FormSubmission" } },
+          "application/x-www-form-urlencoded": { "schema": { "type": "object", "required": ["email"], "properties": {
+            "email": { "type": "string", "format": "email" }, "first_name": { "type": "string" }, "last_name": { "type": "string" }, "website": { "type": "string" }
+          }, "additionalProperties": { "type": "string" }, "description": "Configured properties use properties.KEY fields. Number/boolean values are parsed to their declared types." } }
+        } },
+        "responses": {
+          "200": { "description": "Harmless uniform response, also for honeypot and quota refusals.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/FormSubmissionResult" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" },
+          "413": { "description": "Body exceeds 16 KB." }, "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      },
+      "options": {
+        "operationId": "formPreflight", "summary": "Check the form-specific public origin policy", "tags": ["Forms"], "security": [],
+        "description": "Allows POST with content-type only, from an exact configured origin. Separate from global API CORS. No credentialed requests.",
+        "responses": { "204": { "description": "Allowed preflight." }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    },
+    "/confirm/{token}": {
+      "parameters": [{ "name": "token", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "get": {
+        "operationId": "getConfirmation", "summary": "Display a confirmation without changing consent", "tags": ["Forms"], "security": [],
+        "description": "Seven-day sealed use:confirm token bound to tenant, form, contact and immutable durable topics. No mutation or send on GET/HEAD. Dashboard page /confirm/{token} requires no session.",
+        "responses": { "200": { "description": "Form name, confirmed state and public brand.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Confirmation" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "post": {
+        "operationId": "confirmForm", "summary": "Deliberately confirm a subscription once", "tags": ["Forms"], "security": [],
+        "description": "Atomically clears the global opt-out, may explicitly revive a deleted contact, subscribes the token-bound topics and fires actual topic transitions once. Used tokens are a no-op even after later opt-out. Returns only the current form-configured HTTPS redirect or null, never a request destination.",
+        "responses": { "200": { "description": "Confirmed.", "content": { "application/json": { "schema": { "type": "object", "properties": {
+          "object": { "const": "confirmation" }, "confirmed": { "const": true }, "redirect_url": { "type": ["string", "null"], "format": "uri" }
+        } } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/integrations": {
+      "get": {
+        "operationId": "listIntegrations", "summary": "List integrations without credentials", "tags": ["Integrations"], "x-scope": "full",
+        "responses": { "200": { "description": "Tenant integration list.", "content": { "application/json": { "schema": { "type": "object", "properties": {
+          "object": { "const": "list" }, "has_more": { "type": "boolean" }, "data": { "type": "array", "items": { "$ref": "#/components/schemas/Integration" } }
+        } } } } } }
+      },
+      "post": {
+        "operationId": "createIntegration", "summary": "Create encrypted integration credentials", "tags": ["Integrations"], "x-scope": "full",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IntegrationInput" } } } },
+        "responses": { "200": { "description": "Integration plus token and receiver URL, shown once. Signed receiver activation is a separate deployment capability.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreatedIntegration" } } } } }
+      }
+    },
+    "/integrations/{id}": {
+      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "get": { "operationId": "getIntegration", "summary": "Retrieve an integration without credentials", "tags": ["Integrations"], "x-scope": "full",
+        "responses": { "200": { "description": "Integration.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Integration" } } } } } },
+      "patch": { "operationId": "updateIntegration", "summary": "Update an integration without exposing credentials", "tags": ["Integrations"], "x-scope": "full",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IntegrationUpdate" } } } },
+        "responses": { "200": { "description": "Integration; omitted settings and credentials are preserved.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Integration" } } } } } },
+      "delete": { "operationId": "deleteIntegration", "summary": "Soft delete an integration", "tags": ["Integrations"], "x-scope": "full",
+        "responses": { "200": { "description": "Deleted integration.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Deleted" } } } } } }
+    },
+    "/integrations/{id}/rotate": {
+      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "post": { "operationId": "rotateIntegration", "summary": "Replace the hash-only receiver token", "tags": ["Integrations"], "x-scope": "full",
+        "responses": { "200": { "description": "New token and URL shown once; old URL stops resolving.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreatedIntegration" } } } } } }
+    },
+    "/integrations/{id}/deliveries": {
+      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "get": { "operationId": "integrationDeliveries", "summary": "List recent body-free integration deliveries", "tags": ["Integrations"], "x-scope": "full",
+        "description": "Latest 20 by default, limit 1-100. No request body or credential fields.",
+        "responses": { "200": { "description": "Bounded recent delivery list.", "content": { "application/json": { "schema": { "type": "object", "properties": {
+          "object": { "const": "list" }, "has_more": { "const": false }, "data": { "type": "array", "items": { "$ref": "#/components/schemas/InboundDelivery" } }
+        } } } } } } }
+    },
     "/settings": {
       "get": {
         "operationId": "getSettings",
@@ -2664,7 +2765,8 @@
                   "required": [
                     "object",
                     "import_trigger_automations",
-                    "sandbox_domains"
+                    "sandbox_domains",
+                    "confirmation_daily_limit"
                   ],
                   "properties": {
                     "object": {
@@ -2677,6 +2779,7 @@
                       "type": "boolean",
                       "default": false
                     },
+                    "confirmation_daily_limit": { "type": "integer", "minimum": 0, "maximum": 100000, "default": 500, "description": "Confirmation emails per tenant per UTC day; zero disables confirmation sends." },
                     "sandbox_domains": {
                       "type": "array",
                       "maxItems": 50,
@@ -2716,6 +2819,7 @@
                   "import_trigger_automations": {
                     "type": "boolean"
                   },
+                  "confirmation_daily_limit": { "type": "integer", "minimum": 0, "maximum": 100000 },
                   "sandbox_domains": {
                     "type": "array",
                     "maxItems": 50,
@@ -19316,6 +19420,77 @@
           }
         }
       },
+      "FormInput": {
+        "type": "object", "additionalProperties": false, "required": ["name", "topic_ids", "from_email", "allowed_origins"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "topic_ids": { "type": "array", "minItems": 1, "maxItems": 100, "items": { "type": "string" }, "description": "Live tenant topics only." },
+          "properties": { "type": "array", "maxItems": 100, "default": [], "items": { "type": "string" }, "description": "Live declared keys only; mailbox/name/honeypot and prototype keys are reserved." },
+          "double_opt_in": { "type": "boolean", "default": true },
+          "from_email": { "type": "string", "format": "email", "description": "Exact verified sending-enabled domain required." },
+          "allowed_origins": { "type": "array", "minItems": 1, "maxItems": 50, "items": { "type": "string", "format": "uri" }, "description": "Exact HTTP/HTTPS origins, with no path or credentials." },
+          "redirect_url": { "type": ["string", "null"], "format": "uri", "default": null, "description": "HTTPS only, no credentials. Never taken from public submission." }
+        }
+      },
+      "FormUpdate": { "type": "object", "additionalProperties": false, "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "topic_ids": { "type": "array", "minItems": 1, "maxItems": 100, "items": { "type": "string" } },
+        "properties": { "type": "array", "maxItems": 100, "items": { "type": "string" } },
+        "double_opt_in": { "type": "boolean" }, "from_email": { "type": "string", "format": "email" },
+        "allowed_origins": { "type": "array", "minItems": 1, "maxItems": 50, "items": { "type": "string", "format": "uri" } },
+        "redirect_url": { "type": ["string", "null"], "format": "uri" }
+      } },
+      "Form": { "type": "object", "properties": {
+        "name": { "$ref": "#/components/schemas/FormInput/properties/name" },
+        "topic_ids": { "$ref": "#/components/schemas/FormInput/properties/topic_ids" },
+        "properties": { "$ref": "#/components/schemas/FormInput/properties/properties" },
+        "double_opt_in": { "type": "boolean" }, "from_email": { "type": "string", "format": "email" },
+        "allowed_origins": { "$ref": "#/components/schemas/FormInput/properties/allowed_origins" },
+        "redirect_url": { "type": ["string", "null"], "format": "uri" },
+        "object": { "const": "form" }, "id": { "type": "string" }, "key": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }, "updated_at": { "type": "string", "format": "date-time" }
+      } },
+      "FormSubmission": { "type": "object", "additionalProperties": false, "required": ["email"], "properties": {
+        "email": { "type": "string", "format": "email" }, "first_name": { "type": "string", "maxLength": 120 }, "last_name": { "type": "string", "maxLength": 120 },
+        "website": { "type": "string" }, "properties": { "type": "object", "description": "Only configured keys, using their declared JSON types." }
+      } },
+      "FormSubmissionResult": { "type": "object", "properties": {
+        "object": { "const": "form_submission" }, "message": { "const": "Thank you. Check your email if confirmation is needed." }
+      } },
+      "Confirmation": { "type": "object", "properties": {
+        "object": { "const": "confirmation" }, "form_name": { "type": "string" }, "confirmed": { "type": "boolean" },
+        "brand": { "type": "object", "properties": {
+          "product_name": { "type": "string" }, "logo_url": { "type": ["string", "null"] }, "primary_color": { "type": "string" },
+          "background_color": { "type": "string" }, "text_color": { "type": "string" }
+        } }
+      } },
+      "IntegrationSettings": { "type": "object", "additionalProperties": false, "properties": {
+        "map_plan": { "type": "boolean" }, "delete_contact": { "type": "boolean", "default": false },
+        "secret_header": { "type": "string", "pattern": "^[a-zA-Z0-9-]{1,78}$" },
+        "stripe_restricted_key": { "type": ["string", "null"], "writeOnly": true, "description": "Optional customers:read key; encrypted at rest, omitted from normal reads. Null clears." }
+      } },
+      "IntegrationInput": { "type": "object", "additionalProperties": false, "required": ["provider", "name", "secret"], "properties": {
+        "provider": { "enum": ["stripe", "clerk", "supabase", "webhook"] }, "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "slug": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$", "description": "Provider prefix for named providers; explicit nonreserved slug for webhook." },
+        "secret": { "type": "string", "minLength": 1, "maxLength": 4096, "writeOnly": true }, "settings": { "$ref": "#/components/schemas/IntegrationSettings" }
+      } },
+      "IntegrationUpdate": { "type": "object", "additionalProperties": false, "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 }, "secret": { "type": "string", "minLength": 1, "maxLength": 4096, "writeOnly": true },
+        "settings": { "$ref": "#/components/schemas/IntegrationSettings" }
+      } },
+      "Integration": { "type": "object", "properties": {
+        "object": { "const": "integration" }, "id": { "type": "string" }, "provider": { "enum": ["stripe", "clerk", "supabase", "webhook"] },
+        "name": { "type": "string" }, "slug": { "type": "string" }, "has_restricted_key": { "type": "boolean" },
+        "settings": { "type": "object", "properties": { "map_plan": { "type": "boolean" }, "delete_contact": { "type": "boolean" }, "secret_header": { "type": "string" } } },
+        "last_received_at": { "type": ["string", "null"], "format": "date-time" }, "created_at": { "type": "string", "format": "date-time" }, "updated_at": { "type": "string", "format": "date-time" }
+      } },
+      "CreatedIntegration": { "allOf": [{ "$ref": "#/components/schemas/Integration" }, { "type": "object", "properties": {
+        "token": { "type": "string" }, "url": { "type": "string", "format": "uri" }
+      } }] },
+      "InboundDelivery": { "type": "object", "properties": {
+        "id": { "type": "string" }, "integration_id": { "type": "string" }, "provider_event_id": { "type": "string" }, "status": { "type": "string" },
+        "event_name": { "type": ["string", "null"] }, "contact_id": { "type": ["string", "null"] }, "error": { "type": ["string", "null"] }, "created_at": { "type": "string", "format": "date-time" }
+      } },
       "ContactTopic": {
         "type": "object",
         "required": [
@@ -19338,7 +19513,8 @@
             "type": "string",
             "enum": [
               "opt_in",
-              "opt_out"
+              "opt_out",
+              "pending"
             ]
           },
           "explicit": {
@@ -19739,14 +19915,16 @@
             "type": "string",
             "enum": [
               "subscribed",
-              "unsubscribed"
+              "unsubscribed",
+              "pending"
             ]
           },
           "subscription": {
             "type": "string",
             "enum": [
               "opt_in",
-              "opt_out"
+              "opt_out",
+              "pending"
             ]
           },
           "email": {
@@ -20238,7 +20416,8 @@
                   "type": "string",
                   "enum": [
                     "opt_in",
-                    "opt_out"
+                    "opt_out",
+                    "pending"
                   ]
                 }
               }

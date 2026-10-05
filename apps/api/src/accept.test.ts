@@ -116,6 +116,214 @@ afterAll(async () => {
 });
 
 describe.skipIf(!live)("accept", () => {
+  describe("signup forms confirmation", () => {
+    const origin = "https://signup.example";
+    async function fixture(double_opt_in = true) {
+      const topic = await post(fullKey, "/topics", { name: "Form news", default_subscription: "opt_in" });
+      expect(topic.status).toBe(200);
+      expect((await post(fullKey, "/contact-properties", { key: "active", type: "boolean" })).status).toBe(200);
+      const form = await post(fullKey, "/forms", { name: "Newsletter", topic_ids: [topic.json.id], properties: ["active"],
+        from_email: "hello@dispatch-fixture.net", allowed_origins: [origin], double_opt_in, redirect_url: "https://signup.example/thanks" });
+      expect(form.status, JSON.stringify(form.json)).toBe(200);
+      return { form: form.json, topicId: topic.json.id as string };
+    }
+    async function submit(key: string, email: string, extra = {}) {
+      const response = await app.inject({ method: "POST", url: `/forms/${key}`, headers: {
+        origin, "content-type": "application/json", "user-agent": "dispatch-form-fixture",
+      }, payload: { email, ...extra } });
+      return { status: response.statusCode, json: response.json() };
+    }
+    async function tokenFor(email: string) {
+      const emailRow = (await db.query<{ text: string; tenant_id: string; id: string }>(
+        "select id, text, tenant_id from emails where id in (select email_id from email_recipients where lower(email) = $1) order by created_at desc limit 1", [email.toLowerCase()],
+      )).rows[0];
+      expect(emailRow).toBeDefined();
+      const token = emailRow.text.match(/\/confirm\/([A-Za-z0-9_.-]+)/)?.[1];
+      expect(token).toBeTruthy();
+      return { ...emailRow, token: token! };
+    }
+    async function publicConfirm(token: string, method: "GET" | "POST", extra = {}) {
+      const response = await app.inject({ method, url: `/confirm/${token}`, ...(method === "POST" ? { payload: extra } : {}) });
+      return { status: response.statusCode, json: response.json() };
+    }
+    const harmless = { object: "form_submission", message: "Thank you. Check your email if confirmation is needed." };
+    it("guards management, exact origin/preflight, encodings, allowlists, 16KB and honeypot with uniform address responses", async () => {
+      const { form } = await fixture();
+      expect((await app.inject({ method: "GET", url: `/forms/${form.key}` })).statusCode).toBe(401);
+      expect((await app.inject({ method: "POST", url: "/forms", payload: {} })).statusCode).toBe(401);
+      const foreign = await seedTenant();
+      expect((await call(foreign, "GET", `/forms/${form.id}`)).status).toBe(404);
+      for (const supplied of [undefined, "https://signup.example.evil", "null"]) {
+        const response = await app.inject({ method: "POST", url: `/forms/${form.key}`, headers: supplied ? { origin: supplied } : {}, payload: { email: "origin@fixture.net" } });
+        expect(response.statusCode).toBe(403);
+      }
+      const preflight = await app.inject({ method: "OPTIONS", url: `/forms/${form.key}`, headers: {
+        origin, "access-control-request-method": "POST", "access-control-request-headers": "content-type",
+      } });
+      expect(preflight.statusCode).toBe(204);
+      expect(preflight.headers["access-control-allow-origin"]).toBe(origin);
+      expect(preflight.headers["access-control-allow-credentials"]).toBeUndefined();
+      expect((await app.inject({ method: "OPTIONS", url: `/forms/${form.key}`, headers: {
+        origin, "access-control-request-method": "POST", "access-control-request-headers": "authorization",
+      } })).statusCode).toBe(403);
+      const fake = await submit(form.key, "honeypot@fixture.net", { website: "bot", properties: { forbidden: true } });
+      expect(fake).toMatchObject({ status: 200, json: harmless });
+      expect((await db.query("select id from contacts where email='honeypot@fixture.net'")).rows).toEqual([]);
+      expect((await submit(form.key, "wrong@fixture.net", { properties: { undeclared: 1 } })).status).toBe(400);
+      expect((await submit(form.key, "oversize@fixture.net", { first_name: "x".repeat(17000) })).status).toBe(413);
+      const encoded = await app.inject({ method: "POST", url: `/forms/${form.key}`, headers: { origin, "content-type": "application/x-www-form-urlencoded" },
+        payload: "email=encoded%40fixture.net&properties.active=false&website=" });
+      expect(encoded.statusCode).toBe(200);
+      expect((await db.query("select properties from contacts where email='encoded@fixture.net'")).rows[0].properties).toEqual({ active: false });
+      for (const email of ["new@fixture.net", "existing@fixture.net", "out@fixture.net"]) {
+        if (email !== "new@fixture.net") await post(fullKey, "/contacts", { email, unsubscribed: email.startsWith("out") });
+        const response = await submit(form.key, email);
+        expect(response).toMatchObject({ status: 200, json: harmless });
+      }
+      expect((await submit(form.key, "new@fixture.net")).json).toMatchObject(harmless);
+      for (const patch of [{ from_email: "hello@unverified.net" }, { topic_ids: ["foreign"] }, { properties: ["undeclared"] }, { redirect_url: "http://signup.example" }])
+        expect((await call(fullKey, "PATCH", `/forms/${form.id}`, patch)).status).toBe(400);
+      const viewer = await teammate("Viewer");
+      const session = await signInAs(viewer.email, viewer.password);
+      expect((await call(session.token, "GET", "/forms")).status).toBe(200);
+      for (const method of ["PATCH", "DELETE"] as const) expect((await call(session.token, method, `/forms/${form.id}`, method === "PATCH" ? { name: "No" } : undefined)).status).toBe(403);
+    });
+    it("serializes rolling address/form cooldown and configurable UTC tenant caps across concurrent forms", async () => {
+      const { form } = await fixture();
+      const duplicate = await Promise.all(Array.from({ length: 6 }, () => submit(form.key, "Concurrent@fixture.net")));
+      expect(duplicate.every((response) => response.status === 200)).toBe(true);
+      expect((await db.query("select count(*)::int as count from emails")).rows[0].count).toBe(1);
+      const current = await tokenFor("concurrent@fixture.net");
+      const fresh = (await post(fullKey, "/forms", { name: "Other form", topic_ids: form.topic_ids, from_email: form.from_email,
+        allowed_origins: [origin] })).json;
+      expect((await call(fullKey, "PATCH", "/settings", { confirmation_daily_limit: 3 })).status).toBe(200);
+      const burst = await Promise.all(Array.from({ length: 10 }, (_, index) => submit(index % 2 ? form.key : fresh.key, `cap-${index}@fixture.net`)));
+      expect(burst.every((response) => response.status === 200)).toBe(true);
+      expect((await db.query("select count(*)::int as count from emails")).rows[0].count).toBe(3);
+      expect((await db.query("select sends from confirmation_days where tenant_id=$1", [current.tenant_id])).rows[0].sends).toBe(3);
+      await db.query("update confirmation_sends set sent_at=clock_timestamp()-interval '24 hours 1 second' where tenant_id=$1", [current.tenant_id]);
+      await call(fullKey, "PATCH", "/settings", { confirmation_daily_limit: 4 });
+      expect((await submit(form.key, "concurrent@fixture.net")).status).toBe(200);
+      expect((await db.query("select count(*)::int as count from emails")).rows[0].count).toBe(4);
+    });
+    it("applies a route-wide per-IP public limit rather than a different bucket for each public key", async () => {
+      const { form } = await fixture();
+      const previous = process.env.PUBLIC_RATE_LIMIT_PER_SECOND;
+      process.env.PUBLIC_RATE_LIMIT_PER_SECOND = "1";
+      try {
+        const responses = await Promise.all(Array.from({ length: 5 }, () => app.inject({
+          method: "POST", url: `/forms/${form.key}`, remoteAddress: "192.0.2.144",
+          headers: { origin }, payload: { email: "ip-limit@fixture.net", website: "bot" },
+        })));
+        expect(responses.some((response) => response.statusCode === 429)).toBe(true);
+        expect((await db.query("select count(*)::int as count from contacts")).rows[0].count).toBe(0);
+      } finally {
+        if (previous === undefined) delete process.env.PUBLIC_RATE_LIMIT_PER_SECOND;
+        else process.env.PUBLIC_RATE_LIMIT_PER_SECOND = previous;
+      }
+    });
+    it("rolls contact/pending/token/reservations back on actual send-job enqueue failure and permits a retry", async () => {
+      const { form } = await fixture();
+      const functionName = "fixture_refuse_confirmation_send";
+      await db.query(`create or replace function ${functionName}() returns trigger language plpgsql as $$
+        begin raise exception 'synthetic enqueue refusal'; end $$`);
+      await db.query(`create trigger fixture_refuse_send before insert on send_jobs for each row execute function ${functionName}()`);
+      try {
+        expect((await submit(form.key, "rollback@fixture.net")).status).toBe(500);
+        for (const table of ["contacts", "confirmations", "confirmation_sends", "confirmation_days", "emails", "topic_subscriptions"])
+          expect((await db.query(`select count(*)::int as count from ${table}`)).rows[0].count).toBe(0);
+      } finally {
+        await db.query("drop trigger fixture_refuse_send on send_jobs");
+        await db.query(`drop function ${functionName}()`);
+      }
+      expect((await submit(form.key, "rollback@fixture.net")).status).toBe(200);
+      expect((await db.query("select count(*)::int as count from send_jobs")).rows[0].count).toBe(1);
+    });
+    it("excludes pending from ingest, topic membership counts, broadcast review and immutable snapshots", async () => {
+      const { form, topicId } = await fixture();
+      await submit(form.key, "pending@fixture.net");
+      const contact = (await call(fullKey, "GET", "/contacts")).json.data[0];
+      expect((await call(fullKey, "GET", `/contacts/${contact.id}/topics`)).json.data[0].subscription).toBe("pending");
+      const marketing = await post(fullKey, "/emails", letter({ to: contact.email, topic_id: topicId }));
+      expect(marketing.status).toBe(200);
+      expect((await call(fullKey, "GET", `/emails/${marketing.json.id}`)).json.recipients[0].status).toBe("failed");
+      const segment = await post(fullKey, "/segments", { name: "Confirmed only", rule: { type: "rule", field: "contact.topics", operator: "contains", value: topicId } });
+      expect((await call(fullKey, "GET", `/segments/${segment.json.id}`)).json.contacts).toBe(0);
+      const staticSegment = await post(fullKey, "/segments", { name: "Pending members" });
+      expect((await post(fullKey, `/segments/${staticSegment.json.id}/contacts`, { email: contact.email })).status).toBe(200);
+      const broadcast = await post(fullKey, "/broadcasts", { name: "Pending excludes", from: form.from_email,
+        segment_id: staticSegment.json.id, subject: "News", text: "News", topic_id: topicId });
+      expect((await call(fullKey, "GET", `/broadcasts/${broadcast.json.id}/audience`)).json.recipients).toBe(0);
+      expect((await post(fullKey, `/broadcasts/${broadcast.json.id}/send`, {})).status).toBe(200);
+      const { snapshotBroadcast } = await import("@dispatchmail/db");
+      const { tenant_id } = (await db.query("select tenant_id from contacts where id=$1", [contact.id])).rows[0];
+      await tx(db, (client) => snapshotBroadcast(client, tenant_id, broadcast.json.id));
+      expect((await db.query("select count(*)::int as count from broadcast_recipients where broadcast_id=$1", [broadcast.json.id])).rows[0].count).toBe(0);
+    });
+    it("GET is nonmutating, POST concurrently subscribes and fires once, and repeats after optout are no-ops", async () => {
+      const { form, topicId } = await fixture();
+      const flowId = await contactFlow({ type: "topic_subscribed", topic_id: topicId });
+      await submit(form.key, "confirm@fixture.net");
+      const { token } = await tokenFor("confirm@fixture.net");
+      const before = (await db.query("select row_to_json(c) as data from contacts c")).rows;
+      const subscriptions = (await db.query("select row_to_json(s) as data from topic_subscriptions s")).rows;
+      expect((await publicConfirm(token, "GET")).json).toMatchObject({ form_name: "Newsletter", confirmed: false });
+      expect((await db.query("select row_to_json(c) as data from contacts c")).rows).toEqual(before);
+      expect((await db.query("select row_to_json(s) as data from topic_subscriptions s")).rows).toEqual(subscriptions);
+      expect(await flowRuns(flowId)).toHaveLength(0);
+      const outcomes = await Promise.all(Array.from({ length: 5 }, () => publicConfirm(token, "POST", { redirect_url: "https://evil.example" })));
+      expect(outcomes.every((response) => response.status === 200 && response.json.redirect_url === form.redirect_url)).toBe(true);
+      expect(await flowRuns(flowId)).toHaveLength(1);
+      expect((await db.query("select count(*)::int as count from contact_changes where field=$1 and to_value='true'::jsonb", [`topics.${topicId}`])).rows[0].count).toBe(1);
+      await call(fullKey, "PATCH", `/contacts/${before[0].data.id}`, { unsubscribed: true });
+      const afterOptout = (await db.query("select row_to_json(c) as data from contacts c")).rows;
+      await publicConfirm(token, "POST");
+      expect((await db.query("select row_to_json(c) as data from contacts c")).rows).toEqual(afterOptout);
+      expect(await flowRuns(flowId)).toHaveLength(1);
+    });
+    it("keeps global opt-outs and tombstones with consent off until deliberate confirmation", async () => {
+      const { form } = await fixture(false);
+      for (const deleted of [false, true]) {
+        const email = deleted ? "deleted-form@fixture.net" : "global-form@fixture.net";
+        const created = await post(fullKey, "/contacts", { email, unsubscribed: true });
+        if (deleted) await call(fullKey, "DELETE", `/contacts/${created.json.id}`);
+        await submit(form.key, email);
+        const stored = (await db.query("select deleted_at, unsubscribed_at from contacts where id=$1", [created.json.id])).rows[0];
+        expect(Boolean(stored.deleted_at)).toBe(deleted);
+        expect(stored.unsubscribed_at).not.toBeNull();
+        const { token } = await tokenFor(email);
+        expect((await publicConfirm(token, "GET")).status).toBe(200);
+        expect((await publicConfirm(token, "POST")).status).toBe(200);
+        expect((await db.query("select deleted_at, unsubscribed_at from contacts where id=$1", [created.json.id])).rows[0])
+          .toEqual({ deleted_at: null, unsubscribed_at: null });
+      }
+      await submit(form.key, "single@fixture.net");
+      expect((await db.query("select status from topic_subscriptions where contact_id=(select id from contacts where email='single@fixture.net')")).rows[0].status).toBe("subscribed");
+      expect((await db.query("select email from email_recipients where email='single@fixture.net'")).rows).toEqual([]);
+    });
+    it("refuses wrong-purpose/scope/expired tokens and hides real confirmation URLs from a viewer", async () => {
+      const { form } = await fixture();
+      await submit(form.key, "token@fixture.net");
+      const { token, tenant_id, id: emailId } = await tokenFor("token@fixture.net");
+      const { seal, requireSecret } = await import("@dispatchmail/core");
+      const { readConfirmationToken: read } = await import("@dispatchmail/db");
+      // A signed token of another purpose or scope is still not a confirmation credential.
+      const secret = requireSecret("APP_SECRET");
+      const payload = read(token, secret)!;
+      for (const patch of [{ use: "unsub" }, { tenant_id: "foreign" }, { form_id: "foreign" }, { contact_id: "foreign" },
+        { topic_hash: "0".repeat(64) }, { exp: Math.floor(Date.now() / 1000) - 1 }])
+        expect((await publicConfirm(seal({ ...payload, ...patch }, secret), "POST")).status).toBe(404);
+      const viewer = await teammate("Viewer");
+      const session = await signInAs(viewer.email, viewer.password);
+      const detail = await call(session.token, "GET", `/emails/${emailId}`);
+      expect(detail.status).toBe(200);
+      expect(JSON.stringify(detail.json)).not.toContain(token);
+      expect(JSON.stringify(detail.json)).toContain("#link-hidden");
+      await db.query("update confirmations set expires_at=clock_timestamp()-interval '1 second' where tenant_id=$1", [tenant_id]);
+      expect((await publicConfirm(token, "GET")).status).toBe(404);
+      expect((await publicConfirm(token, "POST")).status).toBe(404);
+    });
+  });
   describe("dynamic segment SQL", () => {
     const leaf = (field: string, operator: Extract<Rule, { type: "rule" }>["operator"], value?: unknown): Rule => ({ type: "rule", field, operator, ...(value === undefined ? {} : { value }) });
     async function fixture() {

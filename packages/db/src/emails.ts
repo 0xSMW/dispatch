@@ -180,8 +180,8 @@ export async function ingestEmail(
        from contacts c
        join topics t on t.id = $3 and t.tenant_id = c.tenant_id and t.deleted_at is null
        left join topic_subscriptions s on s.topic_id = t.id and s.contact_id = c.id
-       where c.tenant_id = $1 and lower(c.email) = any($2) and c.deleted_at is null
-         and (c.unsubscribed_at is not null or s.status <> 'subscribed' or (s.id is null and t.default_status = 'unsubscribed'))`,
+       where c.tenant_id = $1 and lower(c.email) = any($2)
+         and (c.deleted_at is not null or c.unsubscribed_at is not null or s.status <> 'subscribed' or (s.id is null and t.default_status = 'unsubscribed'))`,
       [input.tenantId, lowered, input.topicId],
     );
     for (const row of opted.rows) optedOut.add(row.email.toLowerCase());
