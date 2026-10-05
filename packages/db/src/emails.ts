@@ -35,6 +35,7 @@ export type IngestEmailInput = {
   contactId?: string | null;
   automationId?: string | null;
   automationStep?: string | null;
+  automationRunId?: string | null;
   scheduledAt?: Date | null;
   idempotencyKey?: string | null;
   apiKeyId?: string | null;
@@ -215,9 +216,9 @@ export async function ingestEmail(
   const email = await client.query<IngestEmailResult>(
     `insert into emails (
       id, tenant_id, request_id, idempotency_key, from_email, from_name, reply_to, subject, html, html_tracked, text,
-      template_id, template_version_id, headers, tags, topic_id, broadcast_id, status, scheduled_at, api_key_id, contact_id, automation_id, automation_step, sandbox
+      template_id, template_version_id, headers, tags, topic_id, broadcast_id, status, scheduled_at, api_key_id, contact_id, automation_id, automation_step, sandbox, automation_run_id
     )
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
      returning id, request_id, from_email as from, subject, status, scheduled_at, created_at, sandbox`,
     [
       emailId,
@@ -244,6 +245,7 @@ export async function ingestEmail(
       input.automationId ?? null,
       input.automationStep ?? null,
       sandbox,
+      input.automationRunId ?? null,
     ],
   );
 

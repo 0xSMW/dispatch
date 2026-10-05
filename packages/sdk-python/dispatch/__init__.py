@@ -299,6 +299,13 @@ class BranchPath(TypedDict):
 class BranchConfig(TypedDict):
     """Two to ten ordered paths with unique nonempty keys other than otherwise."""
     paths: list[BranchPath]
+class SplitVariant(TypedDict):
+    key: str
+    label: str
+    weight: int
+class SplitConfig(TypedDict):
+    """2–4 unique stable keys; integer weights sum to100, including zero."""
+    variants: list[SplitVariant]
 
 
 class AutomationGuard(TypedDict):
@@ -433,9 +440,9 @@ class AutomationStepInput(TypedDict, total=False):
     key: str
     type: Literal[
         "trigger", "send_email", "delay", "wait_for_event", "condition",
-        "add_to_segment", "contact_update", "contact_delete", "exit", "filter", "branch",
+        "add_to_segment", "contact_update", "contact_delete", "exit", "filter", "branch", "split",
     ]
-    config: AutomationTriggerConfig | SendEmailConfig | ExitConfig | FilterConfig | BranchConfig | Rule | dict[str, Any]
+    config: AutomationTriggerConfig | SendEmailConfig | ExitConfig | FilterConfig | BranchConfig | SplitConfig | Rule | dict[str, Any]
 
 
 AutomationConnectionInput = TypedDict(
@@ -443,7 +450,7 @@ AutomationConnectionInput = TypedDict(
     {
         "from": str,
         "to": str,
-        "type": NotRequired[Literal["default", "condition_met", "condition_not_met", "timeout", "event_received", "branch"]],
+        "type": NotRequired[Literal["default", "condition_met", "condition_not_met", "timeout", "event_received", "branch", "variant"]],
         "path": NotRequired[str],
     },
 )
@@ -460,6 +467,7 @@ class AutomationInput(TypedDict, total=False):
 
 
 class AutomationUpdateInput(TypedDict, total=False):
+    expected_version: int
     name: str
     status: AutomationStatus
     enabled: bool
@@ -1248,6 +1256,11 @@ class Dispatch:
 
     def automation_run_metrics(self, automation_id: str, **query: Any) -> Json:
         return self._request("GET", _query(_path("automations", automation_id, "runs", "metrics"), query))
+    def automation_split_metrics(self, automation_id: str, step_key: str, **query: Any) -> Json:
+        return self._request("GET", _query(_path("automations", automation_id, "steps", step_key, "metrics"), query))
+    def pick_automation_winner(self, automation_id: str, step_key: str, variant: str, version: int) -> Automation:
+        """Requires an already paused version. Resume separately only after success."""
+        return self._request("POST", _path("automations", automation_id, "steps", step_key, "winner"), {"variant": variant, "version": version})
 
     # Events. /events holds definitions, /events/send fires one, /fired-events lists what fired.
     def send_event(

@@ -332,14 +332,14 @@ describe("docs/api/openapi.json", () => {
     expect(branch).toContain("otherwise");
   });
 
-  it("documents keyed branch connections, branch-only paths and terminal exits", () => {
+  it("documents keyed branch/variant connections and terminal exits", () => {
     const schemas = spec.components.schemas as unknown as Record<string, { properties: Record<string, unknown>; allOf?: unknown[] }>;
     expect(schemas.AutomationConnection.properties.type).toMatchObject({
-      enum: ["default", "condition_met", "condition_not_met", "timeout", "event_received", "branch"],
+      enum: ["default", "condition_met", "condition_not_met", "timeout", "event_received", "branch", "variant"],
     });
     expect(schemas.AutomationConnection.properties.path).toMatchObject({ type: "string", minLength: 1 });
     expect(schemas.AutomationConnection.allOf).toEqual(expect.arrayContaining([expect.objectContaining({
-      if: { properties: { type: { const: "branch" } }, required: ["type"] },
+      if: { properties: { type: { enum: ["branch", "variant"] } }, required: ["type"] },
       then: { required: ["path"] },
     })]));
     const graph = JSON.stringify(schemas.AutomationInput);

@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { AlertTriangle, CheckCircle2, Info } from "lucide-react";
+import { Info } from "lucide-react";
 import { Badge } from "../../components/Badge";
+import { Checks, type CheckRow } from "../../components/Checks";
 import { Drawer } from "../../components/Drawer";
 import { Failed } from "../../components/Empty";
 import { Field } from "../../components/Field";
@@ -17,8 +18,8 @@ import { addresses } from "../../lib/utils";
 import { templateKind, kindLabels } from "../../lib/emailKind";
 import { useCan, useClient } from "../../shell/session";
 import type { Rendered, Template } from "../../types";
-import { EditorScreen, LeaveGuard, Preview, Source, TestSend, useDraft, type Flush } from "./editor";
-import { blockProblem, builtIn, declarable, fill, normalizeVariables, sampleContact, scan, type Found, type Variable, type VariableType } from "./render";
+import { EditorScreen, LeaveGuard, Preview, Source, TestSend, useDraft, type Flush, type SourceCheck } from "./editor";
+import { blockProblem, builtIn, declarable, fill, normalizeVariables, sampleContact, scan, type Filled, type Found, type Variable, type VariableType } from "./render";
 import { samples, sourceNotice, useBrand, Versions } from "./Versions";
 import { VariableTable } from "./Variables";
 
@@ -130,26 +131,47 @@ export function patchBody(changed: Partial<TemplateForm>, next: TemplateForm, se
   return body;
 }
 
-/** Problems to show before publishing. */
-export function publishWarnings(form: TemplateForm) {
-  const warnings: string[] = [];
+/** Existing publish categories, with identities independent of their conditional wording. */
+export function publishRows(form: TemplateForm): CheckRow[] {
+  const warnings: CheckRow[] = [];
+  const warn = (category: string, text: string) => warnings.push({ id: `review.${category}`, tone: "warn", text });
   const found = foundIn(form);
   const problem = blockProblem(form.subject, form.html, form.text);
-  if (problem) warnings.push(`${problem}. The API refuses to publish until the blocks pair up.`);
+  if (problem) warn("blocks", `${problem}. The API refuses to publish until the blocks pair up.`);
   const invalid = invalidNames(found);
   if (invalid.length) {
-    warnings.push(`${invalid.join(", ")} ${invalid.length === 1 ? "is not a valid variable name" : "are not valid variable names"}. Use letters, digits, and underscores.`);
+    warn("variables", `${invalid.join(", ")} ${invalid.length === 1 ? "is not a valid variable name" : "are not valid variable names"}. Use letters, digits, and underscores.`);
   }
   const required = declare(form.variables, found).filter(
     (item) => item.fallback_value === null && !found.some((entry) => entry.key === item.key && entry.inline),
   );
   if (required.length) {
-    warnings.push(`${required.map((item) => item.key).join(", ")} ${required.length === 1 ? "has" : "have"} no fallback. Sends that leave ${required.length === 1 ? "it" : "them"} out fail.`);
+    warn("fallbacks", `${required.map((item) => item.key).join(", ")} ${required.length === 1 ? "has" : "have"} no fallback. Sends that leave ${required.length === 1 ? "it" : "them"} out fail.`);
   }
-  if (!form.subject.trim()) warnings.push("No subject. Every send must pass one.");
-  if (!form.from.trim()) warnings.push("No From address. Every send must pass one.");
-  if (!form.html.trim() && !form.text.trim()) warnings.push("No content. Add HTML or plain text.");
+  if (!form.subject.trim()) warn("subject", "No subject. Every send must pass one.");
+  if (!form.from.trim()) warn("from", "No From address. Every send must pass one.");
+  if (!form.html.trim() && !form.text.trim()) warn("content", "No content. Add HTML or plain text.");
   return warnings;
+}
+
+/** Problems to show before publishing. */
+export function publishWarnings(form: TemplateForm) {
+  return publishRows(form).map((row) => row.text);
+}
+
+/** Collect actual results only; related rules remain distinct even when their text matches. */
+export function templateChecks(preview: Filled, found: Found[], source: SourceCheck | null, review: readonly CheckRow[]): CheckRow[] {
+  const rows: CheckRow[] = source ? [source] : [];
+  if (preview.problem) rows.push({ id: "preview.blocks", tone: "warn", text: `${preview.problem}.` });
+  const invalid = invalidNames(found);
+  if (invalid.length) rows.push({
+    id: "variables.names",
+    tone: "warn",
+    text: `${invalid.join(", ")} cannot be a variable name. Use letters, digits, and underscores.`,
+  });
+  if (preview.missing.length) rows.push({ id: "preview.missing", tone: "warn", text: `No value for ${preview.missing.join(", ")}.` });
+  rows.push(...review);
+  return rows;
 }
 
 /** Template editor: code or visual editing with a live preview. */
@@ -164,6 +186,8 @@ export function TemplateEditor() {
   const [testing, setTesting] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [history, setHistory] = useState(false);
+  const [sourceCheck, setSourceCheck] = useState<SourceCheck | null>(null);
+  const onSourceCheck = useCallback((check: SourceCheck | null) => setSourceCheck(check), []);
   const fallbacks = useRef(new Map<string, string | number>());
   const configured = useRef(new Set<string>());
 
@@ -207,6 +231,8 @@ export function TemplateEditor() {
     return out;
   }, [brand, variables, sampleValues]);
   const preview = useMemo(() => (form ? fill(form, values, variables) : null), [form, values, variables]);
+  const review = useMemo(() => (form ? publishRows(form) : []), [form]);
+  const checks = useMemo(() => preview ? templateChecks(preview, found, sourceCheck, review) : [], [preview, found, sourceCheck, review]);
 
   async function saveNow() {
     const ok = await draft.save();
@@ -308,6 +334,7 @@ export function TemplateEditor() {
                 onText={(value) => draft.set("text", value)}
                 disabled={!can}
                 flushRef={flushVisual}
+                onCheck={onSourceCheck}
                 placeholders={{ variables, onChange: setVariable, fallbacks }}
               />
               <Panel title="Variables">
@@ -327,21 +354,7 @@ export function TemplateEditor() {
                 <span className="dim">Subject</span> {preview.subject || "No subject"}
               </p>
               <Preview html={preview.html} />
-              {preview.problem ? (
-                <p className="warnMark">
-                  <AlertTriangle size={13} aria-hidden /> {preview.problem}.
-                </p>
-              ) : null}
-              {invalidNames(found).length ? (
-                <p className="warnMark">
-                  <AlertTriangle size={13} aria-hidden /> {invalidNames(found).join(", ")} cannot be a variable name. Use letters, digits, and underscores.
-                </p>
-              ) : null}
-              {preview.missing.length ? (
-                <p className="warnMark">
-                  <AlertTriangle size={13} aria-hidden /> No value for {preview.missing.join(", ")}.
-                </p>
-              ) : null}
+              <Checks rows={checks} />
             </div>
           </div>
         </>
@@ -373,7 +386,7 @@ export function TemplateEditor() {
           submitting={publish.isLoading}
           submitDisabled={draft.state.saving}
         >
-          <PublishChecks warnings={publishWarnings(form)} />
+          <PublishChecks warnings={review.map((row) => row.text)} rows={review} />
           <p className="muted">Sends that use this template switch to this version right away.</p>
         </Modal>
       ) : null}
@@ -398,23 +411,8 @@ export function TemplateEditor() {
   );
 }
 
-export function PublishChecks({ warnings }: { warnings: string[] }) {
-  if (warnings.length === 0) {
-    return (
-      <ul className="checklist">
-        <li className="ok">
-          <CheckCircle2 size={15} aria-hidden /> No problems found.
-        </li>
-      </ul>
-    );
-  }
-  return (
-    <ul className="checklist" aria-label="Warnings">
-      {warnings.map((warning) => (
-        <li key={warning} className="warn">
-          <AlertTriangle size={15} aria-hidden /> {warning}
-        </li>
-      ))}
-    </ul>
-  );
+export function PublishChecks({ warnings, rows }: { warnings: string[]; rows?: readonly CheckRow[] }) {
+  return <Checks rows={warnings.length
+    ? rows ?? warnings.map((text, index) => ({ id: `review.warning.${index}`, tone: "warn" as const, text }))
+    : [{ id: "review.clear", tone: "ok", text: "No problems found." }]} />;
 }

@@ -1110,4 +1110,16 @@ create table if not exists goals (
 );
 create index if not exists goals_tenant_live_idx on goals (tenant_id, created_at, id) where deleted_at is null;
 create index if not exists custom_events_goal_idx on custom_events (tenant_id, lower(email), created_at) where deleted_at is null;
+
+-- Split reporting binds an email to its recorded run, never to a recipient guess.
+alter table emails add column if not exists automation_run_id text;
+update emails e set automation_run_id = r.id
+from automation_runs r
+where e.automation_run_id is null and e.created_at < '2026-10-06T00:00:00Z'::timestamptz
+  and r.tenant_id = e.tenant_id and r.id = e.tags->>'automation_run_id'
+  and r.automation_id = e.automation_id;
+create index if not exists emails_automation_run_idx on emails (tenant_id, automation_id, automation_run_id)
+  where automation_run_id is not null;
+create index if not exists automation_steps_split_idx on automation_steps (tenant_id, step_key, run_id, created_at)
+  where type = 'split' and state = 'done';
 `;

@@ -441,6 +441,7 @@ export type RunMetrics = {
   data: Array<RunCounts & { date: string }>;
 };
 
+export type { SplitConfig, SplitVariant, SplitMetric, SplitReport } from "../../../packages/core/src/splits";
 export type AutomationStep = { type: string; key?: string; config?: Record<string, unknown>; [field: string]: unknown };
 
 /** `PATCH /automations/:id?dry_run=true`: runs affected by a proposed graph, without saving. */

@@ -6,6 +6,7 @@
 import { contextFields, isIsoDate, operatorsForType, type ContextField, type RuleSources } from "../../lib/rules";
 import type { PropertyType, SendKind } from "../../types";
 import { kindLabels, sendKind } from "../../lib/emailKind";
+import { splitSchema, type SplitVariant } from "../../../../../packages/core/src/splits";
 
 export const stepTypes = [
   "send_email",
@@ -13,6 +14,7 @@ export const stepTypes = [
   "wait_for_event",
   "condition",
   "branch",
+  "split",
   "filter",
   "exit",
   "add_to_segment",
@@ -179,6 +181,7 @@ export const stepLabels: Record<StepType | "trigger", string> = {
   wait_for_event: "Wait for event",
   condition: "Condition",
   branch: "Branch",
+  split: "Split test",
   filter: "Filter",
   exit: "Exit",
   add_to_segment: "Add to segment",
@@ -196,8 +199,12 @@ export const branchLabels: Record<Branch, string> = {
 export function configuredPaths(node: Pick<Node, "config">): BranchPath[] {
   return Array.isArray(node.config.paths) ? node.config.paths as BranchPath[] : [];
 }
+export function configuredVariants(node: Pick<Node, "config">): SplitVariant[] {
+  return Array.isArray(node.config.variants) ? node.config.variants as SplitVariant[] : [];
+}
 
 export function branchesOf(node: Pick<Node, "type" | "branches" | "config">): Branch[] {
+  if (node.type === "split") return configuredVariants(node).map((variant) => variant.key);
   if (node.type === "branch") return [...configuredPaths(node).map((path) => path.key), "otherwise"];
   if (node.type === "condition") return ["condition_met", "condition_not_met"];
   if (node.type === "wait_for_event" && node.branches) return ["event_received", "timeout"];
@@ -209,10 +216,14 @@ export function branching(node: Pick<Node, "type" | "branches" | "config">) {
 }
 
 export function branchSteps(node: Node, branch: Branch): Node[] {
-  return node.type === "branch" ? node.paths?.find((path) => path.key === branch)?.steps ?? [] : node.branches?.[branch] ?? [];
+  return node.type === "branch" || node.type === "split" ? node.paths?.find((path) => path.key === branch)?.steps ?? [] : node.branches?.[branch] ?? [];
 }
 
 export function branchLabel(node: Node, branch: Branch): string {
+  if (node.type === "split") {
+    const variant = configuredVariants(node).find((variant) => variant.key === branch);
+    return variant ? `${variant.label} (${variant.weight}%)` : branch;
+  }
   if (node.type === "branch") return branch === "otherwise" ? "Otherwise" : configuredPaths(node).find((path) => path.key === branch)?.label || branch;
   return branchLabels[branch] ?? branch;
 }
@@ -240,6 +251,8 @@ export function defaultConfig(type: StepType): Record<string, unknown> {
         { key: "path_1", label: "Path 1", rule: blankRule() },
         { key: "path_2", label: "Path 2", rule: blankRule() },
       ] };
+    case "split":
+      return { variants: [{ key: "a", label: "A", weight: 50 }, { key: "b", label: "B", weight: 50 }] };
     case "add_to_segment":
       return { segment_id: "" };
     default:
@@ -283,15 +296,16 @@ export function toTree(steps: GraphStep[], connections: Connection[] = []): { tr
       seen.add(key);
       const node: Node = { key, type: step.type as StepType, config: { ...(step.config ?? {}) } };
       if (node.type === "send_email" && node.config.kind === undefined) node.config.kind = sendKind(node.config);
-      if (node.type === "branch") {
+      if (node.type === "branch" || node.type === "split") {
+        const edgeType = node.type === "split" ? "variant" : "branch";
         const paths = branchesOf(node);
         const edges = connections.filter((edge) => edge.from === node.key);
-        if (edges.some((edge) => edge.type !== "branch" || !edge.path || !paths.includes(edge.path)) ||
-          paths.some((path) => edges.filter((edge) => edge.type === "branch" && edge.path === path).length !== 1)) {
-          problem ??= `Branch ${node.key} needs exactly one connection per path, including Otherwise.`;
+        if (edges.some((edge) => edge.type !== edgeType || !edge.path || !paths.includes(edge.path)) ||
+          paths.some((path) => edges.filter((edge) => edge.type === edgeType && edge.path === path).length !== 1)) {
+          problem ??= `${node.type === "split" ? "Split" : "Branch"} ${node.key} needs exactly one connection per path.`;
         }
         node.paths = branchesOf(node).map((path) => ({
-          key: path, label: branchLabel(node, path), steps: chain(out(node.key, "branch", path)),
+          key: path, label: branchLabel(node, path), steps: chain(out(node.key, edgeType, path)),
         }));
         list.push(node);
         break;
@@ -358,7 +372,7 @@ export function toGraph(tree: Tree): Graph {
       if (!steps.some((step) => step.key === key)) steps.push({ key, type: node.type, config: cleanConfig(node) });
       if (previous) connections.push({ from: previous.key, to: key, type: previous.type, ...(previous.path ? { path: previous.path } : {}) });
       const branches = branchesOf(node);
-      for (const branch of branches) walk(branchSteps(node, branch), { key: node.key, type: node.type === "branch" ? "branch" : branch, ...(node.type === "branch" ? { path: branch } : {}) });
+      for (const branch of branches) walk(branchSteps(node, branch), { key: node.key, type: node.type === "split" ? "variant" : node.type === "branch" ? "branch" : branch, ...(node.type === "branch" || node.type === "split" ? { path: branch } : {}) });
       if (terminal(node)) break;
       previous = { key: node.key, type: "default" };
     }
@@ -377,6 +391,7 @@ const optional: Partial<Record<StepType, string[]>> = {
 
 /** Drops blank optional fields so the API's defaults apply. */
 export function cleanConfig(node: Node): Record<string, unknown> {
+  if (node.type === "split") return { variants: configuredVariants(node).map(({ key, label, weight }) => ({ key, label, weight })) };
   if (node.type === "exit") return {};
   if (node.type === "branch") return { paths: configuredPaths(node).map(({ key, label, rule }) => ({ key, label, rule })) };
   const config = { ...node.config };
@@ -421,6 +436,7 @@ export function projectRun<T extends { status?: string; output?: unknown; error?
     const output = results.get(node.key)?.output;
     if (!output || typeof output !== "object") return null;
     const decision = output as Record<string, unknown>;
+    if (node.type === "split") return typeof decision.variant === "string" && branchesOf(node).includes(decision.variant) ? decision.variant : null;
     if (node.type === "condition") {
       return decision.result === true ? "condition_met" : decision.result === false ? "condition_not_met" : null;
     }
@@ -474,7 +490,7 @@ function editList(list: Node[], path: ListPath, edit: (list: Node[]) => Node[]):
   return list.map((node) => {
     if (node.key !== head!.key) return node;
     const children = editList(branchSteps(node, head!.branch), rest, edit);
-    if (node.type === "branch") return { ...node, paths: branchesOf(node).map((branch) => ({
+    if (node.type === "branch" || node.type === "split") return { ...node, paths: branchesOf(node).map((branch) => ({
       key: branch, label: branchLabel(node, branch), steps: branch === head!.branch ? children : branchSteps(node, branch),
     })) };
     return { ...node, branches: { ...node.branches, [head!.branch]: children } };
@@ -507,7 +523,7 @@ export function insertStep(tree: Tree, path: ListPath, index: number, type: Step
       if (type === "condition") {
         return [...list.slice(0, index), { ...node, branches: { condition_met: rest.length ? rest : exit(), condition_not_met: exit() } }];
       }
-      if (type === "branch") {
+      if (type === "branch" || type === "split") {
         return [...list.slice(0, index), { ...node, paths: branchesOf(node).map((branch, at) => ({
           key: branch, label: branchLabel(node, branch), steps: at === 0 && rest.length ? rest : exit(),
         })) }];
@@ -543,6 +559,21 @@ export function setBranchPaths(node: Node, paths: BranchPath[]): Node {
   return { ...next, paths: branchesOf(next).map((branch) => ({
     key: branch, label: branchLabel(next, branch),
     steps: branchSteps(node, branch).length ? branchSteps(node, branch) : [exitNode(taken)],
+  })) };
+}
+
+/** Weight edits keep every lane; added variants receive a permanently keyed Exit. */
+export function setSplitVariants(node: Node, variants: SplitVariant[]): Node {
+  const taken = new Set<string>();
+  const collect = (step: Node) => {
+    taken.add(step.key);
+    for (const branch of branchesOf(step)) for (const child of branchSteps(step, branch)) collect(child);
+  };
+  collect(node);
+  const next = { ...node, config: { variants } };
+  return { ...next, paths: variants.map((variant) => ({
+    key: variant.key, label: variant.label,
+    steps: branchSteps(node, variant.key).length ? branchSteps(node, variant.key) : [exitNode(taken)],
   })) };
 }
 
@@ -691,6 +722,11 @@ export function stepIssues(node: Node, fields: ContextField[] = [], sending: Sen
     }
   }
   switch (node.type) {
+    case "split": {
+      const parsed = splitSchema.safeParse(config);
+      if (!parsed.success) issues.variants = parsed.error.issues.map((issue) => issue.message).join(". ");
+      break;
+    }
     case "send_email": {
       // Optional: a blank sender means the template's own.
       issues.from = addressIssue(config.from, false);
@@ -783,6 +819,7 @@ const cardFields: Record<string, string[]> = {
   condition: ["rule"],
   filter: ["rule", "scope"],
   branch: ["paths"],
+  split: ["variants"],
   add_to_segment: ["segment_id", "email"],
   contact_update: ["email", "properties"],
   contact_delete: ["email"],
@@ -851,6 +888,8 @@ export function describe(node: Node): string {
       return `${ruleText(config.rule as Rule)} · ${config.scope === "following" ? "all following steps" : "next step"}`;
     case "branch":
       return `${configuredPaths(node).length} paths`;
+    case "split":
+      return configuredVariants(node).map((variant) => `${variant.label} ${variant.weight}%`).join(" / ");
     case "exit":
       return "The run ends here";
     case "add_to_segment":

@@ -18,6 +18,7 @@ import type { ContactRow, Db } from "@dispatchmail/db";
 import type { Storage } from "@dispatchmail/storage";
 import { Readable } from "node:stream";
 import { createHmac } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import type { Job } from "../../worker/src/deliver.js";
 import type { FastifyInstance } from "fastify";
 
@@ -117,6 +118,177 @@ afterAll(async () => {
 });
 
 describe.skipIf(!live)("accept", () => {
+  // Wave10 actual SDK/stdio + PostgreSQL fixtures. Authored only; run at8.
+  describe("agent stdio MCP", () => {
+    it("initializes the genuine stdio SDK, sends and installs through the real API, and refuses hidden read-only writes", async () => {
+      const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+      const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
+      const bridge = createServer(async (request, response) => {
+        try {
+          const chunks: Buffer[] = [];
+          for await (const chunk of request) chunks.push(Buffer.from(chunk));
+          const result = await app.inject({
+            method: request.method as "GET" | "POST" | "PATCH" | "DELETE",
+            url: request.url ?? "/", headers: request.headers,
+            ...(chunks.length ? { payload: Buffer.concat(chunks) } : {}),
+          });
+          response.writeHead(result.statusCode, { "content-type": "application/json" });
+          response.end(result.body);
+        } catch {
+          response.writeHead(500);
+          response.end('{"name":"fixture_error","statusCode":500,"message":"Fixture request failed"}');
+        }
+      });
+      await new Promise<void>((resolve, reject) => { bridge.once("error", reject); bridge.listen(0, "127.0.0.1", resolve); });
+      const address = bridge.address();
+      if (!address || typeof address === "string") throw new Error("MCP fixture bridge did not bind");
+      async function session(readOnly: boolean, run: (client: InstanceType<typeof Client>) => Promise<void>) {
+        const transport = new StdioClientTransport({
+          command: process.execPath,
+          args: ["--import", "tsx", fileURLToPath(new URL("../../../packages/mcp/src/index.ts", import.meta.url)), ...(readOnly ? ["--read-only"] : [])],
+          cwd: fileURLToPath(new URL("../../../", import.meta.url)),
+          env: { PATH: process.env.PATH ?? "", NODE_ENV: "test", DISPATCH_API_URL: `http://127.0.0.1:${(address as { port: number }).port}`, DISPATCH_API_KEY: fullKey },
+          stderr: "pipe",
+        });
+        const client = new Client({ name: "dispatch-isolated-accept", version: "1.0.0" });
+        try { await client.connect(transport); await run(client); } finally { await client.close(); await transport.close(); }
+      }
+      const content = (result: unknown) => {
+        const value = result as { content: Array<{ type: string; text?: string }> };
+        expect(value.content[0]?.type).toBe("text");
+        const text = value.content[0]!.text!;
+        expect(text).not.toContain(fullKey);
+        expect(text).not.toMatch(/lifecycle-plan|dry-refactor|loops-analysis|security_best_practices_report/);
+        return JSON.parse(text);
+      };
+      try {
+        let emailId = "";
+        await session(false, async (client) => {
+          expect(client.getServerVersion()?.name).toBe("@dispatchmail/mcp");
+          expect((await client.listTools()).tools).toHaveLength(10);
+          const input = { from: "hello@dispatch-fixture.net", to: "agent@example.test", subject: "Agent fixture", html: "<p>Hello</p>", idempotencyKey: "agent-stdio-send" };
+          emailId = content(await client.callTool({ name: "send_email", arguments: input })).id;
+          expect(content(await client.callTool({ name: "send_email", arguments: input })).id).toBe(emailId);
+          expect((await db.query("select id,sandbox from emails where id=$1", [emailId])).rows).toEqual([{ id: emailId, sandbox: true }]);
+          const installed = content(await client.callTool({ name: "install_preset", arguments: { slug: "onboarding-drip", from: "hello@dispatch-fixture.net", name: "MCP installed" } }));
+          expect(installed.automation.status).toBe("disabled");
+          expect(installed.templates.created.length).toBeGreaterThan(0);
+          expect((await db.query("select enabled from automations where id=$1", [installed.automation.id])).rows).toEqual([{ enabled: false }]);
+        });
+        const before = (await db.query("select (select count(*) from emails) as emails, (select count(*) from automations) as automations, (select count(*) from contacts) as contacts, (select count(*) from custom_events) as events")).rows;
+        await session(true, async (client) => {
+          expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(["get_email", "list_emails", "list_automations", "get_metrics", "list_templates", "render_template"]);
+          for (const name of ["send_email", "send_event", "upsert_contact", "install_preset"]) {
+            const result = await client.callTool({ name, arguments: { readOnly: false } });
+            expect(result.isError).toBe(true);
+            expect(content(result).name).toBe("read_only");
+          }
+          expect(content(await client.callTool({ name: "get_email", arguments: { id: emailId } })).id).toBe(emailId);
+          const template = (await db.query("select id from templates order by id limit 1")).rows[0]!.id;
+          const rendered = await client.callTool({ name: "render_template", arguments: { idOrAlias: template, variables: { FIRST_NAME: "Ada" } } });
+          expect(rendered.isError).not.toBe(true);
+          expect(content(rendered).rendered.html).toBeTruthy();
+          const missing = await client.callTool({ name: "get_email", arguments: { id: "missing" } });
+          expect(missing.isError).toBe(true);
+          expect(content(missing).name).toBe("not_found");
+        });
+        expect((await db.query("select (select count(*) from emails) as emails, (select count(*) from automations) as automations, (select count(*) from contacts) as contacts, (select count(*) from custom_events) as events")).rows).toEqual(before);
+      } finally {
+        await new Promise<void>((resolve, reject) => bridge.close((error) => error ? reject(error) : resolve()));
+      }
+    }, 60000);
+  });
+
+  describe("weighted split assignment and winner", () => {
+    async function fixture(count: number) {
+      const tenantId = (await call(fullKey, "GET", "/me")).json.tenant_id as string;
+      const graph = {
+        steps: [{ key: "t", type: "trigger", config: { event_name: "split-start" } },
+          { key: "s", type: "split", config: { variants: [{ key: "a", label: "A", weight: 50 }, { key: "b", label: "B", weight: 50 }] } },
+          { key: "wa", type: "delay", config: { duration: "1 day" } }, { key: "wb", type: "delay", config: { duration: "1 day" } },
+          { key: "xa", type: "exit", config: {} }, { key: "xb", type: "exit", config: {} }],
+        connections: [{ from: "t", to: "s" }, { from: "s", to: "wa", type: "variant", path: "a" },
+          { from: "s", to: "wb", type: "variant", path: "b" }, { from: "wa", to: "xa" }, { from: "wb", to: "xb" }],
+      };
+      const made = await post(fullKey, "/automations", { name: "Split fixture", status: "enabled", ...graph });
+      expect(made.status, JSON.stringify(made.json)).toBe(200);
+      const automationId = made.json.id as string;
+      await db.query(`insert into custom_events(id,tenant_id,request_id,name,email,data)
+        select 'ce_split_'||n,$1,'req_split','split-start','split@example.test','{}'::jsonb from generate_series(1,$2::integer) n`, [tenantId, count]);
+      await db.query(`insert into automation_runs(id,tenant_id,automation_id,event_id,request_id,state,next_step_index)
+        select 'run_split_'||n,$1,$2,'ce_split_'||n,'req_split','ready',0 from generate_series(1,$3::integer) n`, [tenantId, automationId, count]);
+      for (let n = 1; n <= count; n++) await executeAutomationRun(db, tenantId, `run_split_${n}`);
+      return { tenantId, automationId, graph };
+    }
+    it("routes1000 actual runs50/50 within45–55%, retries preserve decisions, and winner keeps all waits/keys/assignments", async () => {
+      const { tenantId, automationId, graph } = await fixture(1000);
+      const saved = (await db.query("select run_id,data from automation_steps where tenant_id=$1 and type='split' order by run_id", [tenantId])).rows;
+      expect(saved).toHaveLength(1000);
+      const a = saved.filter((row) => row.data.variant === "a").length;
+      expect(a).toBeGreaterThanOrEqual(450); expect(a).toBeLessThanOrEqual(550);
+      const waits = (await db.query("select id,state,next_step_key,resume_at from automation_runs where tenant_id=$1 order by id", [tenantId])).rows;
+      expect(waits.every((row) => row.state === "waiting")).toBe(true);
+      const pause = await call(fullKey, "PATCH", `/automations/${automationId}`, { status: "paused", expected_version: 0 });
+      expect(pause.status).toBe(200);
+      const picked = await post(fullKey, `/automations/${automationId}/steps/s/winner`, { variant: "b", version: pause.json.version });
+      expect(picked.status, JSON.stringify(picked.json)).toBe(200);
+      expect(picked.json.connections).toEqual(graph.connections.map((edge) => ({ ...edge, type: edge.type ?? "default" })));
+      expect(picked.json.steps.find((step: any) => step.key === "s").config.variants.map((variant: any) => variant.weight)).toEqual([0, 100]);
+      const comparison = await call(fullKey, "GET", `/automations/${automationId}/steps/s/metrics`);
+      expect(comparison.status).toBe(200);
+      expect(comparison.json.data.map((row: any) => [row.key, row.weight, row.runs])).toEqual([["a", 0, a], ["b", 100, 1000 - a]]);
+      expect((await db.query("select run_id,data from automation_steps where tenant_id=$1 and type='split' order by run_id", [tenantId])).rows).toEqual(saved);
+      expect((await db.query("select id,state,next_step_key,resume_at from automation_runs where tenant_id=$1 order by id", [tenantId])).rows).toEqual(waits);
+      expect((await post(fullKey, `/automations/${automationId}/steps/s/winner`, { variant: "a", version: 0 })).status).toBe(409);
+      expect((await call(fullKey, "GET", `/automations/${automationId}`)).json.status).toBe("paused");
+      // A reclaimed recorded split uses its old decision even under the new weights.
+      const retry = saved.find((row) => row.data.variant === "a")!.run_id;
+      await db.query("update automation_runs set state='ready',next_step_key='s',resume_at=null where id=$1", [retry]);
+      expect((await call(fullKey, "PATCH", `/automations/${automationId}`, { status: "enabled", expected_version: picked.json.version })).status).toBe(200);
+      await executeAutomationRun(db, tenantId, retry);
+      expect((await db.query("select next_step_key,state from automation_runs where id=$1", [retry])).rows[0]).toMatchObject({ next_step_key: "wa", state: "waiting" });
+      const fired = await fireEvent(db, tenantId, "req_after_winner", { name: "split-start", email: "new@example.test", data: {} });
+      for (const run of fired.runs) await executeAutomationRun(db, tenantId, run.id);
+      const after = (await db.query("select data from automation_steps where run_id=$1 and type='split'", [fired.runs[0]!.id])).rows;
+      expect(after[0].data.variant).toBe("b");
+    }, 180000);
+
+    it("measures stored same-run variants with half-open event dates, real historical attribution, zero keys and role guards", async () => {
+      const { tenantId, automationId } = await fixture(4);
+      const assignment = (await db.query("select run_id,data from automation_steps where tenant_id=$1 and type='split' order by run_id limit 1", [tenantId])).rows[0]!;
+      await db.query("update automation_steps set created_at='2026-09-01T00:00:00Z' where tenant_id=$1 and type='split'", [tenantId]);
+      // Retained assignments from a previously removed variant still form a report row.
+      assignment.data.variant = "retired";
+      await db.query("update automation_steps set data=$2::jsonb where run_id=$1 and type='split'", [assignment.run_id, JSON.stringify(assignment.data)]);
+      const send = async (name: string, runId: string | null, sandbox: boolean, created = "2026-09-02T00:00:00Z") => {
+        await db.query(`insert into emails(id,tenant_id,request_id,from_email,subject,automation_id,automation_run_id,sandbox,created_at)
+          values($1,$2,'req_split','hello@dispatch-fixture.net','Split',$3,$4,$5,$6)`, [name, tenantId, automationId, runId, sandbox, created]);
+        for (const [index, type] of ["email.sent", "email.delivered", "email.opened", "email.opened", "email.clicked"].entries()) {
+          await db.query(`insert into email_events(id,tenant_id,email_id,type,data,created_at) values($1,$2,$3,$4,$5,'2026-09-03T00:00:00Z')`,
+            [`${name}_${index}`, tenantId, name, type, JSON.stringify({ sandbox: name === "historical" ? false : sandbox })]);
+        }
+      };
+      await send("real", assignment.run_id, false);
+      await send("historical", assignment.run_id, true);
+      await send("sandbox", assignment.run_id, true);
+      await send("unattributed", null, false);
+      await send("before_split", assignment.run_id, false, "2026-08-31T00:00:00Z");
+      await db.query("insert into email_events(id,tenant_id,email_id,type,data,created_at) values('end_excluded',$1,'real','email.clicked','{\"sandbox\":false}','2026-09-04T00:00:00Z')", [tenantId]);
+      const url = `/automations/${automationId}/steps/s/metrics?start_date=2026-09-03T00:00:00Z&end_date=2026-09-04T00:00:00Z`;
+      const report = await call(fullKey, "GET", url);
+      expect(report.status, JSON.stringify(report.json)).toBe(200);
+      expect(report.json.data.find((row: any) => row.key === assignment.data.variant)).toMatchObject({ runs: 0, sent: 2, delivered: 2, opened: 4, unique_opened: 2, clicked: 2, open_rate: 100, click_rate: 100 });
+      expect(report.json.data.find((row: any) => row.key === "retired")).toMatchObject({ label: "retired", weight: null });
+      expect(report.json.data.filter((row: any) => row.key !== "retired").every((row: any) => row.sent === 0)).toBe(true);
+      const viewer = await teammate("Viewer"), session = await signInAs(viewer.email, viewer.password);
+      expect((await call(session.token, "GET", url)).status).toBe(200);
+      expect((await post(session.token, `/automations/${automationId}/steps/s/winner`, { variant: "a", version: 0 })).status).toBe(403);
+      const foreign = await seedTenant();
+      expect((await call(foreign, "GET", url)).status).toBe(404);
+      expect((await call(fullKey, "GET", `/automations/${automationId}/steps/s/metrics?start_date=bad`)).status).toBe(422);
+    });
+  });
+
   // Wave9 hand-counted actual SQL fixtures. Authored now, execution deferred to8.
   describe("retroactive goal conversions", () => {
     async function fixture() {

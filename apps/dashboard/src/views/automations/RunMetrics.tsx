@@ -10,9 +10,10 @@ import { useResource } from "../../hooks/useResource";
 import { Table } from "../../components/Table";
 import type { ResourceState } from "../../hooks/useResource";
 import { emailRows, type EmailReport } from "./EmailMetrics";
-import type { Tree } from "./graph";
+import { branchesOf, branchSteps, type Tree, type Node } from "./graph";
+import { SplitMetrics } from "./SplitMetrics";
 import { withQuery } from "../../lib/client";
-import type { RunCounts, RunMetrics as Metrics } from "../../types";
+import type { RunCounts, RunMetrics as Metrics, SplitReport } from "../../types";
 import type { Series } from "../../components/chart";
 import { GoalConversions } from "../goals/GoalConversions";
 import "../../styles/audience.css";
@@ -71,8 +72,9 @@ export function runSeries(days: Metrics["data"]): Series[] {
 }
 
 /** The builder's Metrics tab: status shares and runs per day, from `GET /automations/:id/runs/metrics`. */
-export function RunMetrics({ automationId, tree = null, names = {}, emails }: {
+export function RunMetrics({ automationId, tree = null, names = {}, emails, onWinner, winnerDisabled = true, winnerBusy = false }: {
   automationId: string; tree?: Tree | null; names?: Record<string, string>; emails?: ResourceState<EmailReport>;
+  onWinner?: (stepKey: string, variant: string) => Promise<void>; winnerDisabled?: boolean; winnerBusy?: boolean;
 }) {
   const range = useDateRange();
   const metrics = useResource<Metrics>(withQuery(`/automations/${automationId}/runs/metrics`, { start_date: range.start, end_date: range.end }));
@@ -89,6 +91,8 @@ export function RunMetrics({ automationId, tree = null, names = {}, emails }: {
       {steps.length ? <Select label="Goal email step" value={selectedStep} onChange={setStepKey}
         options={[{ value: "", label: "All automation emails" }, ...steps.map((row) => ({ value: row.key, label: `${row.name} · ${row.key}` }))]} /> : null}
       <GoalConversions automationId={automationId} stepKey={selectedStep || undefined} start={range.start} end={range.end} />
+      {splitSteps(tree?.steps ?? []).map((step) => <SplitComparison key={step.key} automationId={automationId} stepKey={step.key}
+        start={range.start} end={range.end} disabled={winnerDisabled} busy={winnerBusy} onWinner={onWinner} />)}
       {emails ? <Panel title="Emails">
         <Table
           rows={emailRows(tree, names, emails.data)}
@@ -135,4 +139,17 @@ export function RunMetrics({ automationId, tree = null, names = {}, emails }: {
       )}
     </div>
   );
+}
+
+export function splitSteps(nodes: Node[]): Node[] {
+  return nodes.flatMap((node) => [...(node.type === "split" ? [node] : []), ...branchesOf(node).flatMap((branch) => splitSteps(branchSteps(node, branch)))]);
+}
+
+function SplitComparison({ automationId, stepKey, start, end, disabled, busy, onWinner }: {
+  automationId: string; stepKey: string; start?: string; end?: string; disabled: boolean; busy: boolean;
+  onWinner?: (stepKey: string, variant: string) => Promise<void>;
+}) {
+  const report = useResource<SplitReport>(withQuery(`/automations/${encodeURIComponent(automationId)}/steps/${encodeURIComponent(stepKey)}/metrics`, { start_date: start, end_date: end }));
+  return <SplitMetrics report={report.data} loading={report.loading} error={report.error} onRetry={() => void report.reload()}
+    disabled={disabled} busy={busy} onWinner={onWinner ? async (variant) => { await onWinner(stepKey, variant); await report.reload(); } : undefined} />;
 }

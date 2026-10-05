@@ -1,4 +1,4 @@
-import { ApiError, automationEnrollSchema, automationGraphSchema, automationSchema, automationStopSchema, automationUpdateSchema, id, type Rule, type TriggerConfig } from "@dispatchmail/core";
+import { ApiError, automationEnrollSchema, automationGraphSchema, automationSchema, automationStopSchema, automationUpdateSchema, splitWinnerSchema, id, type Rule, type TriggerConfig, type SplitConfig } from "@dispatchmail/core";
 import {
   activeStates,
   automationColumns,
@@ -17,6 +17,7 @@ import {
   usedKeys,
   paginate,
   retryTx,
+  splitMetrics,
   softDelete,
   tx,
   type AutomationRow,
@@ -307,6 +308,9 @@ export function registerAutomations(
       );
       const current = locked.rows[0];
       if (!current) throw new ApiError("not_found", 404, "Automation not found");
+      if (input.expected_version !== undefined && input.expected_version !== current.version) {
+        throw new ApiError("conflict", 409, "Automation changed. Reload before continuing.");
+      }
       const graph = mergeGraph(current, input);
       const status = input.status ?? automationStatus(current);
       if (status === "paused" && !current.enabled) {
@@ -424,6 +428,50 @@ export function registerAutomations(
   });
 
   // Run counts by status, in total and per day, for the builder's Metrics tab.
+  app.get("/automations/:id/steps/:key/metrics", async (request) => {
+    const tenantId = request.auth!.tenant_id;
+    const { id: automationId, key: stepKey } = request.params as { id: string; key: string };
+    const automation = await findAutomation(db, tenantId, automationId);
+    const step = automationGraph(automation).steps.find((step) => step.key === stepKey && step.type === "split");
+    if (!step) throw new ApiError("not_found", 404, "Split step not found");
+    const query = request.query as { start_date?: string; end_date?: string };
+    const end = query.end_date === undefined ? new Date() : new Date(query.end_date);
+    const start = query.start_date === undefined ? new Date(end.getTime() - 30 * 86400000) : new Date(query.start_date);
+    return splitMetrics(db, tenantId, { automationId, stepKey, start, end }, (step.config as SplitConfig).variants);
+  });
+
+  // The caller pauses first. A failed winner edit leaves that pause intact.
+  app.post("/automations/:id/steps/:key/winner", async (request) => {
+    const tenantId = request.auth!.tenant_id;
+    const { id: automationId, key: stepKey } = request.params as { id: string; key: string };
+    const input = splitWinnerSchema.parse(request.body);
+    const result = await retryTx(db, async (client) => {
+      const locked = await client.query<AutomationRow>(
+        `select ${automationColumns} from automations where tenant_id = $1 and id = $2 and deleted_at is null for update`,
+        [tenantId, automationId],
+      );
+      const current = locked.rows[0];
+      if (!current) throw new ApiError("not_found", 404, "Automation not found");
+      if (automationStatus(current) !== "paused" || current.version !== input.version) {
+        throw new ApiError("conflict", 409, "Pause the current automation version before picking a winner");
+      }
+      const graph = automationGraph(current);
+      const step = graph.steps.find((step) => step.key === stepKey && step.type === "split");
+      if (!step) throw new ApiError("not_found", 404, "Split step not found");
+      const config = step.config as SplitConfig;
+      if (!config.variants.some((variant) => variant.key === input.variant)) throw new ApiError("validation_error", 422, "Unknown variant");
+      step.config = { variants: config.variants.map((variant) => ({ ...variant, weight: variant.key === input.variant ? 100 : 0 })) };
+      await editRuns(client, tenantId, current, graph.steps, false);
+      const updated = await client.query<AutomationRow>(
+        `update automations set steps = $3::jsonb, version = version + 1, updated_at = now()
+         where tenant_id = $1 and id = $2 returning ${automationColumns}`,
+        [tenantId, automationId, JSON.stringify(graph.steps)],
+      );
+      return updated.rows[0]!;
+    });
+    return presentAutomation(result);
+  });
+
   app.get("/automations/:id/runs/metrics", async (request) => {
     const tenantId = request.auth!.tenant_id;
     const automation = await findAutomation(db, tenantId, (request.params as { id: string }).id);

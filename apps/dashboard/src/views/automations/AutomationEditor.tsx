@@ -54,6 +54,7 @@ import { Canvas, ViewSwitch } from "./Canvas";
 import { StopAutomation, isEnabled } from "./Stop";
 import { countsByStep, useEmailMetrics } from "./EmailMetrics";
 import { Enroll, canEnroll } from "./Enroll";
+import { pickWinner } from "./winner";
 
 type Draft = { name: string; tree: Tree; reentry: Reentry };
 type SaveRequest = { body: Record<string, unknown>; draft: Draft | null; id: string };
@@ -110,6 +111,8 @@ export function AutomationEditor() {
   const [enrolling, setEnrolling] = useState(false);
   const enrollmentJob = params.get("enroll_job");
   const [deleting, setDeleting] = useState(false);
+  const [winnerBusy, setWinnerBusy] = useState(false);
+  const winnerLock = useRef(false);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
   const controlsRef = useRef<HTMLDivElement>(null);
@@ -188,7 +191,7 @@ export function AutomationEditor() {
   const paused = row?.status === "paused";
   const can = useCan();
   // A viewer sees the builder read-only, the same way as an enabled automation.
-  const locked = !can || enabled || Boolean(problem);
+  const locked = !can || enabled || Boolean(problem) || winnerBusy;
   const dirty = Boolean(draft) && snapshot(draft!) !== saved;
   const templateKinds = useMemo(() => Object.fromEntries(templates.rows.flatMap((item) => {
     const kind = item.kind ?? (item.html !== undefined || item.text !== undefined ? templateKind(item) : undefined);
@@ -259,7 +262,30 @@ export function AutomationEditor() {
     success: "Automation paused.",
     onSuccess: (result) => automation.setData(result),
   });
-  const busy = save.isLoading || preview.isLoading || pause.isLoading;
+  const busy = save.isLoading || preview.isLoading || pause.isLoading || winnerBusy;
+  async function winner(stepKey: string, variant: string) {
+    if (winnerLock.current || !can || !row || dirty || busy || problem || confirmation || row.version === undefined) return;
+    winnerLock.current = true;
+    setWinnerBusy(true);
+    setApiError(null);
+    try {
+      await pickWinner(client, row, stepKey, variant, (result) => {
+        automation.setData(result);
+        const stored = toTree(result.steps, result.connections);
+        const next = { name: result.name, tree: stored.tree, reentry: result.reentry ?? "every_time" } satisfies Draft;
+        setDraft(next);
+        setSaved(snapshot(next));
+      });
+      toast.success("Winner picked. Automation resumed.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Winner could not be picked.";
+      setApiError(message);
+      toast.error(message);
+    } finally {
+      winnerLock.current = false;
+      setWinnerBusy(false);
+    }
+  }
 
   const duplicate = useMutation(() => client.post<Automation>(`/automations/${id}/duplicate`), {
     success: "Automation duplicated.",
@@ -297,7 +323,7 @@ export function AutomationEditor() {
   useHotkey(shortcuts.save.combo, () => submit(false), { enabled: tab === "builder" && !locked && dirty });
 
   const edit = (change: (tree: Tree) => Tree) => {
-    if (locked) return;
+    if (locked || winnerBusy) return;
     setConfirmation(null);
     setApiIssues({});
     setDraft((current) => (current ? { ...current, tree: change(current.tree) } : current));
@@ -451,7 +477,8 @@ export function AutomationEditor() {
       </div>
 
       {tab === "runs" && id ? <Runs automationId={id} tree={stored?.tree ?? null} options={options} /> : null}
-      {tab === "metrics" && id ? <RunMetrics automationId={id} tree={stored?.tree ?? null} names={options.templateNames} emails={emailMetrics} /> : null}
+      {tab === "metrics" && id ? <RunMetrics automationId={id} tree={stored?.tree ?? null} names={options.templateNames} emails={emailMetrics}
+        onWinner={winner} winnerBusy={winnerBusy} winnerDisabled={!can || dirty || busy || Boolean(problem) || Boolean(confirmation) || row?.version === undefined || row.status === "disabled"} /> : null}
       {!draft || !row ? (tab === "builder" ? <Skeleton lines={6} /> : null) : (
         <ReentryContext.Provider value={{ value: draft.reentry, onChange: (reentry) => {
           if (locked) return;

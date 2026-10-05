@@ -731,6 +731,17 @@ type BranchConfig struct {
 	Paths []BranchPath `json:"paths"`
 }
 
+type SplitVariant struct {
+	Key    string `json:"key"`
+	Label  string `json:"label"`
+	Weight int    `json:"weight"`
+}
+
+// Two to four unique stable keys, integer weights summing to100; zero is allowed.
+type SplitConfig struct {
+	Variants []SplitVariant `json:"variants"`
+}
+
 // SendEmailConfig uses literal Variables and optional dotted context mappings.
 // Mappings override literals; recipient and unsubscribe context stays protected.
 // Omitted Kind is inferred from TopicID. Marketing drafts may omit TopicID,
@@ -769,13 +780,14 @@ type AutomationInput struct {
 // AutomationUpdate pauses/resumes/stops execution or updates a definition.
 // Version is read-only and is returned on Automation, not accepted here.
 type AutomationUpdate struct {
-	Name        string                  `json:"name,omitempty"`
-	Status      string                  `json:"status,omitempty"`
-	Enabled     *bool                   `json:"enabled,omitempty"`
-	Steps       *[]AutomationStep       `json:"steps,omitempty"`
-	Connections *[]AutomationConnection `json:"connections,omitempty"`
-	Trigger     string                  `json:"trigger,omitempty"`
-	Reentry     AutomationReentry       `json:"reentry,omitempty"`
+	ExpectedVersion *int                    `json:"expected_version,omitempty"`
+	Name            string                  `json:"name,omitempty"`
+	Status          string                  `json:"status,omitempty"`
+	Enabled         *bool                   `json:"enabled,omitempty"`
+	Steps           *[]AutomationStep       `json:"steps,omitempty"`
+	Connections     *[]AutomationConnection `json:"connections,omitempty"`
+	Trigger         string                  `json:"trigger,omitempty"`
+	Reentry         AutomationReentry       `json:"reentry,omitempty"`
 }
 
 type EventInput struct {
@@ -1682,6 +1694,15 @@ func (c *Client) AutomationRun(automationID, runID string) (Map, error) {
 
 func (c *Client) AutomationRunMetrics(automationID string, query ...url.Values) (Map, error) {
 	return object(get[Map](c, with(at("automations", automationID, "runs", "metrics"), query)))
+}
+
+func (c *Client) AutomationSplitMetrics(automationID, stepKey string, query ...url.Values) (Map, error) {
+	return object(get[Map](c, with(at("automations", automationID, "steps", stepKey, "metrics"), query)))
+}
+
+// Requires an already paused version. Resume separately after success.
+func (c *Client) PickAutomationWinner(automationID, stepKey, variant string, version int) (*Automation, error) {
+	return post[Automation](c, at("automations", automationID, "steps", stepKey, "winner"), Map{"variant": variant, "version": version})
 }
 
 // Events. /events holds definitions, /events/send fires one, /fired-events lists what fired.

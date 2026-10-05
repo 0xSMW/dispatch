@@ -267,8 +267,12 @@ export type Segment = Row & {
 };
 export type SegmentPreview = { count: number; sample: Row[] };
 
-export type StepType = "trigger" | "send_email" | "delay" | "wait_for_event" | "condition" | "add_to_segment" | "contact_update" | "contact_delete" | "exit" | "filter" | "branch";
-export type ConnectionType = "default" | "condition_met" | "condition_not_met" | "timeout" | "event_received" | "branch";
+export type StepType = "trigger" | "send_email" | "delay" | "wait_for_event" | "condition" | "add_to_segment" | "contact_update" | "contact_delete" | "exit" | "filter" | "branch" | "split";
+export type ConnectionType = "default" | "condition_met" | "condition_not_met" | "timeout" | "event_received" | "branch" | "variant";
+export type SplitVariant = { key: string; label: string; weight: number };
+export type SplitConfig = { variants: SplitVariant[] };
+export type SplitMetric = Omit<SplitVariant, "weight"> & { weight: number | null; runs: number; sent: number; delivered: number; open_rate: number; click_rate: number; bounce_rate: number; unsubscribed: number; [metric: string]: unknown };
+export type SplitReport = { object: "automation_split_metrics"; automation_id: string; step_key: string; start_date: string; end_date: string; data: SplitMetric[] };
 export type ExitConfig = Record<string, never>;
 /** next tests once; following also saves a guard checked before every later step. */
 export type FilterConfig = { rule: Rule; scope: "next" | "following" };
@@ -279,7 +283,7 @@ export type AutomationConnection = {
   from: string;
   to: string;
   type?: string;
-  /** Required only for type branch: a configured path key or "otherwise". */
+  /** Branch path key (or "otherwise"), or a configured variant key for type variant. */
   path?: string;
 };
 export type AutomationExitReason = "completed" | "exit" | "filter" | "stopped" | "stranded";
@@ -377,6 +381,7 @@ export type AutomationUpdate = {
   status?: AutomationStatus;
   enabled?: boolean;
   version?: never;
+  expectedVersion?: number;
   steps?: Array<Record<string, unknown>>;
   connections?: AutomationConnection[];
   trigger?: string;
@@ -1247,6 +1252,13 @@ class AutomationRuns extends Resource {
 }
 
 class Automations extends Resource {
+  splitMetrics(id: string, stepKey: string, range: { startDate?: string; endDate?: string } = {}) {
+    return this.client.call<SplitReport>("GET", `/automations/${seg(id)}/steps/${seg(stepKey)}/metrics${query(range)}`);
+  }
+  /** Requires an already paused version. Resume separately only after success. */
+  pickWinner(id: string, stepKey: string, input: { variant: string; version: number }) {
+    return this.client.call<Automation>("POST", `/automations/${seg(id)}/steps/${seg(stepKey)}/winner`, input);
+  }
   readonly runs = new AutomationRuns(this.client);
   /** Explicitly enroll current live contacts into an enabled, unpaused contact flow. */
   enroll(id: string, input: AutomationEnrollment, options: { idempotencyKey?: string } = {}) {

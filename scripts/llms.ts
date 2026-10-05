@@ -7,6 +7,11 @@ import { dirname, join, posix, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const publicDocs = [
+  { path: "docs/agent-tools.md", title: "Agent tooling", summary: "Public LLM docs, local SDK-backed stdio MCP tools, permissions and read-only mode." },
+  { path: "docs/goals.md", title: "Goals", summary: "Retroactive real-send conversion cohorts, eligibility and retained-history limits." },
+  { path: "docs/integrations.md", title: "Integrations", summary: "Signed receivers, setup, provider mappings and body-free delivery history." },
+  { path: "docs/templates/theme.md", title: "Brand theme tokens", summary: "Safe theme tokens and explicit library updates that skip edited copies." },
+  { path: "docs/templates/webhook.md", title: "Standard Webhooks", summary: "Signed receiver setup, mapping, replay handling and delivery history." },
   ...[
     ["README", "Lifecycle recipes"],
     ["newsletter-welcome", "Newsletter welcome"],

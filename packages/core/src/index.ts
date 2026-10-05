@@ -1014,7 +1014,11 @@ export function triggerKey(config: TriggerConfig): string {
 
 export { templateKind, type SendKind } from "./email-kind.js";
 
+export { splitSchema, splitWinnerSchema, type SplitConfig, type SplitVariant, type SplitMetricsInput, type SplitMetric, type SplitReport } from "./splits.js";
+import { splitSchema } from "./splits.js";
+
 export const stepConfigs = {
+  split: splitSchema,
   trigger: triggerSchema,
   // Ordinary sends still use topic_id alone. Steps store intent even before a topic is chosen.
   send_email: z
@@ -1095,7 +1099,7 @@ export const stepConfigs = {
 };
 export type StepConfig<T extends StepType> = z.infer<(typeof stepConfigs)[T]>;
 
-export const stepTypes = ["trigger", "send_email", "delay", "wait_for_event", "condition", "filter", "branch", "exit", "add_to_segment", "contact_update", "contact_delete"] as const;
+export const stepTypes = ["trigger", "send_email", "delay", "wait_for_event", "condition", "filter", "branch", "split", "exit", "add_to_segment", "contact_update", "contact_delete"] as const;
 export type StepType = (typeof stepTypes)[number];
 
 export const stepSchema = z.object({
@@ -1106,7 +1110,7 @@ export const stepSchema = z.object({
 export type Step = z.infer<typeof stepSchema>;
 export type AutomationStep = Step;
 
-export const connectionTypes = ["default", "condition_met", "condition_not_met", "timeout", "event_received", "branch"] as const;
+export const connectionTypes = ["default", "condition_met", "condition_not_met", "timeout", "event_received", "branch", "variant"] as const;
 
 export const connectionSchema = z.object({
   from: z.string().min(1),
@@ -1183,15 +1187,21 @@ export function automationIssues(steps: Step[], connections: Connection[]) {
     if (!byKey.has(connection.to)) issues.push(`Connection ends at unknown step ${connection.to}`);
     if (!from || !byKey.has(connection.to)) continue;
     if (from.type === "exit") issues.push(`Exit ${from.key} cannot have outgoing connections`);
-    if (connection.type === "branch") {
+    if (connection.type === "variant") {
+      if (from.type !== "split") issues.push(`A variant connection must start at a split step, not ${from.key}`);
+      else if (!connection.path || !(from.config as StepConfig<"split">).variants.some((variant) => variant.key === connection.path)) {
+        issues.push(`Split ${from.key} has an unknown variant ${connection.path ?? ""}`);
+      }
+    } else if (connection.type === "branch") {
       if (from.type !== "branch") issues.push(`A branch connection must start at a branch step, not ${from.key}`);
       else if (!connection.path || ![...(from.config as StepConfig<"branch">).paths.map((path) => path.key), "otherwise"].includes(connection.path)) {
         issues.push(`Branch ${from.key} has an unknown path ${connection.path ?? ""}`);
       }
     } else {
-      if (connection.path !== undefined) issues.push(`Only branch connections can have a path`);
+      if (connection.path !== undefined) issues.push(`Only branch or variant connections can have a path`);
       if (from.type === "branch") issues.push(`Branch ${from.key} must use branch connections`);
     }
+    if (from.type === "split" && connection.type !== "variant") issues.push(`Split ${from.key} must use variant connections`);
     if (from.type === "filter" && connection.type !== "default") issues.push(`Filter ${from.key} can only have a default connection`);
     if ((connection.type === "condition_met" || connection.type === "condition_not_met") && from.type !== "condition") {
       issues.push(`A ${connection.type} connection must start at a condition step, not ${from.key}`);
@@ -1215,6 +1225,11 @@ export function automationIssues(steps: Step[], connections: Connection[]) {
   for (const step of steps.filter((step) => step.type === "branch")) {
     for (const path of [...(step.config as StepConfig<"branch">).paths.map((path) => path.key), "otherwise"]) {
       if (branches.get(`${step.key}:branch:${path}`) !== 1) issues.push(`Branch ${step.key} needs exactly one connection for path ${path}`);
+    }
+  }
+  for (const step of steps.filter((step) => step.type === "split")) {
+    for (const variant of (step.config as StepConfig<"split">).variants) {
+      if (branches.get(`${step.key}:variant:${variant.key}`) !== 1) issues.push(`Split ${step.key} needs exactly one connection for variant ${variant.key}`);
     }
   }
 
@@ -1277,6 +1292,7 @@ export const automationUpdateSchema = z
     status: z.enum(["enabled", "paused", "disabled"]).optional(),
     enabled: z.boolean().optional(),
     reentry: z.enum(["once", "every_time"]).optional(),
+    expected_version: z.number().int().min(0).optional(),
     trigger: graphFields.trigger,
     steps: graphFields.steps.optional(),
     connections: graphFields.connections

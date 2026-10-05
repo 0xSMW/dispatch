@@ -25,6 +25,7 @@ Every email event is traceable, so you can see what's queued, sent, delivered, b
 - **Inbound email.** Receive replies and incoming mail on your domains, and pick them up through the API or a webhook.
 - **Domains.** Adding a domain returns every DNS record SES needs: DKIM, SPF, DMARC, and MX. Dispatch can publish them to Route 53, and it checks the domain until it verifies.
 - **Tracking and metrics.** Track opens and clicks per domain, and follow delivery, bounce, and complaint rates over time.
+- **Goals.** Measure event or contact-state conversions retroactively for automation, broadcast and step sends, with current eligibility and explicit history limits. See [Goals](goals.md).
 - **Webhooks.** Get a signed event for every delivery, bounce, open, and click. Failed deliveries retry automatically, and you can replay any event.
 - **Logs.** Every API request is logged, so you can see exactly what your app sent. Passwords, keys, and other secrets are removed before a log is stored.
 - **Suppressions.** A hard bounce or a complaint adds the address to the suppression list. Later sends to it are skipped and reported as `email.suppressed`.
@@ -169,6 +170,58 @@ The [self-hosting guide](self-hosting/README.md) walks through each step, and [O
 - [Deliverability](deliverability/README.md)
 - [Local development](local.md)
 - [Troubleshooting](troubleshooting.md)
+
+---
+
+Source: [docs/agent-tools.md](agent-tools.md)
+
+# Agent tooling
+
+The API drawer's Agent tab copies the canonical prompt for the current page. Its [llms index](llms.txt) and [full public documentation](llms-full.txt) include only reviewed, Git-tracked public guides, never local plans or security reports. Maintainers regenerate both with `pnpm llms` after public docs change; `pnpm llms --check` checks freshness.
+
+## Local stdio MCP
+
+`@dispatchmail/mcp` wraps the TypeScript Dispatch SDK with the official TypeScript MCP SDK. It runs over stdin/stdout only. There is no hosted MCP service or OAuth marketplace.
+
+Configure your MCP client to start `dispatch-mcp` from an installed `@dispatchmail/mcp` package, with `DISPATCH_API_URL` and `DISPATCH_API_KEY` passed in its environment. Keep the key out of command arguments, prompts and saved logs. Use a key for your own install and permitted resources.
+
+```json
+{
+  "mcpServers": {
+    "dispatch": {
+      "command": "dispatch-mcp",
+      "args": ["--read-only"]
+    }
+  }
+}
+```
+
+The process inherits `DISPATCH_API_URL` (default `http://localhost:3100`) and requires `DISPATCH_API_KEY`. Configure these in the client's secret/environment settings rather than embedding a key in this JSON. The package's executable is built with `pnpm --filter @dispatchmail/mcp build` in a source checkout after dependency setup.
+
+Tools use the shipped TypeScript SDK's camelCase inputs:
+
+| Tool | Main inputs | Effect |
+| --- | --- | --- |
+| `send_email` | `from`, `to`, `subject`, `html` or `template`, optional `idempotencyKey` | Sends |
+| `get_email` | `id` | Reads |
+| `list_emails` | optional paging and filters | Reads |
+| `send_event` | `event`, exactly one `contactId` or `email`, optional `payload` | Writes |
+| `upsert_contact` | `email`, optional `firstName`, `lastName`, `properties` | Writes via `contacts.create` |
+| `list_automations` | optional paging and `status` | Reads |
+| `install_preset` | `slug`, `from`, optional `name`, `topicId` | Installs disabled |
+| `get_metrics` | optional `startDate`, `endDate`, metrics/dimensions and resource filters | Reads |
+| `list_templates` | optional paging, `q`, `status` | Reads |
+| `render_template` | `idOrAlias`, optional `variables`, `draft` | Reads, despite its API POST |
+
+`--read-only` removes all four write tools from discovery and rejects their direct invocation before any SDK request. There is no arbitrary API-call tool. Ordinary mode, without the flag, permits sends and installation subject to API permissions. SDK failures return explicit MCP errors; HTTP response headers are not tool results.
+
+Sending a transactional email does not require contacts, topics or automations. Installing a lifecycle preset requires a verified sender. Newsletter welcome also requires a live tenant topic; other Marketing presets may install disabled without a topic but cannot be enabled until configured. Review reused templates and the disabled flow before enabling.
+
+## Ask your agent
+
+```text
+Help me send a transactional email with Dispatch without requiring contacts, topics, or automations. Use the public documentation for my running Dispatch version and only shipped endpoints and SDK methods. Read DISPATCH_API_URL and DISPATCH_API_KEY from my environment; never print or embed the key. Respect my current permissions and ask for confirmation before sending email, publishing, deleting, or changing live configuration.
+```
 
 ---
 
@@ -430,7 +483,8 @@ The OpenAPI document has every parameter and field. By area:
 - Webhooks: `POST /webhooks`, `GET /webhooks`, `GET /webhooks/{id}`, `PATCH /webhooks/{id}`, `DELETE /webhooks/{id}`, `POST /webhooks/{id}/signing-secret/rotate`, `POST /webhooks/test`, `GET /webhooks/{id}/events`, `GET /webhooks/{id}/events/{event_id}`, `GET /webhooks/{id}/events/{event_id}/attempts`, `POST /webhooks/{id}/events/{event_id}/replay`. See [webhooks.md](webhooks.md).
 - Templates: `POST /templates`, `GET /templates`, `GET /templates/{id}`, `PATCH /templates/{id}`, `DELETE /templates/{id}`, `POST /templates/{id}/versions`, `GET /templates/{id}/versions`, `POST /templates/{id}/publish`, `POST /templates/{id}/render`, `POST /templates/{id}/duplicate`. `{id}` also accepts the alias.
 - Template library: `GET /template-library`, `GET /template-library/{slug}`, `POST /template-library/{slug}/install`, `GET /template-library/automations`, `GET /template-library/automations/{slug}`
-- Brand: `GET /brand`, `PATCH /brand`
+- Brand: `GET /brand`, `PATCH /brand`, `POST /brand/update-library`. See [theme tokens and safe updates](templates/theme.md).
+- Goals: `GET /goals`, `POST /goals`, `GET /goals/{id}`, `PATCH /goals/{id}`, `DELETE /goals/{id}`, `GET /goals/{id}/metrics`. See [retroactive conversions and history limits](goals.md).
 - Contacts: `POST /contacts`, `GET /contacts`, `GET /contacts/stats`, `GET /contacts/{id}`, `PATCH /contacts/{id}`, `DELETE /contacts/{id}`, `GET /contacts/{id}/activity`, `GET /contacts/{id}/segments`, `POST` and `DELETE /contacts/{id}/segments/{segment_id}`, `GET` and `PATCH /contacts/{id}/topics`. `{id}` also accepts the email address.
 - Imports: `POST /contacts/imports` (multipart CSV), `GET /contacts/imports`, `GET /contacts/imports/{id}`
 - Contact properties: `POST /contact-properties`, `GET /contact-properties`, `GET /contact-properties/{id}`, `PATCH /contact-properties/{id}`, `DELETE /contact-properties/{id}`
@@ -450,7 +504,7 @@ Source: [docs/audience.md](audience.md)
 
 # Audience
 
-Audience holds contacts, custom properties, static segments, and topic preferences. None is required to send a transactional email.
+Audience holds contacts, custom properties, static lists, dynamic filters, and topic preferences. None is required to send a transactional email.
 
 Contacts are identified by email, matched case-insensitively. Create them through the dashboard, the contact API, or a CSV import. [Firing an event](automations.md#triggers) with a new email address also creates a contact.
 
@@ -562,7 +616,7 @@ Omit the TypeScript/Python option, or leave the Go pointer nil, to use the tenan
 
 ## Segments
 
-Segments are static lists. Membership changes when you add or remove a contact, not when the contact's properties change.
+Choose **Static list** for manual membership, or **Filter** for contacts matching current state. Static membership changes when you add or remove a contact. Dynamic membership changes automatically as contact properties, preferences, or recorded email activity change.
 
 Create a segment under Audience → Segments, then manage members from the segment or contact page. The API supports:
 
@@ -576,11 +630,80 @@ An Added to segment trigger starts only on new membership. Deleting its segment 
 
 Use a segment to choose a broadcast's audience. Being in a segment is not permission to receive Marketing email: global unsubscribes, topic preferences, and suppressions still apply. Deleting a contact removes its segment memberships.
 
-There are no rule-based dynamic segments in the current release.
+### Dynamic filters
+
+`POST /segments` accepts an optional `rule`. Null or omission creates a static list. For example:
+
+```json
+{
+  "name": "Active trial users",
+  "rule": {
+    "type": "and",
+    "rules": [
+      { "type": "rule", "field": "contact.plan", "operator": "eq", "value": "trial" },
+      { "type": "rule", "field": "email.opened", "operator": "eq", "value": true, "window": "30 days" }
+    ]
+  }
+}
+```
+
+Declare `plan` as a String property first. Filters support declared contact properties, built-ins, receiving `contact.topics`, and static `contact.segments`. Rules allow five total node levels and twenty conditions. Membership cannot reference another dynamic filter; event fields are not segment fields. Existing own properties named `topics` or `segments` retain precedence.
+
+Email facts are `email.sent`, `email.delivered`, `email.opened`, `email.clicked`, and `email.bounced`. They accept boolean `eq`/`neq`. Optional scope is exactly one of `{"automation_id":"auto_..."}` or `{"broadcast_id":"broadcast_..."}`. Save and preview require a live same-tenant scope; deleting it later means no matching facts, not an unscoped fallback. Optional positive-duration `window` includes both bounds, from statement time minus the duration through statement time. Without a window, all recorded history is eligible. Facts test existence, not event counts. Negative facts also match contacts never sent mail. Sandbox events do not count; recipient-specific events cannot count a different recipient.
+
+`POST /segments/preview` with `{ "rule": ... }` returns an uncached `{ "count": number, "sample": [...] }`, with at most ten contacts from one statement snapshot. Viewers may preview but cannot save. The dashboard debounces this preview while editing.
+
+`GET /segments` returns `type`, `rule`, and `contacts: null` for dynamic rows. Detail returns a numeric count, cached for up to 30 seconds. Editing, conversion, and deletion invalidate that segment's count. Filtered contact lists, contact segment context, broadcast review, and snapshots use SQL matching, not application-side contact filtering.
+
+`PATCH /segments/{id}` preserves the rule when omitted; explicit `rule: null` converts to an empty static list. Remove a static list's members explicitly before converting it to a filter. A static list used by another filter cannot become dynamic. Dynamic membership add/delete, contact segment arrays, imports, Add to segment steps, and Added to segment triggers are refused. Predicate changes do not emit Added to segment events.
+
+Snapshots copy recipients in one database statement and remain unchanged by later contact edits. Review counts can change before the snapshot. Consent, suppressions, and mailbox deduplication still apply.
+
+SQL supports valid finite numeric and ISO values and safely guards malformed legacy shapes. It does not promise universal JavaScript `Number()`/locale-date parsing or arbitrary manually stored large-number precision equivalence. Automation evaluation remains unchanged and explicitly refuses unresolved email-engagement rules.
+
+```ts
+const rule = { type: "rule", field: "email.clicked", operator: "eq", value: true } as const;
+await dispatch.segments.preview(rule);
+await dispatch.segments.create({ name: "Clicked", rule });
+await dispatch.segments.update("seg_...", { rule: null });
+```
+
+Python uses `preview_segment(rule)`, `create_segment({"name": "Clicked", "rule": rule})`, and `update_segment(id, {"rule": None})`. Go uses `PreviewSegment(rule)`, `CreateSegment(SegmentInput{Name: "Clicked", Rule: rule})`, and `UpdateSegment(id, Map{"rule": nil})`; an omitted field preserves the existing filter.
 
 ## Topics
 
 Topics describe categories of Marketing email, such as Product updates or Newsletters. They are preferences, not audience lists.
+
+Form submissions can create **Pending confirmation** preferences. Pending is not Opt in: Marketing ingest, receiving-topic rules, broadcast review and snapshots exclude it, even for topics that default to Opt in.
+
+## Signup forms
+
+Under Audience → Forms, choose live topics, declared properties, a sender on a verified sending-enabled domain, and exact allowed website origins. Double opt-in defaults on. Copy the HTML or browser fetch snippet; neither contains an API key.
+
+Management uses authenticated `GET/POST /forms` and `GET/PATCH/DELETE /forms/{id}`. Public submission uses `POST /forms/{key}`, with the random public **key**, not the management ID. Viewers can inspect forms and copy snippets but cannot create, change or delete them.
+
+Public JSON accepts `email`, optional `first_name` and `last_name`, a `properties` object containing only configured keys, and an empty `website` honeypot. A plain HTML form uses `properties.KEY` fields. Form-encoded numbers and `true`/`false` booleans are converted to their declared types. JSON uses native declared types. Requests are capped at 16 KB. An exact configured `Origin` is required; OPTIONS permits POST and `content-type` only. Missing or foreign origins are refused. The per-IP public limit applies to the route, not each key.
+
+Successful, duplicate, quota-refused and honeypot submissions receive the same message: “Thank you. Check your email if confirmation is needed.” They never reveal subscription state. Confirmation email is limited to one per address and form per rolling 24 hours, plus the tenant's [UTC daily cap](settings.md). Contact, pending consent, token, quota reservations and enqueue commit together; failed enqueue never grants receiving consent.
+
+Double opt-in sets the selected topics to Pending and sends the built-in `confirm-subscription` template. A globally opted-out or deleted contact requires confirmation even if the form has double opt-in off. Submission never revives a deleted contact. A new ordinary single-opt-in contact subscribes immediately.
+
+Confirmation links expire after seven days. Opening `/confirm/{token}` only displays the form and a Confirm button, without a session. The deliberate POST can revive the contact, clear its global opt-out and subscribe the original token-bound topics. Concurrent or repeated POSTs produce the actual topic transition once. Reusing a consumed link after a later opt-out cannot resubscribe. Tokens are purpose-scoped, tenant/form/contact-bound, and backed by durable single-use state. A form's configured HTTPS redirect is the only redirect destination; request fields and query strings cannot replace it.
+
+TypeScript management:
+
+```ts
+const result = await dispatch.forms.create({
+  name: "Newsletter", topicIds: ["topic_..."], fromEmail: "hello@your-verified-domain.com",
+  allowedOrigins: ["https://your-site.com"], doubleOptIn: true,
+});
+await dispatch.forms.list();
+await dispatch.forms.update(result.data!.id, { redirectUrl: "https://your-site.com/thanks" });
+```
+
+Python exposes `forms`, `form`, `create_form`, `update_form`, and `delete_form`, with snake_case inputs. Go exposes `Forms`, `Form`, `CreateForm`, `UpdateForm`, and `DeleteForm`; `FormInput.DoubleOptIn` is a pointer so nil preserves the server default. These clients manage forms. Browser snippets submit publicly without credentials.
+
+## Topic defaults and visibility
 
 Choose these settings when creating a topic:
 
@@ -628,6 +751,16 @@ Help me add and inspect Dispatch contacts while preserving their consent prefere
 Source: [docs/automations.md](automations.md)
 
 # Automations
+
+## Split tests
+
+A `split` step has `variants: [{ key, label, weight }]`, with 2–4 unique stable keys and integer weights from 0 to 100 summing to 100. Zero-weight variants remain connected but receive no new assignments. Each variant needs exactly one `variant` connection with `path` equal to its key.
+
+Assignments hash only the UTF-8 run ID with SHA-256, take the unsigned big-endian first four bytes modulo 100, and select against ordered cumulative weights. The engine records `{variant:key}` atomically with advancement. Retries, paused edits and winner changes do not replace recorded decisions.
+
+List and Canvas both edit the same weights and paths. The Metrics tab compares recorded variants, including zero-result and historical keys. `GET /automations/{id}/steps/{key}/metrics` accepts `start_date`/`end_date` as a half-open interval. Runs use assignment dates; emails use event dates and explicit same-run attribution after the split. Sandbox events do not count as real delivery or engagement. Open/click rates use unique emails over delivered events, matching ordinary email metrics.
+
+**Pick winner** requires full access and no unsaved draft. It pauses, calls `POST /automations/{id}/steps/{key}/winner` with `{variant,version}`, then resumes with `expected_version`. The server changes only weights to 100/0, increments the graph version and preserves paths, waits, keys and stored assignments. Failures leave the automation paused for review; the action never calls Stop or silently resumes after an error. Viewer metrics remain read-only.
 
 Automations run a sequence of steps when your application fires an event or a contact changes. They are optional: sending a transactional email does not require an automation or an audience.
 
@@ -1345,9 +1478,31 @@ Source: [docs/automations/failed-payment.md](automations/failed-payment.md)
 
 Notify about a failed invoice, wait for payment and follow up on timeouts.
 
-## App-owned state and events
+## Connect the Stripe receiver first
 
-No contact property is declared. Manually produce stripe.invoice.payment_failed through the SDK today with actual billing strings: AMOUNT, UPDATE_PAYMENT_URL, INVOICE_NUMBER, invoice_id. Produce stripe.invoice.paid with invoice_id after confirmed payment. Your app owns deduplication, ordering and billing truth.
+Create a Stripe integration in **Settings > Integrations**, or through `POST /integrations`:
+
+```sh
+jq -n --arg secret "$STRIPE_WEBHOOK_SECRET" \
+  '{provider:"stripe",name:"Stripe billing",secret:$secret,settings:{map_plan:false}}' |
+curl --fail-with-body --silent --show-error "$DISPATCH_API_URL/integrations" \
+  -H "Authorization: Bearer $DISPATCH_API_KEY" \
+  -H "Content-Type: application/json" --data-binary @-
+```
+
+The response has flat, top-level `token` and `url`, shown once. Configure that URL as the Stripe endpoint, save its signing secret in Dispatch and subscribe to `invoice.payment_failed` and `invoice.paid`. See [Stripe setup](templates/stripe.md#receiver-setup) for initial secret handoff and contact lookup. Normal GETs never return credentials; `POST /integrations/:id/rotate` returns a replacement URL that must replace the old one in Stripe.
+
+The receiver records `stripe.invoice.payment_failed` and `stripe.invoice.paid`. Invoice payloads include `AMOUNT` formatted from `amount_due`, `INVOICE_NUMBER`, `invoice_id` and `PLAN` when available. **Receiver `UPDATE_PAYMENT_URL` comes from `hosted_invoice_url`**, not a billing-portal card-update session. Review the payment-failed and card-update-reminder button wording so it describes paying/viewing an invoice, or use the manual producer below to supply your app's card-update link. Missing invoice numbers or URLs are empty strings, not preview fallbacks.
+
+Inspect [body-free delivery history](integrations.md#delivery-history-and-replay-retention). Verified duplicate successful deliveries do not repeat effects while their replay keys remain retained. Delivery keys are pruned with `LOG_RETENTION_DAYS` (default 30 days); a redelivery after pruning can apply again. This does not provide invoice-level business deduplication or event ordering.
+
+Receiver creation does not install or enable this preset. Review the graph and billing policy below before enabling.
+
+## State and event ownership
+
+No contact property is declared by this preset. Stripe receiver events use the `stripe.*` namespace; app-defined events and internal reserved `@` contact-trigger keys are separate. Optional receiver plan storage is controlled by `settings.map_plan`, not preset installation.
+
+Alternatively, manually produce `stripe.invoice.payment_failed` through the existing events API/SDK with actual `AMOUNT`, `UPDATE_PAYMENT_URL`, `INVOICE_NUMBER` and `invoice_id` values, then produce `stripe.invoice.paid` after confirmed payment. Your app owns deduplication, ordering and billing truth. Do not produce the same business event manually and through the receiver without duplicate prevention.
 
 Installation creates missing compatible definitions, not values or a producer. Existing property types and declared event-field types must be compatible; conflicts return 409 rather than silent rewrites.
 
@@ -1419,7 +1574,7 @@ value(await dispatch.automations.update(id, { status: "enabled" }));
 
 Missing library copies are installed published. Reused edited or draft copies are never overwritten, repaired or auto-published. Inspect the published version; render a draft with real variables using `dispatch.templates.render(templateId, variables, { draft: true })` and check its error. Publish only an explicitly approved draft with `dispatch.templates.publish(templateId)`. Review [Brand](templates.md#brand), consent, sender, topics and business timing before the separate enable call. Server next_steps are guidance, not assurance that arbitrary caller data or edited copies are ready.
 
-## App calls
+## Manual app-event alternative
 
 These real SDK functions use the value error-checking helper in [offline examples](../examples/lifecycle/recipes.ts). Importing makes no requests. Invoking changes data and can trigger email after enabling.
 
@@ -1439,7 +1594,7 @@ export async function invoicePaid(dispatch: Dispatch, email: string, invoiceId: 
 }
 ```
 
-The schema type-checks supplied keys but does not require every declared key. Preview samples are not production fallbacks; missing printed payment data can fail rendering. Validate real values in your producer. Today these are manual app-owned event calls, not an automatically connected Stripe integration. Future authenticated receiver setup must verify Stripe signatures, deduplicate provider events and map billing truth before forwarding; the preset installs no receiver. See [billing integration](templates/stripe.md) and [Python/Go examples](../examples/lifecycle/README.md).
+Here `invoice.updatePaymentUrl` is an app-owned billing-portal card-update link, unlike the receiver's hosted invoice pay link. Create and protect portal access in your billing application. The schema type-checks supplied keys but does not require every declared key. Preview samples are not production fallbacks; missing printed payment data can fail rendering. Validate real values in your producer. These calls are the manual alternative to the receiver, not SDK integration-management methods. The preset installs no receiver. See [billing integration](templates/stripe.md) and [Python/Go examples](../examples/lifecycle/README.md).
 
 Inspect `dispatch.automations.runs.list(id)` and `dispatch.automations.runs.get(id, runId)` for outputs and filter exits; queued does not mean delivered.
 
@@ -4642,6 +4797,181 @@ Help me inspect sending domains and their verification status in Dispatch. Use t
 
 ---
 
+Source: [docs/goals.md](goals.md)
+
+# Goals and conversions
+
+Goals measure outcomes retroactively. Create a goal today and measure earlier automation, broadcast or step sends. You do not attach a goal before sending.
+
+```json
+{
+  "name": "Upgrade",
+  "target": { "event": "upgraded" },
+  "window_days": 30,
+  "eligibility": null
+}
+```
+
+Create with `POST /goals`, list with `GET /goals`, and retrieve, edit or soft-delete with `GET`, `PATCH` or `DELETE /goals/{id}`. Full access is required for writes. Viewers can read goals and reports.
+
+```text
+GET /goals/{id}/metrics?broadcast_id=broadcast_123&start_date=2026-09-01T00:00:00Z&end_date=2026-10-01T00:00:00Z
+```
+
+## Counting rules
+
+- Choose `automation_id` or `broadcast_id`, not both. An automation can also use `step_key`. Omit scope for all attributed sends.
+- A reached contact must be live and linked by `emails.contact_id`. A queued email alone is not a send. Legacy sends without a contact ID cannot be assigned by guessing an address.
+- The cohort uses each contact's **first real send in the selected scope across retained history**, then selects first sends in `[start_date, end_date)`. Repeated sends do not restart the window or add contacts. A later step has its own first-send cohort.
+- Bounds are ISO datetimes. The default end is database measurement time; default start is 30 days before end.
+- Conversion timestamps must be at or after first send and at or before `first_send + window_days`, capped at measurement time. A conversion after `end_date` still counts if inside that window.
+- Count a contact at most once. `rate` is a fraction, `converted / contacts_reached`, and is zero for an empty cohort.
+- Daily rows are **UTC first-send cohorts**, not conversion-day activity. Empty days are included.
+- Eligibility uses **current** live contact state, not state at send time. Changing eligibility or contact properties can therefore change a historical report.
+- Sandbox send events never enter the cohort. Recorded real attribution remains real even if a later retry is routed to sandbox.
+
+Event targets match the real custom event name and tenant, using a case-insensitive contact email. Deleted events do not count. Address changes can affect email-based historical event matching; events do not contain a guaranteed historical contact identity.
+
+## Contact-state targets and history limits
+
+Use `{ "rule": ... }` instead of `{ "event": ... }` for a contact-state target. The shared typed rule grammar supports groups and declared string, number, boolean and date properties, plus built-in contact scalars. A conversion is **entry into the whole rule**, false before a recorded write and true afterward. Already matching today is not a conversion. All changed fields from one request at one history timestamp are evaluated together, so compound rules do not match unrelated per-field changes. Relative-date operators use the change timestamp. Passage of time without a recorded change is not an entry.
+
+Rules share the ten-level grammar, not segment-only five-level/twenty-condition limits. Targets cannot use event fields or email engagement. Topic/segment rule targets are refused because older removal paths do not provide complete history. Current topic/static-segment eligibility remains available.
+
+Contact history starts when contact-change recording was introduced. No pre-history snapshots are fabricated. History is pruned according to `CONTACT_CHANGES_RETENTION_DAYS` (default 400); reports cannot recover removed transitions. The response exposes the earliest retained tenant change as `history.available_from`, not a promise of complete history for every contact. Writes at identical timestamps use request IDs to break ties; historical transaction order cannot be recovered when no order was recorded.
+
+## SDKs and dashboard
+
+```ts
+const { data: goal } = await dispatch.goals.create({
+  name: "Upgrade", target: { event: "upgraded" }, windowDays: 30,
+});
+const report = await dispatch.goals.metrics(goal!.id, {
+  broadcastId: "broadcast_123",
+  startDate: "2026-09-01T00:00:00Z", endDate: "2026-10-01T00:00:00Z",
+});
+```
+
+Go exposes `Goals`, `Goal`, `CreateGoal`, `UpdateGoal`, `DeleteGoal` and `GoalMetrics`. Python exposes `goals`, `goal`, `create_goal`, `update_goal`, `delete_goal` and `goal_metrics`. Go/Python query names are snake_case.
+
+The Goals page manages definitions. Automation Metrics, broadcast details and global Metrics show the same conversion report with a goal picker. Global Metrics also offers automation or broadcast scope selection.
+
+---
+
+Source: [docs/integrations.md](integrations.md)
+
+# Integrations
+
+Connect Stripe, Clerk, Supabase Database Webhooks or a Standard Webhooks sender to Dispatch. A receiver maps verified deliveries to contacts and namespaced events. It does not install templates or enable automations. Sending through `POST /emails` still needs no integration.
+
+## Create a receiver
+
+In **Settings > Integrations** (`/settings/integrations`), use a provider's **Connect** tile, give the integration a name and enter its signing secret. Supabase uses a shared header secret instead. Each tile links to its receiver setup guide. Copy the receiver URL when it is shown, then configure the provider to POST to that exact URL. Dismissing the one-time display or leaving the page clears it; rotate if you lose the URL.
+
+The same page links to outgoing Webhooks, SMTP, Auth.js and Better Auth setup. Viewers can follow these links and inspect existing integrations, but only full-access users see Connect or other mutation controls.
+
+The same setup uses an authenticated API request. This Stripe example assumes `DISPATCH_API_URL`, a full-access `DISPATCH_API_KEY` and the endpoint's `STRIPE_WEBHOOK_SECRET` are already set:
+
+```sh
+jq -n --arg secret "$STRIPE_WEBHOOK_SECRET" \
+  '{provider:"stripe",name:"Stripe billing",secret:$secret,settings:{map_plan:false}}' |
+curl --fail-with-body --silent --show-error \
+  "$DISPATCH_API_URL/integrations" \
+  -H "Authorization: Bearer $DISPATCH_API_KEY" \
+  -H "Content-Type: application/json" \
+  --data-binary @-
+```
+
+Create returns the integration fields and **flat, top-level `token` and `url` fields**, not an `integration` wrapper. The following is an abbreviated shape, not a usable credential:
+
+```json
+{
+  "object": "integration",
+  "id": "integration_123",
+  "provider": "stripe",
+  "name": "Stripe billing",
+  "slug": "stripe",
+  "settings": {"map_plan": false, "delete_contact": false},
+  "has_restricted_key": false,
+  "token": "<shown once>",
+  "url": "https://api.your-dispatch-host/inbound/<shown once>"
+}
+```
+
+Treat the response and the entire URL as credentials. Store them privately, not in source control, screenshots or logs. The URL token is distinct from the provider signing secret; knowing the URL does not replace provider authentication. Dispatch stores a hash of the URL token and encrypted signing credentials.
+
+Normal `GET /integrations` and `GET /integrations/:id` responses never contain a token, receiver URL, signing secret or restricted key. `has_restricted_key` only indicates whether a key is configured. Viewers can inspect safe integration details and history, but cannot create, edit, delete or rotate integrations.
+
+## Provider setup
+
+| Provider | Authentication and configuration | Mapped events |
+| --- | --- | --- |
+| [Stripe](templates/stripe.md#receiver-setup) | Configure the exact receiver URL as a Stripe webhook endpoint; save that endpoint's signing secret in Dispatch. Stripe supplies `Stripe-Signature`. | Supported customer, subscription, checkout and invoice events under `stripe.*`. |
+| [Clerk](templates/clerk.md#receiver-setup) | Configure a Clerk webhook endpoint with its signing secret. Deliveries use `svix-id`, `svix-timestamp` and `svix-signature`. | `clerk.user.created`, `clerk.user.updated`, `clerk.user.deleted`. |
+| [Supabase](templates/supabase.md#receiver-setup) | Configure Database Webhooks for `auth.users` INSERT and UPDATE, with a shared secret in the header named by `settings.secret_header`. | `supabase.user.created`, `supabase.user.updated`. Not an Auth Send Email Hook. |
+| [Standard Webhooks](templates/webhook.md#receiver-setup) | Configure a sender with a Standard Webhooks signing secret and a complete `webhook-*` or `svix-*` header family. | `<slug>.<event>` from `{event,email,contact?,data}`. |
+
+Stripe, Clerk and Standard Webhooks signatures are checked against the untouched request bytes with a 300-second timestamp tolerance. Do not put a proxy in front of the receiver that reformats its JSON. Supabase Database Webhooks use the configured shared header, not a timestamped signature. Use HTTPS and keep that header secret.
+
+The public receiver is `POST /inbound/{token}`. It has a 1 MB body cap and public rate limiting; management routes still require API authentication. A receiver URL is not an outgoing Dispatch webhook endpoint.
+
+## Events and contact changes
+
+Provider events are separate from app-defined events and internal contact triggers:
+
+- Provider events use `stripe.*`, `clerk.*`, `supabase.*` or the Standard Webhooks slug. For example, Stripe's `invoice.paid` becomes `stripe.invoice.paid`.
+- App-defined events such as `user.inactive` continue to come from your application through `POST /events/send`.
+- Internal `@` trigger keys are reserved. Do not send them as provider or app events.
+
+A receiver can create or update a contact and start matching contact-triggered or event-triggered automations. It preserves existing preferences and does not revive deleted contacts. A delivery without a resolvable contact is ignored with `no_contact`; it is not proof of an email send. Clerk deletion retains the contact and history by default; explicit contact deletion is not a privacy-erasure workflow.
+
+## Manage and rotate
+
+| Request | Purpose |
+| --- | --- |
+| `GET /integrations` | List safe integration details. |
+| `GET /integrations/:id` | Read safe details. |
+| `PATCH /integrations/:id` | Update name, secret or settings. Provider and slug cannot be changed. |
+| `DELETE /integrations/:id` | Disable the receiver by deleting its integration. |
+| `POST /integrations/:id/rotate` | Replace the URL token and return the replacement `token` and `url` once. |
+| `GET /integrations/:id/deliveries` | Inspect body-free delivery history. |
+
+To replace a lost or exposed URL:
+
+```sh
+curl --fail-with-body --silent --show-error \
+  -X POST "$DISPATCH_API_URL/integrations/$INTEGRATION_ID/rotate" \
+  -H "Authorization: Bearer $DISPATCH_API_KEY"
+```
+
+Rotate returns the same flat one-time credential shape as create. The old URL stops working. Replace the URL in the provider configuration immediately; rotation does not change the provider signing secret. To replace that secret, update the provider and `PATCH /integrations/:id` with the new `secret`. Do not expect a normal GET to recover either credential.
+
+## Delivery history and replay retention
+
+```sh
+curl --fail-with-body --silent --show-error \
+  "$DISPATCH_API_URL/integrations/$INTEGRATION_ID/deliveries?limit=20" \
+  -H "Authorization: Bearer $DISPATCH_API_KEY"
+```
+
+The response is `{object:"list",has_more:false,data:[...]}`. The default is the most recent 20 deliveries; the maximum is 100. Rows contain delivery and provider-event IDs, `status`, `event_name`, `contact_id`, a sanitized `error` and `created_at`. They contain no request body, URL token or signing material.
+
+In the dashboard, **View** shows mapped events and the last 20 deliveries. **Refresh deliveries** fetches current history. A matched contact links to its audience detail; unmatched or failed requests need not have a contact.
+
+- `processed`: the mapped contact/event effects committed.
+- `ignored`: no applicable mapping or contact effect, with a sanitized reason where available.
+- `failed`: verification, payload or processing failed. Processing failures roll back contact, event, trigger and wait effects before a separate failure attempt is recorded.
+
+Verified duplicate successful deliveries return HTTP 200 without repeating effects. Replay identity is scoped to the integration: Stripe uses its event ID, Clerk and Standard Webhooks use the signed delivery ID, and Supabase uses a hash of the raw body plus `commit_timestamp` when present. Failed attempts do not consume a successful replay key, so a corrected retry can still process. Providers can deliver out of order; deduplication does not establish billing or application ordering.
+
+Delivery history and replay keys are pruned in bounded batches with log retention. `LOG_RETENTION_DAYS` defaults to **30 days**. After a delivery key is pruned, the receiver no longer remembers that event as a duplicate. A correctly authenticated redelivery can apply again. Supabase has no signing timestamp, so its replay protection in particular is bounded by this retention. Keep longer-lived business deduplication in your app if your policy requires it.
+
+## Keep code-owned alternatives
+
+Receivers are optional. The provider guides retain manual verified handlers for custom mapping and direct email sends. Do not feed the same delivery through both a receiver and a manual producer unless you deliberately prevent duplicate events and mail. See [Failed payment](automations/failed-payment.md) before enabling a billing automation, especially its invoice-correlation and cancellation limits.
+
+---
+
 Source: [docs/local.md](local.md)
 
 # Local development
@@ -4649,6 +4979,15 @@ Source: [docs/local.md](local.md)
 The local stack runs the whole product without AWS. The fake provider stands in for SES, attachments go to local disk, and the worker delivers webhooks and runs automations the same way it does in production.
 
 ## Start
+
+### Dynamic audience migration
+
+The append-only migration adds nullable `segments.rule`, the email
+`(tenant_id, contact_id, created_at)` index, and the recipient
+`(tenant_id, lower(email))` index. It does not backfill contact attribution.
+Creating these indexes can lock writes for a while on a large installation.
+Plan an upgrade window and monitor PostgreSQL before resuming normal traffic.
+Schema replay is idempotent.
 
 ```sh
 cp .env.example .env
@@ -5169,6 +5508,7 @@ Settings apply to one tenant. Read them with `GET /settings` and change supplied
 |:--|:--|:--|
 | `import_trigger_automations` | `false` | The default for starting matching automations during contact imports. Each import can override it. |
 | `sandbox_domains` | `[]` | Up to 50 additional recipient hostnames, including their subdomains, whose emails are rendered and stored for testing rather than sent to the provider. |
+| `confirmation_daily_limit` | `500` | Signup confirmation emails per tenant per UTC day. Whole number from 0 to 100000. Zero disables confirmation sends. Per-address/form rolling 24-hour limits still apply. |
 
 Changes preserve keys you omit. Set `sandbox_domains` to an empty array to remove your additions. Reserved test domains remain sandbox domains regardless of this setting.
 
@@ -5299,6 +5639,8 @@ The 40 MB cap is on the raw message, and the relay advertises it with the `SIZE`
 Source: [docs/templates.md](templates.md)
 
 # Templates
+
+See [Brand theme tokens](templates/theme.md) for email-safe fonts, sizes, colors and explicit library updates that skip edited templates.
 
 Store reusable HTML and plain text with a subject, sender, and variables. Send by template ID or alias. Saving changes creates or updates a draft; sends use the published version until you publish again.
 
@@ -5435,13 +5777,20 @@ Source: [docs/templates/README.md](templates/README.md)
 
 `pnpm db:seed` installs the sixteen default templates and publishes them. A send names the alias and passes only the required variables. Brand values such as `PRODUCT_NAME` come from `GET /brand` and do not have to be in the send.
 
-Each recipe below maps one partner payload onto those aliases and calls `POST /emails`. Field names were checked against the partner docs on 2026-10-01.
+For lifecycle events, start with a receiver in [Settings > Integrations](integrations.md). Create it with `POST /integrations`, copy the one-time receiver URL and configure the provider's signing secret. Normal GET responses never return credentials. Receiver setup does not install templates or enable automations.
 
-- [Supabase Auth](templates/supabase.md) send-email hook
+- [Stripe](templates/stripe.md) billing receiver first, manual invoice and trial email handlers second
+- [Clerk](templates/clerk.md) user lifecycle receiver first, provider-rendered authentication email delivery second
+- [Supabase](templates/supabase.md) Database Webhooks receiver first, separate Auth Send Email Hook second
+- [Standard Webhooks](templates/webhook.md) signed lifecycle receiver and manual app-event alternative
 - [Auth.js](templates/authjs.md) email provider
 - [Better Auth](templates/better-auth.md) send callbacks
-- [Stripe](templates/stripe.md) invoice and trial webhooks
-- [Clerk](templates/clerk.md) has no Dispatch template. Clerk renders the message.
+
+The manual recipes map payloads onto template aliases and call `POST /emails`, or send app events for an automation. Auth.js and Better Auth remain code-owned sending integrations. Clerk renders its own authentication messages; it has no Dispatch authentication template. A Supabase lifecycle webhook is not an Auth Send Email Hook.
+
+All examples use `DISPATCH_API_URL` for the API base URL, without a trailing slash, and `DISPATCH_API_KEY` for authentication. Receiver management needs full access; direct email sends can use a sending key. Manual handlers also use `DISPATCH_FROM` for a verified sender where indicated.
+
+Review template variables, publication, sender and business timing before enabling an automation. In particular, a Stripe receiver supplies a hosted invoice link, not a billing-portal card-update session. See [Failed payment](automations/failed-payment.md).
 
 ---
 
@@ -5455,6 +5804,8 @@ The callback receives `identifier`, `url`, `provider`, `theme`, `token`, `expire
 
 Use `magic-link` and pass `url` as `ACTION_URL`. `provider.from` is the From address Auth.js was configured with.
 
+Set `DISPATCH_API_URL` to your Dispatch API base URL (without a trailing slash) and `DISPATCH_API_KEY` to a sending key. Verify the domain used by `provider.from`.
+
 ```ts
 import type { EmailConfig } from "@auth/core/providers";
 
@@ -5463,7 +5814,7 @@ export async function sendVerificationRequest(params: {
   url: string;
   provider: EmailConfig;
 }) {
-  const response = await fetch(`${process.env.DISPATCH_BASE_URL}/emails`, {
+  const response = await fetch(`${process.env.DISPATCH_API_URL}/emails`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${process.env.DISPATCH_API_KEY}`,
@@ -5501,9 +5852,11 @@ Do not `await` the Dispatch call inside the hook. Better Auth treats a slow hook
 
 `sendVerificationOTP` receives `{ email, otp, type }`. `type` is `sign-in`, `email-verification`, or `forget-password`. All three use `one-time-code`. The address is `email`, not `user.email`.
 
+Set `DISPATCH_API_URL` to your Dispatch API base URL (without a trailing slash), `DISPATCH_API_KEY` to a sending key, and `DISPATCH_FROM` to an address on a verified domain.
+
 ```ts
 async function send(to: string, id: string, variables: Record<string, string>) {
-  const response = await fetch(`${process.env.DISPATCH_BASE_URL}/emails`, {
+  const response = await fetch(`${process.env.DISPATCH_API_URL}/emails`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${process.env.DISPATCH_API_KEY}`,
@@ -5543,6 +5896,34 @@ Source: [docs/templates/clerk.md](templates/clerk.md)
 
 # Clerk
 
+## Receiver setup
+
+For user lifecycle events, create a Clerk integration in **Settings > Integrations**, or use:
+
+```sh
+jq -n --arg secret "$CLERK_WEBHOOK_SECRET" \
+  '{provider:"clerk",name:"Clerk users",secret:$secret,settings:{delete_contact:false}}' |
+curl --fail-with-body --silent --show-error "$DISPATCH_API_URL/integrations" \
+  -H "Authorization: Bearer $DISPATCH_API_KEY" \
+  -H "Content-Type: application/json" --data-binary @-
+```
+
+The response includes flat, top-level `token` and `url` once. Configure a Clerk webhook endpoint with that URL, subscribe to `user.created`, `user.updated` and `user.deleted`, and save the endpoint's signing secret in Dispatch. If the endpoint must exist to obtain its secret, replace a private temporary secret with `PATCH /integrations/:id` before accepting deliveries. Dispatch verifies Clerk's `svix-id`, `svix-timestamp` and `svix-signature` against the original bytes with a 300-second tolerance.
+
+Normal GETs do not return the URL or credentials. `POST /integrations/:id/rotate` returns a replacement URL once; update the endpoint in Clerk. [Delivery history](integrations.md#delivery-history-and-replay-retention) is body-free, with `processed`, `ignored` and `failed` results. Its replay keys expire with `LOG_RETENTION_DAYS` (default 30 days).
+
+| Provider event | Dispatch event | Contact mapping |
+| --- | --- | --- |
+| `user.created` | `clerk.user.created` | Primary email, first and last names, `properties.clerk_user_id` |
+| `user.updated` | `clerk.user.updated` | Same fields; existing preferences are preserved |
+| `user.deleted` | `clerk.user.deleted` | Resolve the existing contact by `clerk_user_id`; retain it and its history by default |
+
+The receiver never picks an arbitrary secondary email for a phone-only or missing-primary-email user, and never revives a deleted contact. Creation/update event data includes `user_id`, `email`, mapped names and properties; deletion data includes `user_id`. Explicit `settings.delete_contact: true` opts into ordinary contact deletion, not privacy erasure. Deletion does not create a missing contact.
+
+This receiver does **not** forward Clerk-rendered authentication emails. Lifecycle events and authentication message delivery are separate configurations.
+
+## Manual authentication email alternative
+
 There is no Clerk template in the library. Clerk renders the email. Dispatch only delivers the HTML Clerk already produced.
 
 Turn **Delivered by Clerk** off on each template you want to send yourself. The switch is per template. Clerk's email template settings, updated 2026-09-30, say to listen for `emails.created`. The deliverability page from the same day says `email.created`. Subscribe to the name your dashboard's event catalog shows. Both pages describe the same handoff.
@@ -5566,7 +5947,7 @@ export async function handleClerk(request: Request) {
   };
   if (!email.to_email_address || !email.subject || !email.body) return;
   if (email.delivered_by_clerk) return;
-  const response = await fetch(`${process.env.DISPATCH_BASE_URL}/emails`, {
+  const response = await fetch(`${process.env.DISPATCH_API_URL}/emails`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${process.env.DISPATCH_API_KEY}`,
@@ -5592,9 +5973,61 @@ Source: [docs/templates/stripe.md](templates/stripe.md)
 
 # Stripe
 
-Checked against the Invoice object and the subscription webhook list on 2026-10-01. `data.object` is the Invoice for the invoice events, and the Subscription for `customer.subscription.trial_will_end`.
+## Receiver setup
 
-Money fields are integers in the smallest currency unit. `amount_paid` of `4900` with currency `usd` is `$49.00`. Divide by 100 for two-decimal currencies. Do not divide for a zero-decimal currency such as `jpy`. The template wants a formatted string in `TOTAL`, `AMOUNT_DUE`, and each line's `amount`. It does not format money itself.
+Create a Stripe integration in **Settings > Integrations**, or use the API:
+
+```sh
+jq -n --arg secret "$STRIPE_WEBHOOK_SECRET" \
+  '{provider:"stripe",name:"Stripe billing",secret:$secret,settings:{map_plan:false}}' |
+curl --fail-with-body --silent --show-error "$DISPATCH_API_URL/integrations" \
+  -H "Authorization: Bearer $DISPATCH_API_KEY" \
+  -H "Content-Type: application/json" --data-binary @-
+```
+
+Create returns safe integration fields plus flat, top-level `token` and `url` once. Configure that URL as the Stripe webhook endpoint and set `secret` to that endpoint's signing secret. If you create the Dispatch receiver before Stripe gives you the endpoint secret, use a private temporary secret, configure the endpoint, then replace `secret` through `PATCH /integrations/:id` before accepting deliveries. The receiver verifies `Stripe-Signature` over raw bytes with a 300-second timestamp tolerance.
+
+Normal GETs never return the URL or credentials. Rotate with `POST /integrations/:id/rotate` to obtain a replacement URL; replace the old URL in Stripe. See [management and body-free delivery history](integrations.md#delivery-history-and-replay-retention), including the `LOG_RETENTION_DAYS` replay bound (default 30 days).
+
+### Mapped events and contacts
+
+Subscribe only to the supported events you need:
+
+| Stripe events | Dispatch events |
+| --- | --- |
+| `customer.created`, `customer.updated`, `customer.deleted` | `stripe.customer.created`, `stripe.customer.updated`, `stripe.customer.deleted` |
+| `customer.subscription.created`, `.updated`, `.deleted`, `.paused`, `.resumed`, `.trial_will_end` | Each complete provider name prefixed with `stripe.` |
+| `checkout.session.completed`, `.async_payment_succeeded`, `.async_payment_failed` | Each complete provider name prefixed with `stripe.` |
+| `invoice.created`, `.finalized`, `.paid`, `.payment_succeeded`, `.payment_failed`, `.payment_action_required`, `.voided`, `.marked_uncollectible` | Each complete provider name prefixed with `stripe.` |
+
+Contacts store `stripe_customer_id`. An email in the payload can identify the contact; events with only a customer ID can resolve an existing contact by that property. Optionally set `settings.stripe_restricted_key` to a Stripe restricted key with customer read permission for customer-email lookup. GET returns only `has_restricted_key`, never the key. Missing or ambiguous contact matches are ignored rather than selecting an arbitrary contact; deleted contacts are not revived. `customer.deleted` retains an existing contact rather than creating or deleting one.
+
+### Receiver invoice variables
+
+Invoice events supply actual billing values to the event payload:
+
+| Variable | Source |
+| --- | --- |
+| `AMOUNT`, `AMOUNT_DUE` | `amount_due`, formatted in the invoice currency |
+| `UPDATE_PAYMENT_URL`, `INVOICE_URL`, `PAY_URL`, `RECEIPT_URL` | `hosted_invoice_url`, or an empty string when absent |
+| `INVOICE_NUMBER`, `RECEIPT_NUMBER` | `number`, or an empty string |
+| `invoice_id` | Invoice `id` |
+| `TOTAL` | Formatted `amount_paid` |
+| `PLAN` | First available price lookup key in provider line order, or an empty string |
+
+They also include `LINE_ITEMS`, `PDF_URL`, `ISSUED_AT`, `DUE_DATE`, `PAID_AT` and `NEXT_RETRY_AT`. Subscription events include `subscription_id`, `status` and `TRIAL_END_DATE`; checkout events include `checkout_session_id`. `PLAN` is available in event data, but storing it as `contact.properties.plan` requires `settings.map_plan: true`.
+
+The receiver's **`UPDATE_PAYMENT_URL` is a hosted invoice pay link**, not a card-update billing portal. Review and adjust button copy to describe paying or viewing the invoice. The receiver does not create billing-portal sessions or supply an app-owned `ACTION_URL` for trial emails. Missing values are not replaced by preview samples. Install and review [Failed payment](automations/failed-payment.md) separately; enabling a receiver does not enable that preset.
+
+Waits match contact and event name, not `invoice_id`. Stripe remains the billing source of truth; this integration does not cancel subscriptions.
+
+## Manual email alternative
+
+Keep a code-owned, signature-verified handler when you need custom recipient lookup, app-owned billing links or direct template sends. Do not also route the same events into an enabled receiver-driven flow without business deduplication.
+
+`data.object` is the Invoice for invoice events, and the Subscription for `customer.subscription.trial_will_end`.
+
+Money fields are integers in Stripe's currency units. `amount_paid` of `4900` with currency `usd` is `$49.00`. The template wants formatted strings in `TOTAL`, `AMOUNT_DUE`, and each line's `amount`; it does not format money itself. The helper below handles zero-decimal and three-decimal currencies and Stripe's legacy ISK/UGX representation.
 
 `customer_email` is a snapshot of the customer's email once the invoice is finalized. It can be null. `hosted_invoice_url` stays null until the invoice is finalized. `invoice_pdf` is the PDF URL.
 
@@ -5605,15 +6038,20 @@ Money fields are integers in the smallest currency unit. `amount_paid` of `4900`
 | `invoice.payment_failed` | `payment-failed` | `AMOUNT` from `amount_due`, `UPDATE_PAYMENT_URL` from your billing portal, `INVOICE_URL` from `hosted_invoice_url` |
 | `customer.subscription.trial_will_end` | `trial-ending` | `TRIAL_END_DATE` from `trial_end`, `ACTION_URL` from your billing page |
 
-`UPDATE_PAYMENT_URL` and `ACTION_URL` are not Stripe fields. Stripe's hosted invoice page is a receipt or a pay page, not the page where the customer changes a card or cancels. Build those two URLs in the app. `trial_end` is a unix timestamp in seconds. Format it with a timezone. The subscription object does not include the email unless you expanded `customer`. Retrieve the customer and read `email`.
+In this manual alternative, `UPDATE_PAYMENT_URL` is your app's billing-portal card-update link and `ACTION_URL` is your app's billing page. Neither is a Stripe payload field. This intentionally differs from the receiver's hosted-invoice `UPDATE_PAYMENT_URL`. Create any portal session in your billing application and protect the entry point appropriately. `trial_end` is a unix timestamp in seconds. Format it with a timezone. The subscription object does not include the email unless you expanded `customer`. Retrieve the customer and read `email`.
 
 A line item uses `description`, `quantity`, and `amount`. Format `amount` the same way as `amount_paid`. Quantity can be a number.
 
 ```ts
 function money(amount: number, currency: string) {
-  const zeroDecimal = new Set(["bif", "clp", "djf", "gnf", "jpy", "kmf", "krw", "mga", "pyg", "rwf", "ugx", "vnd", "vuv", "xaf", "xof", "xpf"]);
-  const major = zeroDecimal.has(currency.toLowerCase()) ? amount : amount / 100;
-  return new Intl.NumberFormat("en-US", { style: "currency", currency }).format(major);
+  const code = currency.toUpperCase();
+  const zeroDecimal = new Set(["BIF", "CLP", "DJF", "GNF", "JPY", "KMF", "KRW", "MGA", "PYG", "RWF", "VND", "VUV", "XAF", "XOF", "XPF"]);
+  const digits = zeroDecimal.has(code) ? 0 : ["BHD", "JOD", "KWD", "OMR", "TND"].includes(code) ? 3 : 2;
+  const displayDigits = ["ISK", "UGX"].includes(code) ? 0 : digits;
+  return new Intl.NumberFormat("en-US", {
+    style: "currency", currency: code,
+    minimumFractionDigits: displayDigits, maximumFractionDigits: displayDigits,
+  }).format(amount / 10 ** digits);
 }
 
 function when(unix: number | null) {
@@ -5653,7 +6091,7 @@ function lineItems(lines: Line[], currency: string) {
 
 `RECEIPT_NUMBER` is required, and `number` is null on a draft. Send `receipt` from `invoice.paid`, after Stripe has assigned the number. Skip the send when `customer_email` is null.
 
-## The webhook handler
+### The manual webhook handler
 
 One handler covers the four events. Verify the Stripe signature before this runs. `billingUrl` and `portalUrl` are pages in your own app.
 
@@ -5676,7 +6114,7 @@ type Invoice = {
 type Subscription = { customer: string; trial_end: number | null };
 
 async function send(to: string, id: string, variables: Record<string, unknown>, key: string) {
-  const response = await fetch(`${process.env.DISPATCH_BASE_URL}/emails`, {
+  const response = await fetch(`${process.env.DISPATCH_API_URL}/emails`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${process.env.DISPATCH_API_KEY}`,
@@ -5741,9 +6179,36 @@ The Stripe event ID is the idempotency key. Stripe delivers an event more than o
 
 Source: [docs/templates/supabase.md](templates/supabase.md)
 
-# Supabase send-email hook
+# Supabase
+
+## Receiver setup
+
+For user lifecycle events, use **Database Webhooks**, not the Auth Send Email Hook. Create a Supabase integration in **Settings > Integrations**, or use:
+
+```sh
+jq -n --arg secret "$SUPABASE_WEBHOOK_SECRET" \
+  '{provider:"supabase",name:"Supabase users",secret:$secret,settings:{secret_header:"x-dispatch-secret"}}' |
+curl --fail-with-body --silent --show-error "$DISPATCH_API_URL/integrations" \
+  -H "Authorization: Bearer $DISPATCH_API_KEY" \
+  -H "Content-Type: application/json" --data-binary @-
+```
+
+Create returns flat, top-level `token` and `url` once. Configure Database Webhooks for `auth.users` **INSERT** and **UPDATE**, POST to that URL with a JSON body, and add `x-dispatch-secret` with the exact shared secret used above. If you choose another header, set its name in `settings.secret_header`. This is shared-header authentication, not an Auth Hook `v1,whsec_...` signature.
+
+Normal GETs never return the URL or secrets. Rotate with `POST /integrations/:id/rotate` and replace the URL in Supabase. [Body-free delivery history](integrations.md#delivery-history-and-replay-retention) shows `processed`, `ignored` or `failed`. Supabase Database Webhooks have no signing timestamp or delivery ID: replay identity is a hash of the raw body plus `commit_timestamp` when present. **Replay protection lasts only while the delivery key is retained**, with `LOG_RETENTION_DAYS` defaulting to 30 days. Use HTTPS, protect the shared header and keep longer-lived business deduplication if needed.
+
+| Database payload | Dispatch event | Contact mapping |
+| --- | --- | --- |
+| `schema:"auth"`, `table:"users"`, `type:"INSERT"` | `supabase.user.created` | `record.email`, `record.id` as `properties.supabase_user_id`, and metadata first/last names |
+| Same table with `type:"UPDATE"` | `supabase.user.updated` | Same fields; existing preferences are preserved |
+
+The receiver supports these two operations, not DELETE or arbitrary tables. Event data includes `user_id`, `email`, mapped names and properties, not passwords, tokens or the whole auth record. Missing email is ignored with `no_contact`. Deleted Dispatch contacts are not revived. Receiving these events does not send verification, recovery or magic-link mail automatically.
+
+## Manual Auth Send Email Hook alternative
 
 Checked against the Send Email Hook guide on 2026-10-01. The body is `{ user, email_data }`. The inputs table on that page says `email`. The JSON schema and the hook samples use `email_data`. Use `email_data`.
+
+Configure this as a separate **Auth Send Email Hook** pointing to your own verified handler below, not `/inbound/{token}`. It sends authentication messages through `POST /emails`; it is not the Database Webhooks lifecycle receiver.
 
 `user.email` is the account email. `email_data.email_action_type` picks the template.
 
@@ -5800,7 +6265,7 @@ function verifyUrl(projectRef: string, emailData: { token_hash: string; email_ac
 }
 
 async function send(to: string, id: string, variables: Record<string, string>) {
-  const response = await fetch(`${process.env.DISPATCH_BASE_URL}/emails`, {
+  const response = await fetch(`${process.env.DISPATCH_API_URL}/emails`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${process.env.DISPATCH_API_KEY}`,
@@ -5861,6 +6326,90 @@ export async function handleSupabase(payload: string, headers: Record<string, st
 ```
 
 `invitation` does not receive the inviter's name. Leave `INVITER_NAME` unset and the template uses "A teammate".
+
+---
+
+Source: [docs/templates/theme.md](templates/theme.md)
+
+# Brand theme tokens
+
+Brand settings control body text, canvas, surface and border colors, one of four email-safe font stacks, font size (14–18), corner radius (0–16), and filled or outline buttons.
+
+Save with `PATCH /brand`. The merged brand must pass 4.5:1 contrast for body text on background and surface, and button text on button. Filled buttons compute black or white text. Outline buttons use the brand color on the surface, so a low-contrast brand color is refused.
+
+`text_color` is the **body** token. `button_text_color` is the computed legacy button/public-page color. Existing `BRAND_TEXT_COLOR` keeps that legacy meaning; confirmation and preferences keep their existing public styling.
+
+Library HTML uses reserved `THEME_TEXT_COLOR`, `THEME_BACKGROUND_COLOR`, `THEME_SURFACE_COLOR`, `THEME_BORDER_COLOR`, `THEME_FONT_FAMILY`, `THEME_FONT_SIZE`, `THEME_RADIUS`, `THEME_BUTTON_STYLE`, `THEME_BUTTON_BACKGROUND`, `THEME_BUTTON_TEXT_COLOR` and `THEME_BUTTON_BORDER`. These names cannot be declared as tenant template variables. Existing tenant variable names and fallbacks are retained.
+
+## Explicit library updates
+
+Changing brand settings does not rewrite installed HTML. On the Brand page, save the settings and choose **Update library templates**, or call `POST /brand/update-library` with full access.
+
+The update locks each installed template and its latest version. Only a latest version still marked as the matching library source receives the current catalog HTML. Edited/custom copies are skipped and listed with their identities and reasons. Missing templates are not installed. Sending address, reply-to, tracking, Marketing intent and existing variable declarations are preserved. Draft copies remain drafts.
+
+The response is `{ "updated": [{ "id", "name", "slug" }], "skipped": [{ "id", "name", "slug", "reason" }] }`. TypeScript uses `dispatch.brand.updateLibrary()`, Go `UpdateLibraryTemplates()`, and Python `update_library_templates()`.
+
+There is one brand theme per tenant. Multiple themes and reusable tenant components are not supported.
+
+---
+
+Source: [docs/templates/webhook.md](templates/webhook.md)
+
+# Standard Webhooks
+
+## Receiver setup
+
+Create a Standard Webhooks integration in **Settings > Integrations**, or use:
+
+```sh
+jq -n --arg secret "$WEBHOOK_SIGNING_SECRET" \
+  '{provider:"webhook",name:"App lifecycle",secret:$secret}' |
+curl --fail-with-body --silent --show-error "$DISPATCH_API_URL/integrations" \
+  -H "Authorization: Bearer $DISPATCH_API_KEY" \
+  -H "Content-Type: application/json" --data-binary @-
+```
+
+`secret` is the sender's Standard Webhooks signing secret (a base64 key, optionally prefixed `whsec_`). Create returns safe integration fields plus flat, top-level `token` and `url` once. Configure the sender to POST to that URL.
+
+The default slug is **`webhook`**. To use another namespace, add `"slug":"product"` on create. Slugs must match **`[a-z][a-z0-9-]{0,62}`**, be unique among live integrations in the tenant, and must not be `stripe`, `clerk` or `supabase`. Provider and slug cannot be edited later.
+
+Sign the original request bytes using Standard Webhooks v1 HMAC-SHA256: the signed content is `<id>.<timestamp>.<raw body>` and the signature value is `v1,<base64 signature>`. Send a complete `webhook-id`, `webhook-timestamp`, `webhook-signature` family, or a complete `svix-id`, `svix-timestamp`, `svix-signature` family. Do not mix them. The timestamp is Unix seconds and must be within 300 seconds of the receiver's clock. Use your sender's supported signing library; the URL token alone is not authentication.
+
+Normal GETs never expose the URL or credentials. `POST /integrations/:id/rotate` returns a replacement URL once; update your sender before further delivery. [Body-free history and replay retention](integrations.md#delivery-history-and-replay-retention) use `LOG_RETENTION_DAYS`, default 30 days. After pruning, a correctly signed redelivery with the same delivery ID can apply again.
+
+## Payload and mapping
+
+```json
+{
+  "event": "user.activated",
+  "email": "person@example.com",
+  "contact": {
+    "first_name": "Sam",
+    "properties": {"activation_source": "import"}
+  },
+  "data": {"activated_at": "2026-10-01T12:00:00Z"}
+}
+```
+
+Use an actual recipient for live sends; `example.com` above is only a sample. `event`, a valid `email` and an object `data` are required. `contact` is optional and accepts only `first_name`, `last_name` and `properties`. Declare custom contact properties with compatible types before using them.
+
+The default mapping above records **`webhook.user.activated`**; a `product` slug records `product.user.activated`. Do not include the slug in `event` unless you intend it to appear twice. The combined event name has a 120-character limit, and the source event must not start with `@`. Reserved internal contact-trigger keys are not an input API.
+
+Mapped contact fields merge into the contact without replacing its preferences. Deleted contacts are not revived. Matching contact and event automations may start, but a receiver does not install or enable them. App events sent directly through `POST /events/send` keep their own names and do not acquire this slug.
+
+## Manual app-event alternative
+
+If your application already owns event production, send the event directly using a Dispatch API key instead of signing an inbound webhook:
+
+```sh
+jq -n --arg email "$CONTACT_EMAIL" \
+  '{event:"user.activated",email:$email,payload:{activated_at:"2026-10-01T12:00:00Z"}}' |
+curl --fail-with-body --silent --show-error "$DISPATCH_API_URL/events/send" \
+  -H "Authorization: Bearer $DISPATCH_API_KEY" \
+  -H "Content-Type: application/json" --data-binary @-
+```
+
+Replace the timestamp with the actual app value. This alternative records `user.activated`, not `webhook.user.activated`. Your application owns retries, ordering and business deduplication. Do not send both forms for the same business action unless the two automation triggers and duplicate effects are intentional. Direct template mail remains available through `POST /emails`; no integration is required.
 
 ---
 

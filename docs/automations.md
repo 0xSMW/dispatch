@@ -1,5 +1,15 @@
 # Automations
 
+## Split tests
+
+A `split` step has `variants: [{ key, label, weight }]`, with 2–4 unique stable keys and integer weights from 0 to 100 summing to 100. Zero-weight variants remain connected but receive no new assignments. Each variant needs exactly one `variant` connection with `path` equal to its key.
+
+Assignments hash only the UTF-8 run ID with SHA-256, take the unsigned big-endian first four bytes modulo 100, and select against ordered cumulative weights. The engine records `{variant:key}` atomically with advancement. Retries, paused edits and winner changes do not replace recorded decisions.
+
+List and Canvas both edit the same weights and paths. The Metrics tab compares recorded variants, including zero-result and historical keys. `GET /automations/{id}/steps/{key}/metrics` accepts `start_date`/`end_date` as a half-open interval. Runs use assignment dates; emails use event dates and explicit same-run attribution after the split. Sandbox events do not count as real delivery or engagement. Open/click rates use unique emails over delivered events, matching ordinary email metrics.
+
+**Pick winner** requires full access and no unsaved draft. It pauses, calls `POST /automations/{id}/steps/{key}/winner` with `{variant,version}`, then resumes with `expected_version`. The server changes only weights to 100/0, increments the graph version and preserves paths, waits, keys and stored assignments. Failures leave the automation paused for review; the action never calls Stop or silently resumes after an error. Viewer metrics remain read-only.
+
 Automations run a sequence of steps when your application fires an event or a contact changes. They are optional: sending a transactional email does not require an automation or an audience.
 
 Build and save an automation while it is disabled, then start it. Pause a running automation to edit it without losing everyone's place. Use its Runs view to inspect each step's result. Email metrics show real sending and engagement per automation and send step; [sandbox activity](api/README.md#sandbox-recipients) is excluded.

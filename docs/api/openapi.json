@@ -12503,6 +12503,44 @@
         }
       }
     },
+    "/automations/{id}/steps/{key}/metrics": {
+      "get": {
+        "summary": "Compare stored split variants",
+        "description": "Assignments use their recorded variant, not current weights. Run counts use assignment dates; email metrics use event dates, both in the half-open [start_date,end_date) window. Same-run attribution and historical sandbox classification apply. Includes configured zero-result and historical keys.",
+        "parameters": [
+          { "in": "path", "name": "id", "required": true, "schema": { "type": "string" } },
+          { "in": "path", "name": "key", "required": true, "schema": { "type": "string" } },
+          { "in": "query", "name": "start_date", "schema": { "type": "string", "format": "date-time" } },
+          { "in": "query", "name": "end_date", "schema": { "type": "string", "format": "date-time" } }
+        ],
+        "responses": {
+          "200": { "description": "Variant metrics", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SplitMetrics" } } } },
+          "404": { "description": "Automation or split step not found" },
+          "422": { "description": "Invalid report dates" }
+        }
+      }
+    },
+    "/automations/{id}/steps/{key}/winner": {
+      "post": {
+        "summary": "Pick a split winner on an already paused version",
+        "description": "Full access only. Changes only weights to winner100/rest0, increments the graph version, preserves keys/connections/recorded decisions and valid runs/waits. Does not resume or Stop. Caller resumes separately with expected_version only after success; failure leaves the pause intact.",
+        "parameters": [
+          { "in": "path", "name": "id", "required": true, "schema": { "type": "string" } },
+          { "in": "path", "name": "key", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "additionalProperties": false, "required": ["variant", "version"],
+          "properties": { "variant": { "type": "string", "minLength": 1, "maxLength": 60 }, "version": { "type": "integer", "minimum": 0 } }
+        } } } },
+        "responses": {
+          "200": { "description": "Paused automation with updated weights", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Automation" } } } },
+          "403": { "description": "Viewer writes forbidden" },
+          "404": { "description": "Automation or split step not found" },
+          "409": { "description": "Not paused or stale version" },
+          "422": { "description": "Unknown variant" }
+        }
+      }
+    },
     "/automations/{id}/runs/metrics": {
       "get": {
         "operationId": "getAutomationRunMetrics",
@@ -21505,6 +21543,34 @@
         },
         "description": "Two to ten ordered paths with unique keys, validated by the API. Keys are nonempty and otherwise is reserved. Rules use fresh contact context and the run's triggering event. First-match routing evaluates paths in array order and takes the first matching rule; otherwise is implicit and chosen only when no rule matches. Each configured path and otherwise needs exactly one keyed branch connection. The step output records { path }."
       },
+      "SplitConfig": {
+        "type": "object", "required": ["variants"],
+        "properties": { "variants": {
+          "type": "array", "minItems": 2, "maxItems": 4,
+          "items": { "type": "object", "required": ["key", "label", "weight"], "properties": {
+            "key": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,60}$" },
+            "label": { "type": "string", "minLength": 1, "maxLength": 120 },
+            "weight": { "type": "integer", "minimum": 0, "maximum": 100 }
+          } }
+        } },
+        "description": "2–4 unique stable keys. Whole-number weights sum to100; zero is allowed. Each variant, including zero-weight variants, needs exactly one variant edge with path=key. Assignment hashes only UTF8 run_id with SHA256, unsigned big-endian first4 bytes modulo100, against cumulative weights in order. Recorded {variant:key} survives retries and weight edits."
+      },
+      "SplitMetrics": {
+        "type": "object", "required": ["object", "automation_id", "step_key", "start_date", "end_date", "data"],
+        "properties": {
+          "object": { "const": "automation_split_metrics" }, "automation_id": { "type": "string" }, "step_key": { "type": "string" },
+          "start_date": { "type": "string", "format": "date-time" }, "end_date": { "type": "string", "format": "date-time" },
+          "data": { "type": "array", "items": { "type": "object", "required": ["key", "label", "weight", "runs", "sent", "delivered", "open_rate", "click_rate", "bounce_rate", "unsubscribed"],
+            "properties": { "key": { "type": "string" }, "label": { "type": "string" }, "weight": { "type": ["integer", "null"] },
+              "runs": { "type": "integer" }, "sent": { "type": "integer" }, "delivered": { "type": "integer" },
+              "opened": { "type": "integer" }, "clicked": { "type": "integer" }, "unique_opened": { "type": "integer" }, "unique_clicked": { "type": "integer" },
+              "bounced": { "type": "integer" }, "complained": { "type": "integer" }, "unsubscribed": { "type": "integer" },
+              "delivery_rate": { "type": "number" }, "open_rate": { "type": "number" }, "click_rate": { "type": "number" },
+              "bounce_rate": { "type": "number" }, "complaint_rate": { "type": "number" }, "unsubscribe_rate": { "type": "number" }
+            }
+          } }
+        }
+      },
       "AutomationStep": {
         "type": "object",
         "required": [
@@ -21526,6 +21592,7 @@
               "condition",
               "filter",
               "branch",
+              "split",
               "exit",
               "add_to_segment",
               "contact_update",
@@ -21535,10 +21602,14 @@
           "config": {
             "type": "object",
             "additionalProperties": true,
-            "description": "Depends on `type`. For `send_email`: `template` (required), `kind` (Transactional or Marketing, optional for legacy input), `from` (optional when the template stores a sender), `to`, `subject`, `reply_to`, `variables`, `variable_mapping`, and `topic_id`. Transactional cannot have a topic. Marketing requires a live topic before enabling or resuming; a Marketing draft without a topic never runs as Transactional. Omitted kind is inferred from topic_id and normalized in stored configs and responses. Marketing templates cannot be used transactionally. Literal variables are not interpreted as field paths. Condition config uses Rule; send_email config uses SendEmailConfig. Filter config uses FilterConfig; Branch config uses BranchConfig; Exit config is empty and uses ExitConfig. Filters continue only on a matching rule, Branch paths use first-match routing, and Exit has no outgoing connections."
+            "description": "Config depends on type: send_email uses SendEmailConfig, condition uses Rule, filter uses FilterConfig, branch uses BranchConfig, split uses SplitConfig, exit uses empty ExitConfig. Marketing requires a live topic before enable/resume and cannot fall back to Transactional. Variables retain literal data. Splits record a stable variant and route via variant edges."
           }
         },
         "allOf": [
+          {
+            "if": { "properties": { "type": { "const": "split" } }, "required": ["type"] },
+            "then": { "required": ["config"], "properties": { "config": { "$ref": "#/components/schemas/SplitConfig" } } }
+          },
           {
             "if": {
               "properties": {
@@ -21712,7 +21783,8 @@
               "condition_not_met",
               "timeout",
               "event_received",
-              "branch"
+              "branch",
+              "variant"
             ]
           },
           "path": {
@@ -21720,7 +21792,7 @@
             "minLength": 1,
             "maxLength": 60,
             "pattern": "^[A-Za-z0-9_-]{1,60}$",
-            "description": "Required only for type branch: a configured path key or otherwise. Other connection types cannot carry path."
+            "description": "Required for branch (configured path or otherwise) and variant (configured variant key). Other types cannot carry path."
           }
         },
         "allOf": [
@@ -21728,7 +21800,7 @@
             "if": {
               "properties": {
                 "type": {
-                  "const": "branch"
+                  "enum": ["branch", "variant"]
                 }
               },
               "required": [
@@ -21749,7 +21821,7 @@
             }
           }
         ],
-        "description": "Branch connections can start only at a Branch step. Each configured path and otherwise requires exactly one outgoing branch connection, distinguished by from, type and path. Every target must be a real step, including Exit. Exit has no outgoing connections. Filter steps can have only a default connection; a failed filter never follows it."
+        "description": "Branch connections start only at Branch steps; every configured path and otherwise requires exactly one keyed edge. Variant connections start only at Split steps; every configured variant, including weight0, requires exactly one edge with path=key. Every target must be a real step, including Exit. Exit has no outgoing connections. Filter steps have only a default connection, never followed on failure."
       },
       "AutomationInput": {
         "type": "object",
@@ -21818,7 +21890,7 @@
             "maxItems": 200
           }
         },
-        "description": "Branch steps require exactly one outgoing branch connection per configured path key and one for otherwise. Only Branch steps can use branch connections or path fields. Each target is a real step; Exit has no outgoing connections. Filters can use only a default connection and never follow it on failure. The API validates unique step/path keys, connection sources and targets, and an acyclic graph. Disabled Marketing drafts may omit a send step's topic_id. Creating enabled returns 422 until each Marketing step has a live topic. Send configs normalize legacy omitted kind from topic_id, and Marketing templates cannot be used transactionally.",
+        "description": "Branch steps require exactly one outgoing branch connection per configured path key and one for otherwise. Split steps require exactly one variant connection per unique configured key, including zero-weight variants. Only branch/variant connections carry path. Each target is a real step; Exit has no outgoing connections. Filters can use only a default connection and never follow it on failure. The API validates unique step/path keys, connection sources and targets, and an acyclic graph. Disabled Marketing drafts may omit a send step's topic_id. Creating enabled returns 422 until each Marketing step has a live topic. Send configs normalize legacy omitted kind from topic_id, and Marketing templates cannot be used transactionally.",
         "examples": [
           {
             "name": "Onboarding",
@@ -21939,6 +22011,7 @@
       "AutomationUpdate": {
         "type": "object",
         "properties": {
+          "expected_version": { "type": "integer", "minimum": 0, "description": "Optional optimistic guard; stale versions return409 without writes." },
           "name": {
             "type": "string",
             "minLength": 1,
@@ -21996,7 +22069,7 @@
             "maxItems": 200
           }
         },
-        "description": "Changing steps, connections, or trigger requires an already paused or disabled automation, or disabling in the same request. Previously used keys cannot change type. Branch steps require exactly one outgoing branch connection per configured path key and one for otherwise. Only Branch steps can use branch connections or path fields. Each target is a real step; Exit has no outgoing connections. Filters can use only a default connection and never follow it on failure. The API validates unique step/path keys, connection sources and targets, and an acyclic graph. Disabled or paused Marketing drafts may omit a send step's topic_id. Enabling or resuming returns 422 until each Marketing step has a live topic. Marketing templates cannot be used transactionally."
+        "description": "Changing steps, connections, or trigger requires an already paused or disabled automation, or disabling in the same request. Previously used keys cannot change type. Branch steps require exactly one outgoing branch connection per configured path key and one for otherwise. Split steps require exactly one variant connection per unique configured key, including zero-weight variants. Only branch/variant connections carry path. Each target is a real step; Exit has no outgoing connections. Filters can use only a default connection and never follow it on failure. The API validates unique step/path keys, connection sources and targets, and an acyclic graph. Disabled or paused Marketing drafts may omit a send step's topic_id. Enabling or resuming returns 422 until each Marketing step has a live topic. Marketing templates cannot be used transactionally."
       },
       "StoredAutomationStep": {
         "allOf": [

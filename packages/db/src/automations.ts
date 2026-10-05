@@ -12,6 +12,7 @@ import { emitRunEvent } from "./run-events.js";
 import { assertSendKinds } from "./send-kinds.js";
 import { contactSegments } from "./segment-matches.js";
 import { staticSegment } from "./segment-writes.js";
+import { assignVariant } from "./splits.js";
 import {
   ApiError,
   durationSeconds,
@@ -68,7 +69,7 @@ export type AutomationRow = {
   updated_at: string;
 };
 
-export type Outcome = Connection["type"] | { type: "branch"; path: string } | { type: "exit" };
+export type Outcome = Connection["type"] | { type: "branch" | "variant"; path: string } | { type: "exit" };
 
 export const stepLimit = 100;
 export const activeStates = ["ready", "running", "waiting"];
@@ -93,7 +94,7 @@ export function walker(graph: { steps: Step[]; connections: Connection[] }) {
   const next = (from: string, outcome: Outcome) => {
     if (typeof outcome === "object") {
       if (outcome.type === "exit") return null;
-      return graph.connections.find((c) => c.from === from && c.type === "branch" && c.path === outcome.path)?.to ?? null;
+      return graph.connections.find((c) => c.from === from && c.type === outcome.type && c.path === outcome.path)?.to ?? null;
     }
     return graph.connections.find((c) => c.from === from && c.type === outcome)?.to ??
       graph.connections.find((c) => c.from === from && c.type === "default")?.to ?? null;
@@ -337,6 +338,7 @@ async function advance(client: Queryable, tenantId: string, runId: string, next:
 export function stepOutcome(step: Step, output: Record<string, unknown>): Outcome {
   if (step.type === "exit" || step.type === "filter" && !output.result) return { type: "exit" };
   if (step.type === "branch") return { type: "branch", path: String(output.path) };
+  if (step.type === "split") return { type: "variant", path: String(output.variant) };
   if (step.type !== "condition") return "default";
   return output.result ? "condition_met" : "condition_not_met";
 }
@@ -514,6 +516,16 @@ export function mappedVariables(mapping: Record<string, string> | undefined, con
 async function executeStep(db: Queryable, run: AutomationRun, step: Step, options: AutomationRunOptions): Promise<Record<string, unknown>> {
   if (step.type === "trigger") return {};
   if (step.type === "exit") return { exited: "exit" };
+  if (step.type === "split") {
+    const saved = await db.query<{ variant: string }>(
+      `select data->>'variant' as variant from automation_steps
+       where tenant_id = $1 and run_id = $2 and step_key = $3 and type = 'split' and state = 'done'
+         and jsonb_typeof(data->'variant') = 'string'
+       order by created_at, id limit 1`,
+      [run.tenant_id, run.id, step.key],
+    );
+    return { variant: saved.rows[0]?.variant ?? assignVariant(run.id, (step.config as StepConfig<"split">).variants) };
+  }
 
   if (step.type === "condition" || step.type === "filter" || step.type === "branch") {
     const contact = await contactContext(db, run.tenant_id, run.email);
@@ -563,6 +575,7 @@ async function executeStep(db: Queryable, run: AutomationRun, step: Step, option
       contactId: recipient?.id,
       automationId: run.automation_id,
       automationStep: step.key,
+      automationRunId: run.id,
       from: from?.email ?? "",
       fromName: from?.name,
       to,

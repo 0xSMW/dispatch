@@ -14,6 +14,7 @@ import { contextFields, engagementFields, isIsoDate, operatorsForType, propertyT
 import type { ContactProperty, EventDefinition, PropertyType, SendKind, Template } from "../../types";
 import { contentKind, kindLabels, sendKind, sendSemantics, templateKind } from "../../lib/emailKind";
 import { EmailCountLine, type EmailCounts } from "./EmailMetrics";
+import { Split as SplitControl } from "./Split";
 import {
   blankRule as emptyRule,
   branchLabel,
@@ -21,10 +22,12 @@ import {
   branchesOf,
   canMove,
   configuredPaths,
+  configuredVariants,
   descendants,
   describe,
   keys,
   setBranchPaths,
+  setSplitVariants,
   stepError,
   stepLabels,
   terminal,
@@ -78,6 +81,7 @@ export const stepIcons: Record<StepType | "trigger", ReactNode> = {
   wait_for_event: <Hourglass size={14} />,
   condition: <Split size={14} />,
   branch: <Split size={14} />,
+  split: <Split size={14} />,
   filter: <Funnel size={14} />,
   exit: <LogOut size={14} />,
   add_to_segment: <UsersRound size={14} />,
@@ -92,6 +96,7 @@ export const stepTones: Record<StepType | "trigger", BadgeVariant> = {
   wait_for_event: "warning",
   condition: "info",
   branch: "info",
+  split: "info",
   filter: "info",
   exit: "neutral",
   add_to_segment: "neutral",
@@ -132,9 +137,9 @@ export function StepList({ nodes, path = [], actions, disabled = false, errors =
             run={run}
           />
           {branchesOf(node).length ? (
-            <div className={node.type === "branch" ? "branches ordered" : "branches"}>
+            <div className={node.type === "branch" || node.type === "split" ? "branches ordered" : "branches"}>
               {branchesOf(node).map((branch) => (
-                <section key={branch} className={`branch ${node.type === "branch" ? branch === "otherwise" ? "otherwise" : "orderedPath" : branch}`} aria-label={`${branchLabel(node, branch)} branch of ${node.key}`}>
+                <section key={branch} className={`branch ${node.type === "split" ? "orderedPath" : node.type === "branch" ? branch === "otherwise" ? "otherwise" : "orderedPath" : branch}`} aria-label={`${branchLabel(node, branch)} branch of ${node.key}`}>
                   <div className="branchLabel">{branchLabel(node, branch)}</div>
                   <StepList
                     nodes={branchSteps(node, branch)}
@@ -163,7 +168,7 @@ export function StepList({ nodes, path = [], actions, disabled = false, errors =
 
 const pickerGroups: StepType[][] = [
   ["send_email"],
-  ["delay", "wait_for_event", "condition", "branch", "filter", "exit"],
+  ["delay", "wait_for_event", "condition", "branch", "split", "filter", "exit"],
   ["contact_update", "contact_delete", "add_to_segment"],
 ];
 
@@ -271,7 +276,7 @@ function StepCard({
 }
 
 export function RunResult({ node, result }: { node: Node; result?: RunStep }) {
-  const output = result?.output as { exited?: string; filter?: string; path?: string; passed?: boolean } | undefined;
+  const output = result?.output as { exited?: string; filter?: string; path?: string; variant?: string; passed?: boolean } | undefined;
   return (
     <div className="stack">
       <p className="muted">{describe(node)}</p>
@@ -302,6 +307,7 @@ export function RunResult({ node, result }: { node: Node; result?: RunStep }) {
       {output?.exited === "filter" ? <p role="status">Left at the Filter step{output.filter ? ` (${output.filter})` : ""}. No further steps ran.</p> : null}
       {node.type === "filter" && output?.passed === true ? <p role="status">Filter matched{node.config.scope === "following" ? "; it will be checked before every following step" : ""}.</p> : null}
       {node.type === "branch" && output?.path ? <p role="status">Took the {branchLabel(node, output.path)} path.</p> : null}
+      {node.type === "split" && output?.variant ? <p role="status">Assigned variant {output.variant}.</p> : null}
       {result && result.output && Object.keys(result.output as object).length ? <Code value={result.output} /> : null}
     </div>
   );
@@ -355,6 +361,9 @@ export function StepForm({ node, path, index, actions, disabled, errors, options
     });
 
   switch (node.type) {
+    case "split":
+      return <SplitControl variants={configuredVariants(node)} disabled={disabled || !actions} issues={errors}
+        onChange={(variants) => actions?.change(node.key, (current) => setSplitVariants(current, variants))} />;
     case "send_email": {
       const template = (typeof config.template === "string" ? { id: config.template } : (config.template ?? {})) as {
         id?: string;
