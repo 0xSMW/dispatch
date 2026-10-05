@@ -82,8 +82,8 @@ it.each([
   {
     name: "marketing step with transactional template",
     file: "src/presets.ts",
-    before: 'send("welcome", "welcome", "transactional")',
-    after: 'send("welcome", "welcome", "marketing")',
+    before: 'step("welcome", "send_email", { template: "welcome", kind: "transactional",',
+    after: 'step("welcome", "send_email", { template: "welcome", kind: "marketing",',
     error: "onboarding-drip: welcome: marketing step uses transactional template welcome with incompatible send intent",
   },
   {

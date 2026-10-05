@@ -70,6 +70,7 @@ async function fixture(supplied: Env, loaded: Env = {}) {
     ...Object.fromEntries(
       [
         "appendEvent",
+        "claimAutomationRuns",
         "contactColumns",
         "dispatchContactWrite",
         "emit",

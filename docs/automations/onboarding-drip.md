@@ -20,7 +20,7 @@ Trigger: `{"type":"contact_created"}`. Re-entry: `once`. Lifetime once per ident
 |:---|:---|:---|
 | `trigger` | `trigger`: `{"type":"contact_created"}` | default → `freshness` |
 | `freshness` | `filter`: `{"rule":{"type":"rule","field":"contact.created_at","operator":"within","value":"14 days"},"scope":"following"}` | default → `welcome` |
-| `welcome` | `send_email`: `{"template":"welcome","kind":"transactional"}` | default → `not_activated` |
+| `welcome` | `send_email`: `{"template":"welcome","kind":"transactional","variable_mapping":{"RECIPIENT_NAME":"contact.first_name"}}` | default → `not_activated` |
 | `not_activated` | `filter`: `{"rule":{"type":"rule","field":"contact.activated","operator":"neq","value":true},"scope":"following"}` | default → `setup_wait` |
 | `setup_wait` | `delay`: `{"duration":"2 days"}` | default → `setup` |
 | `setup` | `send_email`: `{"template":"setup-reminder","kind":"marketing"}` | default → `tips_wait` |

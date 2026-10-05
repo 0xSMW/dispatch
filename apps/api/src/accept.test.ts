@@ -42,7 +42,7 @@ if (targets) {
 // Runtime fixture helpers load only after approval, so their dependencies cannot
 // load ambient targets or initialize a client before the guard.
 const { id, keyHash, makeKey, ProviderError, renderTemplate, sign, verify } = await import("@dispatchmail/core");
-const { appendEvent, connect, contactColumns, dispatchContactWrite, emit, executeAutomationRun, fireEvent, migrate, reconcileBroadcastSent, retryTx, tx, unsubscribeToken, updateContact } = await import("@dispatchmail/db");
+const { appendEvent, claimAutomationRuns, connect, contactColumns, dispatchContactWrite, emit, executeAutomationRun, fireEvent, migrate, reconcileBroadcastSent, retryTx, tx, unsubscribeToken, updateContact } = await import("@dispatchmail/db");
 const { contactContext } = await import("../../../packages/db/src/automations.js");
 const { createImport, claimImports, importBatch } = await import("../../../packages/db/src/imports.js");
 const { runImport } = await import("../../worker/src/imports.js");
@@ -172,10 +172,356 @@ describe.skipIf(!live)("accept", () => {
       expect((await call(sendKey.json.token, "GET", path)).status).toBe(401);
     }
     const installPath = "/template-library/automations/onboarding-drip/install";
-    // Global authorization refuses viewer writes even when a route is not shipped.
+    // Reads and rejected installation attempts do not create resources.
     expect((await call(session.token, "POST", installPath, {})).status).toBe(403);
-    expect((await call(fullKey, "POST", installPath, {})).status).toBe(404);
+    expect((await call(fullKey, "POST", installPath, {})).status).toBe(422);
     expect(await snapshot()).toEqual(before);
+  });
+
+  describe("preset installation", () => {
+    const sender = "Lifecycle <hello@dispatch-fixture.net>";
+    const runOptions = { publicUrl: "https://dispatch.example", appUrl: "https://app.dispatch.example", secret: "synthetic-preset-secret" };
+    const path = (slug: string) => `/template-library/automations/${slug}/install`;
+    const snapshot = async () => (await db.query(`select
+      (select count(*) from templates)::integer as templates,
+      (select count(*) from template_versions)::integer as versions,
+      (select count(*) from automations)::integer as automations,
+      (select count(*) from contact_properties)::integer as properties,
+      (select count(*) from event_schemas)::integer as definitions`)).rows[0];
+    const templateSnapshot = async () => (await db.query(
+      "select row_to_json(t) as template, (select json_agg(v order by v.id) from template_versions v where v.template_id=t.id) as versions from templates t order by t.id",
+    )).rows;
+    async function install(slug: string, options: Record<string, unknown> = {}) {
+      const response = await post(fullKey, path(slug), { from: sender, ...options });
+      expect(response.status, JSON.stringify(response.json)).toBe(200);
+      expect(response.json).toMatchObject({ automation: { status: "disabled", version: 0 }, events: expect.any(Array),
+        properties: expect.any(Array), templates: { created: expect.any(Array), reused: expect.any(Array) }, next_steps: expect.any(Array) });
+      return response.json;
+    }
+    async function topic() {
+      expect((await call(fullKey, "PATCH", "/brand", { company_address: "123 Fixture Street" })).status).toBe(200);
+      const response = await post(fullKey, "/topics", { name: "Lifecycle", default_subscription: "opt_out" });
+      expect(response.status).toBe(200);
+      return response.json.id as string;
+    }
+    async function enable(id: string) {
+      const response = await call(fullKey, "PATCH", `/automations/${id}`, { status: "enabled" });
+      expect(response.status, JSON.stringify(response.json)).toBe(200);
+    }
+    async function contact(email: string, properties: Record<string, unknown> = {}, topicId?: string) {
+      const response = await post(fullKey, "/contacts", { email, first_name: "Ada", properties,
+        ...(topicId ? { topics: [{ id: topicId, subscription: "opt_in" }] } : {}) });
+      expect(response.status, JSON.stringify(response.json)).toBe(200);
+      return response.json;
+    }
+    async function execute(run: { id: string; tenant_id: string }) {
+      await executeAutomationRun(db, run.tenant_id, run.id, runOptions);
+    }
+    async function advance(run: { id: string; tenant_id: string }) {
+      // Only advance the due timestamp. The installed durations, edges and stored wait config stay intact.
+      await db.query("update automation_runs set resume_at=now()-interval '1 second' where id=$1 and state='waiting'", [run.id]);
+      const claimed = await claimAutomationRuns(db, 100);
+      expect(claimed.map((row) => row.id)).toContain(run.id);
+      for (const row of claimed) await execute(row);
+    }
+    const state = async (runId: string) => (await db.query("select state,error,exit_reason,next_step_key,wait_event from automation_runs where id=$1", [runId])).rows[0];
+    const emails = async (automationId: string, contactId?: string) => (await db.query(
+      `select subject,html,text,from_email,from_name,topic_id,headers,automation_step as automation_step_key,contact_id
+       from emails where automation_id=$1 and ($2::text is null or contact_id=$2) order by created_at,id`,
+      [automationId, contactId ?? null],
+    )).rows;
+    async function sendEvent(name: string, email: string, payload: Record<string, unknown> = {}) {
+      const result = await post(fullKey, "/events/send", { event: name, email, payload });
+      expect(result.status, JSON.stringify(result.json)).toBe(202);
+      return result.json.id as string;
+    }
+
+    it("authenticates writes and rejects missing sender/topic, unknown slug, malformed fields and foreign/deleted topics with no writes", async () => {
+      const viewer = await teammate("Viewer");
+      const session = await signInAs(viewer.email, viewer.password);
+      const sendKey = await post(fullKey, "/api-keys", { name: "Preset send", scope: "send" });
+      const foreignKey = await seedTenant();
+      const foreignTopic = await post(foreignKey, "/topics", { name: "Foreign" });
+      const deleted = await topic();
+      expect((await call(fullKey, "DELETE", `/topics/${deleted}`)).status).toBe(200);
+      const before = await snapshot();
+      expect((await app.inject({ method: "POST", url: path("onboarding-drip"), payload: { from: sender } })).statusCode).toBe(401);
+      expect((await post(sendKey.json.token, path("onboarding-drip"), { from: sender })).status).toBe(401);
+      expect((await post(session.token, path("onboarding-drip"), { from: sender })).status).toBe(403);
+      for (const [slug, input, status, message] of [
+        ["onboarding-drip", {}, 422, "Choose a sender"],
+        ["newsletter-welcome", { from: sender }, 422, "Choose a topic"],
+        ["missing", { from: sender }, 404, "Automation preset not found"],
+        ["onboarding-drip", { from: "not email" }, 400, null],
+        ["onboarding-drip", { from: sender, name: "" }, 400, null],
+        ["onboarding-drip", { from: sender, topic_id: 3 }, 400, null],
+        ["newsletter-welcome", { from: sender, topic_id: foreignTopic.json.id }, 422, "Choose an existing topic"],
+        ["newsletter-welcome", { from: sender, topic_id: deleted }, 422, "Choose an existing topic"],
+      ] as const) {
+        const result = await post(fullKey, path(slug), input);
+        expect(result.status, JSON.stringify(result.json)).toBe(status);
+        expect(result.json.name).toBe(status === 404 ? "not_found" : "validation_error");
+        if (message) expect(result.json.message).toBe(message);
+        expect(await snapshot()).toEqual(before);
+      }
+    });
+
+    it.each(["pending", "disabled", "deleted", "foreign"])("rejects a %s sender domain before writes", async (mode) => {
+      if (mode === "pending") await db.query("update domains set status='pending' where name='dispatch-fixture.net'");
+      if (mode === "disabled") await db.query("update domains set sending='disabled' where name='dispatch-fixture.net'");
+      if (mode === "deleted") await db.query("update domains set deleted_at=now() where name='dispatch-fixture.net'");
+      const before = await snapshot();
+      const response = await post(fullKey, path("onboarding-drip"), { from: mode === "foreign" ? "you@foreign.net" : sender });
+      expect(response.status).toBe(403);
+      expect(response.json.name).toBe("validation_error");
+      expect(await snapshot()).toEqual(before);
+    });
+
+    it("binds normalized graph IDs/from/kind/topics, blocks topicless activation and then enables after valid configuration", async () => {
+      const installed = await install("onboarding-drip");
+      expect(installed.next_steps).toEqual(["Choose a topic for marketing steps", "Review the automation and its emails", "Enable the automation"]);
+      const sends = installed.automation.steps.filter((step: any) => step.type === "send_email");
+      for (const step of sends) {
+        expect(step.config.from).toBe(sender);
+        expect(step.config.template).toMatchObject({ id: expect.stringMatching(/^template_/), variables: {} });
+        expect(step.config.topic_id).toBeUndefined();
+      }
+      expect((await call(fullKey, "PATCH", `/automations/${installed.automation.id}`, { status: "enabled" })).status).toBe(422);
+      const topicId = await topic();
+      const configured = await call(fullKey, "PATCH", `/automations/${installed.automation.id}`, {
+        steps: installed.automation.steps.map((step: any) => step.type === "send_email" && step.config.kind === "marketing"
+          ? { ...step, config: { ...step.config, topic_id: topicId } } : step), connections: installed.automation.connections,
+      });
+      expect(configured.status, JSON.stringify(configured.json)).toBe(200);
+      await enable(installed.automation.id);
+      const payment = await install("failed-payment");
+      expect(payment.next_steps).toEqual(["Review the automation and its emails", "Enable the automation"]);
+      await enable(payment.automation.id);
+      expect(payment.automation.steps.filter((step: any) => step.type === "send_email").every((step: any) =>
+        step.config.kind === "transactional" && step.config.topic_id === undefined)).toBe(true);
+    });
+
+    it("preserves edited draft and unedited library copies exactly, including ordinary install contention", async () => {
+      const draft = await post(fullKey, "/templates", { name: "Tenant welcome", alias: "welcome", subject: "My draft", html: "<p>My content</p>", from: "author@dispatch-fixture.net", track: false });
+      expect(draft.status).toBe(200);
+      expect((await post(fullKey, "/template-library/setup-reminder/install", {})).status).toBe(200);
+      const before = await templateSnapshot();
+      const [result, ordinary] = await Promise.all([
+        post(fullKey, path("onboarding-drip"), { from: sender }),
+        post(fullKey, "/template-library/welcome/install", {}),
+      ]);
+      expect(result.status, JSON.stringify(result.json)).toBe(200);
+      expect(ordinary.status).toBe(409);
+      expect(result.json.templates.reused.map((row: any) => row.slug)).toEqual(["welcome", "setup-reminder"]);
+      expect(result.json.templates.created.map((row: any) => row.slug)).toEqual(["feature-tips"]);
+      const after = await templateSnapshot();
+      for (const row of before) expect(after).toContainEqual(row);
+      expect((await call(fullKey, "GET", `/templates/${draft.json.id}`)).json.status).toBe("draft");
+      const repeatBefore = await templateSnapshot();
+      const second = await install("onboarding-drip", { name: "Second onboarding" });
+      expect(second.templates.created).toEqual([]);
+      expect(second.templates.reused).toHaveLength(3);
+      expect(second.properties).toEqual([]);
+      expect(await templateSnapshot()).toEqual(repeatBefore);
+    });
+
+    it("rolls back all dependencies after a late failure and live name conflict", async () => {
+      await install("failed-payment", { name: "Taken" });
+      const before = await snapshot();
+      expect((await post(fullKey, path("onboarding-drip"), { from: sender, name: "Taken" })).status).toBe(409);
+      expect(await snapshot()).toEqual(before);
+      await db.query(`create function preset_test_failure() returns trigger language plpgsql as $$
+        begin raise exception 'synthetic late installation failure'; end $$;
+        create trigger preset_test_failure before insert on automations for each row execute function preset_test_failure()`);
+      try {
+        expect((await post(fullKey, path("onboarding-drip"), { from: sender })).status).toBe(500);
+        expect(await snapshot()).toEqual(before);
+      } finally {
+        await db.query("drop trigger preset_test_failure on automations; drop function preset_test_failure()");
+      }
+    });
+
+    it("has one concurrent name winner and creates shared aliases/dependencies only once", async () => {
+      const results = await Promise.all(Array.from({ length: 2 }, () => post(fullKey, path("onboarding-drip"), { from: sender })));
+      expect(results.map((result) => result.status).sort()).toEqual([200, 409]);
+      expect(await snapshot()).toMatchObject({ templates: 3, versions: 3, automations: 1, properties: 1, definitions: 0 });
+      const before = await templateSnapshot();
+      const shared = await Promise.all(["Second", "Third"].map((name) => post(fullKey, path("onboarding-drip"), { from: sender, name })));
+      expect(shared.map((result) => result.status)).toEqual([200, 200]);
+      expect(shared.every((result) => result.json.templates.created.length === 0 && result.json.properties.length === 0)).toBe(true);
+      expect(await templateSnapshot()).toEqual(before);
+      const payments = await Promise.all(["Invoice one", "Invoice two"].map((name) => post(fullKey, path("failed-payment"), { from: sender, name })));
+      expect(payments.map((result) => result.status)).toEqual([200, 200]);
+      expect(payments.reduce((count, result) => count + result.json.events.length, 0)).toBe(2);
+      expect(payments.reduce((count, result) => count + result.json.templates.created.length, 0)).toBe(3);
+    });
+
+    it.each(["property-type", "property-tombstone", "event-type", "event-tombstone"])("conflicts on %s without rewriting or reviving dependencies", async (mode) => {
+      const event = mode.startsWith("event");
+      const response = event
+        ? await post(fullKey, "/events", { name: "stripe.invoice.payment_failed", schema: { AMOUNT: "number" } })
+        : await post(fullKey, "/contact-properties", { key: "activated", type: "string" });
+      expect(response.status).toBe(200);
+      if (mode.endsWith("tombstone")) expect((await call(fullKey, "DELETE", `${event ? "/events" : "/contact-properties"}/${response.json.id}`)).status).toBe(200);
+      const before = await snapshot();
+      expect((await post(fullKey, path(event ? "failed-payment" : "onboarding-drip"), { from: sender })).status).toBe(409);
+      expect(await snapshot()).toEqual(before);
+    });
+
+    it("reuses compatible event supersets unchanged and counts only live tenant firings", async () => {
+      const definition = await post(fullKey, "/events", { name: "usage.limit_reached", schema: { extra: "boolean" } });
+      const installed = await install("invite-to-upgrade");
+      expect(installed.events).toEqual([]);
+      expect((await call(fullKey, "GET", `/events/${definition.json.id}`)).json.schema).toEqual({ extra: "boolean" });
+      const other = await seedTenant();
+      await post(other, "/events/send", { event: "usage.limit_reached", email: "foreign@dispatch-fixture.net" });
+      const first = await sendEvent("usage.limit_reached", "counts@dispatch-fixture.net");
+      const second = await sendEvent("usage.limit_reached", "counts@dispatch-fixture.net");
+      await db.query("update custom_events set deleted_at=now() where id=$1", [first]);
+      const rows = (await call(fullKey, "GET", "/events")).json.data;
+      const row = rows.find((row: any) => row.id === definition.json.id);
+      expect(row.fired_count).toBe(1);
+      const timestamp = (await db.query("select created_at from custom_events where id=$1", [second])).rows[0].created_at;
+      expect(new Date(row.last_fired_at).toISOString()).toBe(timestamp.toISOString());
+      await post(fullKey, "/events", { name: "never.fired" });
+      expect((await call(fullKey, "GET", "/events")).json.data.find((row: any) => row.name === "never.fired")).toMatchObject({ fired_count: 0, last_fired_at: null });
+    });
+
+    it("runs installed onboarding with contact rendering and a fresh activated following guard", async () => {
+      const topicId = await topic();
+      const installed = await install("onboarding-drip", { topic_id: topicId });
+      await enable(installed.automation.id);
+      const person = await contact("onboarding@example.com", { activated: false }, topicId);
+      const [run] = await flowRuns(installed.automation.id);
+      await execute(run);
+      const [welcome] = await emails(installed.automation.id);
+      expect(welcome).toMatchObject({ contact_id: person.id, from_email: "hello@dispatch-fixture.net", from_name: "Lifecycle", topic_id: null, automation_step_key: "welcome" });
+      expect(welcome.html).toContain("Ada");
+      expect(await state(run.id)).toMatchObject({ state: "waiting", next_step_key: "setup_wait" });
+      await advance(run);
+      expect((await emails(installed.automation.id)).map((row) => row.automation_step_key)).toEqual(["welcome", "setup"]);
+      expect((await call(fullKey, "PATCH", `/contacts/${person.id}`, { properties: { activated: true } })).status).toBe(200);
+      await advance(run);
+      expect(await state(run.id)).toMatchObject({ state: "done", exit_reason: "filter" });
+      expect(await emails(installed.automation.id)).toHaveLength(2);
+    });
+
+    it.each([true, false])("runs installed newsletter Condition outcome activated=%s with topic and unsubscribe headers", async (activated) => {
+      const topicId = await topic();
+      const installed = await install("newsletter-welcome", { topic_id: topicId });
+      expect(installed.automation.trigger_config).toEqual({ type: "topic_subscribed", topic_id: topicId });
+      expect(installed.automation.steps.find((step: any) => step.key === "activation").type).toBe("condition");
+      await enable(installed.automation.id);
+      const person = await contact(`newsletter-${activated}@example.com`, { activated }, topicId);
+      const [run] = await flowRuns(installed.automation.id);
+      await execute(run);
+      await advance(run);
+      const stored = await emails(installed.automation.id);
+      expect(stored.map((row) => row.automation_step_key)).toEqual(["welcome", activated ? "tips" : "setup"]);
+      expect(stored.every((row) => row.topic_id === topicId && row.contact_id === person.id && row.from_email === "hello@dispatch-fixture.net")).toBe(true);
+      expect(stored[0].headers).toHaveProperty("List-Unsubscribe");
+      expect(await state(run.id)).toMatchObject({ state: "done", exit_reason: "exit" });
+    });
+
+    it.each(["free", "pro"])("runs installed upgrade recheck for %s and preserves second subject", async (plan) => {
+      const topicId = await topic();
+      const installed = await install("invite-to-upgrade", { topic_id: topicId });
+      await enable(installed.automation.id);
+      const person = await contact(`upgrade-${plan}@example.com`, { plan: "free" }, topicId);
+      await sendEvent("usage.limit_reached", person.email);
+      const [run] = await flowRuns(installed.automation.id);
+      await execute(run);
+      if (plan === "pro") await call(fullKey, "PATCH", `/contacts/${person.id}`, { properties: { plan } });
+      await advance(run);
+      const stored = await emails(installed.automation.id);
+      expect(stored).toHaveLength(plan === "free" ? 2 : 1);
+      if (plan === "free") expect(stored[1].subject).toContain("Still need more room in");
+      expect(await state(run.id)).toMatchObject({ state: "done", exit_reason: plan === "free" ? "exit" : "filter" });
+    });
+
+    it.each(["old", "recent", "absent"])("runs installed win-back date requirements for %s activity", async (activity) => {
+      const topicId = await topic();
+      const installed = await install("win-back", { topic_id: topicId });
+      await enable(installed.automation.id);
+      const person = await contact(`winback-${activity}@example.com`, activity === "absent" ? {} : {
+        last_active_at: new Date(Date.now() - (activity === "old" ? 20 : 1) * 86400000).toISOString(),
+      }, topicId);
+      await sendEvent("user.inactive", person.email);
+      const [run] = await flowRuns(installed.automation.id);
+      await execute(run);
+      await advance(run);
+      expect(await emails(installed.automation.id)).toHaveLength(activity === "old" ? 2 : 1);
+      expect(await state(run.id)).toMatchObject({ state: "done", exit_reason: activity === "old" ? "exit" : "filter" });
+    });
+
+    it.each(["first-paid", "second-paid", "timeouts", "missing-data"])("runs installed failed-payment %s with actual billing data", async (mode) => {
+      const installed = await install("failed-payment");
+      await enable(installed.automation.id);
+      const person = await contact(`invoice-${mode}@example.com`);
+      const payload = mode === "missing-data" ? {} : { AMOUNT: "$73.42", UPDATE_PAYMENT_URL: "https://billing.example/in_actual", INVOICE_NUMBER: "INV-ACTUAL-73", invoice_id: "in_actual" };
+      await sendEvent("stripe.invoice.payment_failed", person.email, payload);
+      const [run] = await flowRuns(installed.automation.id);
+      await execute(run);
+      if (mode === "missing-data") {
+        expect(await state(run.id)).toMatchObject({ state: "failed", error: expect.stringContaining("Missing template variable") });
+        expect(await emails(installed.automation.id)).toHaveLength(0);
+        return;
+      }
+      let stored = await emails(installed.automation.id);
+      expect(stored[0].html).toContain("$73.42");
+      expect(stored[0].html).toContain("https://billing.example/in_actual");
+      expect((await db.query("select data from custom_events where id=(select event_id from automation_runs where id=$1)", [run.id])).rows[0].data)
+        .toMatchObject({ INVOICE_NUMBER: "INV-ACTUAL-73", invoice_id: "in_actual" });
+      expect(stored[0].topic_id).toBeNull();
+      if (mode !== "first-paid") await advance(run);
+      if (mode === "timeouts") await advance(run);
+      else {
+        // Existing waits are contact/event-name based, deliberately not invoice-specific.
+        await sendEvent("stripe.invoice.paid", person.email, { invoice_id: "different_invoice" });
+        await execute(run);
+      }
+      stored = await emails(installed.automation.id);
+      if (mode !== "first-paid") expect(stored[1].html).toContain("INV-ACTUAL-73");
+      expect(stored.map((row) => row.automation_step_key)).toEqual(mode === "first-paid" ? ["failed"] :
+        mode === "second-paid" ? ["failed", "reminder"] : ["failed", "reminder", "canceled"]);
+      expect(await state(run.id)).toMatchObject({ state: "done", exit_reason: "exit" });
+    });
+
+    it.each(["canceled", "pro"])("runs installed come-back against current %s plan after its original delay", async (plan) => {
+      const topicId = await topic();
+      const installed = await install("come-back", { topic_id: topicId });
+      await enable(installed.automation.id);
+      const person = await contact(`return-${plan}@example.com`, { plan: "free" }, topicId);
+      await call(fullKey, "PATCH", `/contacts/${person.id}`, { properties: { plan: "canceled" } });
+      const [run] = await flowRuns(installed.automation.id);
+      await execute(run);
+      if (plan === "pro") await call(fullKey, "PATCH", `/contacts/${person.id}`, { properties: { plan } });
+      await advance(run);
+      expect(await emails(installed.automation.id)).toHaveLength(plan === "canceled" ? 1 : 0);
+      expect(await state(run.id)).toMatchObject({ state: "done", exit_reason: plan === "canceled" ? "exit" : "filter" });
+    });
+
+    it("holds an installed flow paused then rejects stale original event state without rewriting freshness", async () => {
+      const topicId = await topic();
+      const installed = await install("invite-to-upgrade", { topic_id: topicId });
+      await enable(installed.automation.id);
+      const person = await contact("stale@example.com", { plan: "free" }, topicId);
+      await sendEvent("usage.limit_reached", person.email);
+      const [run] = await flowRuns(installed.automation.id);
+      await execute(run);
+      await call(fullKey, "PATCH", `/automations/${installed.automation.id}`, { status: "paused" });
+      await db.query("update automation_runs set resume_at=now()-interval '1 second' where id=$1", [run.id]);
+      await db.query("update custom_events set created_at=now()-interval '11 days' where id=(select event_id from automation_runs where id=$1)", [run.id]);
+      expect(await claimAutomationRuns(db, 100)).toEqual([]);
+      await execute(run);
+      expect(await state(run.id)).toMatchObject({ state: "waiting" });
+      await enable(installed.automation.id);
+      await advance(run);
+      expect(await emails(installed.automation.id)).toHaveLength(1);
+      expect(await state(run.id)).toMatchObject({ state: "done", exit_reason: "filter" });
+      const stored = (await call(fullKey, "GET", `/automations/${installed.automation.id}`)).json;
+      expect(stored.steps.find((step: any) => step.key === "freshness").config.rule.value).toBe("10 days");
+    });
   });
 
   describe("trigger depth and contention repair", () => {

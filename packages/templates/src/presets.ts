@@ -80,7 +80,8 @@ export const presets: Preset[] = [
     events: [], properties: [activated], templates: ["welcome", "setup-reminder", "feature-tips"],
     steps: [
       step("trigger", "trigger", { type: "contact_created" }), fresh("onboarding-drip"),
-      send("welcome", "welcome", "transactional"),
+      step("welcome", "send_email", { template: "welcome", kind: "transactional",
+        variable_mapping: { RECIPIENT_NAME: "contact.first_name" } }),
       filter("not_activated", rule("contact.activated", "neq", true), "following"),
       delay("setup_wait", "2 days"), send("setup", "setup-reminder", "marketing"),
       delay("tips_wait", "3 days"), send("tips", "feature-tips", "marketing"), step("exit", "exit"),

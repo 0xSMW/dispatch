@@ -1415,7 +1415,10 @@
           "type": "send_email",
           "config": {
             "template": "welcome",
-            "kind": "transactional"
+            "kind": "transactional",
+            "variable_mapping": {
+              "RECIPIENT_NAME": "contact.first_name"
+            }
           }
         },
         {

@@ -21,6 +21,10 @@ async function mappedPayment() {
 const graph = (item: Preset) => automationGraphSchema.parse({ steps: item.steps, connections: item.connections });
 
 describe("pure lifecycle preset graphs", () => {
+  it("maps the existing welcome template's recipient name from fresh contact state", () => {
+    expect(preset("onboarding-drip").steps.find((step) => step.key === "welcome")!.config)
+      .toMatchObject({ template: "welcome", kind: "transactional", variable_mapping: { RECIPIENT_NAME: "contact.first_name" } });
+  });
   it("contains exactly the six approved conventional slugs and stages", () => {
     expect(presets.map(({ slug, stage }) => [slug, stage])).toEqual([
       ["newsletter-welcome", "acquisition"], ["onboarding-drip", "onboarding"],
