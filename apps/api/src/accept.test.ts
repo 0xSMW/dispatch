@@ -116,6 +116,68 @@ afterAll(async () => {
 });
 
 describe.skipIf(!live)("accept", () => {
+  it("lists all lifecycle preset definitions through stored full and viewer authentication without installing resources", async () => {
+    const { loadLibrary } = await import("./library.js");
+    const library = await loadLibrary();
+    const viewer = await teammate("Viewer");
+    const session = await signInAs(viewer.email, viewer.password);
+    expect(session.status).toBe(200);
+    const secondKey = await seedTenant();
+    const sendKey = await post(fullKey, "/api-keys", { name: "preset send-only", scope: "send" });
+    expect(sendKey.status).toBe(200);
+    await migrate(db);
+    await migrate(db);
+    const snapshot = async () => (await db.query(`select
+      (select count(*) from templates) as templates,
+      (select count(*) from template_versions) as versions,
+      (select count(*) from automations) as automations,
+      (select count(*) from automation_runs) as runs,
+      (select count(*) from contacts) as contacts,
+      (select count(*) from contact_properties) as properties,
+      (select count(*) from custom_events) as events,
+      (select count(*) from topics) as topics`)).rows[0];
+    const before = await snapshot();
+    for (const token of [fullKey, session.token, secondKey]) {
+      const listed = await call(token, "GET", "/template-library/automations");
+      expect(listed.status).toBe(200);
+      expect(listed.json).toEqual({
+        object: "list", has_more: false, data: library.automations, request_id: expect.any(String),
+      });
+      expect(listed.json.data).toHaveLength(6);
+      for (const preset of library.automations) {
+        const detail = await call(token, "GET", `/template-library/automations/${preset.slug}`);
+        expect(detail.status).toBe(200);
+        expect(detail.json).toEqual({
+          object: "automation_preset", ...preset, request_id: expect.any(String),
+        });
+      }
+      const templates = await call(token, "GET", "/template-library");
+      expect(templates.status).toBe(200);
+      expect(templates.json.data).toHaveLength(25);
+      for (const template of templates.json.data) {
+        expect(template).toMatchObject({
+          stage: library.templates.find((entry) => entry.slug === template.slug)!.stage,
+          when: expect.any(String),
+          kind: expect.stringMatching(/^(transactional|marketing)$/),
+        });
+        expect(template).not.toHaveProperty("html");
+        expect(template).not.toHaveProperty("text");
+      }
+    }
+    const missing = await call(fullKey, "GET", "/template-library/automations/not-a-preset");
+    expect(missing.status).toBe(404);
+    expect(missing.json).toMatchObject({ name: "not_found" });
+    for (const path of ["/template-library/automations", "/template-library/automations/failed-payment"]) {
+      expect((await app.inject({ method: "GET", url: path })).statusCode).toBe(401);
+      expect((await call(sendKey.json.token, "GET", path)).status).toBe(401);
+    }
+    const installPath = "/template-library/automations/onboarding-drip/install";
+    // Global authorization refuses viewer writes even when a route is not shipped.
+    expect((await call(session.token, "POST", installPath, {})).status).toBe(403);
+    expect((await call(fullKey, "POST", installPath, {})).status).toBe(404);
+    expect(await snapshot()).toEqual(before);
+  });
+
   describe("trigger depth and contention repair", () => {
     const runRow = async (runId: string) => (await db.query(
       "select state,error,depth,guards,next_step_key from automation_runs where id=$1", [runId],
