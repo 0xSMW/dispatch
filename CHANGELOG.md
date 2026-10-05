@@ -4,7 +4,7 @@
 
 - Complete API reference examples for signup forms, dynamic segment previews, scoped goal reports and version-guarded split winners. Keep new public guides' Agent prompts aligned with the canonical dashboard wording.
 - Add a local `@dispatchmail/mcp` stdio server using the official MCP and Dispatch TypeScript SDKs. Ten tools map to shipped APIs; read-only mode hides and rejects every write tool. Public LLM docs include the final agent, integration, goal and theme guides without internal plans.
-- Add stable weighted Split test steps, stored-run variant metrics and full-role pause/version-guarded winner controls. Keep zero-weight paths connected and preserve recorded decisions, keys and waits. Template Checks consolidates existing actual Source, variable, preview and publish warnings without changing safety or confirmation controls.
+- Add stable weighted Split test steps, stored-run variant metrics and full-role pause/version-guarded winner controls. Keep zero-weight paths connected and preserve recorded decisions, keys and waits. Template Checks consolidates existing actual Source, variable, preview and publish warnings without changing safety or confirmation controls. Broadcast Review also includes actual visual refusals alongside its existing variable, review and link results.
 
 - Added retroactive event/contact-state goals with current eligibility, real-send first-send cohorts, conversion windows and UTC daily rates. Goals can be managed in the dashboard and measured in automation, broadcast and global Metrics.
 - Added brand theme tokens and explicit library updates that preserve sending settings and skip edited copies.

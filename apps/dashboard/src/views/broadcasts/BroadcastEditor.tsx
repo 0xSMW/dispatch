@@ -18,7 +18,7 @@ import { addresses } from "../../lib/utils";
 import { usable, useWhen, whenHint } from "../../lib/when";
 import { useCan, useClient } from "../../shell/session";
 import type { BroadcastAudience, BroadcastDetail, ContactProperty, LinkCheck, List, Rendered, Segment, Template, Topic } from "../../types";
-import { EditorScreen, LeaveGuard, Preview, Source, TestSend, useDraft, type Flush } from "../templates/editor";
+import { EditorScreen, LeaveGuard, Preview, Source, TestSend, useDraft, type Flush, type SourceCheck } from "../templates/editor";
 import { contactField, contactKeys, fill, hasUnsubscribe, links, noFallback, sampleContact } from "../templates/render";
 import { useBrand } from "../templates/Versions";
 import "../../styles/editor.css";
@@ -93,6 +93,7 @@ export function BroadcastEditor() {
   const [testing, setTesting] = useState(false);
   const [reviewing, setReviewing] = useState(false);
   const [template, setTemplate] = useState("");
+  const [sourceCheck, setSourceCheck] = useState<SourceCheck | null>(null);
   const can = useCan();
   const editable = can && broadcast.data?.status === "draft";
 
@@ -222,7 +223,7 @@ export function BroadcastEditor() {
           </div>
           <div className="editorPanes">
             <div className="editorPane">
-              <Source html={form.html} text={form.text} onHtml={set("html")} onText={set("text")} disabled={!editable} textareaRef={html} flushRef={flushVisual} />
+              <Source html={form.html} text={form.text} onHtml={set("html")} onText={set("text")} disabled={!editable} textareaRef={html} flushRef={flushVisual} onCheck={setSourceCheck} />
               {editable ? (
                 <Panel title="Personalize">
                   <div className="insertList">
@@ -291,6 +292,7 @@ export function BroadcastEditor() {
           topic={topics.data?.data.find((topic) => topic.id === form.topic_id) ?? null}
           save={draft.save}
           saveError={draft.state.error}
+          sourceCheck={sourceCheck}
           onClose={() => setReviewing(false)}
           onSent={() => navigate(`/broadcasts/${row.id}`)}
         />
@@ -402,6 +404,7 @@ function Review({
   topic,
   save,
   saveError,
+  sourceCheck,
   onClose,
   onSent,
 }: {
@@ -411,6 +414,7 @@ function Review({
   topic: Topic | null;
   save: () => Promise<boolean>;
   saveError: string | null;
+  sourceCheck: SourceCheck | null;
   onClose: () => void;
   onSent: () => void;
 }) {
@@ -481,7 +485,7 @@ function Review({
       submitDisabled={blocked || typed !== confirmPhrase}
     >
       <div className="stack">
-        <Checks rows={checks} />
+        <Checks rows={sourceCheck ? [sourceCheck, ...checks] : checks} />
 
         <div className="form">
           <Select

@@ -87,6 +87,45 @@ describe("BroadcastEditor", () => {
     expect(calls(fetch, "POST /broadcasts/broadcast_1/send")[0]!.body).toEqual({});
   });
 
+  it("collects the actual visual refusal with existing variable, review, and link results without adding a send blocker", async () => {
+    const html = '<a href="javascript:alert(1)">Unsafe</a><a href="https://acme.test/new">{{{contact.first_name}}} {{{contact.last_name}}} {{{contact.typo}}}</a>';
+    const counted = { ...audience, object: "broadcast_audience" as const, no_first_name: 1, no_last_name: 2 };
+    const form = toForm(broadcast({ html }));
+    const { fetch } = setup(broadcast({ html }), { "GET /broadcasts/broadcast_1/audience": counted });
+    await screen.findByRole("option", { name: "Customers" });
+    expect(screen.queryByRole("list", { name: "Checks" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Visual" }));
+    const reason = "Visual mode does not open the link javascript:alert(1).";
+    expect(await screen.findByText(reason)).toBeTruthy();
+    expect(screen.getByLabelText("HTML")).toHaveProperty("value", html);
+    expect(calls(fetch, "PATCH /broadcasts/broadcast_1")).toHaveLength(0);
+    expect(calls(fetch, "POST /links/check")).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    const dialog = within(screen.getByRole("dialog"));
+    await dialog.findByText("Link 404 not found.");
+    await dialog.findByText("Sending to 112 contacts in Customers.");
+    const checks = dialog.getByRole("list", { name: "Checks" });
+    const rows = reviewChecks(form, segment as Segment, null, counted, [
+      { object: "link", url: "https://acme.test/new", ok: false, status: 404, message: "404 not found" },
+    ], 1, []);
+    expect(dialog.getAllByRole("list", { name: "Checks" })).toHaveLength(1);
+    expect([...checks.querySelectorAll("[data-check-id]")].map((row) => row.getAttribute("data-check-id")))
+      .toEqual(["source.visual", ...rows.map((row) => row.id)]);
+    expect(checks.querySelector('[data-check-id="source.visual"]')).toHaveProperty("className", "warn");
+    expect(within(checks).getByText(reason)).toBeTruthy();
+    for (const row of rows) {
+      expect(within(checks).getByText(row.text).closest("li")).toHaveProperty("className", row.tone);
+      if (row.detail) expect(within(checks).getByText(row.detail)).toBeTruthy();
+    }
+    expect(calls(fetch, "POST /links/check")[0]!.body).toEqual({ urls: ["https://acme.test/new"] });
+    const send = dialog.getByRole("button", { name: /Send now/ });
+    expect(send).toHaveProperty("disabled", true);
+    fireEvent.change(dialog.getByLabelText("Confirmation phrase"), { target: { value: "SEND" } });
+    expect(send).toHaveProperty("disabled", false);
+    expect(calls(fetch, "POST /broadcasts/broadcast_1/send")).toHaveLength(0);
+  });
+
   it("sends a test with the API's own rendering of the saved draft", async () => {
     const fetch = api({
       "GET /broadcasts/broadcast_1": broadcast(),
@@ -230,6 +269,7 @@ describe("BroadcastEditor", () => {
     expect((await screen.findByLabelText("HTML"))).toHaveProperty("disabled", true);
     expect(screen.getByRole("button", { name: "Review" })).toHaveProperty("disabled", true);
     expect(screen.queryByRole("button", { name: "Test email" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Visual" })).toBeNull();
     expect(calls(fetch, "POST /links/check")).toHaveLength(0);
     expect(calls(fetch, "GET /broadcasts/broadcast_1/audience")).toHaveLength(0);
     expect(calls(fetch, "PATCH /broadcasts/broadcast_1")).toHaveLength(0);
