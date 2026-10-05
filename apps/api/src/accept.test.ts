@@ -145,9 +145,9 @@ describe.skipIf(!live)("accept", () => {
       return { [`${family}-id`]: identity, [`${family}-timestamp`]: String(time),
         [`${family}-signature`]: `v1,${createHmac("sha256", Buffer.from(standardSecret.slice(6), "base64")).update(`${identity}.${time}.`).update(body).digest("base64")}` };
     }
-    async function receive(row: any, payload: unknown, identity = id("provider"), options: { raw?: string; time?: number; headers?: Record<string, string> } = {}) {
+    async function receive(row: any, payload: unknown, identity = id("provider"), options: { raw?: string; time?: number; headers?: Record<string, string>; receiver?: FastifyInstance } = {}) {
       const body = options.raw ?? JSON.stringify(payload);
-      const response = await app.inject({ method: "POST", url: `/inbound/${row.token}`,
+      const response = await (options.receiver ?? app).inject({ method: "POST", url: `/inbound/${row.token}`,
         headers: { "content-type": "application/json", "user-agent": "dispatch-inbound-fixture",
           ...signed(row.provider, body, identity, options.time), ...options.headers }, payload: body });
       return { status: response.statusCode, json: response.json(), body: response.body };
@@ -302,7 +302,7 @@ describe.skipIf(!live)("accept", () => {
         if (pending) await pending;
       }
     });
-    it("preserves opt-outs/pending/preferences/properties, ignores tombstones and ambiguous provider IDs, and never upserts deletion", async () => {
+    it("preserves opt-outs/preferences/properties, ignores tombstones and ambiguous provider IDs, and never upserts deletion", async () => {
       const row = await integration("clerk");
       const topic = await post(fullKey, "/topics", { name: "Keep preference", default_subscription: "opt_out" });
       const person = await post(fullKey, "/contacts", { email: "signed@example.com", unsubscribed: true, properties: { keep: "value" } });
@@ -325,6 +325,97 @@ describe.skipIf(!live)("accept", () => {
       expect((await receive(row, { type: "user.deleted", data: { id: "duplicate" } }, "ambiguous")).json.error).toBe("ambiguous_contact");
       expect((await call(fullKey, "GET", `/contacts/${other.json.id}`)).status).toBe(200);
       expect((await db.query("select id from contact_changes where contact_id=$1", [person.json.id])).rows.length).toBeGreaterThan(0);
+    });
+    it.each(["stripe", "clerk", "supabase", "webhook"])("preserves actual form-pending consent through a signed %s contact write", async provider => {
+      const topic = await post(fullKey, "/topics", { name: "Pending receiver", default_subscription: "opt_in" });
+      expect(topic.status).toBe(200);
+      const subscribedFlow = await contactFlow({ type: "topic_subscribed", topic_id: topic.json.id });
+      const form = await post(fullKey, "/forms", { name: "Pending receiver", topic_ids: [topic.json.id],
+        from_email: "hello@dispatch-fixture.net", allowed_origins: ["https://signup.example"], double_opt_in: true });
+      expect(form.status).toBe(200);
+      const submitted = await app.inject({ method: "POST", url: `/forms/${form.json.key}`,
+        headers: { origin: "https://signup.example" }, payload: { email: "pending-receiver@example.com" } });
+      expect(submitted.statusCode).toBe(200);
+      const person = (await db.query("select id,tenant_id from contacts where email='pending-receiver@example.com'")).rows[0];
+      const subscriptions = (await db.query("select * from topic_subscriptions where contact_id=$1 order by id", [person.id])).rows;
+      expect(subscriptions).toHaveLength(1);
+      expect(subscriptions[0].status).toBe("pending");
+      const confirmations = (await db.query("select * from confirmations where contact_id=$1 order by id", [person.id])).rows;
+      expect(confirmations).toHaveLength(1);
+      const topicHistory = async () => (await db.query(
+        "select * from contact_changes where contact_id=$1 and field=$2 order by created_at,id", [person.id, `topics.${topic.json.id}`],
+      )).rows;
+      const beforeHistory = await topicHistory();
+      const row = await integration(provider);
+      expect((await receive(row, payload(provider, "evt_pending", "pending-receiver@example.com"), "pending")).json)
+        .toMatchObject({ status: "processed", contact_id: person.id });
+      expect((await db.query("select * from topic_subscriptions where contact_id=$1 order by id", [person.id])).rows).toEqual(subscriptions);
+      expect((await db.query("select * from confirmations where contact_id=$1 order by id", [person.id])).rows).toEqual(confirmations);
+      expect(await topicHistory()).toEqual(beforeHistory);
+      expect((await contactContext(db, person.tenant_id, "pending-receiver@example.com"))!.topics).not.toContain(topic.json.id);
+      expect(await flowRuns(subscribedFlow)).toHaveLength(0);
+      if (provider === "clerk") {
+        const changes = (await db.query("select * from contact_changes where contact_id=$1 order by created_at,id", [person.id])).rows;
+        expect((await receive(row, { type: "user.deleted", data: { id: "user_fixture" } }, "pending-retain")).json.status).toBe("processed");
+        expect((await db.query("select * from contact_changes where contact_id=$1 order by created_at,id", [person.id])).rows).toEqual(changes);
+        expect((await db.query("select * from topic_subscriptions where contact_id=$1 order by id", [person.id])).rows).toEqual(subscriptions);
+        expect((await call(fullKey, "GET", `/contacts/${person.id}`)).status).toBe(200);
+      }
+    });
+    it("applies optional restricted-key customer preparation through the signed receiver and real database, with sanitized failure/retry", async () => {
+      // This receiver uses the production handler and real DB, but injected synthetic
+      // customer responses. No external Stripe request belongs in this fixture.
+      const { default: Fastify } = await import("fastify");
+      const { registerReceiver } = await import("./receiver.js");
+      const { requireSecret } = await import("@dispatchmail/core");
+      const receiver = Fastify();
+      const requests: Array<{ url: string; init: RequestInit }> = [];
+      let failLookup = false;
+      receiver.addHook("onRequest", async request => { request.request_id = id("request"); });
+      receiver.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) =>
+        reply.code(error.statusCode ?? 500).send({ message: error.message }));
+      registerReceiver(receiver, { db, secret: requireSecret("APP_SECRET"), customerTransport: async (url, init) => {
+        requests.push({ url, init });
+        if (failLookup) return new Response("synthetic response must not escape", { status: 403 });
+        return new Response(JSON.stringify({ id: url.split("/").at(-1), email: "lookup@example.com" }));
+      } });
+      try {
+        const row = await integration("stripe", { stripe_restricted_key: "rk_test_lookup" });
+        const person = await post(fullKey, "/contacts", { email: "lookup@example.com", properties: { keep: "value" } });
+        expect(person.status).toBe(200);
+        const foreign = await seedTenant();
+        const other = await post(foreign, "/contacts", { email: "lookup@example.com", properties: { keep: "foreign" } });
+        expect(other.status).toBe(200);
+        const event = { id: "evt_lookup", type: "customer.subscription.updated", data: { object: {
+          id: "sub_lookup", customer: "cus_lookup", status: "active", items: { data: [{ price: { lookup_key: "pro" } }] },
+        } } };
+        failLookup = true;
+        const failure = await receive(row, event, "unused", { receiver });
+        expect(failure.status).toBe(503);
+        expect(failure.body).not.toContain("synthetic response");
+        expect((await db.query("select id from inbound_deliveries where provider_event_id='evt_lookup'")).rows).toHaveLength(0);
+        expect((await db.query("select id from custom_events where name='stripe.customer.subscription.updated'")).rows).toHaveLength(0);
+        expect((await db.query("select properties from contacts where id=$1", [person.json.id])).rows[0].properties).toEqual({ keep: "value" });
+        failLookup = false;
+        expect((await receive(row, event, "unused", { receiver })).json).toMatchObject({ status: "processed", contact_id: person.json.id });
+        expect(requests).toHaveLength(2);
+        expect(requests[1]).toMatchObject({ url: "https://api.stripe.com/v1/customers/cus_lookup",
+          init: { method: "GET", redirect: "error", headers: { Authorization: "Bearer rk_test_lookup" } } });
+        expect((await db.query("select properties from contacts where id=$1", [person.json.id])).rows[0].properties)
+          .toEqual({ keep: "value", stripe_customer_id: "cus_lookup" });
+        expect((await db.query("select properties from contacts where id=$1", [other.json.id])).rows[0].properties).toEqual({ keep: "foreign" });
+        expect((await db.query("select data from custom_events where name='stripe.customer.subscription.updated'")).rows[0].data)
+          .toMatchObject({ customer_id: "cus_lookup", subscription_id: "sub_lookup", PLAN: "pro" });
+        expect((await receive(row, event, "unused", { receiver })).json.duplicate).toBe(true);
+        expect((await db.query("select id from custom_events where name='stripe.customer.subscription.updated'")).rows).toHaveLength(1);
+        const deliveries = (await call(fullKey, "GET", `/integrations/${row.id}/deliveries`)).json.data;
+        expect(deliveries.map((item: any) => item.status).sort()).toEqual(["failed", "processed"]);
+        expect(JSON.stringify(deliveries)).not.toMatch(/rk_test_lookup|synthetic response/);
+        expect((await call(fullKey, "DELETE", `/contacts/${person.json.id}`)).status).toBe(200);
+        expect((await receive(row, { ...event, id: "evt_lookup_deleted" }, "unused", { receiver })).json)
+          .toMatchObject({ status: "ignored", error: "no_contact" });
+        expect((await call(fullKey, "GET", `/contacts/${person.json.id}`)).status).toBe(404);
+      } finally { await receiver.close(); }
     });
     it("supports default/custom tenant-unique webhook namespaces, ignores unsupported events and prunes only bounded aged history", async () => {
       const row = await integration();
@@ -350,26 +441,75 @@ describe.skipIf(!live)("accept", () => {
       const automationId = installed.json.automation.id;
       expect((await call(fullKey, "PATCH", `/automations/${automationId}`, { status: "enabled" })).status).toBe(200);
       const row = await integration("stripe", { map_plan: true });
-      const invoice = { id: "in_receiver", customer: "cus_receiver", customer_email: "invoice@example.com",
+      const known = await post(fullKey, "/contacts", { email: "invoice@example.com", properties: { stripe_customer_id: "cus_receiver" } });
+      expect(known.status).toBe(200);
+      const invoice = { id: "in_receiver", customer: "cus_receiver",
         amount_due: 7342, currency: "usd", hosted_invoice_url: "https://invoice.example/in_receiver", number: "INV-RECEIVER-73",
         lines: { data: [{ price: { lookup_key: "pro" } }] } };
       const failed = { id: "evt_failure", type: "invoice.payment_failed", data: { object: invoice } };
-      expect((await receive(row, failed)).status).toBe(200);
+      expect((await receive(row, failed)).json).toMatchObject({ status: "processed", contact_id: known.json.id });
+      expect((await db.query("select data from custom_events where name='stripe.invoice.payment_failed'")).rows[0].data)
+        .toMatchObject({ AMOUNT: "$73.42", UPDATE_PAYMENT_URL: "https://invoice.example/in_receiver",
+          INVOICE_NUMBER: "INV-RECEIVER-73", invoice_id: "in_receiver", PLAN: "pro" });
       const [run] = await flowRuns(automationId);
       expect(run).toBeDefined();
       await executeAutomationRun(db, run.tenant_id, run.id);
-      const emails = (await db.query("select html, automation_step_key from emails where automation_id=$1", [automationId])).rows;
+      const emails = (await db.query("select html from emails where automation_id=$1", [automationId])).rows;
       expect(emails).toHaveLength(1);
       expect(emails[0].html).toContain("$73.42");
       expect(emails[0].html).toContain("https://invoice.example/in_receiver");
       expect((await db.query("select state, wait_event from automation_runs where id=$1", [run.id])).rows[0])
         .toEqual({ state: "waiting", wait_event: "stripe.invoice.paid" });
       expect((await receive(row, failed)).json.duplicate).toBe(true);
+      expect(await flowRuns(automationId)).toHaveLength(1);
+      expect((await db.query("select id from emails where automation_id=$1", [automationId])).rows).toHaveLength(1);
       expect((await receive(row, { id: "evt_recovery", type: "invoice.paid", data: { object: { ...invoice, customer_email: undefined } } })).status).toBe(200);
       await executeAutomationRun(db, run.tenant_id, run.id);
       expect((await db.query("select state, exit_reason from automation_runs where id=$1", [run.id])).rows[0]).toEqual({ state: "done", exit_reason: "exit" });
       expect((await db.query("select id from emails where automation_id=$1", [automationId])).rows).toHaveLength(1);
       expect((await db.query("select properties from contacts where email='invoice@example.com'")).rows[0].properties).toMatchObject({ stripe_customer_id: "cus_receiver", plan: "pro" });
+    });
+    it("records signed provider updates while paused, preserves a paid wait decision and resumes without missed-trigger replay", async () => {
+      const installed = await post(fullKey, "/template-library/automations/failed-payment/install", { from: "hello@dispatch-fixture.net" });
+      expect(installed.status).toBe(200);
+      const automationId = installed.json.automation.id;
+      expect((await call(fullKey, "PATCH", `/automations/${automationId}`, { status: "enabled" })).status).toBe(200);
+      const row = await integration("stripe", { map_plan: true });
+      const invoice = { id: "in_paused", customer: "cus_paused", customer_email: "paused-receiver@example.com",
+        amount_due: 7342, currency: "usd", hosted_invoice_url: "https://invoice.example/in_paused", number: "INV-PAUSED-73",
+        lines: { data: [{ price: { lookup_key: "pro" } }] } };
+      expect((await receive(row, { id: "evt_before_pause", type: "invoice.payment_failed", data: { object: invoice } })).status).toBe(200);
+      const [run] = await flowRuns(automationId);
+      expect(run).toBeDefined();
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect((await db.query("select state,wait_event from automation_runs where id=$1", [run.id])).rows[0])
+        .toEqual({ state: "waiting", wait_event: "stripe.invoice.paid" });
+      expect((await call(fullKey, "PATCH", `/automations/${automationId}`, { status: "paused" })).status).toBe(200);
+      expect((await receive(row, { id: "evt_missed_pause", type: "invoice.payment_failed", data: { object: {
+        ...invoice, id: "in_missed", customer: "cus_missed", customer_email: "missed-receiver@example.com",
+      } } })).status).toBe(200);
+      const paid = { id: "evt_paid_pause", type: "invoice.paid", data: { object: {
+        ...invoice, customer_email: undefined, lines: { data: [{ price: { lookup_key: "paid" } }] },
+      } } };
+      expect((await receive(row, paid)).status).toBe(200);
+      expect((await receive(row, paid)).json.duplicate).toBe(true);
+      const decided = (await db.query("select state,wait_event,resume_data from automation_runs where id=$1", [run.id])).rows[0];
+      expect(decided).toMatchObject({ state: "ready", wait_event: null });
+      expect(decided.resume_data).toBeTruthy();
+      expect((await db.query("select properties from contacts where email='paused-receiver@example.com'")).rows[0].properties.plan).toBe("paid");
+      expect((await db.query("select id from custom_events where name='stripe.invoice.payment_failed'")).rows).toHaveLength(2);
+      expect((await db.query("select id from custom_events where name='stripe.invoice.paid'")).rows).toHaveLength(1);
+      expect(await flowRuns(automationId)).toHaveLength(1);
+      expect(await claimAutomationRuns(db, 20)).toEqual([]);
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect((await db.query("select state,wait_event,resume_data from automation_runs where id=$1", [run.id])).rows[0]).toEqual(decided);
+      expect((await call(fullKey, "PATCH", `/automations/${automationId}`, { status: "enabled" })).status).toBe(200);
+      expect(await flowRuns(automationId)).toHaveLength(1);
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect((await db.query("select state,exit_reason from automation_runs where id=$1", [run.id])).rows[0])
+        .toEqual({ state: "done", exit_reason: "exit" });
+      expect((await db.query("select id from emails where automation_id=$1", [automationId])).rows).toHaveLength(1);
+      expect(await flowRuns(automationId)).toHaveLength(1);
     });
   });
   describe("signup forms confirmation", () => {
@@ -1980,9 +2120,10 @@ describe.skipIf(!live)("accept", () => {
     const connections = [{ from: "start", to: "send" }];
     async function fixture(kind = "transactional", topic_id?: string) {
       const template = await post(fullKey, "/templates", { name: "Kind", subject: "Kind", text: "Hello", publish: true });
-      const steps = [start, { key: "send", type: "send_email", config: {
+      const send = { key: "send", type: "send_email", config: {
         kind, from: "hello@dispatch-fixture.net", template: template.json.id, ...(topic_id ? { topic_id } : {}),
-      } }];
+      } };
+      const steps: [typeof start, typeof send] = [start, send];
       return { template: template.json, steps, connections };
     }
     async function run(flow: any, email = "kind@dispatch-fixture.net") {
