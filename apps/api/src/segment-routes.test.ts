@@ -11,6 +11,9 @@ const contact = { id: "contact_1", email: "a@fixture.net", first_name: null, las
 
 async function fixture() {
   const query = vi.fn(async (sql: string, _params?: unknown[]) => {
+    if (sql.startsWith("insert into segments")) return { rows: [{
+      id: _params![0], name: _params![2], description: null, rule: null, created_at: timestamp, updated_at: timestamp,
+    }] };
     if (sql.includes("from contact_properties")) return { rows: [{ key: "score", type: "number" }] };
     if (sql.includes("from segments") && !sql.includes("join")) return { rows: [{
       id: "segment_1", name: "Filter", description: null, rule, created_at: timestamp, updated_at: timestamp,
@@ -36,6 +39,18 @@ async function fixture() {
 }
 
 describe("dynamic segment route wiring", () => {
+  it.each([undefined, null])("binds SQL NULL, not JSON null, for static creation with rule %s", async (value) => {
+    const { app, query } = await fixture();
+    try {
+      const response = await app.inject({ method: "POST", url: "/segments", payload: {
+        name: "Static", ...(value === undefined ? {} : { rule: value }),
+      } });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toMatchObject({ type: "static", rule: null });
+      const insertion = query.mock.calls.find(([sql]) => sql.startsWith("insert into segments"))!;
+      expect(insertion[1]![4]).toBeNull();
+    } finally { await app.close(); }
+  });
   it("presents typed preview samples from the single-statement helper", async () => {
     const { app, query } = await fixture();
     try {

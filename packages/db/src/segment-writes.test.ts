@@ -35,9 +35,13 @@ describe("segment write locks", () => {
     const converted = database([[row], [], [{ ...row, rule: null }]]);
     expect((await updateSegment(converted.db, "t", "s", { rule: null })).rule).toBeNull();
     expect(converted.query.mock.calls[1]).toEqual(["delete from segment_contacts where tenant_id = $1 and segment_id = $2", ["t", "s"]]);
+    expect((converted.query.mock.calls[2] as unknown[])[1]).toEqual(["t", "s", "Filter", null, null]);
     const renamed = database([[row], [{ ...row, name: "Renamed" }]]);
     await updateSegment(renamed.db, "t", "s", { name: "Renamed" });
     expect((renamed.query.mock.calls[1] as unknown[])[1]).toEqual(["t", "s", "Renamed", null, JSON.stringify(rule)]);
+    const staticRenamed = database([[{ ...row, rule: null }], [{ ...row, rule: null }]]);
+    await updateSegment(staticRenamed.db, "t", "s", { name: "Still static" });
+    expect((staticRenamed.query.mock.calls[1] as unknown[])[1]).toEqual(["t", "s", "Still static", null, null]);
   });
   it("refuses unresolved saved engagement on automation enable", async () => {
     const { db, query } = database([]);

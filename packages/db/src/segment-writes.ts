@@ -58,11 +58,12 @@ export async function updateSegment(db: Queryable, tenantId: string, segmentId: 
   }
   if (input.rule === null && current.rule != null)
     await db.query("delete from segment_contacts where tenant_id = $1 and segment_id = $2", [tenantId, segmentId]);
+  const nextRule = input.rule === undefined ? current.rule : input.rule;
   const updated = await db.query<SegmentRow>(
     `update segments set name = $3, description = $4, rule = $5::jsonb, updated_at = clock_timestamp()
      where tenant_id = $1 and id = $2 and deleted_at is null returning ${segmentColumns}`,
     [tenantId, segmentId, input.name ?? current.name, input.description ?? current.description,
-      JSON.stringify(input.rule === undefined ? current.rule : input.rule)],
+      nextRule == null ? null : JSON.stringify(nextRule)],
   );
   return updated.rows[0]!;
 }

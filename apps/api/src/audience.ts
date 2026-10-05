@@ -422,7 +422,7 @@ export function registerAudience(
       const row = await client.query(
         `insert into segments (id, tenant_id, name, description, rule)
          values ($1, $2, $3, $4, $5::jsonb) returning ${segmentColumns}`,
-        [id("segment"), request.auth!.tenant_id, input.name, input.description ?? null, JSON.stringify(input.rule ?? null)],
+        [id("segment"), request.auth!.tenant_id, input.name, input.description ?? null, input.rule == null ? null : JSON.stringify(input.rule)],
       );
       return presentSegment(row.rows[0]);
     });
