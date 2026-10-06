@@ -5,6 +5,7 @@ import { errorMessage } from "../../lib/client";
 import { confirmationClient } from "../../lib/confirmation";
 import type { Confirmation } from "../../types";
 import { ConfirmCard } from "./Confirm";
+import { textColor } from "./Preferences";
 import "../../styles/public.css";
 
 type State =
@@ -90,11 +91,12 @@ function ConfirmationPage({ token }: { token: string }) {
   }
 
   const { brand, form_name } = state.data;
+  const text = textColor(brand.background_color);
   const style = {
     backgroundColor: brand.background_color,
     "--surface": brand.background_color,
-    "--text": brand.text_color,
-    "--text-muted": brand.text_color,
+    "--text": text,
+    "--text-muted": text,
   } as CSSProperties;
   return (
     <div className="publicPage" style={style}>

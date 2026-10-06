@@ -41,6 +41,66 @@ describe("ConfirmPage", () => {
     vi.unstubAllGlobals();
   });
 
+  describe.each([
+    ["#ffffff", "#ff0055", "#ffffff", "#000000"],
+    ["#18181b", "#facc15", "#000000", "#ffffff"],
+  ])("page text on %s stays independent of button branding", (background, primary, foreground, text) => {
+    const branded: Confirmation = {
+      ...page,
+      brand: { ...page.brand, background_color: background, primary_color: primary, text_color: foreground },
+    };
+
+    function expectColors() {
+      const root = document.querySelector<HTMLElement>(".publicPage")!;
+      const card = document.querySelector<HTMLFormElement>(".publicCard")!;
+      expect(root.style.getPropertyValue("--surface")).toBe(background);
+      expect(root.style.getPropertyValue("--text")).toBe(text);
+      expect(root.style.getPropertyValue("--text-muted")).toBe(text);
+      expect(card.style.getPropertyValue("--brand")).toBe(primary);
+      expect(card.style.getPropertyValue("--brand-text")).toBe(foreground);
+    }
+
+    it("keeps ready, busy and done copy readable without changing deliberate confirmation", async () => {
+      let finish!: (reply: Reply) => void;
+      const fetch = mockFetch((_url, init) => init.method === "POST"
+        ? new Promise<Reply>((resolve) => { finish = resolve; })
+        : { body: branded });
+      show();
+      const button = await screen.findByRole("button", { name: "Confirm" });
+      expect(screen.getByText("Acme")).toBeTruthy();
+      expect(screen.getByText("Confirm your subscription.")).toBeTruthy();
+      expect((button as HTMLButtonElement).disabled).toBe(false);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(callAt(fetch).init.method).not.toBe("POST");
+      expectColors();
+
+      fireEvent.click(button);
+      expect(screen.getByRole("status").textContent).toBe("Confirming…");
+      expect((button as HTMLButtonElement).disabled).toBe(true);
+      expectColors();
+      fireEvent.submit(button.closest("form")!);
+      expect(fetch.mock.calls.filter(([, init]) => init?.method === "POST")).toHaveLength(1);
+
+      finish({ body: { object: "confirmation", confirmed: true, redirect_url: null } });
+      await screen.findByText("Thank you! Your subscription is confirmed.");
+      expect(screen.queryByRole("button")).toBeNull();
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expectColors();
+    });
+
+    it("keeps already-confirmed copy readable without posting or redirecting", async () => {
+      const assign = navigation();
+      const fetch = mockFetch(() => ({ body: { ...branded, confirmed: true } }));
+      show();
+      await screen.findByText("Thank you! Your subscription is confirmed.");
+      expect(screen.queryByRole("button")).toBeNull();
+      expectColors();
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(callAt(fetch).init.method).not.toBe("POST");
+      expect(assign).not.toHaveBeenCalled();
+    });
+  });
+
   it("loads branding without a session and never posts on mount or rerender", async () => {
     const fetch = mockFetch(() => ({ body: page }));
     const view = show("/confirm/tok%2Fen?redirect_url=https://untrusted.example", true);

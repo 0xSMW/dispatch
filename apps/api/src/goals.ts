@@ -6,7 +6,7 @@ export function registerGoals(app: FastifyInstance, deps: { db: Db; paging: (req
   const { db, paging } = deps;
   app.get("/goals", async (request) => {
     const page = await paginate<Awaited<ReturnType<typeof getGoal>>>(db,
-      { table: "goals", tenantId: request.auth!.tenant_id, select: goalColumns }, paging(request));
+      { table: "goals", tenantId: request.auth!.tenant_id, select: goalColumns, deletedCol: "deleted_at" }, paging(request));
     return { ...page, data: page.data.map(presentGoal) };
   });
   app.post("/goals", async (request) => presentGoal(await retryTx(db,

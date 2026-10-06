@@ -9,6 +9,64 @@ import { hideLinks, logBodies, redact } from "./logs.js";
 const form = { ...formSchema.parse({ name: "News", topic_ids: ["topic_1"], properties: ["active", "score"],
   from_email: "hello@example.com", allowed_origins: ["https://customer.example"] }), tenant_id: "tenant_1" } as FormRecord;
 const db = { query: vi.fn(async () => ({ rows: [{ key: "active", type: "boolean" }, { key: "score", type: "number" }] })) } as unknown as Queryable;
+it("lists only live tenant forms across forward and backward page boundaries with public shapes", async () => {
+  const id = (n: number) => `form_${String(n).padStart(2, "0")}`;
+  const rows: FormRecord[] = [1, 2, 4, 5, 6, 7, 8, 9].map(n => ({
+    ...form, id: id(n), key: `public-key-${n}`, tenant_id: n === 5 ? "tenant_other" : "tenant_1",
+    created_at: n >= 5 ? "2026-10-05T00:00:00Z" : "2026-10-04T00:00:00Z",
+    updated_at: "2026-10-05T00:00:00Z", deleted_at: [2, 7, 9].includes(n) ? "2026-10-06T00:00:00Z" : null,
+  }));
+  const compare = (a: FormRecord, b: FormRecord) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id);
+  // Model only this list query; pagination SQL and presentation are the real route's implementations.
+  const query = vi.fn(async (raw: string, params: unknown[]) => {
+    const sql = raw.replace(/\s+/g, " ");
+    expect(sql).toContain(" from forms where tenant_id = $1 and deleted_at is null");
+    const backward = sql.includes("order by created_at asc, id asc");
+    const direction = backward ? "asc" : "desc";
+    expect(sql).toContain(`order by created_at ${direction}, id ${direction} limit $${params.length}`);
+    let matches = rows.filter(entry => entry.tenant_id === params[0] && entry.deleted_at === null);
+    if (params.length === 3) {
+      expect(sql).toContain(`(created_at, id) ${backward ? ">" : "<"} ( select created_at, id from forms where tenant_id = $1 and id = $2 limit 1 )`);
+      const cursor = rows.find(entry => entry.tenant_id === params[0] && entry.id === params[1]);
+      matches = cursor ? matches.filter(entry => backward ? compare(entry, cursor) > 0 : compare(entry, cursor) < 0) : [];
+    }
+    return { rows: matches.sort((a, b) => (backward ? 1 : -1) * compare(a, b)).slice(0, Number(params.at(-1))) };
+  });
+  const app = Fastify();
+  app.addHook("preHandler", async request => { request.auth = { tenant_id: "tenant_1", api_key_id: "key_1", scope: "full" }; });
+  registerForms(app, { db: { query } as unknown as Db, secret: "offline", appUrl: "https://app.example", publicUrl: "https://api.example",
+    paging: request => {
+      const { limit, after, before } = request.query as { limit?: string; after?: string; before?: string };
+      return { limit: Number(limit ?? 20), after, before };
+    } });
+  try {
+    for (const { search, ids, has_more } of [
+      { search: "limit=2", ids: [8, 6], has_more: true },
+      { search: `limit=2&after=${id(6)}`, ids: [4, 1], has_more: false },
+      { search: `limit=2&before=${id(1)}`, ids: [6, 4], has_more: true },
+      { search: `limit=2&before=${id(4)}`, ids: [8, 6], has_more: false },
+      { search: `limit=1&after=${id(8)}`, ids: [6], has_more: true },
+      { search: `limit=2&after=${id(1)}`, ids: [], has_more: false },
+      { search: `limit=2&after=${id(5)}`, ids: [], has_more: false },
+      { search: `limit=2&after=${id(7)}`, ids: [6, 4], has_more: true },
+    ]) {
+      const response = await app.inject(`/forms?${search}`);
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ object: "list", has_more, data: ids.map(n => {
+        const { tenant_id: _tenant, deleted_at: _deleted, ...entry } = rows.find(entry => entry.id === id(n))!;
+        return { ...entry, object: "form", created_at: new Date(entry.created_at).toISOString(), updated_at: new Date(entry.updated_at).toISOString() };
+      }) });
+      const params = new URLSearchParams(search);
+      const cursor = params.get("after") ?? params.get("before");
+      expect(query).toHaveBeenLastCalledWith(expect.any(String), ["tenant_1", ...(cursor ? [cursor] : []), Number(params.get("limit")) + 1]);
+    }
+    const calls = query.mock.calls.length;
+    for (const search of ["limit=0", "limit=101", `limit=2&after=${id(8)}&before=${id(4)}`])
+      expect((await app.inject(`/forms?${search}`)).statusCode).toBe(400);
+    expect(query.mock.calls).toHaveLength(calls);
+  } finally { await app.close(); }
+});
+
 describe("public form guards", () => {
   it("requires exact form origins and a blank website honeypot", () => {
     expect(formOrigin(form, "https://customer.example")).toBe(true);

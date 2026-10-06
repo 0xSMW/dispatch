@@ -14,7 +14,7 @@ export function registerIntegrations(app: FastifyInstance, deps: {
     ...result.integration, token: result.token, url: `${publicUrl.replace(/\/$/, "")}/inbound/${encodeURIComponent(result.token)}`,
   });
   app.get("/integrations", async (request) => {
-    const page = await paginate<IntegrationRecord>(db, { table: "integrations", tenantId: request.auth!.tenant_id, select: integrationColumns }, paging(request));
+    const page = await paginate<IntegrationRecord>(db, { table: "integrations", tenantId: request.auth!.tenant_id, select: integrationColumns, deletedCol: "deleted_at" }, paging(request));
     return { ...page, data: page.data.map(presentIntegration) };
   });
   app.post("/integrations", async (request, reply) => {

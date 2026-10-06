@@ -47,7 +47,7 @@ export function registerForms(app: FastifyInstance, deps: {
 }) {
   const { db, paging, secret, appUrl, publicUrl } = deps;
   app.get("/forms", async (request) => {
-    const page = await paginate<FormRecord>(db, { table: "forms", tenantId: request.auth!.tenant_id, select: formColumns }, paging(request));
+    const page = await paginate<FormRecord>(db, { table: "forms", tenantId: request.auth!.tenant_id, select: formColumns, deletedCol: "deleted_at" }, paging(request));
     return { ...page, data: page.data.map(presentForm) };
   });
   app.post("/forms", async (request) =>
