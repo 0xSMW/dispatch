@@ -1,6 +1,7 @@
 import { Readable } from "node:stream";
 import { describe, expect, it, vi } from "vitest";
 import type { ContactRow, Db, ImportRow } from "@dispatchmail/db";
+import type { Rule } from "@dispatchmail/core";
 import { mapRecord, resolveColumns, runImport, startImports } from "./imports.js";
 
 type Query = { sql: string; params: unknown[] };
@@ -15,6 +16,7 @@ type ImportState = Pick<ImportRow, "status" | "counts"> & {
 // Full contact state is returned at each phase: inserts, locked conflict reads, and updates.
 function fakeDb(existing: Array<string | (ContactRow & { deleted_at?: string | null })> = [], options: {
   definitions?: Array<{ key: string; type: string }>;
+  segmentRule?: Rule | null;
   deadlocks?: number;
   deadlockOffset?: number;
   afterRollback?: (current: ImportState) => void;
@@ -38,6 +40,11 @@ function fakeDb(existing: Array<string | (ContactRow & { deleted_at?: string | n
       options.afterRollback?.(current);
     }
     if (sql.includes("from contact_properties")) return { rows: options.definitions ?? [{ key: "seats", type: "number" }], rowCount: 1 };
+    if (sql === "select id, rule from segments where tenant_id = $1 and id = $2 and deleted_at is null for update") {
+      const rows = params.length === 2 && params[0] === "tenant_1" && params[1] === "segment_1"
+        ? [{ id: "segment_1", rule: options.segmentRule ?? null }] : [];
+      return { rows, rowCount: rows.length };
+    }
     if (sql.includes("insert into contacts")) {
       const emails = params[2] as string[];
       const ids = params[0] as string[];
@@ -338,15 +345,39 @@ describe("contact import", () => {
   });
 
   it("adds imported contacts to segments and topics", async () => {
-    const { db, queries } = fakeDb();
+    const { db, queries, current } = fakeDb();
     const csv = ["email", "a@example.com"].join("\n");
-    await runImport(db, storage(csv), job({ segments: [{ id: "segment_1" }], topics: [{ id: "topic_1", subscription: "opt_out" }] }));
+    const counts = await runImport(db, storage(csv), job({ segments: [{ id: "segment_1" }], topics: [{ id: "topic_1", subscription: "opt_out" }] }));
+    expect(counts).toEqual({ total: 1, created: 1, updated: 0, skipped: 0, failed: 0 });
+    expect(current.status).toBe("completed");
+    const lock = queries.findIndex((query) => query.sql === "select id, rule from segments where tenant_id = $1 and id = $2 and deleted_at is null for update");
+    expect(lock).toBeGreaterThan(-1);
+    expect(queries[lock].params).toEqual(["tenant_1", "segment_1"]);
+    expect(lock).toBeLessThan(queries.findIndex((query) => query.sql.includes("insert into contacts")));
     const segment = queries.find((query) => query.sql.includes("insert into segment_contacts"))!;
     expect(segment.params[2]).toEqual(["segment_1"]);
     const topic = queries.find((query) => query.sql.includes("insert into topic_subscriptions"))!;
     expect(topic.params[4]).toEqual(["unsubscribed"]);
     // An existing opt-out is never turned back into an opt-in by an import.
     expect(topic.sql).toContain("where not (topic_subscriptions.status = 'unsubscribed' and excluded.status = 'subscribed')");
+  });
+
+  it.each([
+    { tenantId: "tenant_1", segmentId: "missing", rule: null, error: "Segment not found" },
+    { tenantId: "other_tenant", segmentId: "segment_1", rule: null, error: "Segment not found" },
+    { tenantId: "tenant_1", segmentId: "segment_1", rule: { type: "rule", field: "contact.email", operator: "eq", value: "a@example.com" } as Rule,
+      error: "Dynamic segments do not accept membership writes" },
+  ])("fails an import with an invalid segment target $tenantId/$segmentId ($error) before audience writes", async ({ tenantId, segmentId, rule, error }) => {
+    const { db, queries, current, known } = fakeDb([], { segmentRule: rule });
+    await runImport(db, storage("email\na@example.com"), job({
+      tenant_id: tenantId, segments: [{ id: segmentId }], topics: [{ id: "topic_1", subscription: "opt_in" }], trigger_automations: true,
+    }));
+    expect(current.status).toBe("failed");
+    const finish = queries.find((query) => query.sql.includes("set status = $2"))!;
+    expect(finish.params[3]).toBe(error);
+    expect(known.size).toBe(0);
+    expect(queries.filter((query) => /^\s*(insert|update|delete)\b/i.test(query.sql) && !query.sql.includes("contact_imports"))).toEqual([]);
+    expect(savedCounts(queries)).toEqual([]);
   });
 
   it.each([false, true])("records imported contact history and gates bulk entry using the persisted flag %s", async (trigger_automations) => {

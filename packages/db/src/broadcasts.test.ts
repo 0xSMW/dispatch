@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import type { Rule } from "@dispatchmail/core";
+import type { Queryable } from "./index.js";
 import {
   broadcastAudience,
   broadcastStatus,
@@ -21,13 +23,11 @@ import {
 
 function client(handler: (sql: string, params: unknown[]) => { rows: unknown[]; rowCount?: number }) {
   const queries: Array<{ sql: string; params: unknown[] }> = [];
-  return {
-    queries,
-    query: vi.fn(async (sql: string, params: unknown[] = []) => {
-      queries.push({ sql, params });
-      return handler(sql, params);
-    }),
-  };
+  const query = vi.fn(async (sql: string, params: unknown[] = []) => {
+    queries.push({ sql, params });
+    return handler(sql, params);
+  });
+  return { queries, query } as unknown as Queryable & { queries: typeof queries; query: typeof query };
 }
 
 const row: BroadcastRow = {
@@ -306,18 +306,68 @@ describe("recipients and clicked links", () => {
 
   it("counts who a send would reach and why the rest are left out", async () => {
     const counts = { total: 10, recipients: 6, unsubscribed: 2, suppressed: 1, opted_out: 1, no_first_name: 3, no_last_name: 4 };
-    const db = client(() => ({ rows: [counts] }));
+    const db = client((sql, params) => {
+      if (sql === "select rule from segments where tenant_id = $1 and id = $2 and deleted_at is null") {
+        expect(params).toEqual(["tenant_1", "segment_1"]);
+        return { rows: [{ rule: null }] };
+      }
+      if (sql === "select key, type from contact_properties where tenant_id = $1 and deleted_at is null") {
+        expect(params).toEqual(["tenant_1"]);
+        return { rows: [{ key: "plan", type: "string" }] };
+      }
+      if (sql.includes("count(*)::integer as total")) return { rows: [counts] };
+      throw new Error(`Unexpected audience query: ${sql}`);
+    });
     const audience = await broadcastAudience(db, "tenant_1", { segmentId: "segment_1", topicId: null });
     expect(audience).toEqual({ object: "broadcast_audience", ...counts });
-    expect(db.queries[0].params).toEqual(["tenant_1", "segment_1", null]);
-    expect(db.queries[0].sql).toContain("lower(sup.email) = lower(c.email)");
-    expect(db.queries[0].sql).toContain("c.deleted_at is null");
+    const aggregate = db.queries.find((query) => query.sql.includes("count(*)::integer as total"))!;
+    expect(aggregate.params).toEqual(["tenant_1", "segment_1", null, "segment_1"]);
+    expect(aggregate.sql).toContain("lower(sup.email) = lower(c.email)");
+    expect(aggregate.sql).toContain("sup.removed_at is null");
+    expect(aggregate.sql).toContain("c.deleted_at is null");
+    expect(aggregate.sql).toContain("s.deleted_at is null");
+    expect(aggregate.sql).toContain("s.rule is null");
+    expect(aggregate.sql).toContain("s.id = $4::text");
+    expect(aggregate.sql).toContain("t.deleted_at is null");
+    expect(aggregate.sql).toContain("t.default_status = 'unsubscribed' and s.status = 'subscribed'");
     // The name counts are of recipients only, and an empty name counts as none.
-    expect(db.queries[0].sql).toContain("topic_ok and no_first_name");
-    expect(db.queries[0].sql).toContain("coalesce(trim(c.first_name), '') = ''");
+    expect(aggregate.sql).toContain("topic_ok and no_first_name");
+    expect(aggregate.sql).toContain("coalesce(trim(c.first_name), '') = ''");
+    expect(aggregate.sql).toContain("coalesce(trim(c.last_name), '') = ''");
 
     const empty = client(() => ({ rows: [] }));
     expect((await broadcastAudience(empty, "tenant_1", { segmentId: null, topicId: null })).recipients).toBe(0);
+  });
+
+  it.each([
+    { depth: 5, conditions: 1, error: null },
+    { depth: 6, conditions: 1, error: "Segment rules can nest at most 5 levels" },
+    { depth: 2, conditions: 20, error: null },
+    { depth: 2, conditions: 21, error: "Segment rules can hold at most 20 conditions" },
+  ])("enforces audience rule limits at $depth levels and $conditions conditions", async ({ depth, conditions, error }) => {
+    const leaf: Rule = { type: "rule", field: "contact.plan", operator: "eq", value: "pro" };
+    let rule: Rule = { type: "and", rules: Array.from({ length: conditions }, () => leaf) };
+    for (let level = 2; level < depth; level++) rule = { type: "and", rules: [rule] };
+    const db = client((sql, params) => {
+      if (sql === "select rule from segments where tenant_id = $1 and id = $2 and deleted_at is null") {
+        expect(params).toEqual(["tenant_1", "segment_1"]);
+        return { rows: [{ rule }] };
+      }
+      if (sql === "select key, type from contact_properties where tenant_id = $1 and deleted_at is null") {
+        expect(params).toEqual(["tenant_1"]);
+        return { rows: [{ key: "plan", type: "string" }] };
+      }
+      if (sql.includes("count(*)::integer as total")) return { rows: [] };
+      throw new Error(`Unexpected audience query: ${sql}`);
+    });
+    const audience = broadcastAudience(db, "tenant_1", { segmentId: "segment_1", topicId: null });
+    if (error) {
+      await expect(audience).rejects.toThrow(error);
+      expect(db.queries.some((query) => query.sql.includes("count(*)::integer as total"))).toBe(false);
+    } else {
+      await expect(audience).resolves.toMatchObject({ object: "broadcast_audience", recipients: 0 });
+      expect(db.queries.filter((query) => query.sql.includes("count(*)::integer as total"))).toHaveLength(1);
+    }
   });
 
   it("rejects an unknown type", () => {

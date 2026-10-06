@@ -8,6 +8,7 @@ import { domainCsv } from "./domains/Domains";
 import { keyCsv } from "./keys/Keys";
 import { webhookCsv } from "./webhooks/Webhooks";
 import * as tabs from "./tabs";
+import type { Segment } from "../types";
 
 // The CSV export each list page offers.
 describe("list exports", () => {
@@ -16,12 +17,30 @@ describe("list exports", () => {
     expect(Object.values(tabs).flat().some((tab) => tab.to === "/automations/events")).toBe(false);
   });
   it("writes a header row and one line per row", () => {
-    expect(toCsv([{ id: "seg_1", name: "VIP, gold", contacts: 3, created_at: "2026-09-01" }] as never[], segmentCsv)).toBe(
-      'id,name,contacts,created_at\r\nseg_1,"VIP, gold",3,2026-09-01\r\n',
+    const rows: Segment[] = [{ object: "segment", id: "seg_1", name: 'VIP, "gold"\r\nmembers', type: "static", rule: null,
+      contacts: 3, created_at: "2026-09-01", updated_at: "2026-09-01" }];
+    expect(toCsv(rows, segmentCsv)).toBe(
+      'id,name,type,contacts,created_at\r\nseg_1,"VIP, ""gold""\r\nmembers",static,3,2026-09-01\r\n',
+    );
+  });
+
+  it("leaves dynamic and unavailable contact counts blank rather than zero", () => {
+    const rows: Segment[] = [
+      { object: "segment", id: "seg_dynamic", name: "Live", type: "dynamic",
+        rule: { type: "rule", field: "contact.email", operator: "eq", value: "a@example.com" }, contacts: null,
+        created_at: "2026-09-01", updated_at: "2026-09-01" },
+      { object: "segment", id: "seg_unavailable", name: "Unavailable", type: "static", rule: null,
+        created_at: "2026-09-01", updated_at: "2026-09-01" },
+      { object: "segment", id: "seg_empty", name: "Empty", type: "static", rule: null, contacts: 0,
+        created_at: "2026-09-01", updated_at: "2026-09-01" },
+    ];
+    expect(toCsv(rows, segmentCsv)).toBe(
+      "id,name,type,contacts,created_at\r\nseg_dynamic,Live,dynamic,,2026-09-01\r\nseg_unavailable,Unavailable,static,,2026-09-01\r\nseg_empty,Empty,static,0,2026-09-01\r\n",
     );
   });
 
   it("covers the columns each page shows", () => {
+    expect(segmentCsv.map((column) => column.header)).toEqual(["id", "name", "type", "contacts", "created_at"]);
     expect(broadcastCsv.map((column) => column.header)).toEqual(["id", "name", "status", "segment_id", "scheduled_at", "sent_at", "created_at"]);
     expect(keyCsv.map((column) => column.header)).toEqual(["id", "name", "token", "permission", "domain_id", "last_used_at", "created_at"]);
     expect(webhookCsv.map((column) => column.value({ events: ["email.sent", "email.delivered"] } as never))[3]).toBe("email.sent email.delivered");

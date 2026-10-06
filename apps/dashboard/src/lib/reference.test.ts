@@ -20,7 +20,7 @@ describe("API reference", () => {
     vi.stubGlobal("fetch", fetch);
     const dispatch = new Dispatch({ apiKey: "reference_test", baseUrl: apiUrl });
     const owned = calls.filter(call => /^\/forms(?:\/|\?|$)|\/segments\/preview|\/segments\/segment_123|\/steps\/split_123\/|\/goals\/goal_123\/metrics/.test(call.path));
-    expect(owned).toHaveLength(12);
+    expect(owned).toHaveLength(13);
     for (const call of owned) {
       fetch.mockClear();
       await new Function("dispatch", `return ${call.sdk}`)(dispatch);
@@ -94,6 +94,31 @@ describe("API reference", () => {
   it("covers every signed-in route", () => {
     expect(routes.length).toBeGreaterThan(30);
     expect(routes.filter((path) => !(`/${path}` in references))).toEqual([]);
+  });
+
+  it("uses concrete ids in every static Goals and Integrations example", () => {
+    const goals = referenceFor("/goals")!;
+    expect(goals.calls.map(({ method, path, sdk }) => ({ method, path, sdk }))).toEqual([
+      { method: "GET", path: "/goals?limit=40", sdk: "dispatch.goals.list({ limit: 40 })" },
+      { method: "POST", path: "/goals", sdk: 'dispatch.goals.create({ name: "Upgrade", target: { event: "upgraded" }, windowDays: 30 })' },
+      { method: "GET", path: "/goals/goal_123", sdk: 'dispatch.goals.get("goal_123")' },
+      { method: "PATCH", path: "/goals/goal_123", sdk: 'dispatch.goals.update("goal_123", { eligibility: null })' },
+      { method: "DELETE", path: "/goals/goal_123", sdk: 'dispatch.goals.remove("goal_123")' },
+      { method: "GET", path: "/goals/goal_123/metrics?broadcast_id=broadcast_123", sdk: 'dispatch.goals.metrics("goal_123", { broadcastId: "broadcast_123" })' },
+    ]);
+    const integrations = referenceFor("/settings/integrations")!;
+    expect(integrations.calls.map(({ method, path, sdk }) => ({ method, path, sdk }))).toEqual([
+      { method: "GET", path: "/integrations", sdk: "dispatch.integrations.list()" },
+      { method: "POST", path: "/integrations", sdk: 'dispatch.integrations.create({ provider: "webhook", name: "App", secret: "SIGNING_SECRET" })' },
+      { method: "GET", path: "/integrations/integration_123/deliveries?limit=20", sdk: 'dispatch.integrations.deliveries("integration_123", { limit: 20 })' },
+      { method: "POST", path: "/integrations/integration_123/rotate", sdk: 'dispatch.integrations.rotate("integration_123")' },
+    ]);
+    for (const call of [...goals.calls, ...integrations.calls]) {
+      for (const example of [call.path, call.sdk, curl(call, apiUrl), sdk(call, apiUrl), python(call, apiUrl), go(call, apiUrl)]) {
+        expect(example).not.toBeNull();
+        expect(example).not.toMatch(/:id|%(?:25)*3aid/i);
+      }
+    }
   });
 
   it("fills route params into paths and SDK calls", () => {
@@ -204,7 +229,7 @@ print(json.dumps(requests))
   });
 
   it("uses actual Go method names and syntactically valid complete programs", () => {
-    const client = ["client.go", "forms.go", "goals.go"]
+    const client = ["client.go", "forms.go", "goals.go", "integrations.go"]
       .map(file => readFileSync(new URL(`../../../../packages/sdk-go/${file}`, import.meta.url), "utf8")).join("\n");
     for (const call of calls) {
       const code = go(call, apiUrl);

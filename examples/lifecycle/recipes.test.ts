@@ -4,10 +4,10 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import ts from "typescript";
 import { Dispatch } from "../../packages/sdk/src/index.js";
+import library from "../../packages/templates/library.json";
 import * as recipes from "./recipes.js";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
-const library = JSON.parse(readFileSync(resolve(root, "packages/templates/library.json"), "utf8"));
 const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; vi.restoreAllMocks(); });
 
@@ -176,9 +176,33 @@ describe("public lifecycle recipe contracts", () => {
 
   it.each(library.automations)("documents $slug with the exact shipped graph and SDK producer", (preset) => {
     const text = readFileSync(resolve(root, `docs/automations/${preset.slug}.md`), "utf8");
-    for (const heading of ["Goal", "App-owned state and events", "Trigger and re-entry",
-      "Ordered graph and freshness", "Install, review, enable", "App calls", "Ask your agent"]) {
+    const failedPayment = preset.slug === "failed-payment";
+    const stateHeading = failedPayment ? "State and event ownership" : "App-owned state and events";
+    const callsHeading = failedPayment ? "Manual app-event alternative" : "App calls";
+    for (const heading of ["Goal", stateHeading, "Trigger and re-entry",
+      "Ordered graph and freshness", "Install, review, enable", callsHeading, "Ask your agent"]) {
       expect(text).toContain(`## ${heading}`);
+    }
+    if (failedPayment) {
+      const headings = ["Goal", "Connect the Stripe receiver first", stateHeading, "Trigger and re-entry",
+        "Ordered graph and freshness", "Install, review, enable", callsHeading, "Ask your agent"];
+      const positions = headings.map(heading => text.indexOf(`## ${heading}\n`));
+      expect(positions.every(position => position >= 0)).toBe(true);
+      expect(positions).toEqual([...positions].sort((a, b) => a - b));
+      const receiver = text.split("## Connect the Stripe receiver first\n")[1].split("## State and event ownership\n")[0];
+      expect(receiver).toContain("Create a Stripe integration");
+      expect(receiver).toContain("`invoice.payment_failed` and `invoice.paid`");
+      expect(receiver).toContain("**Receiver `UPDATE_PAYMENT_URL` comes from `hosted_invoice_url`**");
+      expect(receiver).toContain("Receiver creation does not install or enable this preset");
+      const ownership = text.split("## State and event ownership\n")[1].split("## Trigger and re-entry\n")[0];
+      expect(ownership).toContain("Your app owns deduplication, ordering and billing truth");
+      expect(ownership).toContain("Do not produce the same business event manually and through the receiver without duplicate prevention");
+      const manual = text.split("## Manual app-event alternative\n")[1].split("## Ask your agent\n")[0];
+      expect(manual).toContain("export async function paymentFailed(");
+      expect(manual).toContain("export async function invoicePaid(");
+      expect(manual).toContain("an app-owned billing-portal card-update link");
+      expect(manual).toContain("These calls are the manual alternative to the receiver, not SDK integration-management methods");
+      expect(manual).toContain("The preset installs no receiver");
     }
     expect(text).toContain(`Re-entry: \`${preset.reentry}\``);
     const rows = text.split("\n").filter(line => /^\| `/.test(line));
@@ -190,7 +214,7 @@ describe("public lifecycle recipe contracts", () => {
       if (!edges.length) expect(rows[index]).toContain("| End |");
     });
     const source = readFileSync(resolve(root, "examples/lifecycle/recipes.ts"), "utf8");
-    const appBlock = text.split("## App calls")[1].match(/```ts\n([\s\S]*?)\n```/)![1];
+    const appBlock = text.split(`## ${callsHeading}\n`)[1].match(/```ts\n([\s\S]*?)\n```/)![1];
     for (const fn of appBlock.matchAll(/export async function [\s\S]*?^}/gm)) expect(source).toContain(fn[0]);
     expect(text).toContain("never overwritten");
     expect(text).toContain("scope following");

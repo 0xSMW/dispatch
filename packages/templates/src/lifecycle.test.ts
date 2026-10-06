@@ -1,4 +1,4 @@
-import { renderTemplate, reservedVariables, templateSchema } from "@dispatchmail/core";
+import { emailFonts, renderTemplate, reservedVariables, templateSchema, themeContext } from "@dispatchmail/core";
 import { describe, expect, it } from "vitest";
 import library from "../library.json";
 import {
@@ -30,6 +30,7 @@ const brand = {
   LOGO_URL: "",
   BRAND_COLOR: "#18181b",
   BRAND_TEXT_COLOR: "#ffffff",
+  ...themeContext({ color: "#18181b" }),
   SUPPORT_EMAIL: "support@acme.example",
   SUPPORT_URL: "https://acme.example/support",
   PRIVACY_URL: "https://acme.example/privacy",
@@ -134,6 +135,50 @@ describe("lifecycle sources and metadata", () => {
     }
     expect(stages).toEqual(["acquisition", "onboarding", "retention", "reengagement", "dunning", "reactivation"]);
     expect(new Set(library.templates.map((item) => item.slug)).size).toBe(25);
+  });
+
+  it.each(["setup-reminder", "confirm-subscription"])("%s renders the canonical default theme CSS", (slug) => {
+    const rendered = renderTemplate(entry(slug), { CONFIRM_URL: "https://acme.example/confirm/token" }, brand);
+    for (const css of [
+      "background-color:#f4f4f5", "background-color:#ffffff", "color:#18181b",
+      "border:1px solid #e4e4e7", "font-size:16px", "border-radius:8px",
+      "background-color:#18181b;border-radius:8px;border:1px solid #18181b;color:#ffffff",
+    ]) {
+      expect(rendered.html).toContain(css);
+    }
+    expect(rendered.html).toContain("font-family:-apple-system");
+    expect(rendered.html).not.toContain("{{{");
+  });
+
+  it.each(["setup-reminder", "confirm-subscription"])("%s renders nondefault theme CSS and outlined actions", (slug) => {
+    const rendered = renderTemplate(entry(slug), { CONFIRM_URL: "https://acme.example/confirm/token" }, {
+      ...brand,
+      BRAND_COLOR: "#173e70",
+      ...themeContext({
+        color: "#173e70", text_color: "#152438", background_color: "#eef4fa",
+        surface_color: "#ffffff", border_color: "#6f87a0", font_family: emailFonts[2],
+        font_size: 18, radius: 13, button_style: "outline",
+      }),
+    });
+    for (const css of [
+      "background-color:#eef4fa", "background-color:#ffffff", "color:#152438",
+      "border:1px solid #6f87a0", "font-size:18px", "border-radius:13px",
+      "background-color:#ffffff;border-radius:13px;border:1px solid #173e70;color:#173e70",
+    ]) {
+      expect(rendered.html).toContain(css);
+    }
+    expect(rendered.html).toContain("font-family:Georgia");
+    expect(rendered.html).not.toContain("{{{");
+  });
+
+  it.each(["setup-reminder", "confirm-subscription"])("%s still rejects a missing reserved theme token", (slug) => {
+    const { THEME_FONT_SIZE, ...missingTheme } = brand;
+    expect(THEME_FONT_SIZE).toBe("16px");
+    expect(missingTheme).not.toHaveProperty("THEME_FONT_SIZE");
+    expect(entry(slug).html).toContain("{{{THEME_FONT_SIZE}}}");
+    expect(() => renderTemplate(entry(slug), {
+      CONFIRM_URL: "https://acme.example/confirm/token",
+    }, missingTheme)).toThrow("Missing template variable: THEME_FONT_SIZE");
   });
 
   it.each(library.templates)("$slug uses declarations accepted by the existing template write contract", (item) => {
