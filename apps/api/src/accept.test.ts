@@ -980,7 +980,7 @@ describe.skipIf(!live)("accept", () => {
       expect(Number((await db.query("select count(*) as count from audit_logs where tenant_id=$1",
         [tenant_id])).rows[0].count)).toBeGreaterThan(0);
       for (const session of [full.token, read.token]) {
-        const page = await call(session, "GET", `/logs?q=${detailId}`);
+        const page = await call(session, "GET", `/logs?q=${detailId}&user_agent=dispatch-telemetry-accept`);
         expect(page.status).toBe(200);
         expect(page.json.data).toEqual([expect.objectContaining({ id: stored.id, endpoint: `/emails/${emailId}` })]);
       }
