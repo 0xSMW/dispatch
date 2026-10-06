@@ -918,6 +918,90 @@ describe.skipIf(!live)("accept", () => {
       return { status: response.statusCode, json: response.json() };
     }
     const harmless = { object: "form_submission", message: "Thank you. Check your email if confirmation is needed." };
+    it("flushes dashboard preflight and authenticated email-detail logs without starving telemetry", async () => {
+      const { form } = await fixture();
+      const admin = await teammate("Admin");
+      const full = await signInAs(admin.email, admin.password);
+      const viewer = await teammate("Viewer");
+      const read = await signInAs(viewer.email, viewer.password);
+      expect(full.status).toBe(200);
+      expect(read.status).toBe(200);
+      expect((await submit(form.key, "telemetry-confirm@fixture.net")).status).toBe(200);
+      const { token, tenant_id, id: emailId } = await tokenFor("telemetry-confirm@fixture.net");
+      const dashboard = (process.env.CORS_ORIGINS ?? "http://localhost:5173,http://127.0.0.1:5173")
+        .split(",").map(value => value.trim()).filter(Boolean)[0]!;
+      const preflightId = id("req");
+      const detailId = id("req");
+      const preflight = await app.inject({
+        method: "OPTIONS", url: `/forms/${form.id}`, headers: {
+          origin: dashboard, "access-control-request-method": "GET",
+          "access-control-request-headers": "authorization", "x-request-id": preflightId,
+        },
+      });
+      expect(preflight.statusCode).toBe(204);
+      expect(preflight.headers["access-control-allow-origin"]).toBe(dashboard);
+      expect(preflight.headers["x-request-id"]).toBe(preflightId);
+      expect(preflight.headers["x-content-type-options"]).toBe("nosniff");
+      const detail = await app.inject({
+        method: "GET", url: `/emails/${emailId}`, headers: {
+          authorization: `Bearer ${full.token}`, origin: dashboard, "x-request-id": detailId,
+          "user-agent": "dispatch-telemetry-accept",
+        },
+      });
+      expect(detail.statusCode).toBe(200);
+      expect(detail.headers["x-request-id"]).toBe(detailId);
+      const email = detail.json();
+      expect(email.html.length).toBeGreaterThan(0);
+      expect(email.html).toContain(`/confirm/${token}`);
+      expect((await call(full.token, "GET", `/logs?q=${detailId}`)).status).toBe(200);
+      const persisted = (await db.query<{
+        id: string; request_id: string; tenant_id: string | null; api_key_id: string | null;
+        method: string; path: string; status: number; latency_ms: number;
+        response_body: { html: string; text: string; subject: string } | null;
+      }>("select id,request_id,tenant_id,api_key_id,method,path,status,latency_ms,response_body from logs where request_id=any($1::text[])",
+        [[preflightId, detailId]])).rows;
+      expect(persisted).toHaveLength(2);
+      for (const log of persisted) {
+        expect(Number.isFinite(log.latency_ms)).toBe(true);
+        expect(Number.isInteger(log.latency_ms)).toBe(true);
+        expect(log.latency_ms).toBeGreaterThanOrEqual(0);
+      }
+      expect(persisted.find(log => log.request_id === preflightId)).toMatchObject({
+        tenant_id: null, api_key_id: null, method: "OPTIONS", path: `/forms/${form.id}`, status: 204,
+      });
+      const stored = persisted.find(log => log.request_id === detailId)!;
+      expect(stored).toMatchObject({
+        tenant_id, method: "GET", path: `/emails/${emailId}`, status: 200,
+        response_body: { html: email.html, text: email.text, subject: email.subject },
+      });
+      expect(stored.api_key_id).toBeTruthy();
+      expect(Number((await db.query("select value from usage_counters where tenant_id=$1 and name='api_requests'",
+        [tenant_id])).rows[0]?.value)).toBeGreaterThan(0);
+      expect(Number((await db.query("select count(*) as count from audit_logs where tenant_id=$1",
+        [tenant_id])).rows[0].count)).toBeGreaterThan(0);
+      for (const session of [full.token, read.token]) {
+        const page = await call(session, "GET", `/logs?q=${detailId}`);
+        expect(page.status).toBe(200);
+        expect(page.json.data).toEqual([expect.objectContaining({ id: stored.id, endpoint: `/emails/${emailId}` })]);
+      }
+      const fullLog = await call(full.token, "GET", `/logs/${stored.id}`);
+      const viewerLog = await call(read.token, "GET", `/logs/${stored.id}`);
+      expect(fullLog.status).toBe(200);
+      expect(viewerLog.status).toBe(200);
+      expect(fullLog.json.response_body.html).toBe(email.html);
+      expect(fullLog.json.response_body.text).toBe(email.text);
+      expect(JSON.stringify(fullLog.json)).toContain(token);
+      expect(JSON.stringify(viewerLog.json)).not.toContain(token);
+      expect(JSON.stringify(viewerLog.json)).not.toContain("/confirm/");
+      const confirmationUrl = email.html.match(/https?:\/\/[^\s"'<>]+\/confirm\/[A-Za-z0-9_.-]+/)?.[0];
+      expect(confirmationUrl).toBeTruthy();
+      expect(viewerLog.json.response_body).toMatchObject({
+        id: emailId, subject: email.subject,
+        html: email.html.replaceAll(confirmationUrl, "#link-hidden"),
+        text: email.text.replaceAll(confirmationUrl, "#link-hidden"),
+      });
+      expect(viewerLog.json.response_body.html).toContain("#link-hidden");
+    });
     it("preflights minted management IDs without credentials or existence lookup while preserving full/viewer/unauthenticated/foreign CRUD guards", async () => {
       const { form } = await fixture();
       const dashboard = (process.env.CORS_ORIGINS ?? "http://localhost:5173,http://127.0.0.1:5173")

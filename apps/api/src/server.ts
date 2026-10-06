@@ -232,6 +232,17 @@ let telemetryFlushPromise: Promise<void> | null = null;
 
 assertProductionConfig();
 
+app.addHook("onRequest", async (request, reply) => {
+  request.started_at = Date.now();
+  request.request_id = safeRequestId(
+    request.headers["x-request-id"]?.toString(),
+  );
+  securityHeaders(reply);
+  reply.header("x-request-id", request.request_id);
+  if (!request.headers["user-agent"])
+    reply.header("dispatch-warning", "missing_user_agent");
+});
+
 await app.register(cors, {
   origin(origin, callback) {
     callback(null, allowedOrigin(origin));
@@ -253,17 +264,6 @@ const telemetryTimer = vercelRuntime ? null : setInterval(
   Number(process.env.TELEMETRY_FLUSH_MS ?? 100),
 );
 telemetryTimer?.unref();
-
-app.addHook("onRequest", async (request, reply) => {
-  request.started_at = Date.now();
-  request.request_id = safeRequestId(
-    request.headers["x-request-id"]?.toString(),
-  );
-  securityHeaders(reply);
-  reply.header("x-request-id", request.request_id);
-  if (!request.headers["user-agent"])
-    reply.header("dispatch-warning", "missing_user_agent");
-});
 
 app.addHook("preHandler", async (request, reply) => {
   const path = request.url.split("?")[0];
