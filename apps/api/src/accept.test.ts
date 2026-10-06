@@ -118,6 +118,64 @@ afterAll(async () => {
 });
 
 describe.skipIf(!live)("accept", () => {
+  // Run the persisted-log regression before another case truncates its tenant:
+  // this fixture deliberately leaves the product telemetry timer at ten minutes.
+  it("review regression: mixed-scheme real confirmation URLs remain full-role visible and concealed in viewer emails and logs", async () => {
+    const origin = "https://signup.example";
+    const topic = await post(fullKey, "/topics", { name: "Scheme confirmation", default_subscription: "opt_in" });
+    expect(topic.status).toBe(200);
+    const form = await post(fullKey, "/forms", {
+      name: "Scheme confirmation", topic_ids: [topic.json.id], properties: [], from_email: "hello@dispatch-fixture.net",
+      allowed_origins: [origin], double_opt_in: true,
+    });
+    expect(form.status).toBe(200);
+    const viewer = await teammate("Viewer");
+    const read = await signInAs(viewer.email, viewer.password);
+    expect(read.status).toBe(200);
+    expect((await app.inject({ method: "POST", url: `/forms/${form.json.key}`,
+      headers: { origin, "content-type": "application/json" }, payload: { email: "mixed-confirm@fixture.net" },
+    })).statusCode).toBe(200);
+    const stored = (await db.query(`select id,html,text,subject from emails
+      where id in (select email_id from email_recipients where email='mixed-confirm@fixture.net')
+      order by created_at desc limit 1`)).rows[0];
+    expect(stored).toBeDefined();
+    const emailId = stored.id as string;
+    const token = stored.text.match(/\/confirm\/([A-Za-z0-9_.-]+)/)?.[1];
+    expect(token).toBeTruthy();
+    const url = stored.text.match(/https?:\/\/[^\s"'<>]+\/confirm\/[A-Za-z0-9_.-]+/)?.[0];
+    expect(url).toBeTruthy();
+    for (const scheme of ["HtTpS", "HTTPS", "HtTp", "HTTP"]) {
+      const mixed = url!.replace(/^https?/i, scheme);
+      const html = stored.html.replaceAll(url, mixed), text = stored.text.replaceAll(url, mixed);
+      await db.query("update emails set html=$2,text=$3 where id=$1", [emailId, html, text]);
+      const requestId = id("req");
+      const full = await app.inject({ method: "GET", url: `/emails/${emailId}`, headers: {
+        authorization: `Bearer ${fullKey}`, "x-request-id": requestId, "user-agent": "review-concealment",
+      } });
+      expect(full.statusCode).toBe(200);
+      expect(full.json()).toMatchObject({ html, text, subject: stored.subject });
+      expect(JSON.stringify(full.json())).toContain(token);
+      const hidden = await call(read.token, "GET", `/emails/${emailId}`);
+      expect(hidden.status).toBe(200);
+      expect(hidden.json).toMatchObject({
+        html: html.replaceAll(mixed, "#link-hidden"), text: text.replaceAll(mixed, "#link-hidden"), subject: stored.subject,
+      });
+      expect(JSON.stringify(hidden.json)).not.toContain(token);
+      expect((await call(fullKey, "GET", `/logs?q=${requestId}`)).status).toBe(200);
+      const log = (await db.query("select id from logs where request_id=$1", [requestId])).rows[0];
+      expect(log).toBeDefined();
+      const fullLog = await call(fullKey, "GET", `/logs/${log.id}`);
+      const readLog = await call(read.token, "GET", `/logs/${log.id}`);
+      expect(fullLog.status).toBe(200); expect(readLog.status).toBe(200);
+      expect(fullLog.json.response_body).toMatchObject({ html, text, subject: stored.subject });
+      expect(JSON.stringify(fullLog.json)).toContain(token);
+      expect(readLog.json.response_body).toMatchObject({
+        html: html.replaceAll(mixed, "#link-hidden"), text: text.replaceAll(mixed, "#link-hidden"), subject: stored.subject,
+      });
+      expect(JSON.stringify(readLog.json)).not.toContain(token);
+    }
+  });
+
   // Wave10 actual SDK/stdio + PostgreSQL fixtures. Authored only; run at8.
   describe("agent stdio MCP", () => {
     it("initializes the genuine stdio SDK, sends and installs through the real API, and refuses hidden read-only writes", async () => {
@@ -971,47 +1029,6 @@ describe.skipIf(!live)("accept", () => {
       return { status: response.statusCode, json: response.json() };
     }
     const harmless = { object: "form_submission", message: "Thank you. Check your email if confirmation is needed." };
-    it("review regression: mixed-scheme real confirmation URLs remain full-role visible and concealed in viewer emails and logs", async () => {
-      const { form } = await fixture();
-      const viewer = await teammate("Viewer");
-      const read = await signInAs(viewer.email, viewer.password);
-      expect(read.status).toBe(200);
-      expect((await submit(form.key, "mixed-confirm@fixture.net")).status).toBe(200);
-      const { token, id: emailId } = await tokenFor("mixed-confirm@fixture.net");
-      const stored = (await db.query("select html,text,subject from emails where id=$1", [emailId])).rows[0];
-      const url = stored.text.match(/https?:\/\/[^\s"'<>]+\/confirm\/[A-Za-z0-9_.-]+/)?.[0];
-      expect(url).toBeTruthy();
-      for (const scheme of ["HtTpS", "HTTPS", "HtTp", "HTTP"]) {
-        const mixed = url!.replace(/^https?/i, scheme);
-        const html = stored.html.replaceAll(url, mixed), text = stored.text.replaceAll(url, mixed);
-        await db.query("update emails set html=$2,text=$3 where id=$1", [emailId, html, text]);
-        const requestId = id("req");
-        const full = await app.inject({ method: "GET", url: `/emails/${emailId}`, headers: {
-          authorization: `Bearer ${fullKey}`, "x-request-id": requestId, "user-agent": "review-concealment",
-        } });
-        expect(full.statusCode).toBe(200);
-        expect(full.json()).toMatchObject({ html, text, subject: stored.subject });
-        expect(JSON.stringify(full.json())).toContain(token);
-        const hidden = await call(read.token, "GET", `/emails/${emailId}`);
-        expect(hidden.status).toBe(200);
-        expect(hidden.json).toMatchObject({
-          html: html.replaceAll(mixed, "#link-hidden"), text: text.replaceAll(mixed, "#link-hidden"), subject: stored.subject,
-        });
-        expect(JSON.stringify(hidden.json)).not.toContain(token);
-        expect((await call(fullKey, "GET", `/logs?q=${requestId}`)).status).toBe(200);
-        const log = (await db.query("select id from logs where request_id=$1", [requestId])).rows[0];
-        expect(log).toBeDefined();
-        const fullLog = await call(fullKey, "GET", `/logs/${log.id}`);
-        const readLog = await call(read.token, "GET", `/logs/${log.id}`);
-        expect(fullLog.status).toBe(200); expect(readLog.status).toBe(200);
-        expect(fullLog.json.response_body).toMatchObject({ html, text, subject: stored.subject });
-        expect(JSON.stringify(fullLog.json)).toContain(token);
-        expect(readLog.json.response_body).toMatchObject({
-          html: html.replaceAll(mixed, "#link-hidden"), text: text.replaceAll(mixed, "#link-hidden"), subject: stored.subject,
-        });
-        expect(JSON.stringify(readLog.json)).not.toContain(token);
-      }
-    });
     it("flushes dashboard preflight and authenticated email-detail logs without starving telemetry", async () => {
       const { form } = await fixture();
       const admin = await teammate("Admin");
@@ -1478,7 +1495,10 @@ describe.skipIf(!live)("accept", () => {
       const damaged = await post(fullKey, "/segments", { name: "Deleted definition", rule });
       const valid = await post(fullKey, "/segments", { name: "Valid builtin", rule: leaf("contact.email", "exists") });
       expect(damaged.status).toBe(200); expect(valid.status).toBe(200);
-      expect((await call(fullKey, "GET", `/segments/${damaged.json.id}`)).json.contacts).toBe(1);
+      // Resolve the pre-delete count directly, without priming the approved
+      // 30-second detail cache with a deliberately stale value.
+      const { segmentCount } = await import("@dispatchmail/db");
+      expect(await segmentCount(db, tenant, damaged.json.id)).toBe(1);
       expect((await call(fullKey, "DELETE", `/contact-properties/${property.json.id}`)).status).toBe(200);
       expect((await db.query("select properties from contacts where id=$1", [person.json.id])).rows)
         .toEqual([{ properties: { removed_field: "yes" } }]);
@@ -1494,6 +1514,7 @@ describe.skipIf(!live)("accept", () => {
         const result = await call(fullKey, "GET", path);
         expect(result.status).toBe(200); expect(result.json.data).toEqual([]);
       }
+      expect(await segmentCount(db, tenant, damaged.json.id)).toBe(0);
       expect((await call(fullKey, "GET", `/segments/${damaged.json.id}`)).json.contacts).toBe(0);
       expect((await call(fullKey, "GET", `/segments/${valid.json.id}`)).json.contacts).toBe(1);
       expect((await post(fullKey, "/segments", { name: "Invalid new", rule })).status).toBe(400);
