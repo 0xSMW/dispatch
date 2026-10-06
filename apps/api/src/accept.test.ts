@@ -294,6 +294,47 @@ describe.skipIf(!live)("accept", () => {
 
   // Wave9 hand-counted actual SQL fixtures. Authored now, execution deferred to8.
   describe("retroactive goal conversions", () => {
+    it("review regression: custom created_at history cannot fabricate builtin conversion while genuine custom transitions convert", async () => {
+      expect((await post(fullKey, "/contact-properties", { key: "activated", type: "boolean" })).status).toBe(200);
+      const person = await post(fullKey, "/contacts", {
+        email: "goal-history@dispatch-fixture.net", properties: { created_at: null, activated: false },
+      });
+      expect(person.status).toBe(200);
+      const tenant = (await call(fullKey, "GET", "/me")).json.tenant_id as string;
+      const original = (await db.query("select created_at from contacts where id=$1", [person.json.id])).rows[0].created_at;
+      const broadcast = await queuedBroadcast("goal-history@dispatch-fixture.net");
+      expect((await tick()).jobs).toBeGreaterThan(0);
+      expect((await db.query(`select e.contact_id,e.broadcast_id,e.sandbox,ev.type
+        from emails e join email_events ev on ev.email_id=e.id
+        where e.id=$1 and ev.type='email.sent'`, [broadcast.emailId])).rows)
+        .toEqual([{ contact_id: person.json.id, broadcast_id: broadcast.id, sandbox: false, type: "email.sent" }]);
+      const value = new Date().toISOString();
+      expect((await call(fullKey, "PATCH", `/contacts/${person.json.id}`, {
+        properties: { created_at: value, activated: true },
+      })).status).toBe(200);
+      expect((await db.query("select created_at,properties from contacts where id=$1", [person.json.id])).rows[0])
+        .toEqual({ created_at: original, properties: { created_at: value, activated: true } });
+      expect((await db.query(`select field,from_value,to_value from contact_changes
+        where tenant_id=$1 and contact_id=$2 and field='created_at' order by created_at desc limit 1`,
+      [tenant, person.json.id])).rows).toEqual([{ field: "created_at", from_value: null, to_value: value }]);
+      const builtin = await post(fullKey, "/goals", { name: "Immutable creation", target: {
+        rule: { type: "rule", field: "contact.created_at", operator: "exists" },
+      } });
+      const custom = await post(fullKey, "/goals", { name: "Genuine activation", target: {
+        rule: { type: "rule", field: "contact.activated", operator: "eq", value: true },
+      } });
+      expect(builtin.status).toBe(200); expect(custom.status).toBe(200);
+      const query = new URLSearchParams({
+        broadcast_id: broadcast.id,
+        start_date: new Date(Date.now() - 3600000).toISOString(),
+        end_date: new Date(Date.now() + 1000).toISOString(),
+      });
+      const builtinMetrics = await call(fullKey, "GET", `/goals/${builtin.json.id}/metrics?${query}`);
+      const customMetrics = await call(fullKey, "GET", `/goals/${custom.json.id}/metrics?${query}`);
+      expect(builtinMetrics.status).toBe(200); expect(customMetrics.status).toBe(200);
+      expect(builtinMetrics.json).toMatchObject({ contacts_reached: 1, converted: 0, rate: 0 });
+      expect(customMetrics.json).toMatchObject({ contacts_reached: 1, converted: 1, rate: 1 });
+    });
     async function fixture() {
       const tenant = (await call(fullKey, "GET", "/me")).json.tenant_id as string;
       for (const [key, type] of [["score", "number"], ["active", "boolean"], ["eligible", "boolean"]]) {
@@ -737,7 +778,7 @@ describe.skipIf(!live)("accept", () => {
         expect((await call(fullKey, "GET", `/contacts/${person.id}`)).status).toBe(200);
       }
     });
-    it("applies optional restricted-key customer preparation through the signed receiver and real database, with sanitized failure/retry", async () => {
+    it("review regression: committed Stripe replay bypasses failing customer transport after a retryable initial failure", async () => {
       // This receiver uses the production handler and real DB, but injected synthetic
       // customer responses. No external Stripe request belongs in this fixture.
       const { default: Fastify } = await import("fastify");
@@ -781,15 +822,27 @@ describe.skipIf(!live)("accept", () => {
         expect((await db.query("select properties from contacts where id=$1", [other.json.id])).rows[0].properties).toEqual({ keep: "foreign" });
         expect((await db.query("select data from custom_events where name='stripe.customer.subscription.updated'")).rows[0].data)
           .toMatchObject({ customer_id: "cus_lookup", subscription_id: "sub_lookup", PLAN: "pro" });
-        expect((await receive(row, event, "unused", { receiver })).json.duplicate).toBe(true);
+        const committed = (await db.query("select * from inbound_deliveries where integration_id=$1 order by id", [row.id])).rows;
+        failLookup = true;
+        const replay = await receive(row, event, "unused", { receiver });
+        expect(replay.status).toBe(200);
+        expect(replay.json).toMatchObject({ status: "processed", contact_id: person.json.id, duplicate: true });
+        expect(requests).toHaveLength(2);
+        expect((await db.query("select * from inbound_deliveries where integration_id=$1 order by id", [row.id])).rows).toEqual(committed);
         expect((await db.query("select id from custom_events where name='stripe.customer.subscription.updated'")).rows).toHaveLength(1);
         const deliveries = (await call(fullKey, "GET", `/integrations/${row.id}/deliveries`)).json.data;
         expect(deliveries.map((item: any) => item.status).sort()).toEqual(["failed", "processed"]);
         expect(JSON.stringify(deliveries)).not.toMatch(/rk_test_lookup|synthetic response/);
+        failLookup = false;
         expect((await call(fullKey, "DELETE", `/contacts/${person.json.id}`)).status).toBe(200);
         expect((await receive(row, { ...event, id: "evt_lookup_deleted" }, "unused", { receiver })).json)
           .toMatchObject({ status: "ignored", error: "no_contact" });
         expect((await call(fullKey, "GET", `/contacts/${person.json.id}`)).status).toBe(404);
+        expect((await post(fullKey, `/integrations/${row.id}/rotate`, {})).status).toBe(200);
+        failLookup = true;
+        const beforeRevoked = requests.length;
+        expect((await receive(row, event, "unused", { receiver })).status).toBe(404);
+        expect(requests).toHaveLength(beforeRevoked);
       } finally { await receiver.close(); }
     });
     it("supports default/custom tenant-unique webhook namespaces, ignores unsupported events and prunes only bounded aged history", async () => {
@@ -918,6 +971,47 @@ describe.skipIf(!live)("accept", () => {
       return { status: response.statusCode, json: response.json() };
     }
     const harmless = { object: "form_submission", message: "Thank you. Check your email if confirmation is needed." };
+    it("review regression: mixed-scheme real confirmation URLs remain full-role visible and concealed in viewer emails and logs", async () => {
+      const { form } = await fixture();
+      const viewer = await teammate("Viewer");
+      const read = await signInAs(viewer.email, viewer.password);
+      expect(read.status).toBe(200);
+      expect((await submit(form.key, "mixed-confirm@fixture.net")).status).toBe(200);
+      const { token, id: emailId } = await tokenFor("mixed-confirm@fixture.net");
+      const stored = (await db.query("select html,text,subject from emails where id=$1", [emailId])).rows[0];
+      const url = stored.text.match(/https?:\/\/[^\s"'<>]+\/confirm\/[A-Za-z0-9_.-]+/)?.[0];
+      expect(url).toBeTruthy();
+      for (const scheme of ["HtTpS", "HTTPS", "HtTp", "HTTP"]) {
+        const mixed = url!.replace(/^https?/i, scheme);
+        const html = stored.html.replaceAll(url, mixed), text = stored.text.replaceAll(url, mixed);
+        await db.query("update emails set html=$2,text=$3 where id=$1", [emailId, html, text]);
+        const requestId = id("req");
+        const full = await app.inject({ method: "GET", url: `/emails/${emailId}`, headers: {
+          authorization: `Bearer ${fullKey}`, "x-request-id": requestId, "user-agent": "review-concealment",
+        } });
+        expect(full.statusCode).toBe(200);
+        expect(full.json()).toMatchObject({ html, text, subject: stored.subject });
+        expect(JSON.stringify(full.json())).toContain(token);
+        const hidden = await call(read.token, "GET", `/emails/${emailId}`);
+        expect(hidden.status).toBe(200);
+        expect(hidden.json).toMatchObject({
+          html: html.replaceAll(mixed, "#link-hidden"), text: text.replaceAll(mixed, "#link-hidden"), subject: stored.subject,
+        });
+        expect(JSON.stringify(hidden.json)).not.toContain(token);
+        expect((await call(fullKey, "GET", `/logs?q=${requestId}`)).status).toBe(200);
+        const log = (await db.query("select id from logs where request_id=$1", [requestId])).rows[0];
+        expect(log).toBeDefined();
+        const fullLog = await call(fullKey, "GET", `/logs/${log.id}`);
+        const readLog = await call(read.token, "GET", `/logs/${log.id}`);
+        expect(fullLog.status).toBe(200); expect(readLog.status).toBe(200);
+        expect(fullLog.json.response_body).toMatchObject({ html, text, subject: stored.subject });
+        expect(JSON.stringify(fullLog.json)).toContain(token);
+        expect(readLog.json.response_body).toMatchObject({
+          html: html.replaceAll(mixed, "#link-hidden"), text: text.replaceAll(mixed, "#link-hidden"), subject: stored.subject,
+        });
+        expect(JSON.stringify(readLog.json)).not.toContain(token);
+      }
+    });
     it("flushes dashboard preflight and authenticated email-detail logs without starving telemetry", async () => {
       const { form } = await fixture();
       const admin = await teammate("Admin");
@@ -1371,6 +1465,49 @@ describe.skipIf(!live)("accept", () => {
       expect(await selected(tenant, leaf("contact.last_seen", "not_within", "1 day"), boundaryPrefix)).toEqual([c,d,e,f]);
     });
 
+    it("review regression: deleting a declared property invalidates the whole saved filter without breaking ordinary audience reads", async () => {
+      const property = await post(fullKey, "/contact-properties", { key: "removed_field", type: "string" });
+      expect(property.status).toBe(200);
+      const person = await post(fullKey, "/contacts", { email: "removed-property@fixture.net", properties: { removed_field: "yes" } });
+      expect(person.status).toBe(200);
+      const tenant = (await call(fullKey, "GET", "/me")).json.tenant_id as string;
+      const rule: Rule = { type: "or", rules: [
+        leaf("contact.email", "exists"),
+        { type: "and", rules: [leaf("contact.removed_field", "eq", "yes"), leaf("contact.unsubscribed", "eq", false)] },
+      ] };
+      const damaged = await post(fullKey, "/segments", { name: "Deleted definition", rule });
+      const valid = await post(fullKey, "/segments", { name: "Valid builtin", rule: leaf("contact.email", "exists") });
+      expect(damaged.status).toBe(200); expect(valid.status).toBe(200);
+      expect((await call(fullKey, "GET", `/segments/${damaged.json.id}`)).json.contacts).toBe(1);
+      expect((await call(fullKey, "DELETE", `/contact-properties/${property.json.id}`)).status).toBe(200);
+      expect((await db.query("select properties from contacts where id=$1", [person.json.id])).rows)
+        .toEqual([{ properties: { removed_field: "yes" } }]);
+      const ordinary = await call(fullKey, "GET", "/contacts");
+      expect(ordinary.status).toBe(200);
+      expect(ordinary.json.data.map((row: { id: string }) => row.id)).toEqual([person.json.id]);
+      expect((await call(fullKey, "GET", `/contacts/${person.json.id}`)).status).toBe(200);
+      const memberships = await call(fullKey, "GET", `/contacts/${person.json.id}/segments`);
+      expect(memberships.status).toBe(200);
+      expect(memberships.json.data.map((row: { id: string }) => row.id)).toEqual([valid.json.id]);
+      expect((await contactContext(db, tenant, "removed-property@fixture.net"))!.segments).toEqual([valid.json.id]);
+      for (const path of [`/contacts?segment_id=${damaged.json.id}`, `/segments/${damaged.json.id}/contacts`]) {
+        const result = await call(fullKey, "GET", path);
+        expect(result.status).toBe(200); expect(result.json.data).toEqual([]);
+      }
+      expect((await call(fullKey, "GET", `/segments/${damaged.json.id}`)).json.contacts).toBe(0);
+      expect((await call(fullKey, "GET", `/segments/${valid.json.id}`)).json.contacts).toBe(1);
+      expect((await post(fullKey, "/segments", { name: "Invalid new", rule })).status).toBe(400);
+      expect((await call(fullKey, "PATCH", `/segments/${valid.json.id}`, { rule })).status).toBe(400);
+      expect((await post(fullKey, "/segments/preview", { rule })).status).toBe(400);
+      const { broadcastAudience, snapshotBroadcast } = await import("@dispatchmail/db");
+      expect((await broadcastAudience(db, tenant, { segmentId: damaged.json.id, topicId: null })).recipients).toBe(0);
+      const broadcast = id("broadcast");
+      await db.query(`insert into broadcasts(id,tenant_id,name,from_email,subject,html,segment_id)
+        values($1,$2,'Invalid saved filter','sender@fixture.net','Fixture','<p>Fixture</p>',$3)`, [broadcast, tenant, damaged.json.id]);
+      expect(await tx(db, client => snapshotBroadcast(client, tenant, broadcast))).toBe(0);
+      expect((await db.query("select id from broadcast_recipients where broadcast_id=$1", [broadcast])).rows).toEqual([]);
+    });
+
     it("uses dynamic lists context preview and atomic snapshots with current receiving preferences", async () => {
       const { tenant, contacts } = await fixture();
       const [a,b] = contacts;
@@ -1625,6 +1762,53 @@ describe.skipIf(!live)("accept", () => {
       expect(detail.json).toMatchObject({ type: first === "membership" ? "static" : "dynamic" });
       expect((await db.query("select contact_id from segment_contacts where tenant_id=$1 and segment_id=$2", [tenant,segment.json.id])).rows)
         .toEqual(first === "membership" ? [{ contact_id: contacts[0] }] : []);
+    });
+
+    it("review regression: caller-owned import transactions retain the static lock through outer commit and roll back with the caller", async () => {
+      const tenant = (await call(fullKey, "GET", "/me")).json.tenant_id as string;
+      const segment = await post(fullKey, "/segments", { name: "Caller transaction" });
+      expect(segment.status).toBe(200);
+      const input = (importId: string) => ({
+        id: importId, tenantId: tenant, storageKey: "unused-caller-transaction", columnMap: {},
+        onConflict: "upsert" as const, segments: [{ id: segment.json.id }], topics: [], triggerAutomations: false,
+      });
+      let ready!: () => void, release!: () => void;
+      const locked = new Promise<void>(resolve => { ready = resolve; });
+      const resume = new Promise<void>(resolve => { release = resolve; });
+      let ownerPid = 0, challengerPid = 0;
+      const importId = id("import");
+      const outer = tx(db, async client => {
+        ownerPid = (await client.query("select pg_backend_pid() as pid")).rows[0].pid;
+        expect(await createImport(client, input(importId))).toMatchObject({ id: importId, status: "queued" });
+        expect((await client.query("select id from contact_imports where id=$1", [importId])).rows).toEqual([{ id: importId }]);
+        ready(); await resume;
+        expect((await client.query("select pg_backend_pid() as pid")).rows[0].pid).toBe(ownerPid);
+      });
+      void outer.catch(() => ready());
+      await locked;
+      const challenger = tx(db, async client => {
+        challengerPid = (await client.query("select pg_backend_pid() as pid")).rows[0].pid;
+        await client.query("select id from segments where tenant_id=$1 and id=$2 for update", [tenant, segment.json.id]);
+      });
+      void challenger.catch(() => undefined);
+      try {
+        expect((await db.query("select id from contact_imports where id=$1", [importId])).rows).toEqual([]);
+        let blocked = false;
+        for (let attempt = 0; attempt < 100 && !blocked; attempt++) {
+          if (challengerPid) blocked = (await db.query("select $1::int=any(pg_blocking_pids($2::int)) as blocked",
+            [ownerPid, challengerPid])).rows[0].blocked;
+          if (!blocked) await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        expect(blocked).toBe(true);
+      } finally { release(); await Promise.allSettled([outer, challenger]); }
+      await outer; await challenger;
+      expect((await db.query("select id from contact_imports where id=$1", [importId])).rows).toEqual([{ id: importId }]);
+      const rolledBack = id("import"), failure = new Error("caller rollback");
+      await expect(tx(db, async client => {
+        expect(await createImport(client, input(rolledBack))).toMatchObject({ id: rolledBack });
+        throw failure;
+      })).rejects.toBe(failure);
+      expect((await db.query("select id from contact_imports where id=$1", [rolledBack])).rows).toEqual([]);
     });
 
     it("keeps import creation's static-target lock until the queued row commits", async () => {

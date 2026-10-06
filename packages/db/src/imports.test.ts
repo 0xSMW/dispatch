@@ -144,6 +144,110 @@ describe("contact import queries", () => {
     expect(db.queries.some(({ sql }) => sql.startsWith("insert into contact_imports"))).toBe(!dynamic);
     expect(release).toHaveBeenCalledOnce();
   });
+  it.each(["success", "reference failure", "insert failure"] as const)(
+    "leaves the inherited-connect caller client lifecycle untouched on %s", async (outcome) => {
+      const failure = new Error(outcome);
+      const db = client((sql, params) => {
+        if (sql.startsWith("select id, rule from segments")) {
+          if (outcome === "reference failure") throw failure;
+          return [{ id: params[1], rule: null }];
+        }
+        if (sql.includes("count(*) from segments")) return [{ segments: 2, topics: 0 }];
+        if (sql.startsWith("insert into contact_imports")) {
+          if (outcome === "insert failure") throw failure;
+          return [{ id: params[0] }];
+        }
+        return [];
+      });
+      const connect = vi.fn(async () => { throw new Error("Caller client must not reconnect"); });
+      const release = vi.fn();
+      const supplied = Object.assign(Object.create({ connect }), db, { release }) as Queryable;
+      const pending = createImport(supplied, {
+        id: job.id, tenantId: job.tenant_id, storageKey: "key", columnMap: {}, onConflict: "upsert",
+        segments: [{ id: "segment_z" }, { id: "segment_a" }, { id: "segment_z" }],
+        topics: [], triggerAutomations: false,
+      });
+      if (outcome === "success") expect(await pending).toEqual({ id: job.id });
+      else await expect(pending).rejects.toBe(failure);
+      expect(connect).not.toHaveBeenCalled();
+      expect(release).not.toHaveBeenCalled();
+      expect(db.queries.some(({ sql }) => ["begin", "commit", "rollback"].includes(sql))).toBe(false);
+      expect(db.queries.filter(({ sql }) => sql.includes("for update")).map(({ params }) => params[1]))
+        .toEqual(outcome === "reference failure" ? ["segment_a"] : ["segment_a", "segment_z"]);
+    },
+  );
+
+  it("recognizes an inherited callable release as caller ownership", async () => {
+    const db = client((sql, params) => sql.startsWith("insert into contact_imports") ? [{ id: params[0] }] : []);
+    const connect = vi.fn(async () => { throw new Error("Caller client must not reconnect"); });
+    const release = vi.fn();
+    const supplied = Object.assign(Object.create({ connect, release }), db) as Queryable;
+    expect(await createImport(supplied, {
+      id: job.id, tenantId: job.tenant_id, storageKey: "key", columnMap: {}, onConflict: "upsert",
+      segments: [], topics: [], triggerAutomations: false,
+    })).toEqual({ id: job.id });
+    expect(connect).not.toHaveBeenCalled();
+    expect(release).not.toHaveBeenCalled();
+    expect(db.queries).toHaveLength(1);
+  });
+
+  it.each([undefined, "legacy"])("keeps query-only compatibility when connect is not callable: %s", async (connect) => {
+    const db = client((sql, params) => {
+      if (sql.startsWith("select id, rule from segments")) return [{ id: params[1], rule: null }];
+      if (sql.includes("count(*) from segments")) return [{ segments: 2, topics: 0 }];
+      if (sql.startsWith("insert into contact_imports")) return [{ id: params[0] }];
+      return [];
+    });
+    expect(await createImport({ ...db, connect } as Queryable, {
+      id: job.id, tenantId: job.tenant_id, storageKey: "key", columnMap: {}, onConflict: "upsert",
+      segments: [{ id: "segment_z" }, { id: "segment_a" }, { id: "segment_z" }],
+      topics: [], triggerAutomations: false,
+    })).toEqual({ id: job.id });
+    expect(db.queries.filter(({ sql }) => sql.includes("for update")).map(({ params }) => params[1]))
+      .toEqual(["segment_a", "segment_z"]);
+    expect(db.queries.some(({ sql }) => ["begin", "commit", "rollback"].includes(sql))).toBe(false);
+  });
+
+  it.each(["success", "reference failure", "insert failure"] as const)(
+    "owns the pool transaction, sorted locks and release on %s", async (outcome) => {
+      const failure = new Error(outcome);
+      const db = client((sql, params) => {
+        if (sql.startsWith("select id, rule from segments")) {
+          if (outcome === "reference failure") throw failure;
+          return [{ id: params[1], rule: null }];
+        }
+        if (sql.includes("count(*) from segments")) return [{ segments: 2, topics: 0 }];
+        if (sql.startsWith("insert into contact_imports")) {
+          if (outcome === "insert failure") throw failure;
+          return [{ id: params[0] }];
+        }
+        return [];
+      });
+      const release = vi.fn();
+      const connect = vi.fn(async () => ({ query: db.query, release }));
+      const poolQuery = vi.fn(async () => { throw new Error("Pool query must use the owned client"); });
+      const pool = Object.assign(Object.create({ connect }), { query: poolQuery, release: null }) as Queryable;
+      const pending = createImport(pool, {
+        id: job.id, tenantId: job.tenant_id, storageKey: "key", columnMap: {}, onConflict: "upsert",
+        segments: [{ id: "segment_z" }, { id: "segment_a" }, { id: "segment_z" }],
+        topics: [], triggerAutomations: false,
+      });
+      if (outcome === "success") expect(await pending).toEqual({ id: job.id });
+      else await expect(pending).rejects.toBe(failure);
+      expect(connect).toHaveBeenCalledOnce();
+      expect(poolQuery).not.toHaveBeenCalled();
+      expect(release).toHaveBeenCalledOnce();
+      expect(db.queries.filter(({ sql }) => ["begin", "commit", "rollback"].includes(sql)).map(({ sql }) => sql))
+        .toEqual(["begin", outcome === "success" ? "commit" : "rollback"]);
+      expect(db.queries.filter(({ sql }) => sql.includes("for update")).map(({ params }) => params[1]))
+        .toEqual(outcome === "reference failure" ? ["segment_a"] : ["segment_a", "segment_z"]);
+      if (outcome !== "reference failure") {
+        expect(db.queries.find(({ sql }) => sql.includes("count(*) from segments"))?.params)
+          .toEqual([job.tenant_id, ["segment_a", "segment_z"], []]);
+      }
+    },
+  );
+
   it("presents counts with every key and builds the storage key", () => {
     expect(presentImport({ id: "import_1", status: "queued", counts: { total: 1 } as never, error: null, created_at: "2026-10-01", completed_at: null })).toEqual({
       object: "contact_import",

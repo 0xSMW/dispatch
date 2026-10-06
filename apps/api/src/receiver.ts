@@ -3,6 +3,7 @@ import {
   decryptCredentials, inboundEventId, integrationByToken, prepareInbound, receiveInbound,
   recordInboundFailure, type Db,
 } from "@dispatchmail/db";
+import { inboundDuplicate } from "../../../packages/db/src/inbound/receiver.js";
 import { verifyClerk, verifyStripe, verifySupabase, verifyWebhook } from "../../../packages/db/src/inbound/signatures.js";
 import type { Headers, InboundDependencies, Verification } from "../../../packages/db/src/inbound/types.js";
 import type { FastifyInstance } from "fastify";
@@ -55,18 +56,23 @@ export function registerReceiver(app: FastifyInstance, deps: {
       }
       const providerEventId = inboundEventId({ provider: integration.provider, body, headers });
       if (!providerEventId || providerEventId.length > 255 || providerEventId.startsWith("attempt:")) return invalid("invalid_payload");
-      let mapping: Awaited<ReturnType<typeof prepareInbound>>;
-      try {
-        mapping = await prepareInbound(integration, payload, {
-          stripeRestrictedKey: credentials.stripeRestrictedKey, customerTransport: deps.customerTransport,
-        });
-      } catch {
-        await recordInboundFailure(deps.db, integration, request.request_id, "processing_failed");
-        throw new ApiError("service_unavailable", 503, "Inbound delivery could not be processed; retry");
-      }
-      const result = await receiveInbound(deps.db, {
-        integration, tokenHash: integration.token_hash, providerEventId, mapping, requestId: request.request_id,
+      let result: Awaited<ReturnType<typeof receiveInbound>> | null = await inboundDuplicate(deps.db, {
+        integration, tokenHash: integration.token_hash, providerEventId,
       });
+      if (!result) {
+        let mapping: Awaited<ReturnType<typeof prepareInbound>>;
+        try {
+          mapping = await prepareInbound(integration, payload, {
+            stripeRestrictedKey: credentials.stripeRestrictedKey, customerTransport: deps.customerTransport,
+          });
+        } catch {
+          await recordInboundFailure(deps.db, integration, request.request_id, "processing_failed");
+          throw new ApiError("service_unavailable", 503, "Inbound delivery could not be processed; retry");
+        }
+        result = await receiveInbound(deps.db, {
+          integration, tokenHash: integration.token_hash, providerEventId, mapping, requestId: request.request_id,
+        });
+      }
       return {
         object: "inbound_delivery", status: result.status, event_name: result.eventName,
         contact_id: result.contactId, ...(result.reason ? { error: result.reason } : {}),

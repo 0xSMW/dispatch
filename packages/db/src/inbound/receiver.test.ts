@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "../index.js";
 import type { IntegrationRecord } from "@dispatchmail/core";
 import { applyInbound } from "./application.js";
-import { receiveInbound } from "./receiver.js";
+import { inboundDuplicate, receiveInbound } from "./receiver.js";
 import type { ReceiveInboundInput } from "./types.js";
 
 vi.mock("./application.js", () => ({ applyInbound: vi.fn() }));
@@ -182,5 +182,202 @@ describe("atomic inbound receiver (mocked database only)", () => {
     await expect(receiveInbound(f.db, f.input)).rejects.toMatchObject({ statusCode: 503 });
     expect(applyInbound).not.toHaveBeenCalled();
     expect(f.audit).toHaveBeenCalledOnce();
+  });
+});
+
+describe("authenticated advisory inbound duplicate (mocked database only)", () => {
+  it.each(["processed", "ignored"] as const)("returns stored %s under the same tenant lock without reservation, application or audit", async status => {
+    const f = fixture();
+    f.query.mockImplementation(async sql => {
+      f.calls.push(sql);
+      if (sql.includes("from integrations")) return { rows: [integration()] };
+      if (sql.includes("from inbound_deliveries")) return { rows: [{
+        status, event_name: status === "processed" ? "stripe.invoice.paid" : null,
+        contact_id: status === "processed" ? "contact_test" : null,
+        error: status === "ignored" ? "unsupported_event" : null,
+      }] };
+      return { rows: [] };
+    });
+    expect(await inboundDuplicate(f.db, f.input)).toEqual({
+      status, eventName: status === "processed" ? "stripe.invoice.paid" : null,
+      contactId: status === "processed" ? "contact_test" : null, duplicate: true,
+      ...(status === "ignored" ? { reason: "unsupported_event" } : {}),
+    });
+    expect(f.query.mock.calls).toEqual([
+      ["begin"],
+      [expect.stringContaining("where tenant_id = $1 and id = $2 and deleted_at is null for update"),
+        ["tenant_test", "integration_test"]],
+      [expect.stringContaining("where tenant_id = $1 and integration_id = $2 and provider_event_id = $3"),
+        ["tenant_test", "integration_test", "evt_test"]],
+      ["commit"],
+    ]);
+    expect(f.release).toHaveBeenCalledOnce();
+    expect(applyInbound).not.toHaveBeenCalled();
+    expect(f.audit).not.toHaveBeenCalled();
+  });
+
+  it("returns null on a miss and leaves the full locked receive/reservation path available", async () => {
+    const f = fixture();
+    expect(await inboundDuplicate(f.db, f.input)).toBeNull();
+    expect(f.query.mock.calls.some(([sql]) => /^(insert|update|delete)/.test(sql))).toBe(false);
+    expect(applyInbound).not.toHaveBeenCalled();
+    expect(f.audit).not.toHaveBeenCalled();
+    expect(f.calls.slice(-2)).toEqual(["commit", "release"]);
+    await expect(receiveInbound(f.db, f.input)).resolves.toMatchObject({ status: "processed" });
+    expect(f.connect).toHaveBeenCalledTimes(2);
+    expect(f.calls.filter(sql => sql.includes("from integrations"))).toHaveLength(2);
+    expect(f.calls.filter(sql => sql.startsWith("insert"))).toHaveLength(1);
+    expect(applyInbound).toHaveBeenCalledOnce();
+  });
+
+  it("keeps receive's reservation recheck when a committed duplicate appears after an advisory miss", async () => {
+    const f = fixture();
+    expect(await inboundDuplicate(f.db, f.input)).toBeNull();
+    f.query.mockImplementation(async sql => {
+      f.calls.push(sql);
+      if (sql.includes("from integrations")) return { rows: [integration()] };
+      if (sql.includes("from inbound_deliveries")) return { rows: [{
+        status: "processed", event_name: "stripe.invoice.paid", contact_id: "contact_test", error: null,
+      }] };
+      return { rows: [] };
+    });
+    expect(await receiveInbound(f.db, f.input)).toEqual({
+      status: "processed", eventName: "stripe.invoice.paid", contactId: "contact_test", duplicate: true,
+    });
+    expect(f.calls.filter(sql => sql.includes("from integrations"))).toHaveLength(2);
+    expect(f.calls.some(sql => sql.startsWith("insert"))).toBe(true);
+    expect(f.calls.some(sql => sql.startsWith("update"))).toBe(false);
+    expect(applyInbound).not.toHaveBeenCalled();
+    expect(f.audit).not.toHaveBeenCalled();
+  });
+
+  it.each(["missing", "deleted", "rotated", "snapshot_token", "wrong_tenant"] as const)("cannot bypass revoked authorization (%s) with a stored delivery", async mode => {
+    const f = fixture();
+    if (mode === "snapshot_token") f.input.integration.token_hash = "different_hash";
+    if (mode === "wrong_tenant") f.input.integration.tenant_id = "another_tenant";
+    f.query.mockImplementation(async (sql, values) => {
+      f.calls.push(sql);
+      if (sql.includes("from integrations")) return { rows: mode === "missing" || values?.[0] !== "tenant_test" ? [] : [{
+        ...integration(), deleted_at: mode === "deleted" ? "2026-10-06" : null,
+        token_hash: mode === "rotated" ? "new_hash" : "synthetic_hash",
+      }] };
+      if (sql.includes("from inbound_deliveries")) return { rows: [{
+        status: "processed", event_name: "stripe.invoice.paid", contact_id: "contact_test", error: null,
+      }] };
+      return { rows: [] };
+    });
+    await expect(inboundDuplicate(f.db, f.input)).rejects.toMatchObject({
+      name: "not_found", statusCode: 404, message: "Integration not found",
+    });
+    expect(f.calls.some(sql => sql.includes("from inbound_deliveries"))).toBe(false);
+    expect(f.calls.some(sql => /^(insert|update|delete)/.test(sql))).toBe(false);
+    expect(f.calls.slice(-2)).toEqual(["rollback", "release"]);
+    expect(applyInbound).not.toHaveBeenCalled();
+    expect(f.audit).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { secret: "new_ciphertext" }, { settings: { map_plan: false } },
+    { settings: { map_plan: true, delete_contact: false, stripe_restricted_key: "new_ciphertext" } },
+    { provider: "webhook" }, { slug: "billing" },
+  ])("cannot bypass changed authenticated credentials or settings (%j) with a stored delivery", async change => {
+    const f = fixture();
+    f.query.mockImplementation(async sql => {
+      f.calls.push(sql);
+      if (sql.includes("from integrations")) return { rows: [{ ...integration(), ...change }] };
+      if (sql.includes("from inbound_deliveries")) return { rows: [{
+        status: "processed", event_name: "stripe.invoice.paid", contact_id: "contact_test", error: null,
+      }] };
+      return { rows: [] };
+    });
+    await expect(inboundDuplicate(f.db, f.input)).rejects.toMatchObject({
+      name: "service_unavailable", statusCode: 503, message: "Inbound delivery could not be processed; retry",
+    });
+    expect(f.calls.some(sql => sql.includes("from inbound_deliveries"))).toBe(false);
+    expect(f.calls.slice(-2)).toEqual(["rollback", "release"]);
+    expect(applyInbound).not.toHaveBeenCalled();
+    expect(f.audit).not.toHaveBeenCalled();
+  });
+
+  it("accepts equivalent reordered settings and name edits, sanitizing stored reasons", async () => {
+    const f = fixture();
+    f.query.mockImplementation(async sql => ({
+      rows: sql.includes("from integrations") ? [{
+        ...integration(), name: "Renamed", settings: { delete_contact: false, map_plan: true },
+      }] : sql.includes("from inbound_deliveries") ? [{
+        status: "ignored", event_name: null, contact_id: null, error: "synthetic_untrusted_body",
+      }] : [],
+    }));
+    expect(await inboundDuplicate(f.db, f.input)).toEqual({
+      status: "ignored", eventName: null, contactId: null, reason: "no_contact", duplicate: true,
+    });
+    expect(applyInbound).not.toHaveBeenCalled();
+    expect(f.audit).not.toHaveBeenCalled();
+  });
+
+  it.each(["failed", "invalid_status"])("keeps stored %s retryable and read-only", async status => {
+    const f = fixture();
+    f.query.mockImplementation(async sql => {
+      f.calls.push(sql);
+      return { rows: sql.includes("from integrations") ? [integration()]
+        : sql.includes("from inbound_deliveries") ? [{
+          status, event_name: null, contact_id: null, error: "synthetic_secret",
+        }] : [] };
+    });
+    await expect(inboundDuplicate(f.db, f.input)).rejects.toMatchObject({
+      statusCode: 503, message: "Inbound delivery could not be processed; retry",
+    });
+    expect(f.calls.some(sql => /^(insert|update|delete)/.test(sql))).toBe(false);
+    expect(f.calls.slice(-2)).toEqual(["rollback", "release"]);
+    expect(applyInbound).not.toHaveBeenCalled();
+    expect(f.audit).not.toHaveBeenCalled();
+  });
+
+  it.each(["", "attempt:synthetic"])("rejects invalid/reserved canonical identity %j without delivery lookup or audit", async providerEventId => {
+    const f = fixture();
+    f.input.providerEventId = providerEventId;
+    await expect(inboundDuplicate(f.db, f.input)).rejects.toMatchObject({ statusCode: 503 });
+    expect(f.calls.some(sql => sql.includes("from inbound_deliveries"))).toBe(false);
+    expect(f.calls.some(sql => /^(insert|update|delete)/.test(sql))).toBe(false);
+    expect(applyInbound).not.toHaveBeenCalled();
+    expect(f.audit).not.toHaveBeenCalled();
+  });
+
+  it("retries a rolled-back lookup deadlock without reservation or effects", async () => {
+    const f = fixture();
+    const normal = f.query.getMockImplementation()!;
+    let deadlock = true;
+    f.query.mockImplementation(async (sql, values) => {
+      if (sql.includes("from inbound_deliveries") && deadlock) {
+        deadlock = false;
+        throw Object.assign(new Error("synthetic_deadlock"), { code: "40P01" });
+      }
+      return normal(sql, values);
+    });
+    expect(await inboundDuplicate(f.db, f.input)).toBeNull();
+    expect(f.connect).toHaveBeenCalledTimes(2);
+    expect(f.calls.indexOf("rollback")).toBeLessThan(f.calls.lastIndexOf("begin"));
+    expect(f.calls.some(sql => /^(insert|update|delete)/.test(sql))).toBe(false);
+    expect(f.release).toHaveBeenCalledTimes(2);
+    expect(applyInbound).not.toHaveBeenCalled();
+    expect(f.audit).not.toHaveBeenCalled();
+  });
+
+  it.each(["from integrations", "from inbound_deliveries", "commit"])("sanitizes %s database failure without writing an audit", async stage => {
+    const f = fixture();
+    const normal = f.query.getMockImplementation()!;
+    f.query.mockImplementation(async (sql, values) => {
+      if (sql.includes(stage)) throw new Error("synthetic_SQL_secret");
+      return normal(sql, values);
+    });
+    const error = await inboundDuplicate(f.db, f.input).catch(error => error);
+    expect(error).toMatchObject({
+      name: "service_unavailable", statusCode: 503, message: "Inbound delivery could not be processed; retry",
+    });
+    expect(error.cause).toBeUndefined();
+    expect(f.calls).toContain("rollback");
+    expect(f.release).toHaveBeenCalledOnce();
+    expect(applyInbound).not.toHaveBeenCalled();
+    expect(f.audit).not.toHaveBeenCalled();
   });
 });

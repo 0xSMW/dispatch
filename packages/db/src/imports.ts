@@ -105,8 +105,11 @@ export async function createImport(
     return row.rows[0];
   };
   // Keep static-target locks through insertion. A supplied client already belongs
-  // to the caller's transaction; a pool needs its own transaction.
-  return "connect" in db ? tx(db as Db, create) : create(db);
+  // to the caller's transaction, even with inherited connect; only a pool needs
+  // its own transaction. Query-only adapters still run directly.
+  const connection = db as Queryable & { connect?: unknown; release?: unknown };
+  return typeof connection.connect === "function" && typeof connection.release !== "function"
+    ? tx(db as Db, create) : create(db);
 }
 
 export async function findImport(db: Queryable, tenantId: string, importId: string): Promise<ImportSummary> {

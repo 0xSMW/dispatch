@@ -2,6 +2,7 @@
  * Rewind current scalar state using the first recorded change on/after a receipt.
  * All fields from one request at one timestamp move together. No synthetic
  * snapshots or state entries are invented before retained history.
+ * Immutable builtin created_at takes precedence over custom-key history.
  * Alias h is a grouped receipt (tenant_id,contact_id,created_at,request_id).
  */
 export function goalState(side: "before" | "after") {
@@ -15,6 +16,7 @@ export function goalState(side: "before" | "after") {
       select distinct on (ch.field) ch.field,ch.from_value
       from contact_changes ch
       where ch.tenant_id = h.tenant_id and ch.contact_id = h.contact_id
+        and ch.field <> 'created_at'
         and ch.field not like 'topics.%' and ch.field not like 'segments.%'
         and (ch.created_at,ch.request_id) ${comparison} (h.created_at,h.request_id)
       order by ch.field,ch.created_at,ch.request_id,ch.id

@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ApiError, evaluate, operatorsForType, type Operator, type Rule } from "@dispatchmail/core";
-import { segmentCount, segmentFilter, segmentPredicate, segmentPreview, type SegmentProperty } from "./segments.js";
+import { assertSegmentRule, segmentCount, segmentFilter, segmentPredicate, segmentPreview, type SegmentProperty } from "./segments.js";
 import type { Queryable } from "./index.js";
 
 const properties: SegmentProperty[] = [
@@ -361,8 +361,103 @@ describe("segment read helpers", () => {
     const bind = vi.fn(() => "$1");
     const missing = database([[]]);
     await expect(segmentFilter(missing.db, "tenant", "foreign", bind)).rejects.toMatchObject({ name: "not_found", statusCode: 404 });
-    const malformed = database([[{ rule: { type: "and", rules: [leaf("contact.email", "eq", "a"), leaf("contact.unknown")] } }], []]);
-    await expect(segmentFilter(malformed.db, "tenant", "s", bind)).rejects.toThrow("Unknown segment field");
+    const malformed = database([[{ rule: { type: "and", rules: [leaf("contact.email", "eq", "a"), leaf("contact.properties.plan")] } }], []]);
+    await expect(segmentFilter(malformed.db, "tenant", "s", bind)).rejects.toThrow("Unsupported segment field");
+    expect(bind).not.toHaveBeenCalled();
+  });
+
+  it.each(["and", "or"] as const)("fails the entire saved nested %s filter closed when a declaration is missing", async (type) => {
+    for (const operator of ["eq", "neq", "exists", "is_empty"] as const) {
+      const rule: Rule = { type, rules: [
+        leaf("contact.email", "exists"),
+        { type: "or", rules: [
+          leaf("contact.first_name", "eq", "Ada"),
+          { type: "and", rules: [leaf("contact.plan", operator, operator === "eq" || operator === "neq" ? "pro" : undefined)] },
+        ] },
+      ] };
+      const { db, query } = database([[{ rule }], properties.filter(({ key }) => key !== "plan")]);
+      const bind = vi.fn(() => "$9");
+      expect(await segmentFilter(db, "tenant", "damaged", bind)).toBe("false");
+      expect(bind).not.toHaveBeenCalled();
+      expect(query).toHaveBeenCalledTimes(2);
+      expect(query.mock.calls[1]).toEqual([
+        "select key, type from contact_properties where tenant_id = $1 and deleted_at is null", ["tenant"],
+      ]);
+    }
+  });
+
+  it("counts a damaged saved filter with SQL false and only the tenant parameter", async () => {
+    const rule: Rule = { type: "or", rules: [leaf("contact.email", "exists"), leaf("contact.plan", "eq", "pro")] };
+    const { db, query } = database([[{ rule }], [], [{ count: "0" }]]);
+    expect(await segmentCount(db, "tenant", "damaged")).toBe(0);
+    expect(query.mock.calls[2]).toEqual([
+      "select count(*) as count from contacts c where c.tenant_id = $1 and c.deleted_at is null and (false)", ["tenant"],
+    ]);
+  });
+
+  it.each(["save", "preview"] as const)("keeps %s validation strict for undeclared custom fields", async (operation) => {
+    const { db, query } = database([[]]);
+    const rule: Rule = { type: "or", rules: [leaf("contact.email", "exists"), leaf("contact.plan", "eq", "pro")] };
+    await expect(operation === "save" ? assertSegmentRule(db, "tenant", rule) : segmentPreview(db, "tenant", rule))
+      .rejects.toMatchObject({ name: "validation_error", statusCode: 400, message: "Unknown segment field: contact.plan" });
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["email", "a@fixture.net", "c.email"],
+    ["first_name", "Ada", "c.first_name"],
+    ["last_name", "Lovelace", "c.last_name"],
+    ["created_at", "2026-10-04", "c.created_at"],
+    ["unsubscribed", true, "c.unsubscribed_at is not null"],
+  ] as const)("keeps saved builtin %s independent of custom declarations", async (key, value, expression) => {
+    for (const metadata of [[], [{ key, type: "number" }]] as SegmentProperty[][]) {
+      const { db } = database([[{ rule: leaf(`contact.${key}`, "eq", value) }], metadata]);
+      const values: unknown[] = [];
+      const sql = await segmentFilter(db, "tenant", "valid", (value) => { values.push(value); return "$3"; });
+      expect(sql).toContain(expression);
+      expect(sql).not.toContain("c.properties");
+      expect(values).toEqual([JSON.stringify(value)]);
+    }
+  });
+
+  it.each(["topics", "segments"] as const)("keeps saved %s own-property and membership fallbacks without declarations", async (key) => {
+    const { db, query } = database([[{ rule: leaf(`contact.${key}`, "contains", "target") }], [], []]);
+    const values: unknown[] = [];
+    const sql = await segmentFilter(db, "tenant", "valid", (value) => { values.push(value); return `$${values.length}`; });
+    expect(sql).toContain("case when c.properties ? $1::text");
+    expect(sql).toContain(key === "topics" ? "from topics t" : "from segments s");
+    expect(sql).toContain(key === "topics" ? "coalesce(s.status, t.default_status)" : "s.rule is null");
+    expect(values).toEqual([key, "target", "target"]);
+    expect(query).toHaveBeenCalledTimes(key === "topics" ? 2 : 3);
+  });
+
+  it.each([
+    [leaf("contact.properties.plan"), properties, "Unsupported segment field"],
+    [leaf("contact.score", "contains", "1"), properties, "Operator contains is not supported"],
+    [leaf("contact.score", "eq", "1"), properties, "Invalid value"],
+    [leaf("contact.email", "exists"), [{ key: "score", type: "object" }], "Invalid segment property metadata"],
+    [{ type: "xor", rules: [leaf("contact.email", "exists")] }, properties, undefined],
+  ])("does not suppress unrelated saved-rule validation: %j", async (bad, metadata, message) => {
+    const rule = { type: "or", rules: [leaf("contact.missing", "exists"), bad] } as Rule;
+    const { db } = database([[{ rule }], metadata as SegmentProperty[]]);
+    const bind = vi.fn(() => "$1");
+    await expect(segmentFilter(db, "tenant", "s", bind)).rejects.toThrow(message as string | undefined);
+    expect(bind).not.toHaveBeenCalled();
+  });
+
+  it.each(["segment", "properties", "references"] as const)("propagates legitimate %s query errors instead of treating them as missing declarations", async (stage) => {
+    const rule: Rule = { type: "or", rules: [
+      leaf("contact.plan", "exists"), leaf("contact.segments", "contains", "static"),
+    ] };
+    const failure = new ApiError("validation_error", 400, "Unknown segment field: contact.plan");
+    const query = vi.fn(async (sql: string) => {
+      if ((stage === "segment" && sql.startsWith("select rule"))
+        || (stage === "properties" && sql.includes("from contact_properties"))
+        || (stage === "references" && sql.includes("as dynamic"))) throw failure;
+      return { rows: sql.startsWith("select rule") ? [{ rule }] : [] };
+    });
+    const bind = vi.fn(() => "$1");
+    await expect(segmentFilter({ query } as unknown as Queryable, "tenant", "s", bind)).rejects.toBe(failure);
     expect(bind).not.toHaveBeenCalled();
   });
 

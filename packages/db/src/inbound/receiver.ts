@@ -1,6 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { ApiError, id, type InboundDelivery, type InboundResult, type IntegrationRecord } from "@dispatchmail/core";
-import type { Db } from "../index.js";
+import type { Client, Db } from "../index.js";
 import { retryTx } from "../retry.js";
 import { applyInbound } from "./application.js";
 import { recordInboundFailure } from "./deliveries.js";
@@ -22,6 +22,72 @@ function safeResult(result: InboundResult): InboundResult {
   };
 }
 
+type InboundIdentity = Pick<ReceiveInboundInput, "integration" | "tokenHash" | "providerEventId">;
+type Duplicate = InboundResult & { duplicate: true };
+
+async function lockIntegration(
+  client: Client, input: InboundIdentity, errors: { missing: ApiError; changed: ApiError },
+): Promise<IntegrationRecord> {
+  // Both advisory lookup and receive serialize with management's changes and
+  // authenticate the current row, not the earlier authenticated/prepared snapshot.
+  const locked = await client.query<IntegrationRecord>(
+    `select ${integrationColumns} from integrations
+     where tenant_id = $1 and id = $2 and deleted_at is null for update`,
+    [input.integration.tenant_id, input.integration.id],
+  );
+  const current = locked.rows[0];
+  if (!current || current.deleted_at !== null
+    || current.token_hash !== input.tokenHash
+    || input.integration.token_hash !== input.tokenHash) throw errors.missing;
+  if (current.provider !== input.integration.provider
+    || current.slug !== input.integration.slug
+    || current.secret !== input.integration.secret
+    || !isDeepStrictEqual(current.settings, input.integration.settings)) throw errors.changed;
+  if (typeof input.providerEventId !== "string" || !input.providerEventId
+    || input.providerEventId.startsWith("attempt:")) {
+    throw new Error("Invalid verified event identity");
+  }
+  return current;
+}
+
+async function storedDuplicate(
+  client: Client, integration: IntegrationRecord, providerEventId: string,
+): Promise<Duplicate | null> {
+  const existing = await client.query<InboundDelivery>(
+    `select status, event_name, contact_id, error from inbound_deliveries
+     where tenant_id = $1 and integration_id = $2 and provider_event_id = $3`,
+    [integration.tenant_id, integration.id, providerEventId],
+  );
+  const delivery = existing.rows[0];
+  if (!delivery) return null;
+  if (delivery.status === "failed") throw new Error("Delivery reservation unavailable");
+  return {
+    ...safeResult({
+      status: delivery.status, eventName: delivery.event_name, contactId: delivery.contact_id,
+      ...(delivery.error !== null ? { reason: delivery.error } : {}),
+    }),
+    duplicate: true,
+  };
+}
+
+/** Authenticated advisory read only: a miss must still use receive's full lock/recheck. */
+export async function inboundDuplicate(
+  db: Db, input: InboundIdentity,
+): Promise<Duplicate | null> {
+  const missing = new ApiError("not_found", 404, "Integration not found");
+  const changed = new ApiError("service_unavailable", 503, "Inbound delivery could not be processed; retry");
+  try {
+    return await retryTx(db, async client => {
+      const current = await lockIntegration(client, input, { missing, changed });
+      return storedDuplicate(client, current, input.providerEventId);
+    });
+  } catch (error) {
+    if (error === missing || error === changed) throw error;
+    // Lookup failures remain retryable without reserving identities or writing audits.
+    throw new ApiError("service_unavailable", 503, "Inbound delivery could not be processed; retry");
+  }
+}
+
 export async function receiveInbound(
   db: Db, input: ReceiveInboundInput,
 ): Promise<InboundResult & { duplicate?: boolean }> {
@@ -29,25 +95,7 @@ export async function receiveInbound(
   const changed = new ApiError("service_unavailable", 503, "Inbound delivery could not be processed; retry");
   try {
     return await retryTx(db, async client => {
-      // Row locks serialize receivers with management's updates/rotation/deletion.
-      // Read the current row, not the earlier authenticated/prepared snapshot.
-      const locked = await client.query<IntegrationRecord>(
-        `select ${integrationColumns} from integrations
-         where tenant_id = $1 and id = $2 and deleted_at is null for update`,
-        [input.integration.tenant_id, input.integration.id],
-      );
-      const current = locked.rows[0];
-      if (!current || current.deleted_at !== null
-        || current.token_hash !== input.tokenHash
-        || input.integration.token_hash !== input.tokenHash) throw missing;
-      if (current.provider !== input.integration.provider
-        || current.slug !== input.integration.slug
-        || current.secret !== input.integration.secret
-        || !isDeepStrictEqual(current.settings, input.integration.settings)) throw changed;
-      if (typeof input.providerEventId !== "string" || !input.providerEventId
-        || input.providerEventId.startsWith("attempt:")) {
-        throw new Error("Invalid verified event identity");
-      }
+      const current = await lockIntegration(client, input, { missing, changed });
 
       const deliveryId = id("delivery");
       const reserved = await client.query<{ id: string }>(
@@ -58,20 +106,9 @@ export async function receiveInbound(
         [deliveryId, current.tenant_id, current.id, input.providerEventId],
       );
       if (!reserved.rows[0]) {
-        const existing = await client.query<InboundDelivery>(
-          `select status, event_name, contact_id, error from inbound_deliveries
-           where tenant_id = $1 and integration_id = $2 and provider_event_id = $3`,
-          [current.tenant_id, current.id, input.providerEventId],
-        );
-        const delivery = existing.rows[0];
-        if (!delivery || delivery.status === "failed") throw new Error("Delivery reservation unavailable");
-        return {
-          ...safeResult({
-            status: delivery.status, eventName: delivery.event_name, contactId: delivery.contact_id,
-            ...(delivery.error !== null ? { reason: delivery.error } : {}),
-          }),
-          duplicate: true,
-        };
+        const duplicate = await storedDuplicate(client, current, input.providerEventId);
+        if (!duplicate) throw new Error("Delivery reservation unavailable");
+        return duplicate;
       }
       const result = safeResult(await applyInbound(client, current, input.mapping, input.requestId));
       await client.query(

@@ -150,7 +150,7 @@ export function segmentPredicate(rule: Rule, bind: Bind, properties: readonly Se
   return compileRule(validated.rule, bind, validated.definitions);
 }
 
-function validateRule(rule: Rule, properties: readonly SegmentProperty[], goal = false) {
+function validateRule(rule: Rule, properties: readonly SegmentProperty[], { goal = false, saved = false } = {}) {
   if (!goal) limits(rule);
   const parsed = (goal ? ruleSchema : segmentRuleSchema).safeParse(rule);
   if (!parsed.success) invalid(parsed.error.issues[0]?.message ?? "Invalid segment rule");
@@ -164,6 +164,7 @@ function validateRule(rule: Rule, properties: readonly SegmentProperty[], goal =
 
   // Resolve and validate every leaf before bind(), so refusal does not partly
   // mutate the caller's parameter collection.
+  let missing = false;
   function validate(node: Rule) {
     if (node.type !== "rule") { node.rules.forEach(validate); return; }
     if ((engagementFields as readonly string[]).includes(node.field)) return;
@@ -172,7 +173,11 @@ function validateRule(rule: Rule, properties: readonly SegmentProperty[], goal =
     }
     const key = node.field.slice(8);
     const type = fields.get(key) ?? definitions.get(key) ?? (key === "topics" || key === "segments" ? "set" : undefined);
-    if (!type) invalid(`Unknown segment field: ${node.field}`);
+    if (!type) {
+      if (!saved) invalid(`Unknown segment field: ${node.field}`);
+      missing = true;
+      return;
+    }
     if (!operatorsForType(type).includes(node.operator)) invalid(`Operator ${node.operator} is not supported for ${node.field}`);
     if (node.operator === "exists" || node.operator === "is_empty") return;
     if (node.operator === "within" || node.operator === "not_within") return;
@@ -183,17 +188,17 @@ function validateRule(rule: Rule, properties: readonly SegmentProperty[], goal =
     if (!valid) invalid(`Invalid value for ${node.field}`);
   }
   validate(parsed.data);
-  return { rule: parsed.data, definitions };
+  return { rule: parsed.data, definitions, missing };
 }
 
 // Goals share the grammar and typed scalar compiler, not segment-only limits.
 export function goalPredicate(rule: Rule, bind: Bind, properties: readonly SegmentProperty[]): string {
-  const validated = validateRule(rule, properties, true);
+  const validated = validateRule(rule, properties, { goal: true });
   return compileRule(validated.rule, bind, validated.definitions);
 }
 
 export function goalStatePredicate(rule: Rule, bind: Bind, properties: readonly SegmentProperty[], state: string, clock: string): string {
-  const validated = validateRule(rule, properties, true);
+  const validated = validateRule(rule, properties, { goal: true });
   function compile(node: Rule): string {
     if (node.type !== "rule") return `(${node.rules.map(compile).join(node.type === "and" ? " and " : " or ")})`;
     const key = node.field.slice(8);
@@ -353,10 +358,13 @@ export async function segmentFilter(db: Queryable, tenantId: string, segmentId: 
   if (!segment) throw new ApiError("not_found", 404, "Segment not found");
   const metadata = await properties(db, tenantId);
   if (segment.rule === null) return membership("segments", bind(segmentId));
-  const validated = validateRule(segment.rule, metadata);
+  const validated = validateRule(segment.rule, metadata, { saved: true });
   // Saved scopes are checked by the SQL's live-resource guard: deletion means no facts,
   // not an error and never an unscoped fallback.
   await references(db, tenantId, validated.rule, false);
+  // Deleting a declaration keeps contact JSON, but invalidates the entire saved
+  // filter: replacing just the missing leaf could still admit another OR branch.
+  if (validated.missing) return "false";
   return compileRule(validated.rule, bind, validated.definitions);
 }
 
