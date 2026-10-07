@@ -2090,7 +2090,7 @@ async function previewBrand(tenantId: string) {
   return brandContext(brand.brand, { tenantName: brand.name, domain, from: `support@${domain}` });
 }
 
-async function flushTelemetry() {
+export async function flushTelemetry() {
   if (telemetryFlushPromise) return telemetryFlushPromise;
   telemetryFlushPromise = flushTelemetryNow().finally(() => {
     telemetryFlushPromise = null;

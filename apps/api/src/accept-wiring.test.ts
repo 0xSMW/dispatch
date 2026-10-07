@@ -123,7 +123,8 @@ async function fixture(supplied: Env, loaded: Env = {}) {
     redisClient(process.env.REDIS_URL);
     return { close: vi.fn(async () => {}) };
   };
-  const api = vi.fn(() => ({ ...initialize(), app: { inject: vi.fn() } }));
+  const flushTelemetry = vi.fn(async () => {});
+  const api = vi.fn(() => ({ ...initialize(), app: { inject: vi.fn() }, flushTelemetry }));
   const worker = vi.fn(() => ({ ...initialize(), tick: vi.fn() }));
   vi.doMock("./server.js", api);
   vi.doMock("../../worker/src/worker.js", worker);
@@ -142,6 +143,7 @@ async function fixture(supplied: Env, loaded: Env = {}) {
     migrate,
     redisClient,
     api,
+    flushTelemetry,
     worker,
     appEnv,
   };
@@ -364,7 +366,15 @@ describe("actual acceptance fixture wiring, offline", () => {
         Array(2).fill(["redis://127.0.0.1:32769/15"]),
       );
       // Exercise the actual destructive fixture helpers, entirely through the mocked DB.
-      for (const hook of f.hooks.beforeEach!) await hook();
+      let releaseFlush!: () => void;
+      f.flushTelemetry.mockImplementationOnce(() => new Promise<void>((resolve) => {
+        releaseFlush = resolve;
+      }));
+      const setup = Promise.all(f.hooks.beforeEach!.map((hook) => hook()));
+      await vi.waitFor(() => expect(f.flushTelemetry).toHaveBeenCalledOnce());
+      expect(f.query.mock.calls.some(([sql]) => sql.includes("pg_tables") || sql.startsWith("truncate"))).toBe(false);
+      releaseFlush();
+      await setup;
       expect(f.query).toHaveBeenCalledWith(
         'truncate "fixture" restart identity cascade',
       );

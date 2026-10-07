@@ -55,6 +55,7 @@ let db: Db;
 let app: FastifyInstance;
 let tick: () => Promise<{ jobs: number; runs: number; attempts: number }>;
 let closeApi: () => Promise<void>;
+let flushApiTelemetry: () => Promise<void>;
 let closeWorker: () => Promise<void>;
 let fullKey = "";
 let turn = Promise.resolve();
@@ -91,6 +92,7 @@ beforeAll(async () => {
   const worker = await import("../../worker/src/worker.js");
   app = api.app;
   closeApi = api.close;
+  flushApiTelemetry = api.flushTelemetry;
   tick = worker.tick;
   closeWorker = worker.close;
 });
@@ -118,8 +120,6 @@ afterAll(async () => {
 });
 
 describe.skipIf(!live)("accept", () => {
-  // Run the persisted-log regression before another case truncates its tenant:
-  // this fixture deliberately leaves the product telemetry timer at ten minutes.
   it("review regression: mixed-scheme real confirmation URLs remain full-role visible and concealed in viewer emails and logs", async () => {
     const origin = "https://signup.example";
     const topic = await post(fullKey, "/topics", { name: "Scheme confirmation", default_subscription: "opt_in" });
@@ -7600,6 +7600,9 @@ async function ensureDatabase() {
 }
 
 async function truncate() {
+  // Persist queued telemetry while its tenant and credential foreign keys still exist.
+  // The shared API stays alive across cases with its automatic flush timer delayed.
+  await flushApiTelemetry();
   const tables = await db.query<{ tablename: string }>(
     "select tablename from pg_tables where schemaname = 'public'",
   );
