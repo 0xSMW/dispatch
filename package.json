@@ -45,6 +45,7 @@
   "pnpm": {
     "overrides": {
       "@types/node": "^24.19.1",
+      "source-map-js": "1.2.2",
       "@workflow/core>devalue": "5.9.3",
       "@workflow/core>nanoid": "5.1.16",
       "fast-uri@3": "3.1.8",

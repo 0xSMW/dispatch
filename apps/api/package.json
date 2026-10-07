@@ -29,7 +29,7 @@
     "workflow": "5.0.1"
   },
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "1.17.5",
+    "@modelcontextprotocol/sdk": "1.31.0",
     "@types/node": "^24.19.1",
     "@types/sns-validator": "^0.3.3",
     "tsx": "^4.19.4",
