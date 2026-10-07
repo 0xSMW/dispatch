@@ -1,12 +1,14 @@
 import { parse } from "csv-parse";
-import type { ImportColumnMap } from "@dispatchmail/core";
+import { isIsoDate, type ImportColumnMap, type PropertyType } from "@dispatchmail/core";
 import {
   claimImports,
   dedupeByEmail,
   emptyCounts,
   finishImport,
   importBatch,
+  isDeadlock,
   propertyDefinitions,
+  retryTx,
   saveImportCounts,
   tx,
   type Db,
@@ -19,7 +21,7 @@ import type { Storage } from "@dispatchmail/storage";
 
 export const batchSize = 1_000;
 
-type ColumnType = "string" | "number" | "boolean";
+type ColumnType = PropertyType;
 
 export type Columns = {
   email: string;
@@ -31,6 +33,7 @@ export type Columns = {
 
 const emailPattern = /^[^\s@<>()",;]+@[^\s@<>()",;]+\.[^\s@<>()",;]+$/;
 const trueValues = new Set(["true", "yes", "y", "1", "unsubscribed"]);
+const propertyBooleans = new Map([["true", true], ["yes", true], ["1", true], ["false", false], ["no", false], ["0", false]]);
 const defaults = {
   email: ["email", "email_address", "e-mail", "email address"],
   first_name: ["first_name", "firstname", "first name"],
@@ -47,10 +50,17 @@ export async function startImports(
   storage: Pick<Storage, "stream">,
   state = running,
   max = Number(process.env.IMPORT_CONCURRENCY ?? 1),
+  options: { bounded?: boolean } = {},
 ) {
   const free = max - state.count;
   if (free <= 0) return 0;
   const imports = await claimImports(db, free);
+  if (options.bounded) {
+    // A serverless step must finish its work before returning. Each pass commits one batch,
+    // then leaves the import queued for another durable step.
+    await Promise.all(imports.map((job) => runImport(db, storage, job, { maxRows: batchSize })));
+    return imports.length;
+  }
   for (const job of imports) {
     state.count += 1;
     void runImport(db, storage, job)
@@ -66,7 +76,7 @@ export async function runImport(
   db: Db,
   storage: Pick<Storage, "stream">,
   job: ImportRow,
-  options: { batchSize?: number } = {},
+  options: { batchSize?: number; maxRows?: number } = {},
 ) {
   const size = options.batchSize ?? batchSize;
   // A job taken over from a worker that stopped has rows already committed. Those rows are read
@@ -80,12 +90,14 @@ export async function runImport(
     counts.skipped = job.counts?.skipped ?? 0;
   }
   let seen = 0;
+  let source: Awaited<ReturnType<Storage["stream"]>> | undefined;
+  let parser: ReturnType<typeof parse> | undefined;
   try {
     const definitions = await propertyDefinitions(db, job.tenant_id);
-    const source = await storage.stream(job.storage_key);
+    source = await storage.stream(job.storage_key);
     const header: { columns?: Columns } = {};
     const broken: { message?: string } = {};
-    const parser = parse({
+    parser = parse({
       bom: true,
       trim: true,
       skip_empty_lines: true,
@@ -107,7 +119,7 @@ export async function runImport(
         return undefined;
       },
     });
-    source.on("error", (error) => parser.destroy(error));
+    source.on("error", (error) => parser?.destroy(error));
     source.pipe(parser);
 
     let batch: ImportContact[] = [];
@@ -117,20 +129,45 @@ export async function runImport(
       const contact = header.columns ? mapRecord(record, header.columns) : null;
       if (!contact) {
         counts.failed += 1;
-        continue;
       }
       if (seen <= done) continue;
-      batch.push(contact);
+      if (contact) batch.push(contact);
       if (batch.length >= size) {
         await flush(db, job, batch, counts, seen);
         batch = [];
       }
+      if (options.maxRows && seen - done >= options.maxRows) {
+        if (batch.length > 0) await flush(db, job, batch, counts, seen);
+        await tx(db, async (client) => {
+          await ownImport(client, job);
+          if (batch.length === 0) await saveImportCounts(client, job.id, counts, seen);
+          await client.query("update contact_imports set status = 'queued', locked_at = null where tenant_id = $1 and id = $2", [job.tenant_id, job.id]);
+        });
+        source.pause();
+        if ("destroy" in source && typeof source.destroy === "function") source.destroy();
+        parser.destroy();
+        return counts;
+      }
     }
     if (batch.length > 0) await flush(db, job, batch, counts, seen);
     if (broken.message) throw new Error(broken.message);
-    await finishImport(db, job.id, "completed", counts);
+    await tx(db, async (client) => {
+      await ownImport(client, job);
+      await finishImport(client, job.id, "completed", counts);
+    });
   } catch (error) {
-    await finishImport(db, job.id, "failed", counts, error instanceof Error ? error.message : String(error));
+    if (error instanceof ImportInterrupted) return counts;
+    // An exhausted aborted batch leaves only prior committed progress. Keep it reclaimable;
+    // do not fail or requeue a job that may have been cancelled or taken over meanwhile.
+    if (isDeadlock(error)) return counts;
+    await tx(db, async (client) => {
+      try { await ownImport(client, job); }
+      catch (ownership) { if (ownership instanceof ImportInterrupted) return; throw ownership; }
+      await finishImport(client, job.id, "failed", counts, error instanceof Error ? error.message : String(error));
+    });
+  } finally {
+    parser?.destroy();
+    if (source && "destroy" in source && typeof source.destroy === "function") source.destroy();
   }
   return counts;
 }
@@ -138,7 +175,9 @@ export async function runImport(
 // Upserts one batch and writes progress in the same transaction. Mutates counts once the batch commits.
 export async function flush(db: Db, job: ImportRow, batch: ImportContact[], counts: ImportCounts, offset = 0) {
   const { rows, dropped } = dedupeByEmail(batch);
-  const result = await tx(db, async (client) => {
+  const result = await retryTx(db, async (client) => {
+    const current = await ownImport(client, job);
+    if (offset > 0 && (current.row_offset ?? 0) >= offset) throw new ImportInterrupted();
     const done = await importBatch(client, job, rows);
     await saveImportCounts(
       client,
@@ -157,6 +196,20 @@ export async function flush(db: Db, job: ImportRow, batch: ImportContact[], coun
   counts.updated += result.updated;
   counts.skipped += result.skipped + dropped;
   return counts;
+}
+
+class ImportInterrupted extends Error {}
+
+async function ownImport(client: { query: Db["query"] }, job: ImportRow) {
+  const found = await client.query<ImportRow>(
+    "select status, row_offset, claim_version from contact_imports where tenant_id = $1 and id = $2 for update",
+    [job.tenant_id, job.id],
+  );
+  const current = found.rows[0];
+  if (!current || current.status !== "in_progress" || (current.claim_version ?? 0) !== (job.claim_version ?? 0)) {
+    throw new ImportInterrupted();
+  }
+  return current;
 }
 
 export function resolveColumns(header: string[], map: ImportColumnMap, definitions: PropertyDefinition[]): Columns {
@@ -212,7 +265,12 @@ export function mapRecord(record: Record<string, string | undefined>, columns: C
       if (!Number.isFinite(value)) return null;
       properties[property.key] = value;
     } else if (property.type === "boolean") {
-      properties[property.key] = trueValues.has(raw.toLowerCase());
+      const value = propertyBooleans.get(raw.toLowerCase());
+      if (value === undefined) return null;
+      properties[property.key] = value;
+    } else if (property.type === "date") {
+      if (!isIsoDate(raw)) return null;
+      properties[property.key] = raw;
     } else {
       properties[property.key] = raw;
     }

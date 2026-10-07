@@ -105,26 +105,75 @@ type Tag struct {
 }
 
 type Email struct {
-	Object      string   `json:"object,omitempty"`
-	ID          string   `json:"id"`
-	MessageID   *string  `json:"message_id,omitempty"`
-	From        string   `json:"from,omitempty"`
-	To          []string `json:"to,omitempty"`
-	Cc          []string `json:"cc,omitempty"`
-	Bcc         []string `json:"bcc,omitempty"`
-	ReplyTo     []string `json:"reply_to,omitempty"`
-	Subject     string   `json:"subject,omitempty"`
-	HTML        *string  `json:"html,omitempty"`
-	Text        *string  `json:"text,omitempty"`
-	LastEvent   string   `json:"last_event,omitempty"`
-	ScheduledAt *string  `json:"scheduled_at,omitempty"`
-	Tags        []Tag    `json:"tags,omitempty"`
-	CreatedAt   string   `json:"created_at,omitempty"`
+	Object string `json:"object,omitempty"`
+	ID     string `json:"id"`
+	// Sandbox is true only when every original recipient is simulated, with no external delivery.
+	Sandbox     bool             `json:"sandbox"`
+	Recipients  []EmailRecipient `json:"recipients,omitempty"`
+	Emails      []SplitEmail     `json:"emails,omitempty"`
+	MessageID   *string          `json:"message_id,omitempty"`
+	From        string           `json:"from,omitempty"`
+	To          []string         `json:"to,omitempty"`
+	Cc          []string         `json:"cc,omitempty"`
+	Bcc         []string         `json:"bcc,omitempty"`
+	ReplyTo     []string         `json:"reply_to,omitempty"`
+	Subject     string           `json:"subject,omitempty"`
+	HTML        *string          `json:"html,omitempty"`
+	Text        *string          `json:"text,omitempty"`
+	LastEvent   string           `json:"last_event,omitempty"`
+	ScheduledAt *string          `json:"scheduled_at,omitempty"`
+	Tags        []Tag            `json:"tags,omitempty"`
+	CreatedAt   string           `json:"created_at,omitempty"`
+}
+
+type EmailRecipient struct {
+	ID        string `json:"id"`
+	Email     string `json:"email"`
+	Kind      string `json:"kind"`
+	Status    string `json:"status"`
+	Sandbox   bool   `json:"sandbox"`
+	CreatedAt string `json:"created_at"`
+}
+
+type SplitEmail struct {
+	ID      string `json:"id"`
+	To      string `json:"to"`
+	Sandbox bool   `json:"sandbox"`
+}
+
+type ContactActivity struct {
+	Object       string                `json:"object"`
+	ID           string                `json:"id"`
+	Type         string                `json:"type"`
+	ResourceID   *string               `json:"resource_id"`
+	Label        *string               `json:"label"`
+	EmailID      *string               `json:"email_id"`
+	AutomationID *string               `json:"automation_id"`
+	RunID        *string               `json:"run_id"`
+	ExitReason   *AutomationExitReason `json:"exit_reason"`
+	CreatedAt    string                `json:"created_at"`
+}
+
+const (
+	EmailUnsubscribed      = "email.unsubscribed"
+	AutomationRunStarted   = "automation.run.started"
+	AutomationRunCompleted = "automation.run.completed"
+	AutomationRunFailed    = "automation.run.failed"
+)
+
+type AutomationRunEvent struct {
+	AutomationID string                `json:"automation_id"`
+	RunID        string                `json:"run_id"`
+	ContactID    *string               `json:"contact_id"`
+	State        string                `json:"state"`
+	ExitReason   *AutomationExitReason `json:"exit_reason"`
 }
 
 type BatchResponse struct {
 	Data []struct {
-		ID string `json:"id"`
+		ID      string       `json:"id"`
+		Sandbox bool         `json:"sandbox"`
+		Emails  []SplitEmail `json:"emails,omitempty"`
 	} `json:"data"`
 	Errors []struct {
 		Index   int    `json:"index"`
@@ -155,10 +204,18 @@ type TemplateVariable struct {
 	FallbackValue any    `json:"fallback_value,omitempty"`
 }
 
+type SendKind string
+
+const (
+	Transactional SendKind = "transactional"
+	Marketing     SendKind = "marketing"
+)
+
 type Template struct {
 	Object                 string             `json:"object,omitempty"`
 	ID                     string             `json:"id"`
 	Name                   string             `json:"name"`
+	Kind                   SendKind           `json:"kind"`
 	Alias                  *string            `json:"alias,omitempty"`
 	From                   *string            `json:"from,omitempty"`
 	ReplyTo                []string           `json:"reply_to,omitempty"`
@@ -187,9 +244,10 @@ type Contact struct {
 }
 
 type ContactProperty struct {
-	Object        string `json:"object,omitempty"`
-	ID            string `json:"id"`
-	Key           string `json:"key"`
+	Object string `json:"object,omitempty"`
+	ID     string `json:"id"`
+	Key    string `json:"key"`
+	// Type is string, number, boolean, or date. Dates remain ISO strings.
 	Type          string `json:"type"`
 	FallbackValue any    `json:"fallback_value,omitempty"`
 	CreatedAt     string `json:"created_at,omitempty"`
@@ -208,12 +266,15 @@ type Topic struct {
 }
 
 type Segment struct {
-	Object    string `json:"object,omitempty"`
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Contacts  int    `json:"contacts,omitempty"`
-	CreatedAt string `json:"created_at,omitempty"`
-	UpdatedAt string `json:"updated_at,omitempty"`
+	Object      string  `json:"object,omitempty"`
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	Description *string `json:"description,omitempty"`
+	Type        string  `json:"type"`
+	Rule        *Rule   `json:"rule"`
+	Contacts    *int    `json:"contacts,omitempty"`
+	CreatedAt   string  `json:"created_at,omitempty"`
+	UpdatedAt   string  `json:"updated_at,omitempty"`
 }
 
 type Suppression struct {
@@ -244,15 +305,130 @@ type Broadcast struct {
 }
 
 type Automation struct {
-	Object      string `json:"object,omitempty"`
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Status      string `json:"status,omitempty"`
-	Steps       []any  `json:"steps,omitempty"`
-	Connections []any  `json:"connections,omitempty"`
-	CreatedAt   string `json:"created_at,omitempty"`
-	UpdatedAt   string `json:"updated_at,omitempty"`
+	Object        string                  `json:"object,omitempty"`
+	ID            string                  `json:"id"`
+	Name          string                  `json:"name"`
+	Status        string                  `json:"status,omitempty"`
+	Version       int                     `json:"version"`
+	Trigger       *string                 `json:"trigger"`
+	TriggerConfig AutomationTriggerConfig `json:"trigger_config"`
+	Reentry       AutomationReentry       `json:"reentry"`
+	Steps         []any                   `json:"steps"`
+	Connections   []any                   `json:"connections"`
+	CreatedAt     string                  `json:"created_at,omitempty"`
+	UpdatedAt     string                  `json:"updated_at,omitempty"`
 }
+
+type AutomationDryRun struct {
+	StrandedRuns int            `json:"stranded_runs"`
+	ByStep       map[string]int `json:"by_step"`
+}
+
+type AutomationExitReason string
+
+const (
+	ExitCompleted AutomationExitReason = "completed"
+	ExitExplicit  AutomationExitReason = "exit"
+	ExitFilter    AutomationExitReason = "filter"
+	ExitStopped   AutomationExitReason = "stopped"
+	ExitStranded  AutomationExitReason = "stranded"
+)
+
+type AutomationGuard struct {
+	Filter string `json:"filter"`
+	Rule   Rule   `json:"rule"`
+}
+
+// AutomationRun describes both list and detail responses. AutomationRuns and
+// AutomationRun retain their existing map return types for compatibility.
+type AutomationRun struct {
+	Object       string                `json:"object"`
+	ID           string                `json:"id"`
+	AutomationID string                `json:"automation_id"`
+	Status       string                `json:"status"`
+	ExitReason   *AutomationExitReason `json:"exit_reason"`
+	Guards       []AutomationGuard     `json:"guards"`
+	Event        Map                   `json:"event"`
+	Error        *string               `json:"error"`
+	CreatedAt    string                `json:"created_at"`
+	UpdatedAt    string                `json:"updated_at"`
+	Steps        []AutomationRunStep   `json:"steps,omitempty"`
+}
+
+type AutomationRunStep struct {
+	Key         string  `json:"key"`
+	Type        string  `json:"type"`
+	Status      string  `json:"status"`
+	StartedAt   *string `json:"started_at"`
+	CompletedAt *string `json:"completed_at"`
+	Output      Map     `json:"output"`
+	Error       *string `json:"error"`
+}
+
+// Automation statuses. Pausing a disabled automation returns 409.
+const (
+	AutomationEnabled  = "enabled"
+	AutomationPaused   = "paused"
+	AutomationDisabled = "disabled"
+)
+
+type AutomationTriggerType string
+
+const (
+	TriggerEvent           AutomationTriggerType = "event"
+	TriggerContactCreated  AutomationTriggerType = "contact_created"
+	TriggerContactUpdated  AutomationTriggerType = "contact_updated"
+	TriggerTopicSubscribed AutomationTriggerType = "topic_subscribed"
+	TriggerSegmentAdded    AutomationTriggerType = "segment_added"
+)
+
+// AutomationTriggerConfig describes a trigger step's snake_case config.
+// EventName, TopicID, and SegmentID apply to their respective trigger types.
+// Field, From, and To apply to contact_updated. From and To are JSON primitives
+// (string, number, boolean, or null); dates are ISO strings. A nil RawMessage is
+// omitted, while json.RawMessage("null") preserves an explicit null transition.
+type AutomationTriggerConfig struct {
+	Type      AutomationTriggerType `json:"type"`
+	EventName string                `json:"event_name,omitempty"`
+	Field     string                `json:"field,omitempty"`
+	From      json.RawMessage       `json:"from,omitempty"`
+	To        json.RawMessage       `json:"to,omitempty"`
+	TopicID   string                `json:"topic_id,omitempty"`
+	SegmentID string                `json:"segment_id,omitempty"`
+}
+
+type AutomationReentry string
+
+// AutomationEnrollment selects exactly one segment or all live contacts.
+type AutomationEnrollment struct {
+	SegmentID string `json:"segment_id,omitempty"`
+	All       bool   `json:"all,omitempty"`
+}
+
+type AutomationEnrollmentCounts struct {
+	Total     int `json:"total"`
+	Processed int `json:"processed"`
+	Enrolled  int `json:"enrolled"`
+	Skipped   int `json:"skipped"`
+	Failed    int `json:"failed"`
+}
+
+type AutomationEnrollmentJob struct {
+	Object       string                     `json:"object"`
+	ID           string                     `json:"id"`
+	AutomationID string                     `json:"automation_id"`
+	SegmentID    *string                    `json:"segment_id"`
+	Status       string                     `json:"status"`
+	Counts       AutomationEnrollmentCounts `json:"counts"`
+	Error        *string                    `json:"error"`
+	CreatedAt    string                     `json:"created_at"`
+	CompletedAt  *string                    `json:"completed_at"`
+}
+
+const (
+	ReentryOnce      AutomationReentry = "once"
+	ReentryEveryTime AutomationReentry = "every_time"
+)
 
 type Webhook struct {
 	Object        string   `json:"object,omitempty"`
@@ -434,9 +610,18 @@ type TopicChoice struct {
 }
 
 type ContactPropertyInput struct {
-	Key           string `json:"key"`
-	Type          string `json:"type,omitempty"`
-	FallbackValue any    `json:"fallback_value,omitempty"`
+	Key string `json:"key"`
+	// Type is string (the default), number, boolean, or date.
+	Type string `json:"type,omitempty"`
+	// FallbackValue must match Type. Dates are ISO strings; nil clears the fallback.
+	FallbackValue any `json:"fallback_value,omitempty"`
+}
+
+// ImportColumn maps a CSV header to a field. Type is string, number, boolean, or date.
+// A declared property type takes precedence over the mapping's type.
+type ImportColumn struct {
+	Column string `json:"column"`
+	Type   string `json:"type,omitempty"`
 }
 
 type ContactImportInput struct {
@@ -446,6 +631,8 @@ type ContactImportInput struct {
 	OnConflict string
 	Segments   []map[string]string
 	Topics     []TopicChoice
+	// Nil uses the tenant default, resolved and stored when the import is created.
+	TriggerAutomations *bool
 }
 
 type TopicInput struct {
@@ -464,6 +651,15 @@ type TopicSubscriptionInput struct {
 type SegmentInput struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
+	// Nil omits rule; json.RawMessage("null") explicitly converts to static.
+	Rule any `json:"rule,omitempty"`
+}
+
+type SegmentUpdate struct {
+	Name        *string `json:"name,omitempty"`
+	Description *string `json:"description,omitempty"`
+	// Nil omits rule; json.RawMessage("null") explicitly converts to static.
+	Rule any `json:"rule,omitempty"`
 }
 
 type BroadcastInput struct {
@@ -483,22 +679,115 @@ type BroadcastInput struct {
 }
 
 type AutomationStep struct {
-	Key    string         `json:"key"`
-	Type   string         `json:"type"`
-	Config map[string]any `json:"config,omitempty"`
+	Key    string `json:"key"`
+	Type   string `json:"type"`
+	Config any    `json:"config,omitempty"`
+}
+
+// Rule is a predicate (type rule) or a recursive and/or group.
+// Value retains JSON booleans, numbers, strings, and arrays without coercion.
+// Nil omits Value; json.RawMessage("null") preserves an explicit JSON null.
+type Rule struct {
+	Type     string           `json:"type"`
+	Field    string           `json:"field,omitempty"`
+	Operator string           `json:"operator,omitempty"`
+	Value    any              `json:"value,omitempty"`
+	Rules    []Rule           `json:"rules,omitempty"`
+	Scope    *EngagementScope `json:"scope,omitempty"`
+	Window   string           `json:"window,omitempty"`
+}
+
+type EngagementScope struct {
+	AutomationID string `json:"automation_id,omitempty"`
+	BroadcastID  string `json:"broadcast_id,omitempty"`
+}
+
+type SegmentPreview struct {
+	Count  int       `json:"count"`
+	Sample []Contact `json:"sample"`
+}
+
+func (c *Client) PreviewSegment(rule Rule) (*SegmentPreview, error) {
+	return post[SegmentPreview](c, "/segments/preview", Map{"rule": rule})
+}
+
+type ExitConfig struct{}
+
+// FilterConfig tests once for next, or before every later step for following.
+type FilterConfig struct {
+	Rule  Rule   `json:"rule"`
+	Scope string `json:"scope"`
+}
+
+type BranchPath struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+	Rule  Rule   `json:"rule"`
+}
+
+// BranchConfig has two to ten ordered paths, with unique nonempty keys other
+// than otherwise. The first matching rule wins; otherwise is implicit.
+type BranchConfig struct {
+	Paths []BranchPath `json:"paths"`
+}
+
+type SplitVariant struct {
+	Key    string `json:"key"`
+	Label  string `json:"label"`
+	Weight int    `json:"weight"`
+}
+
+// Two to four unique stable keys, integer weights summing to100; zero is allowed.
+type SplitConfig struct {
+	Variants []SplitVariant `json:"variants"`
+}
+
+// SendEmailConfig uses literal Variables and optional dotted context mappings.
+// Mappings override literals; recipient and unsubscribe context stays protected.
+// Omitted Kind is inferred from TopicID. Marketing drafts may omit TopicID,
+// but enabling or resuming requires a live topic. Transactional cannot have a topic.
+type SendEmailConfig struct {
+	Template        any               `json:"template"`
+	Kind            SendKind          `json:"kind,omitempty"`
+	From            string            `json:"from,omitempty"`
+	To              string            `json:"to,omitempty"`
+	Subject         string            `json:"subject,omitempty"`
+	ReplyTo         any               `json:"reply_to,omitempty"`
+	TopicID         string            `json:"topic_id,omitempty"`
+	Variables       map[string]any    `json:"variables,omitempty"`
+	VariableMapping map[string]string `json:"variable_mapping,omitempty"`
 }
 
 type AutomationConnection struct {
 	From string `json:"from"`
 	To   string `json:"to"`
 	Type string `json:"type,omitempty"`
+	// Path applies only to type branch: a configured path key or otherwise.
+	Path string `json:"path,omitempty"`
 }
 
 type AutomationInput struct {
-	Name        string                 `json:"name"`
+	Name string `json:"name"`
+	// Status on create accepts enabled or disabled, not paused.
 	Status      string                 `json:"status,omitempty"`
+	Enabled     *bool                  `json:"enabled,omitempty"`
 	Steps       []AutomationStep       `json:"steps"`
 	Connections []AutomationConnection `json:"connections,omitempty"`
+	Trigger     string                 `json:"trigger,omitempty"`
+	Reentry     AutomationReentry      `json:"reentry,omitempty"`
+}
+
+// AutomationUpdate pauses/resumes/stops execution or updates a definition.
+// Version is read-only and is returned on Automation, not accepted here.
+type AutomationUpdate struct {
+	ExpectedVersion *int                    `json:"expected_version,omitempty"`
+	Name            string                  `json:"name,omitempty"`
+	Status          string                  `json:"status,omitempty"`
+	Enabled         *bool                   `json:"enabled,omitempty"`
+	Steps           *[]AutomationStep       `json:"steps,omitempty"`
+	Connections     *[]AutomationConnection `json:"connections,omitempty"`
+	Trigger         string                  `json:"trigger,omitempty"`
+	Reentry         AutomationReentry       `json:"reentry,omitempty"`
 }
 
 type EventInput struct {
@@ -511,6 +800,94 @@ type EventInput struct {
 type EventDefinitionInput struct {
 	Name   string            `json:"name"`
 	Schema map[string]string `json:"schema,omitempty"`
+}
+
+// EventDefinition list rows include counts; detail responses may omit them.
+type EventDefinition struct {
+	Object      string            `json:"object,omitempty"`
+	ID          string            `json:"id"`
+	Name        string            `json:"name"`
+	Schema      map[string]string `json:"schema"`
+	FiredCount  *int              `json:"fired_count,omitempty"`
+	LastFiredAt *string           `json:"last_fired_at"`
+}
+
+type AutomationInstallInput struct {
+	Name string `json:"name,omitempty"`
+	From string `json:"from"`
+	// TopicID is required for newsletter-welcome; otherwise it binds Marketing steps.
+	TopicID string `json:"topic_id,omitempty"`
+}
+
+type InstalledTemplate struct {
+	ID   string `json:"id"`
+	Slug string `json:"slug"`
+}
+
+type InstalledEvent struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type InstalledProperty struct {
+	ID   string `json:"id"`
+	Key  string `json:"key"`
+	Type string `json:"type"`
+}
+
+type AutomationInstallation struct {
+	Automation Automation `json:"automation"`
+	Templates  struct {
+		Created []InstalledTemplate `json:"created"`
+		Reused  []InstalledTemplate `json:"reused"`
+	} `json:"templates"`
+	Events     []InstalledEvent    `json:"events"`
+	Properties []InstalledProperty `json:"properties"`
+	NextSteps  []string            `json:"next_steps"`
+	RequestID  string              `json:"request_id,omitempty"`
+}
+
+type LibraryStage string
+
+const (
+	StageAcquisition  LibraryStage = "acquisition"
+	StageOnboarding   LibraryStage = "onboarding"
+	StageRetention    LibraryStage = "retention"
+	StageReengagement LibraryStage = "reengagement"
+	StageDunning      LibraryStage = "dunning"
+	StageReactivation LibraryStage = "reactivation"
+)
+
+type AutomationPresetEvent struct {
+	Name   string            `json:"name"`
+	Schema map[string]string `json:"schema"`
+}
+
+type AutomationPresetProperty struct {
+	Key  string `json:"key"`
+	Type string `json:"type"`
+}
+
+// AutomationPreset is a read-only library definition. Templates are library
+// slugs, not tenant IDs; newsletter TopicID is the {{topic_id}} install placeholder.
+type AutomationPreset struct {
+	Slug          string                     `json:"slug"`
+	Name          string                     `json:"name"`
+	Stage         LibraryStage               `json:"stage"`
+	Description   string                     `json:"description"`
+	When          string                     `json:"when"`
+	TriggerConfig AutomationTriggerConfig    `json:"trigger_config"`
+	Reentry       AutomationReentry          `json:"reentry"`
+	Events        []AutomationPresetEvent    `json:"events"`
+	Properties    []AutomationPresetProperty `json:"properties"`
+	Steps         []AutomationStep           `json:"steps"`
+	Connections   []AutomationConnection     `json:"connections"`
+	Templates     []string                   `json:"templates"`
+}
+
+type AutomationPresetDetail struct {
+	Object string `json:"object"`
+	AutomationPreset
 }
 
 type WebhookInput struct {
@@ -863,6 +1240,19 @@ func (c *Client) DeleteAPIKey(id string) (*Deleted, error) { return remove(c, at
 // Brand and template library
 func (c *Client) Brand() (*Brand, error) { return get[Brand](c, "/brand") }
 
+type Settings struct {
+	Object                   string   `json:"object"`
+	ImportTriggerAutomations bool     `json:"import_trigger_automations"`
+	SandboxDomains           []string `json:"sandbox_domains"`
+	ConfirmationDailyLimit   int      `json:"confirmation_daily_limit"`
+}
+
+func (c *Client) Settings() (*Settings, error) { return get[Settings](c, "/settings") }
+
+func (c *Client) UpdateSettings(settings any) (*Settings, error) {
+	return patch[Settings](c, "/settings", settings)
+}
+
 func (c *Client) UpdateBrand(brand any) (*Brand, error) { return patch[Brand](c, "/brand", brand) }
 
 func (c *Client) TemplateLibrary() (*ListResponse[Map], error) {
@@ -871,6 +1261,18 @@ func (c *Client) TemplateLibrary() (*ListResponse[Map], error) {
 
 func (c *Client) TemplateLibraryEntry(slug string) (Map, error) {
 	return object(get[Map](c, at("template-library", slug)))
+}
+
+func (c *Client) TemplateLibraryAutomations() (*ListResponse[AutomationPreset], error) {
+	return get[ListResponse[AutomationPreset]](c, "/template-library/automations")
+}
+
+func (c *Client) TemplateLibraryAutomation(slug string) (*AutomationPresetDetail, error) {
+	return get[AutomationPresetDetail](c, at("template-library", "automations", slug))
+}
+
+func (c *Client) TemplateLibraryInstallAutomation(slug string, input AutomationInstallInput) (*AutomationInstallation, error) {
+	return post[AutomationInstallation](c, at("template-library", "automations", slug, "install"), input)
 }
 
 func (c *Client) InstallTemplate(slug string) (*Template, error) {
@@ -1005,6 +1407,11 @@ func (c *Client) ImportContacts(input ContactImportInput) (Map, error) {
 			return nil, err
 		}
 	}
+	if input.TriggerAutomations != nil {
+		if err := field("trigger_automations", *input.TriggerAutomations); err != nil {
+			return nil, err
+		}
+	}
 	filename := input.Filename
 	if filename == "" {
 		filename = "contacts.csv"
@@ -1032,6 +1439,10 @@ func (c *Client) ContactImports(query ...url.Values) (*ListResponse[Map], error)
 
 func (c *Client) ContactImport(id string) (Map, error) {
 	return object(get[Map](c, at("contacts", "imports", id)))
+}
+
+func (c *Client) CancelContactImport(id string) (Map, error) {
+	return object(call[Map](c, http.MethodDelete, at("contacts", "imports", id), nil, "", true))
 }
 
 // Contact properties
@@ -1216,6 +1627,24 @@ func (c *Client) BroadcastAudience(id string) (Map, error) {
 }
 
 // Automations
+// Enroll accepts an enabled, unpaused contact flow and returns its asynchronous job.
+func (c *Client) Enroll(id string, input AutomationEnrollment, idempotencyKey ...string) (*AutomationEnrollmentJob, error) {
+	key := ""
+	if len(idempotencyKey) > 0 {
+		key = idempotencyKey[0]
+	}
+	return call[AutomationEnrollmentJob](c, http.MethodPost, at("automations", id, "enroll"), input, key, true)
+}
+
+func (c *Client) GetEnrollmentJob(id, jobID string) (*AutomationEnrollmentJob, error) {
+	return get[AutomationEnrollmentJob](c, at("automations", id, "enroll-jobs", jobID))
+}
+
+// CancelEnrollmentJob stops between batches without cancelling already-created runs.
+func (c *Client) CancelEnrollmentJob(id, jobID string) (*AutomationEnrollmentJob, error) {
+	return call[AutomationEnrollmentJob](c, http.MethodDelete, at("automations", id, "enroll-jobs", jobID), nil, "", true)
+}
+
 func (c *Client) Automations(query ...url.Values) (*ListResponse[Automation], error) {
 	return get[ListResponse[Automation]](c, with("/automations", query))
 }
@@ -1232,6 +1661,11 @@ func (c *Client) UpdateAutomation(id string, automation any) (*Automation, error
 	return patch[Automation](c, at("automations", id), automation)
 }
 
+// DryRunAutomation previews an ordinary update with the same validation, without saving changes.
+func (c *Client) DryRunAutomation(id string, automation any) (*AutomationDryRun, error) {
+	return patch[AutomationDryRun](c, with(at("automations", id), []url.Values{{"dry_run": {"true"}}}), automation)
+}
+
 func (c *Client) DeleteAutomation(id string) (*Deleted, error) {
 	return remove(c, at("automations", id))
 }
@@ -1240,8 +1674,14 @@ func (c *Client) DuplicateAutomation(id string) (*Automation, error) {
 	return post[Automation](c, at("automations", id, "duplicate"), nil)
 }
 
-func (c *Client) StopAutomation(id string) (Map, error) {
-	return object(post[Map](c, at("automations", id, "stop"), nil))
+// StopAutomation cancels active runs. An optional true resets only once enrollments
+// for contacts whose runs this stop actually cancels, never completed runs.
+func (c *Client) StopAutomation(id string, resetReentry ...bool) (Map, error) {
+	var body any
+	if len(resetReentry) > 0 {
+		body = Map{"reset_reentry": resetReentry[0]}
+	}
+	return object(post[Map](c, at("automations", id, "stop"), body))
 }
 
 func (c *Client) AutomationRuns(id string, query ...url.Values) (*ListResponse[Map], error) {
@@ -1254,6 +1694,15 @@ func (c *Client) AutomationRun(automationID, runID string) (Map, error) {
 
 func (c *Client) AutomationRunMetrics(automationID string, query ...url.Values) (Map, error) {
 	return object(get[Map](c, with(at("automations", automationID, "runs", "metrics"), query)))
+}
+
+func (c *Client) AutomationSplitMetrics(automationID, stepKey string, query ...url.Values) (Map, error) {
+	return object(get[Map](c, with(at("automations", automationID, "steps", stepKey, "metrics"), query)))
+}
+
+// Requires an already paused version. Resume separately after success.
+func (c *Client) PickAutomationWinner(automationID, stepKey, variant string, version int) (*Automation, error) {
+	return post[Automation](c, at("automations", automationID, "steps", stepKey, "winner"), Map{"variant": variant, "version": version})
 }
 
 // Events. /events holds definitions, /events/send fires one, /fired-events lists what fired.
@@ -1390,7 +1839,34 @@ func (c *Client) send(method, path string, reader io.Reader, contentType, idempo
 		req.Header.Set(key, value)
 	}
 
-	res, err := c.HTTPClient.Do(req)
+	httpClient := c.HTTPClient
+	if auth {
+		// Copy the client so shared caller settings are never mutated. Go's default
+		// redirect policy forwards Authorization to subdomains and across ports.
+		next := *httpClient
+		checkRedirect := next.CheckRedirect
+		origin := *req.URL
+		next.CheckRedirect = func(redirect *http.Request, via []*http.Request) error {
+			if !sameOrigin(&origin, redirect.URL) {
+				return fmt.Errorf("dispatch: redirect outside API origin is not allowed")
+			}
+			if len(via) >= 10 {
+				return fmt.Errorf("stopped after 10 redirects")
+			}
+			if checkRedirect != nil {
+				if err := checkRedirect(redirect, via); err != nil {
+					return err
+				}
+			}
+			// A caller callback can change the destination before returning.
+			if !sameOrigin(&origin, redirect.URL) {
+				return fmt.Errorf("dispatch: redirect outside API origin is not allowed")
+			}
+			return nil
+		}
+		httpClient = &next
+	}
+	res, err := httpClient.Do(req)
 	if err != nil {
 		return nil, &Error{
 			Name:    "application_error",
@@ -1430,6 +1906,25 @@ func (c *Client) send(method, path string, reader io.Reader, contentType, idempo
 		failure.RequestID = res.Header.Get("X-Request-Id")
 	}
 	return nil, failure
+}
+
+func sameOrigin(a, b *url.URL) bool {
+	return b != nil && strings.EqualFold(a.Scheme, b.Scheme) &&
+		strings.EqualFold(a.Hostname(), b.Hostname()) && effectivePort(a) == effectivePort(b)
+}
+
+func effectivePort(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return "443"
+	case "http":
+		return "80"
+	default:
+		return ""
+	}
 }
 
 func object(m *Map, err error) (Map, error) {

@@ -1,5 +1,6 @@
 // The round-trip guard for the visual editor. Nothing here imports the editor
 // package, so the code editor can use these checks without loading it.
+import { encodeInlineDefaults, mapText } from "./inline";
 
 /** `{{{KEY}}}`, `{{{KEY|fallback}}}`, block tags such as `{{{#if X}}}`, and `{{key}}`, in source order. */
 const tokenPattern = /\{\{\{[\s\S]*?\}\}\}|\{\{[^{}]+\}\}/g;
@@ -16,7 +17,13 @@ function decode(value: string) {
 }
 
 export function tokens(html: string | null | undefined): string[] {
-  return [...(html ?? "").matchAll(tokenPattern)].map((match) => decode(match[0]));
+  const out: string[] = [];
+  const collect = (source: string, attribute: boolean) => {
+    for (const match of source.matchAll(tokenPattern)) out.push(attribute ? decode(match[0]) : match[0]);
+    return source;
+  };
+  mapText(html ?? "", (text) => collect(text, false), (markup) => collect(markup, true));
+  return out;
 }
 
 export function blocks(html: string | null | undefined): string[] {
@@ -43,7 +50,7 @@ function same(left: string[], right: string[]) {
 type Parts = { links: string[]; images: string[]; styles: string[] };
 
 function parts(html: string): Parts {
-  const doc = new DOMParser().parseFromString(html, "text/html");
+  const doc = new DOMParser().parseFromString(encodeInlineDefaults(html), "text/html");
   return {
     links: [...doc.querySelectorAll("a[href]")].map((element) => element.getAttribute("href") ?? ""),
     images: [...doc.querySelectorAll("img[src]")].map((element) => element.getAttribute("src") ?? ""),
@@ -114,10 +121,11 @@ function unsafe(html: string): string | null {
 export function blocked(html: string): string | null {
   const tag = stranded(html);
   if (tag) return `${tag} sits between list items or table rows, which visual mode cannot keep.`;
-  return unsafe(html);
+  // Saved documents load defaults as literal text; native clipboard HTML does not.
+  return unsafe(encodeInlineDefaults(html));
 }
 
-/** True for pasted HTML that visual mode must not take: a data image, or a link that is not a web or mail address. */
+/** Check raw clipboard HTML, since native paste/drop consumes it without shielding inline defaults. */
 export function unsafePaste(html: string): boolean {
   return unsafe(html) !== null;
 }
@@ -128,7 +136,7 @@ export function unsafePaste(html: string): boolean {
  * Null when `html` is not shaped like the editor's own output.
  */
 export function unwrap(html: string): string | null {
-  const doc = new DOMParser().parseFromString(html, "text/html");
+  const doc = new DOMParser().parseFromString(encodeInlineDefaults(html), "text/html");
   const outer = doc.body.children.length === 1 ? doc.body.children[0]! : null;
   if (!outer || outer.tagName !== "TABLE" || outer.getAttribute("role") !== "presentation") return null;
   const cell = outer.querySelector(":scope > tbody > tr > td");

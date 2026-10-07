@@ -1,0 +1,22 @@
+{
+  "name": "@dispatchmail/mcp",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/server.d.ts",
+  "bin": { "dispatch-mcp": "dist/index.js" },
+  "exports": { ".": { "types": "./dist/server.d.ts", "import": "./dist/server.js" } },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "check": "pnpm typecheck",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run src/tools.test.ts src/server.test.ts"
+  },
+  "dependencies": {
+    "@dispatchmail/sdk": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.31.0"
+  },
+  "devDependencies": { "typescript": "^5.8.3" }
+}

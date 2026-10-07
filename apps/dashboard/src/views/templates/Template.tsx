@@ -18,6 +18,7 @@ import { toast } from "../../components/Toast";
 import { useMutation } from "../../hooks/useMutation";
 import { useResource } from "../../hooks/useResource";
 import { useCan, useClient } from "../../shell/session";
+import { kindLabels, templateKind } from "../../lib/emailKind";
 import type { Template as TemplateRow } from "../../types";
 import { Preview } from "./editor";
 import { builtIn, fill, normalizeVariables, scan, type Variable } from "./render";
@@ -122,6 +123,7 @@ export function Template() {
         <Facts
           items={[
             { label: "Status", value: <Badge value={row.status} /> },
+            { label: "Kind", value: <Badge value={templateKind(row)} label={kindLabels[templateKind(row)]} /> },
             { label: "Alias", value: row.alias, copy: Boolean(row.alias) },
             { label: "ID", value: row.id, copy: true },
             { label: "Published", value: row.published_at ? <Time value={row.published_at} mode="absolute" /> : null },
@@ -152,6 +154,7 @@ export function Template() {
           <span>This template has unpublished changes. Sends use the published version until you publish.</span>
         </div>
       ) : null}
+      {row ? <p className="fieldHint">Template kind is computed from HTML and plain text. An unsubscribe placeholder makes it Marketing; Marketing templates cannot send as Transactional.</p> : null}
 
       <Panel title="Content">
         <Tabs

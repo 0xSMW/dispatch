@@ -41,16 +41,16 @@ export type Api = {
     duplicate: Call;
     render: Call;
     versions: { list: Call; create: Call };
-    library: { list: Call; get: Call; install: Call };
+    library: { list: Call; get: Call; install: Call; automations: Call; automation: Call; installAutomation: Call };
   };
   contacts: Crud & {
     activity: Call;
     segments: { list: Call; add: Call; remove: Call };
     topics: { list: Call; update: Call };
-    imports: { create: Call; list: Call; get: Call };
+    imports: { create: Call; list: Call; get: Call; cancel: Call };
   };
   contactProperties: Crud;
-  segments: Crud & { contacts: Call };
+  segments: Crud & { contacts: Call; preview: Call };
   topics: Crud;
   suppressions: { add: Call; list: Call; get: Call; remove: Call; batchAdd: Call; batchRemove: Call };
   broadcasts: Crud & {
@@ -62,7 +62,15 @@ export type Api = {
     pause: Call;
     resume: Call;
   };
-  automations: Crud & { duplicate: Call; stop: Call; runs: { list: Call; get: Call } };
+  automations: Crud & {
+    dryRun: Call;
+    duplicate: Call;
+    stop: Call;
+    enroll: Call;
+    getEnrollmentJob: Call;
+    cancelEnrollmentJob: Call;
+    runs: { list: Call; get: Call };
+  };
   events: Crud & { send: Call; fired: { list: Call; get: Call } };
   logs: { list: Call; get: Call; export: Call };
   usage: { get: Call };

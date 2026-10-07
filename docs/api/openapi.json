@@ -41,7 +41,7 @@
     },
     {
       "name": "Template library",
-      "description": "Built-in templates you can preview and install."
+      "description": "Built-in email templates and automation presets. Preview and install email templates; list and inspect preset graphs."
     },
     {
       "name": "Brand",
@@ -88,11 +88,106 @@
       "description": "Setup, users, roles, sessions, audit logs, system status, and usage."
     },
     {
+      "name": "Internal",
+      "description": "Deployment callbacks, not tenant API or SDK operations. Each route uses its own deployment credential or signed notification."
+    },
+    {
       "name": "Public",
       "description": "Routes that need no API key. Links Dispatch puts in emails and dashboard pages land here."
     }
   ],
   "paths": {
+    "/internal/reconcile": {
+      "get": {
+        "operationId": "reconcileWorker",
+        "summary": "Wake the deployment worker",
+        "description": "Deployment cron callback. Requires the configured CRON_SECRET as a bearer credential, not an API key or dashboard session. Also prunes counters when COUNTER_BACKEND is postgres.",
+        "tags": [
+          "Internal"
+        ],
+        "security": [
+          {
+            "cronAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Worker wake accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalAcknowledgement"
+                }
+              }
+            }
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/internal/events": {
+      "post": {
+        "operationId": "receiveSesNotification",
+        "summary": "Receive a signed SNS notification for SES",
+        "description": "Deployment callback. Does not use tenant bearer authentication. The configured SNS_TOPIC_ARN must match TopicArn and the SNS notification signature must verify. Accepts SubscriptionConfirmation and Notification envelopes; Message contains the SES event JSON. Unmatched or malformed events are refused. Processing failures return 503 so SNS can retry.",
+        "tags": [
+          "Internal"
+        ],
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SnsNotification"
+              }
+            },
+            "text/plain": {
+              "schema": {
+                "type": "string",
+                "description": "The same signed SNS envelope encoded as JSON text."
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Subscription confirmed or event applied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InternalAcknowledgement"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "503": {
+            "description": "Event processing unavailable. Retry the notification.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/health": {
       "get": {
         "operationId": "getHealth",
@@ -2212,6 +2307,159 @@
         }
       }
     },
+    "/template-library/automations": {
+      "get": {
+        "operationId": "listLibraryAutomations",
+        "summary": "List built-in automation presets",
+        "tags": [
+          "Template library"
+        ],
+        "description": "Returns all six presets in one page with has_more false. Read-only dashboard roles may read them; no tenant resources are created.",
+        "x-scope": "full",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/RequestIdHeader"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "ratelimit-limit": {
+                "$ref": "#/components/headers/RateLimitLimit"
+              },
+              "ratelimit-remaining": {
+                "$ref": "#/components/headers/RateLimitRemaining"
+              },
+              "ratelimit-reset": {
+                "$ref": "#/components/headers/RateLimitReset"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "object",
+                    "has_more",
+                    "data",
+                    "request_id"
+                  ],
+                  "properties": {
+                    "object": {
+                      "type": "string",
+                      "const": "list"
+                    },
+                    "has_more": {
+                      "type": "boolean",
+                      "const": false
+                    },
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/AutomationPreset"
+                      }
+                    },
+                    "request_id": {
+                      "type": "string",
+                      "description": "The request ID."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
+    "/template-library/automations/{slug}": {
+      "get": {
+        "operationId": "getLibraryAutomation",
+        "summary": "Get a built-in automation preset",
+        "tags": [
+          "Template library"
+        ],
+        "x-scope": "full",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "description": "Automation preset slug.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/RequestIdHeader"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "ratelimit-limit": {
+                "$ref": "#/components/headers/RateLimitLimit"
+              },
+              "ratelimit-remaining": {
+                "$ref": "#/components/headers/RateLimitRemaining"
+              },
+              "ratelimit-reset": {
+                "$ref": "#/components/headers/RateLimitReset"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/AutomationPresetDetail"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RequestId"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        },
+        "description": "Returns the published preset definition without resolving sender, topic or template IDs, and without creating tenant resources. Read-only dashboard roles may read it."
+      }
+    },
     "/template-library/{slug}": {
       "get": {
         "operationId": "getLibraryTemplate",
@@ -2398,6 +2646,300 @@
         }
       }
     },
+    "/forms": {
+      "get": {
+        "operationId": "listForms", "summary": "List signup forms", "tags": ["Forms"], "x-scope": "full",
+        "responses": { "200": { "description": "Tenant forms.", "content": { "application/json": { "schema": { "type": "object", "properties": {
+          "object": { "const": "list" }, "has_more": { "type": "boolean" }, "data": { "type": "array", "items": { "$ref": "#/components/schemas/Form" } }
+        } } } } } }
+      },
+      "post": {
+        "operationId": "createForm", "summary": "Create a signup form", "tags": ["Forms"], "x-scope": "full",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/FormInput" } } } },
+        "responses": { "200": { "description": "Created form with a random public key.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Form" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    },
+    "/forms/{id}": {
+      "parameters": [{ "name": "id", "in": "path", "required": true, "description": "Management ID for GET/PATCH/DELETE. Public random form key for POST/OPTIONS.", "schema": { "type": "string" } }],
+      "get": {
+        "operationId": "getForm", "summary": "Retrieve a signup form by management ID", "tags": ["Forms"], "x-scope": "full",
+        "responses": { "200": { "description": "Form.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Form" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "patch": {
+        "operationId": "updateForm", "summary": "Update a signup form by management ID", "tags": ["Forms"], "x-scope": "full",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/FormUpdate" } } } },
+        "responses": { "200": { "description": "Updated form.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Form" } } } }, "400": { "$ref": "#/components/responses/BadRequest" } }
+      },
+      "delete": {
+        "operationId": "deleteForm", "summary": "Soft delete a signup form by management ID", "tags": ["Forms"], "x-scope": "full",
+        "responses": { "200": { "description": "Deleted form; contacts and preferences are retained.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Deleted" } } } } }
+      },
+      "post": {
+        "operationId": "submitForm", "summary": "Submit a public signup form by its random key", "tags": ["Forms"], "security": [],
+        "description": "16 KB maximum. Origin must exactly match the form's allowed_origins. No API credentials. website is a honeypot and must be empty. Unknown fields/properties are refused. Responses are identical across address states and quota refusal. One confirmation per address/form per rolling 24 hours; tenant UTC daily cap defaults to 500. Failed enqueue rolls back contact, pending consent, token and reservations.",
+        "requestBody": { "required": true, "content": {
+          "application/json": { "schema": { "$ref": "#/components/schemas/FormSubmission" } },
+          "application/x-www-form-urlencoded": { "schema": { "type": "object", "required": ["email"], "properties": {
+            "email": { "type": "string", "format": "email" }, "first_name": { "type": "string" }, "last_name": { "type": "string" }, "website": { "type": "string" }
+          }, "additionalProperties": { "type": "string" }, "description": "Configured properties use properties.KEY fields. Number/boolean values are parsed to their declared types." } }
+        } },
+        "responses": {
+          "200": { "description": "Harmless uniform response, also for honeypot and quota refusals.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/FormSubmissionResult" } } } },
+          "400": { "$ref": "#/components/responses/BadRequest" }, "403": { "$ref": "#/components/responses/Forbidden" },
+          "413": { "description": "Body exceeds 16 KB." }, "429": { "$ref": "#/components/responses/RateLimited" }
+        }
+      },
+      "options": {
+        "operationId": "formPreflight", "summary": "Check the form-specific public origin policy", "tags": ["Forms"], "security": [],
+        "description": "Allows POST with content-type only, from an exact configured origin. Separate from global API CORS. No credentialed requests.",
+        "responses": { "204": { "description": "Allowed preflight." }, "403": { "$ref": "#/components/responses/Forbidden" } }
+      }
+    },
+    "/confirm/{token}": {
+      "parameters": [{ "name": "token", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "get": {
+        "operationId": "getConfirmation", "summary": "Display a confirmation without changing consent", "tags": ["Forms"], "security": [],
+        "description": "Seven-day sealed use:confirm token bound to tenant, form, contact and immutable durable topics. No mutation or send on GET/HEAD. Dashboard page /confirm/{token} requires no session.",
+        "responses": { "200": { "description": "Form name, confirmed state and public brand.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Confirmation" } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      },
+      "post": {
+        "operationId": "confirmForm", "summary": "Deliberately confirm a subscription once", "tags": ["Forms"], "security": [],
+        "description": "Atomically clears the global opt-out, may explicitly revive a deleted contact, subscribes the token-bound topics and fires actual topic transitions once. Used tokens are a no-op even after later opt-out. Returns only the current form-configured HTTPS redirect or null, never a request destination.",
+        "responses": { "200": { "description": "Confirmed.", "content": { "application/json": { "schema": { "type": "object", "properties": {
+          "object": { "const": "confirmation" }, "confirmed": { "const": true }, "redirect_url": { "type": ["string", "null"], "format": "uri" }
+        } } } } }, "404": { "$ref": "#/components/responses/NotFound" } }
+      }
+    },
+    "/integrations": {
+      "get": {
+        "operationId": "listIntegrations", "summary": "List integrations without credentials", "tags": ["Integrations"], "x-scope": "full",
+        "responses": { "200": { "description": "Tenant integration list.", "content": { "application/json": { "schema": { "type": "object", "properties": {
+          "object": { "const": "list" }, "has_more": { "type": "boolean" }, "data": { "type": "array", "items": { "$ref": "#/components/schemas/Integration" } }
+        } } } } } }
+      },
+      "post": {
+        "operationId": "createIntegration", "summary": "Create encrypted integration credentials", "tags": ["Integrations"], "x-scope": "full",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IntegrationInput" } } } },
+        "responses": { "200": { "description": "Integration plus token and active signed receiver URL, shown once.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreatedIntegration" } } } } }
+      }
+    },
+    "/integrations/{id}": {
+      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "get": { "operationId": "getIntegration", "summary": "Retrieve an integration without credentials", "tags": ["Integrations"], "x-scope": "full",
+        "responses": { "200": { "description": "Integration.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Integration" } } } } } },
+      "patch": { "operationId": "updateIntegration", "summary": "Update an integration without exposing credentials", "tags": ["Integrations"], "x-scope": "full",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IntegrationUpdate" } } } },
+        "responses": { "200": { "description": "Integration; omitted settings and credentials are preserved.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Integration" } } } } } },
+      "delete": { "operationId": "deleteIntegration", "summary": "Soft delete an integration", "tags": ["Integrations"], "x-scope": "full",
+        "responses": { "200": { "description": "Deleted integration.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Deleted" } } } } } }
+    },
+    "/integrations/{id}/rotate": {
+      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "post": { "operationId": "rotateIntegration", "summary": "Replace the hash-only receiver token", "tags": ["Integrations"], "x-scope": "full",
+        "responses": { "200": { "description": "New token and URL shown once; old URL stops resolving.", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CreatedIntegration" } } } } } }
+    },
+    "/integrations/{id}/deliveries": {
+      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "get": { "operationId": "integrationDeliveries", "summary": "List recent body-free integration deliveries", "tags": ["Integrations"], "x-scope": "full",
+        "description": "Latest 20 by default, limit 1-100. No request body or credential fields.",
+        "responses": { "200": { "description": "Bounded recent delivery list.", "content": { "application/json": { "schema": { "type": "object", "properties": {
+          "object": { "const": "list" }, "has_more": { "const": false }, "data": { "type": "array", "items": { "$ref": "#/components/schemas/InboundDelivery" } }
+        } } } } } } }
+    },
+    "/inbound/{token}": {
+      "parameters": [{ "name": "token", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "post": {
+        "operationId": "receiveInbound", "summary": "Receive an authenticated provider webhook", "tags": ["Integrations"], "security": [],
+        "description": "Public, per-IP/route rate limited, maximum 1 MB. Verifies the untouched bytes with Stripe/Svix/Standard Webhooks (300-second past/future tolerance) or the Supabase configured shared header. Known integrations record body-free failures. Successful/ignored verified identities deduplicate within LOG_RETENTION_DAYS (default 30); bounded pruning expires replay protection. Contact changes, history, triggers, provider event/wait effects and canonical delivery commit together. Failed attempts roll back the canonical key and return retryable 503. Normal integration reads never return this URL/token or secrets.",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "type": "object", "additionalProperties": true } } } },
+        "responses": {
+          "200": { "description": "Processed, ignored or duplicate without repeated effects.", "content": { "application/json": { "schema": {
+            "type": "object", "properties": { "object": { "const": "inbound_delivery" }, "status": { "enum": ["processed", "ignored"] },
+              "event_name": { "type": ["string", "null"] }, "contact_id": { "type": ["string", "null"] },
+              "error": { "type": "string" }, "duplicate": { "type": "boolean" } }
+          } } } },
+          "400": { "description": "Invalid signature, expired/future timestamp or malformed verified payload." },
+          "404": { "$ref": "#/components/responses/NotFound" },
+          "413": { "description": "Body exceeds 1 MB." },
+          "429": { "description": "Public route/IP rate exceeded." },
+          "503": { "description": "Retryable preparation or rolled-back processing failure." }
+        }
+      }
+    },
+    "/settings": {
+      "get": {
+        "operationId": "getSettings",
+        "summary": "Retrieve tenant settings",
+        "tags": [
+          "Settings"
+        ],
+        "x-scope": "full",
+        "responses": {
+          "200": {
+            "description": "Effective tenant settings, with defaults applied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "object",
+                    "import_trigger_automations",
+                    "sandbox_domains",
+                    "confirmation_daily_limit"
+                  ],
+                  "properties": {
+                    "object": {
+                      "type": "string",
+                      "enum": [
+                        "settings"
+                      ]
+                    },
+                    "import_trigger_automations": {
+                      "type": "boolean",
+                      "default": false
+                    },
+                    "confirmation_daily_limit": { "type": "integer", "minimum": 0, "maximum": 100000, "default": 500, "description": "Confirmation emails per tenant per UTC day; zero disables confirmation sends." },
+                    "sandbox_domains": {
+                      "type": "array",
+                      "maxItems": 50,
+                      "items": {
+                        "type": "string"
+                      },
+                      "description": "Additional recipient domains and their subdomains that bypass the provider, even in production. Reserved test domains always bypass it. Separate from the SES account sandbox."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateSettings",
+        "summary": "Update tenant settings",
+        "tags": [
+          "Settings"
+        ],
+        "x-scope": "full",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "import_trigger_automations": {
+                    "type": "boolean"
+                  },
+                  "confirmation_daily_limit": { "type": "integer", "minimum": 0, "maximum": 100000 },
+                  "sandbox_domains": {
+                    "type": "array",
+                    "maxItems": 50,
+                    "items": {
+                      "type": "string",
+                      "format": "hostname"
+                    },
+                    "description": "Replace the tenant's additional sandbox recipient domains, including their subdomains. An empty array removes additions, not reserved test domains. Matching is case-insensitive and respects hostname boundaries."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Effective settings after merging the supplied keys.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/goals": {
+      "get": {
+        "operationId": "listGoals", "tags": ["Goals"], "summary": "List goals",
+        "parameters": [
+          { "name": "limit", "in": "query", "schema": { "type": "integer", "minimum": 1, "maximum": 100 } },
+          { "name": "after", "in": "query", "schema": { "type": "string" } },
+          { "name": "before", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": { "200": { "description": "Goals page", "content": { "application/json": { "schema": {
+          "type": "object", "required": ["object", "has_more", "data"], "properties": {
+            "object": { "const": "list" }, "has_more": { "type": "boolean" },
+            "data": { "type": "array", "items": { "$ref": "#/components/schemas/Goal" } }
+          }
+        } } } } }
+      },
+      "post": {
+        "operationId": "createGoal", "tags": ["Goals"], "summary": "Create a retroactive goal",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GoalInput" } } } },
+        "responses": { "200": { "description": "Created goal", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Goal" } } } } }
+      }
+    },
+    "/goals/{id}": {
+      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "string" } }],
+      "get": {
+        "operationId": "getGoal", "tags": ["Goals"], "summary": "Retrieve a goal",
+        "responses": { "200": { "description": "Goal", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Goal" } } } } }
+      },
+      "patch": {
+        "operationId": "updateGoal", "tags": ["Goals"], "summary": "Update a goal",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GoalUpdate" } } } },
+        "responses": { "200": { "description": "Updated goal", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Goal" } } } } }
+      },
+      "delete": {
+        "operationId": "deleteGoal", "tags": ["Goals"], "summary": "Soft-delete a goal",
+        "responses": { "200": { "description": "Deleted", "content": { "application/json": { "schema": {
+          "type": "object", "required": ["object", "id", "deleted"], "properties": {
+            "object": { "const": "goal" }, "id": { "type": "string" }, "deleted": { "const": true }
+          }
+        } } } } }
+      }
+    },
+    "/goals/{id}/metrics": {
+      "get": {
+        "operationId": "goalMetrics", "tags": ["Goals"], "summary": "Measure historical conversions",
+        "description": "No attachment is needed. Uses each live contact's first real attributed send in the selected scope, then selects first-send cohorts in [start_date,end_date). Eligibility is current. Targets count once in the inclusive conversion window, capped at measurement time, including conversions after end_date. UTC daily cohorts and fractional rates (zero for empty cohorts). Omit scope for all attributed sends. Rule history starts with recorded contact changes; unrecorded transitions and older topic/segment removals are unavailable.",
+        "parameters": [
+          { "name": "id", "in": "path", "required": true, "schema": { "type": "string" } },
+          { "name": "automation_id", "in": "query", "description": "Mutually exclusive with broadcast_id.", "schema": { "type": "string" } },
+          { "name": "broadcast_id", "in": "query", "schema": { "type": "string" } },
+          { "name": "step_key", "in": "query", "description": "Requires automation_id.", "schema": { "type": "string" } },
+          { "name": "start_date", "in": "query", "description": "ISO datetime; default end_date minus 30 days.", "schema": { "type": "string", "format": "date-time" } },
+          { "name": "end_date", "in": "query", "description": "Exclusive first-send bound; default database measurement time.", "schema": { "type": "string", "format": "date-time" } }
+        ],
+        "responses": { "200": { "description": "Goal conversions", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/GoalMetrics" } } } } }
+      }
+    },
+    "/brand/update-library": {
+      "post": {
+        "operationId": "updateLibraryTemplates", "tags": ["Brand"], "summary": "Explicitly update unedited installed library templates",
+        "description": "Full access only. Locks latest versions and skips edited/custom copies. Existing sending settings and variable names are retained. Does not install missing templates or publish draft copies.",
+        "responses": { "200": { "description": "Updated and skipped identities", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/LibraryUpdates" } } } } }
+      }
+    },
     "/brand": {
       "get": {
         "operationId": "getBrand",
@@ -2536,7 +3078,7 @@
         "tags": [
           "Emails"
         ],
-        "description": "The email is stored and queued before the response. A sending-access key restricted to a domain can only send from that domain (`validation_error`, 403). An unverified sender domain fails with `validation_error` and status 403.",
+        "description": "The email is stored before the response. With topic_id, Marketing sends carry protected unsubscribe headers and recipient-specific links. Multiple To, Cc, and Bcc recipients are deduplicated case-insensitively, first role wins, and split into separate To-only emails. The response retains the first id and adds emails: [{id, to, sandbox}]. Opted-out recipients fail independently. Idempotency covers the whole request. Transactional sends without topic_id keep their multi-recipient shape. Recipients at example.com, example.net, example.org and their subdomains, under .test, .example or .invalid, or at tenant sandbox_domains and their subdomains never reach the provider, even in production. Only real recipients in mixed emails are sent. sandbox describes the email identified by id; it is true only when all its original recipients are sandbox recipients. A sending-access key restricted to a domain can only send from that domain (`validation_error`, 403). An unverified sender domain fails with `validation_error` and status 403.",
         "x-scope": "send",
         "parameters": [
           {
@@ -2579,12 +3121,20 @@
                   "type": "object",
                   "required": [
                     "id",
+                    "sandbox",
                     "request_id"
                   ],
                   "properties": {
                     "id": {
                       "type": "string",
                       "description": "The email ID."
+                    },
+                    "sandbox": {
+                      "type": "boolean",
+                      "description": "True when all original recipients of the email identified by id are sandbox recipients. Delivery is simulated without calling the provider."
+                    },
+                    "emails": {
+                      "$ref": "#/components/schemas/SplitEmails"
                     },
                     "request_id": {
                       "type": "string",
@@ -2765,7 +3315,7 @@
         "tags": [
           "Emails"
         ],
-        "description": "The body is an array of emails or `{ emails: [...] }`. Attachments are not allowed. In strict mode one invalid email rejects the batch.",
+        "description": "The body is an array of emails or `{ emails: [...] }`. Attachments are not allowed. In strict mode one invalid email rejects the batch. Each accepted result includes sandbox; split Marketing items also expose sandbox on each email. Sandbox recipients follow the same reserved-domain and tenant sandbox_domains rules as POST /emails, including in production. Only real recipients in mixed emails reach the provider.",
         "x-scope": "send",
         "parameters": [
           {
@@ -2879,7 +3429,7 @@
         "tags": [
           "Metrics"
         ],
-        "description": "Counts `email_events` for the tenant. Without dates it covers the 7 days before now. `end_date` is exclusive. Rates are percentages rounded to two decimals, and 0 when the denominator is 0. `unsubscribed` counts `email.unsubscribed` events, recorded when a recipient unsubscribes through a broadcast's link.",
+        "description": "Counts real `email_events` for the tenant. Simulated email and sandbox-recipient activity is excluded from totals and rates, including automation and step breakdowns. Event attribution preserves historical real metrics when a later retry becomes sandbox. Without dates it covers the 7 days before now. `end_date` is exclusive. Rates are percentages rounded to two decimals, and 0 when the denominator is 0. `unsubscribed` counts `email.unsubscribed` events from Marketing and broadcast links. Automation attribution is worker-owned; legacy messages can have a null step key.",
         "x-scope": "full",
         "parameters": [
           {
@@ -2941,7 +3491,7 @@
             "name": "dimensions",
             "in": "query",
             "required": false,
-            "description": "Comma-separated: `period`, `domain`, `email`, `broadcast`. `email` and `broadcast` cannot be combined.",
+            "description": "Comma-separated: `period`, `domain`, `email`, `broadcast`, `automation`, `step`. `email` and `broadcast` cannot be combined. `step` requires an automation_id filter and returns automation_id and automation_step.",
             "schema": {
               "type": "string"
             }
@@ -2969,6 +3519,15 @@
             "in": "query",
             "required": false,
             "description": "Comma-separated broadcast IDs, 100 at most.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "automation_id",
+            "in": "query",
+            "required": false,
+            "description": "Comma-separated automation IDs, 100 at most. Required for the step dimension.",
             "schema": {
               "type": "string"
             }
@@ -7300,12 +7859,17 @@
                   "required": [
                     "object",
                     "id",
+                    "trigger_automations",
                     "request_id"
                   ],
                   "properties": {
                     "object": {
                       "type": "string",
                       "const": "contact_import"
+                    },
+                    "trigger_automations": {
+                      "type": "boolean",
+                      "description": "The resolved opt-in stored for this import."
                     },
                     "id": {
                       "type": "string"
@@ -7371,7 +7935,8 @@
                 "queued",
                 "in_progress",
                 "completed",
-                "failed"
+                "failed",
+                "cancelled"
               ]
             }
           },
@@ -7518,6 +8083,77 @@
             "$ref": "#/components/responses/ServerError"
           }
         }
+      },
+      "delete": {
+        "operationId": "cancelContactImport",
+        "summary": "Cancel future contact import batches",
+        "tags": [
+          "Imports"
+        ],
+        "x-scope": "full",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Import ID.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/RequestIdHeader"
+          }
+        ],
+        "responses": {
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "200": {
+            "description": "Success.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "ratelimit-limit": {
+                "$ref": "#/components/headers/RateLimitLimit"
+              },
+              "ratelimit-remaining": {
+                "$ref": "#/components/headers/RateLimitRemaining"
+              },
+              "ratelimit-reset": {
+                "$ref": "#/components/headers/RateLimitReset"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/ContactImport"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RequestId"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "description": "Preserves previously committed contacts, triggers and counts. Cancellation takes effect between batches."
       }
     },
     "/contact-properties": {
@@ -8671,6 +9307,47 @@
           "500": {
             "$ref": "#/components/responses/ServerError"
           }
+        }
+      }
+    },
+    "/segments/preview": {
+      "post": {
+        "operationId": "previewSegment",
+        "summary": "Preview a dynamic segment",
+        "description": "Read-only POST, available to full and viewer roles. Uncached count and at most ten sample contacts from one statement snapshot. Five total levels, twenty conditions; declared contact fields, static membership and supported email engagement only.",
+        "tags": ["Segments"],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["rule"],
+                "properties": { "rule": { "$ref": "#/components/schemas/Rule" } }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Preview",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["count", "sample"],
+                  "properties": {
+                    "count": { "type": "integer", "minimum": 0 },
+                    "sample": { "type": "array", "maxItems": 10, "items": { "$ref": "#/components/schemas/Contact" } },
+                    "request_id": { "type": "string" }
+                  }
+                }
+              }
+            }
+          },
+          "400": { "description": "Invalid rule", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } },
+          "404": { "description": "Scope resource not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Error" } } } }
         }
       }
     },
@@ -11054,6 +11731,7 @@
       "post": {
         "operationId": "createAutomation",
         "summary": "Create an automation",
+        "description": "Disabled Marketing drafts may omit a send step topic. Creating enabled returns 422 until every Marketing step has a live topic. Send configs always return explicit kind, inferred from topic_id for legacy input.",
         "tags": [
           "Automations"
         ],
@@ -11117,6 +11795,9 @@
           "409": {
             "$ref": "#/components/responses/Conflict"
           },
+          "422": {
+            "$ref": "#/components/responses/UnprocessableEntity"
+          },
           "429": {
             "$ref": "#/components/responses/RateLimited"
           },
@@ -11151,6 +11832,7 @@
               "type": "string",
               "enum": [
                 "enabled",
+                "paused",
                 "disabled"
               ]
             }
@@ -11305,6 +11987,7 @@
       "patch": {
         "operationId": "updateAutomation",
         "summary": "Update an automation",
+        "description": "Graph edits are allowed while paused or disabled. Saving commits the graph, version and stranded-run cancellations together. Step keys permanently reserve their type. Set dry_run=true to preview affected counts without changing any state. Disabled or paused Marketing drafts may omit a send step topic. Enabling or resuming returns 422 until every Marketing step has a live topic.",
         "tags": [
           "Automations"
         ],
@@ -11317,6 +12000,15 @@
             "description": "Automation ID.",
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "dry_run",
+            "in": "query",
+            "required": false,
+            "description": "Preview stranded-run counts without saving any changes.",
+            "schema": {
+              "type": "boolean"
             }
           },
           {
@@ -11353,12 +12045,26 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "allOf": [
+                  "oneOf": [
                     {
-                      "$ref": "#/components/schemas/Automation"
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/Automation"
+                        },
+                        {
+                          "$ref": "#/components/schemas/RequestId"
+                        }
+                      ]
                     },
                     {
-                      "$ref": "#/components/schemas/RequestId"
+                      "allOf": [
+                        {
+                          "$ref": "#/components/schemas/DryRun"
+                        },
+                        {
+                          "$ref": "#/components/schemas/RequestId"
+                        }
+                      ]
                     }
                   ]
                 }
@@ -11379,6 +12085,9 @@
           },
           "409": {
             "$ref": "#/components/responses/Conflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/UnprocessableEntity"
           },
           "429": {
             "$ref": "#/components/responses/RateLimited"
@@ -11573,6 +12282,24 @@
       "post": {
         "operationId": "stopAutomation",
         "summary": "Disable an automation and stop its active runs",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                  "reset_reentry": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Let contacts from the active runs cancelled by this request enter again. Completed runs keep their once-only enrollment."
+                  }
+                }
+              }
+            }
+          }
+        },
         "tags": [
           "Automations"
         ],
@@ -11773,6 +12500,52 @@
           "500": {
             "$ref": "#/components/responses/ServerError"
           }
+        }
+      }
+    },
+    "/automations/{id}/steps/{key}/metrics": {
+      "get": {
+        "operationId": "getAutomationSplitMetrics",
+        "summary": "Compare stored split variants",
+        "tags": [
+          "Automations"
+        ],
+        "description": "Assignments use their recorded variant, not current weights. Run counts use assignment dates; email metrics use event dates, both in the half-open [start_date,end_date) window. Same-run attribution and historical sandbox classification apply. Includes configured zero-result and historical keys.",
+        "parameters": [
+          { "in": "path", "name": "id", "required": true, "schema": { "type": "string" } },
+          { "in": "path", "name": "key", "required": true, "schema": { "type": "string" } },
+          { "in": "query", "name": "start_date", "schema": { "type": "string", "format": "date-time" } },
+          { "in": "query", "name": "end_date", "schema": { "type": "string", "format": "date-time" } }
+        ],
+        "responses": {
+          "200": { "description": "Variant metrics", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SplitMetrics" } } } },
+          "404": { "description": "Automation or split step not found" },
+          "422": { "description": "Invalid report dates" }
+        }
+      }
+    },
+    "/automations/{id}/steps/{key}/winner": {
+      "post": {
+        "operationId": "pickAutomationSplitWinner",
+        "summary": "Pick a split winner on an already paused version",
+        "tags": [
+          "Automations"
+        ],
+        "description": "Full access only. Changes only weights to winner100/rest0, increments the graph version, preserves keys/connections/recorded decisions and valid runs/waits. Does not resume or Stop. Caller resumes separately with expected_version only after success; failure leaves the pause intact.",
+        "parameters": [
+          { "in": "path", "name": "id", "required": true, "schema": { "type": "string" } },
+          { "in": "path", "name": "key", "required": true, "schema": { "type": "string" } }
+        ],
+        "requestBody": { "required": true, "content": { "application/json": { "schema": {
+          "type": "object", "additionalProperties": false, "required": ["variant", "version"],
+          "properties": { "variant": { "type": "string", "minLength": 1, "maxLength": 60 }, "version": { "type": "integer", "minimum": 0 } }
+        } } } },
+        "responses": {
+          "200": { "description": "Paused automation with updated weights", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/Automation" } } } },
+          "403": { "description": "Viewer writes forbidden" },
+          "404": { "description": "Automation or split step not found" },
+          "409": { "description": "Not paused or stale version" },
+          "422": { "description": "Unknown variant" }
         }
       }
     },
@@ -12087,7 +12860,7 @@
                     "data": {
                       "type": "array",
                       "items": {
-                        "$ref": "#/components/schemas/Event"
+                        "$ref": "#/components/schemas/EventListItem"
                       }
                     },
                     "request_id": {
@@ -14355,10 +15128,395 @@
           }
         }
       }
+    },
+    "/automations/{id}/enroll": {
+      "post": {
+        "operationId": "enrollAutomation",
+        "summary": "Enroll contacts in an enabled contact-triggered automation",
+        "tags": [
+          "Automations"
+        ],
+        "x-scope": "full",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Automation ID.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/RequestIdHeader"
+          },
+          {
+            "name": "idempotency-key",
+            "in": "header",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 256
+            },
+            "description": "Retry the same audience once, scoped to tenant and automation."
+          }
+        ],
+        "responses": {
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "202": {
+            "description": "Success.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "ratelimit-limit": {
+                "$ref": "#/components/headers/RateLimitLimit"
+              },
+              "ratelimit-remaining": {
+                "$ref": "#/components/headers/RateLimitRemaining"
+              },
+              "ratelimit-reset": {
+                "$ref": "#/components/headers/RateLimitReset"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/AutomationEnrollmentJob"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RequestId"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "422": {
+            "$ref": "#/components/responses/UnprocessableEntity"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutomationEnrollInput"
+              }
+            }
+          }
+        },
+        "description": "Requires enabled, unpaused, non-event automation and a live static segment or all contacts. Worker pages 500 live contacts at a time, excludes contacts created after the job, uses bulk priority, and ignores contact_updated from/to. Lifetime once re-entry remains respected; every job admits each contact at most once. total is the initial audience count; deleted contacts or changed segment membership may reduce final processed count."
+      }
+    },
+    "/automations/{id}/enroll-jobs/{job_id}": {
+      "get": {
+        "operationId": "getAutomationEnrollmentJob",
+        "summary": "Retrieve enrollment progress",
+        "tags": [
+          "Automations"
+        ],
+        "x-scope": "full",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Automation ID.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/RequestIdHeader"
+          },
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Enrollment job ID."
+          }
+        ],
+        "responses": {
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "200": {
+            "description": "Success.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "ratelimit-limit": {
+                "$ref": "#/components/headers/RateLimitLimit"
+              },
+              "ratelimit-remaining": {
+                "$ref": "#/components/headers/RateLimitRemaining"
+              },
+              "ratelimit-reset": {
+                "$ref": "#/components/headers/RateLimitReset"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/AutomationEnrollmentJob"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RequestId"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "cancelAutomationEnrollmentJob",
+        "summary": "Cancel future enrollment batches",
+        "tags": [
+          "Automations"
+        ],
+        "x-scope": "full",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "Automation ID.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/RequestIdHeader"
+          },
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "Enrollment job ID."
+          }
+        ],
+        "responses": {
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "200": {
+            "description": "Success.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "ratelimit-limit": {
+                "$ref": "#/components/headers/RateLimitLimit"
+              },
+              "ratelimit-remaining": {
+                "$ref": "#/components/headers/RateLimitRemaining"
+              },
+              "ratelimit-reset": {
+                "$ref": "#/components/headers/RateLimitReset"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/AutomationEnrollmentJob"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RequestId"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "description": "Cancellation happens between pages. Runs already started remain queued or active."
+      }
+    },
+    "/template-library/automations/{slug}/install": {
+      "post": {
+        "operationId": "installLibraryAutomation",
+        "summary": "Install a disabled lifecycle automation",
+        "tags": [
+          "Template library"
+        ],
+        "x-scope": "full",
+        "parameters": [
+          {
+            "name": "slug",
+            "in": "path",
+            "required": true,
+            "description": "Automation preset slug.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/RequestIdHeader"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AutomationInstallInput"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Installed disabled; empty resource arrays are present.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "ratelimit-limit": {
+                "$ref": "#/components/headers/RateLimitLimit"
+              },
+              "ratelimit-remaining": {
+                "$ref": "#/components/headers/RateLimitRemaining"
+              },
+              "ratelimit-reset": {
+                "$ref": "#/components/headers/RateLimitReset"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/AutomationInstallation"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RequestId"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed body or schema validation error.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "description": "Viewer writes forbidden, or sender domain unverified, deleted, foreign, or sending-disabled.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "Name conflict or incompatible/tombstoned/concurrently changed dependencies; all writes roll back.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Missing sender: Choose a sender. Missing newsletter topic: Choose a topic. Invalid tenant-live topic or send-kind/trigger validation. No partial installation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        },
+        "description": "Requires full write permission and a verified sender. Newsletter welcome requires an explicit live same-tenant topic at installation; absence returns 422 Choose a topic without writes. Other Marketing presets allow topicless disabled installation, return Choose a topic for marketing steps, and cannot be enabled until configured. Every send step binds the selected sender; only Marketing sends bind the topic. Existing template content/source/publication/version history remain unchanged."
+      }
     }
   },
   "components": {
     "securitySchemes": {
+      "cronAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Deployment CRON_SECRET, not a tenant API key or session token."
+      },
       "bearerAuth": {
         "type": "http",
         "scheme": "bearer",
@@ -14608,6 +15766,70 @@
       }
     },
     "schemas": {
+      "InternalAcknowledgement": {
+        "type": "object",
+        "required": [
+          "ok",
+          "request_id"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "const": true
+          },
+          "request_id": {
+            "type": "string"
+          }
+        }
+      },
+      "SnsNotification": {
+        "type": "object",
+        "description": "An AWS SNS signed message envelope. SNS signature verification also validates the envelope's signing fields.",
+        "properties": {
+          "Type": {
+            "type": "string",
+            "enum": [
+              "SubscriptionConfirmation",
+              "Notification"
+            ]
+          },
+          "TopicArn": {
+            "type": "string"
+          },
+          "Message": {
+            "type": "string"
+          },
+          "Token": {
+            "type": "string",
+            "description": "Required for SubscriptionConfirmation."
+          },
+          "MessageId": {
+            "type": "string"
+          },
+          "Timestamp": {
+            "type": "string"
+          },
+          "Signature": {
+            "type": "string"
+          },
+          "SignatureVersion": {
+            "type": "string"
+          },
+          "SigningCertURL": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "Type",
+          "TopicArn",
+          "Message",
+          "MessageId",
+          "Timestamp",
+          "Signature",
+          "SignatureVersion",
+          "SigningCertURL"
+        ]
+      },
       "Error": {
         "type": "object",
         "required": [
@@ -15320,7 +16542,8 @@
         "properties": {
           "kind": {
             "type": "string",
-            "maxLength": 40
+            "maxLength": 40,
+            "description": "Source provenance, such as library or react-email. This is not the email's Transactional or Marketing kind."
           },
           "path": {
             "type": "string"
@@ -15330,6 +16553,14 @@
           },
           "version": {
             "type": "string"
+          },
+          "send_kind": {
+            "type": "string",
+            "enum": [
+              "transactional",
+              "marketing"
+            ],
+            "description": "The library template's sending kind, preserved on installation."
           }
         },
         "additionalProperties": false
@@ -15573,7 +16804,8 @@
           "object",
           "id",
           "name",
-          "status"
+          "status",
+          "kind"
         ],
         "properties": {
           "object": {
@@ -15585,6 +16817,15 @@
           },
           "name": {
             "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "transactional",
+              "marketing"
+            ],
+            "readOnly": true,
+            "description": "Derived from library source.send_kind or unsubscribe placeholders in the template content. Marketing templates cannot be used by Transactional automation steps. This field does not change ordinary /emails sending, which is controlled by topic_id."
           },
           "alias": {
             "type": [
@@ -15772,7 +17013,9 @@
           "name",
           "category",
           "kind",
-          "subject"
+          "subject",
+          "stage",
+          "when"
         ],
         "properties": {
           "slug": {
@@ -15833,8 +17076,97 @@
           "preview": {
             "type": "string",
             "description": "Inbox preview text."
+          },
+          "stage": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "acquisition",
+              "onboarding",
+              "retention",
+              "reengagement",
+              "dunning",
+              "reactivation",
+              null
+            ]
+          },
+          "when": {
+            "type": "string"
           }
         }
+      },
+      "ThemeColor": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
+      "ThemeFont": { "type": "string", "enum": [
+        "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+        "Arial, Helvetica, sans-serif", "Georgia, 'Times New Roman', serif", "'Courier New', Courier, monospace"
+      ] },
+      "GoalTarget": {
+        "oneOf": [
+          { "type": "object", "required": ["event"], "properties": { "event": { "type": "string", "minLength": 1, "maxLength": 120, "pattern": "^[^@]" } }, "additionalProperties": false },
+          { "type": "object", "required": ["rule"], "properties": { "rule": { "$ref": "#/components/schemas/Rule" } }, "additionalProperties": false }
+        ],
+        "description": "Real custom event name or whole contact-state entry. Rule targets require recorded scalar history, not events, engagement or topic/segment membership."
+      },
+      "GoalInput": {
+        "type": "object", "required": ["name", "target"], "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "target": { "$ref": "#/components/schemas/GoalTarget" },
+          "eligibility": { "oneOf": [{ "$ref": "#/components/schemas/Rule" }, { "type": "null" }], "description": "Current contact state. Current live topic/static-segment membership is supported." },
+          "window_days": { "type": "integer", "minimum": 1, "maximum": 365, "default": 30 }
+        }
+      },
+      "GoalUpdate": {
+        "type": "object", "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "target": { "$ref": "#/components/schemas/GoalTarget" },
+          "eligibility": { "oneOf": [{ "$ref": "#/components/schemas/Rule" }, { "type": "null" }] },
+          "window_days": { "type": "integer", "minimum": 1, "maximum": 365 }
+        }
+      },
+      "Goal": {
+        "type": "object", "required": ["object", "id", "name", "target", "eligibility", "window_days", "created_at", "updated_at"],
+        "properties": {
+          "object": { "const": "goal" }, "id": { "type": "string" },
+          "name": { "type": "string" }, "target": { "$ref": "#/components/schemas/GoalTarget" },
+          "eligibility": { "oneOf": [{ "$ref": "#/components/schemas/Rule" }, { "type": "null" }] },
+          "window_days": { "type": "integer" }, "created_at": { "type": "string", "format": "date-time" },
+          "updated_at": { "type": "string", "format": "date-time" }
+        }
+      },
+      "GoalDay": {
+        "type": "object", "required": ["date", "contacts_reached", "converted", "rate"],
+        "properties": {
+          "date": { "type": "string", "format": "date" }, "contacts_reached": { "type": "integer" },
+          "converted": { "type": "integer" }, "rate": { "type": "number", "minimum": 0, "maximum": 1 }
+        }
+      },
+      "GoalMetrics": {
+        "type": "object", "required": ["object", "goal_id", "start_date", "end_date", "contacts_reached", "converted", "rate", "data", "history"],
+        "properties": {
+          "object": { "const": "goal_metrics" }, "goal_id": { "type": "string" },
+          "start_date": { "type": "string", "format": "date-time" }, "end_date": { "type": "string", "format": "date-time" },
+          "contacts_reached": { "type": "integer" }, "converted": { "type": "integer" },
+          "rate": { "type": "number", "minimum": 0, "maximum": 1 },
+          "data": { "type": "array", "items": { "$ref": "#/components/schemas/GoalDay" } },
+          "history": { "type": "object", "required": ["available_from", "limitation"], "properties": {
+            "available_from": { "type": ["string", "null"], "format": "date-time" }, "limitation": { "type": "string" }
+          } }
+        }
+      },
+      "LibraryUpdates": {
+        "type": "object", "required": ["updated", "skipped"],
+        "properties": {
+          "updated": { "type": "array", "items": { "$ref": "#/components/schemas/LibraryUpdateItem" } },
+          "skipped": { "type": "array", "items": { "$ref": "#/components/schemas/LibraryUpdateItem" } }
+        }
+      },
+      "LibraryUpdateItem": {
+        "type": "object", "required": ["id", "name", "slug"],
+        "properties": { "id": { "type": "string" }, "name": { "type": "string" }, "slug": { "type": "string" }, "reason": { "type": "string" } }
       },
       "Brand": {
         "type": "object",
@@ -15903,12 +17235,17 @@
           },
           "text_color": {
             "type": "string",
-            "description": "Black or white, whichever contrasts better with `color`.",
-            "enum": [
-              "#000000",
-              "#ffffff"
-            ]
+            "description": "Body text token, not the computed button color.",
+            "pattern": "^#[0-9a-fA-F]{6}$"
           },
+          "button_text_color": { "type": "string", "enum": ["#000000", "#ffffff"], "description": "Computed legacy button/public-page text. BRAND_TEXT_COLOR retains this meaning." },
+          "background_color": { "$ref": "#/components/schemas/ThemeColor" },
+          "surface_color": { "$ref": "#/components/schemas/ThemeColor" },
+          "border_color": { "$ref": "#/components/schemas/ThemeColor" },
+          "font_family": { "$ref": "#/components/schemas/ThemeFont" },
+          "font_size": { "type": "integer", "minimum": 14, "maximum": 18 },
+          "radius": { "type": "integer", "minimum": 0, "maximum": 16 },
+          "button_style": { "type": "string", "enum": ["filled", "outline"] },
           "variables": {
             "type": "object",
             "description": "The reserved template variables, such as `PRODUCT_NAME` and `SUPPORT_EMAIL`, as a preview render fills them. Fallbacks for unset brand fields are applied.",
@@ -15920,7 +17257,16 @@
       },
       "BrandUpdate": {
         "type": "object",
+        "description": "Merged settings must reach 4.5:1 body/background, body/surface and button-text/button contrast. Filled buttons compute black/white; outline uses brand color on surface.",
         "properties": {
+          "text_color": { "$ref": "#/components/schemas/ThemeColor" },
+          "background_color": { "$ref": "#/components/schemas/ThemeColor" },
+          "surface_color": { "$ref": "#/components/schemas/ThemeColor" },
+          "border_color": { "$ref": "#/components/schemas/ThemeColor" },
+          "font_family": { "$ref": "#/components/schemas/ThemeFont" },
+          "font_size": { "type": "integer", "minimum": 14, "maximum": 18 },
+          "radius": { "type": "integer", "minimum": 0, "maximum": 16 },
+          "button_style": { "type": "string", "enum": ["filled", "outline"] },
           "product_name": {
             "type": "string",
             "minLength": 1,
@@ -16346,6 +17692,31 @@
         "additionalProperties": false,
         "description": "The same fields as a single send, without `attachments`."
       },
+      "SplitEmails": {
+        "type": "array",
+        "description": "Present on multi-recipient Marketing sends, in first-seen recipient order. Each email has one To recipient and its own unsubscribe link.",
+        "items": {
+          "type": "object",
+          "required": [
+            "id",
+            "to",
+            "sandbox"
+          ],
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "to": {
+              "type": "string",
+              "format": "email"
+            },
+            "sandbox": {
+              "type": "boolean",
+              "description": "True when this split email's recipient is a sandbox recipient."
+            }
+          }
+        }
+      },
       "BatchResult": {
         "type": "object",
         "required": [
@@ -16357,15 +17728,23 @@
             "items": {
               "type": "object",
               "required": [
-                "id"
+                "id",
+                "sandbox"
               ],
               "properties": {
                 "id": {
                   "type": "string"
+                },
+                "sandbox": {
+                  "type": "boolean",
+                  "description": "True when all original recipients of the email identified by id are sandbox recipients."
+                },
+                "emails": {
+                  "$ref": "#/components/schemas/SplitEmails"
                 }
               }
             },
-            "description": "The accepted emails, in request order."
+            "description": "The accepted items, in request order. A multi-recipient Marketing item retains its first id and includes its own emails array."
           },
           "errors": {
             "type": "array",
@@ -16398,7 +17777,9 @@
           "from",
           "created_at",
           "subject",
-          "last_event"
+          "last_event",
+          "sandbox",
+          "recipients"
         ],
         "properties": {
           "object": {
@@ -16413,6 +17794,17 @@
               "string",
               "null"
             ]
+          },
+          "sandbox": {
+            "type": "boolean",
+            "description": "True only when all original recipients are sandbox recipients. Mixed emails are false. Sandbox emails keep normal queued, scheduled and delivered statuses; delivered is a simulation, not provider confirmation, and has no real provider message ID."
+          },
+          "recipients": {
+            "type": "array",
+            "description": "Original recipients with per-recipient sandbox flags, including mixed emails. The to, cc and bcc address arrays retain their existing string types.",
+            "items": {
+              "$ref": "#/components/schemas/EmailRecipient"
+            }
           },
           "to": {
             "type": "array",
@@ -16490,6 +17882,36 @@
                 }
               }
             }
+          }
+        }
+      },
+      "EmailRecipient": {
+        "type": "object",
+        "required": [
+          "email",
+          "kind",
+          "sandbox"
+        ],
+        "properties": {
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "to",
+              "cc",
+              "bcc"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "description": "Stored recipient delivery status. For sandbox recipients, delivery is simulated."
+          },
+          "sandbox": {
+            "type": "boolean",
+            "description": "True when the original recipient is at a reserved test domain or a tenant sandbox domain. The recipient never reaches the provider."
           }
         }
       },
@@ -16669,12 +18091,21 @@
               "topic.created",
               "topic.updated",
               "topic.deleted",
-              "email.unsubscribed"
+              "email.unsubscribed",
+              "automation.run.started",
+              "automation.run.completed",
+              "automation.run.failed"
             ],
-            "description": "`email.unsubscribed` is recorded for a broadcast recipient who unsubscribes. No webhook fires for it."
+            "description": "Marketing and broadcast unsubscribe links record one `email.unsubscribed` event per email, even when used again. The event is fanned out to enabled webhook endpoints subscribed to `email.unsubscribed`."
           },
           "data": {
             "type": "object",
+            "properties": {
+              "sandbox": {
+                "type": "boolean",
+                "description": "True for simulated sandbox delivery, not real provider delivery. Mixed-email simulations are recipient-scoped."
+              }
+            },
             "additionalProperties": true
           },
           "created_at": {
@@ -16741,7 +18172,21 @@
             "type": "array",
             "items": {
               "type": "object",
-              "properties": {},
+              "properties": {
+                "automation_id": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "automation_step": {
+                  "type": [
+                    "string",
+                    "null"
+                  ],
+                  "description": "Send-step key. Legacy automation emails can have no step key."
+                }
+              },
               "additionalProperties": true
             },
             "description": "One row per dimension group. Empty without dimensions."
@@ -17367,6 +18812,10 @@
           "email.clicked",
           "email.suppressed",
           "email.received",
+          "email.unsubscribed",
+          "automation.run.started",
+          "automation.run.completed",
+          "automation.run.failed",
           "contact.created",
           "contact.updated",
           "contact.deleted",
@@ -17573,14 +19022,182 @@
           },
           "data": {
             "type": "object",
+            "properties": {
+              "sandbox": {
+                "type": "boolean",
+                "description": "True on simulated sandbox email.delivered events, not provider-confirmed delivery. All-sandbox emails bypass the provider and have no real provider message ID. For mixed emails, only sandbox recipients appear in the simulated event; real recipients still receive provider delivery events."
+              },
+              "automation_id": {
+                "type": "string",
+                "description": "Present on automation lifecycle events."
+              },
+              "run_id": {
+                "type": "string",
+                "description": "Present on automation lifecycle events."
+              },
+              "contact_id": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "Present on automation lifecycle events; null when no contact was identified."
+              },
+              "state": {
+                "type": "string",
+                "description": "Internal run state on automation lifecycle events: ready on started, done or stopped on completed, failed on failed."
+              },
+              "exit_reason": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "completed",
+                  "exit",
+                  "filter",
+                  "stopped",
+                  "stranded",
+                  null
+                ],
+                "description": "completed is a natural ending; exit is an Exit step; filter is a failed Filter or saved guard; stopped is cancellation; stranded is a paused edit that removed or changed the next step. Running and failed runs have null; failed is not an exit reason."
+              }
+            },
             "additionalProperties": true,
-            "description": "Email events include `email_id`, `created_at`, `from`, `to`, `subject`, `message_id`, and `tags`, plus fields for the event type."
+            "description": "Email events include `email_id`, `created_at`, `from`, `to`, `subject`, `message_id`, and `tags`, plus fields for the event type. Automation lifecycle events require automation_id, run_id, contact_id (nullable), state and exit_reason (nullable). Started events have null exit_reason; failed events have null exit_reason. Completed events cover done and stopped and carry completed, exit, filter, stopped or stranded. Guards and per-step branch choices are available from the run API, not webhook data."
           },
           "created_at": {
             "type": "string",
             "format": "date-time"
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "enum": [
+                    "automation.run.started",
+                    "automation.run.completed",
+                    "automation.run.failed"
+                  ]
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "data": {
+                  "required": [
+                    "automation_id",
+                    "run_id",
+                    "contact_id",
+                    "state",
+                    "exit_reason"
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "automation.run.started"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "data": {
+                  "properties": {
+                    "state": {
+                      "const": "ready"
+                    },
+                    "exit_reason": {
+                      "type": "null"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "automation.run.completed"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "data": {
+                  "properties": {
+                    "state": {
+                      "enum": [
+                        "done",
+                        "stopped"
+                      ]
+                    },
+                    "exit_reason": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "automation.run.failed"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "data": {
+                  "properties": {
+                    "state": {
+                      "const": "failed"
+                    },
+                    "exit_reason": {
+                      "type": "null"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "examples": [
+          {
+            "id": "event_123",
+            "request_id": null,
+            "type": "automation.run.completed",
+            "email_id": null,
+            "data": {
+              "automation_id": "auto_123",
+              "run_id": "run_123",
+              "contact_id": "contact_123",
+              "state": "done",
+              "exit_reason": "filter"
+            },
+            "created_at": "2026-10-04T12:00:00.000Z"
+          }
+        ]
       },
       "WebhookEventDetail": {
         "allOf": [
@@ -17717,7 +19334,7 @@
           "properties": {
             "type": "object",
             "additionalProperties": true,
-            "description": "Values must match the type of a defined contact property."
+            "description": "Values must match the type of a defined contact property. Declared string, number, boolean, and date properties require matching JSON types; dates must be ISO strings. Undeclared keys remain allowed."
           },
           "unsubscribed": {
             "type": "boolean"
@@ -17783,7 +19400,7 @@
           "properties": {
             "type": "object",
             "additionalProperties": true,
-            "description": "Merged into the stored properties. A `null` value removes that key."
+            "description": "Merged into the stored properties. A `null` value removes that key. Declared string, number, boolean, and date properties require matching JSON types; dates must be ISO strings. Undeclared keys remain allowed."
           },
           "unsubscribed": {
             "type": "boolean"
@@ -17838,7 +19455,13 @@
               "properties": {
                 "value": {},
                 "type": {
-                  "type": "string"
+                  "type": "string",
+                  "enum": [
+                    "string",
+                    "number",
+                    "boolean",
+                    "date"
+                  ]
                 }
               }
             }
@@ -17932,7 +19555,7 @@
           },
           "type": {
             "type": "string",
-            "description": "`contact.created`, `segment.added`, `topic.opted_in`, `topic.opted_out`, or an email event type."
+            "description": "`contact.created`, `segment.added`, `topic.opted_in`, `topic.opted_out`, `event.fired`, `automation.run.started`, `automation.run.completed`, or an email event type. Run completion covers done, failed, and stopped states, reported in label."
           },
           "resource_id": {
             "type": [
@@ -17951,6 +19574,35 @@
               "string",
               "null"
             ]
+          },
+          "automation_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Present on automation-run activity."
+          },
+          "run_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The run behind a started or completed activity row."
+          },
+          "exit_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "completed",
+              "exit",
+              "filter",
+              "stopped",
+              "stranded",
+              null
+            ],
+            "description": "The stored run exit reason on automation.run.completed activity only: completed (natural ending), exit (Exit step), filter (failed Filter or guard), stopped (cancellation), or stranded (waiting step removed or changed). Null on other activity and legacy terminal runs with no stored reason; never inferred from the state."
           },
           "created_at": {
             "type": "string",
@@ -17982,6 +19634,77 @@
           }
         }
       },
+      "FormInput": {
+        "type": "object", "additionalProperties": false, "required": ["name", "topic_ids", "from_email", "allowed_origins"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+          "topic_ids": { "type": "array", "minItems": 1, "maxItems": 100, "items": { "type": "string" }, "description": "Live tenant topics only." },
+          "properties": { "type": "array", "maxItems": 100, "default": [], "items": { "type": "string" }, "description": "Live declared keys only; mailbox/name/honeypot and prototype keys are reserved." },
+          "double_opt_in": { "type": "boolean", "default": true },
+          "from_email": { "type": "string", "format": "email", "description": "Exact verified sending-enabled domain required." },
+          "allowed_origins": { "type": "array", "minItems": 1, "maxItems": 50, "items": { "type": "string", "format": "uri" }, "description": "Exact HTTP/HTTPS origins, with no path or credentials." },
+          "redirect_url": { "type": ["string", "null"], "format": "uri", "default": null, "description": "HTTPS only, no credentials. Never taken from public submission." }
+        }
+      },
+      "FormUpdate": { "type": "object", "additionalProperties": false, "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "topic_ids": { "type": "array", "minItems": 1, "maxItems": 100, "items": { "type": "string" } },
+        "properties": { "type": "array", "maxItems": 100, "items": { "type": "string" } },
+        "double_opt_in": { "type": "boolean" }, "from_email": { "type": "string", "format": "email" },
+        "allowed_origins": { "type": "array", "minItems": 1, "maxItems": 50, "items": { "type": "string", "format": "uri" } },
+        "redirect_url": { "type": ["string", "null"], "format": "uri" }
+      } },
+      "Form": { "type": "object", "properties": {
+        "name": { "$ref": "#/components/schemas/FormInput/properties/name" },
+        "topic_ids": { "$ref": "#/components/schemas/FormInput/properties/topic_ids" },
+        "properties": { "$ref": "#/components/schemas/FormInput/properties/properties" },
+        "double_opt_in": { "type": "boolean" }, "from_email": { "type": "string", "format": "email" },
+        "allowed_origins": { "$ref": "#/components/schemas/FormInput/properties/allowed_origins" },
+        "redirect_url": { "type": ["string", "null"], "format": "uri" },
+        "object": { "const": "form" }, "id": { "type": "string" }, "key": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" }, "updated_at": { "type": "string", "format": "date-time" }
+      } },
+      "FormSubmission": { "type": "object", "additionalProperties": false, "required": ["email"], "properties": {
+        "email": { "type": "string", "format": "email" }, "first_name": { "type": "string", "maxLength": 120 }, "last_name": { "type": "string", "maxLength": 120 },
+        "website": { "type": "string" }, "properties": { "type": "object", "description": "Only configured keys, using their declared JSON types." }
+      } },
+      "FormSubmissionResult": { "type": "object", "properties": {
+        "object": { "const": "form_submission" }, "message": { "const": "Thank you. Check your email if confirmation is needed." }
+      } },
+      "Confirmation": { "type": "object", "properties": {
+        "object": { "const": "confirmation" }, "form_name": { "type": "string" }, "confirmed": { "type": "boolean" },
+        "brand": { "type": "object", "properties": {
+          "product_name": { "type": "string" }, "logo_url": { "type": ["string", "null"] }, "primary_color": { "type": "string" },
+          "background_color": { "type": "string" }, "text_color": { "type": "string" }
+        } }
+      } },
+      "IntegrationSettings": { "type": "object", "additionalProperties": false, "properties": {
+        "map_plan": { "type": "boolean" }, "delete_contact": { "type": "boolean", "default": false },
+        "secret_header": { "type": "string", "pattern": "^[a-zA-Z0-9-]{1,78}$" },
+        "stripe_restricted_key": { "type": ["string", "null"], "writeOnly": true, "description": "Optional customers:read key; encrypted at rest, omitted from normal reads. Null clears." }
+      } },
+      "IntegrationInput": { "type": "object", "additionalProperties": false, "required": ["provider", "name", "secret"], "properties": {
+        "provider": { "enum": ["stripe", "clerk", "supabase", "webhook"] }, "name": { "type": "string", "minLength": 1, "maxLength": 120 },
+        "slug": { "type": "string", "pattern": "^[a-z][a-z0-9-]{0,62}$", "description": "Provider prefix for named providers. Standard Webhooks defaults to webhook; tenant-unique and nonreserved (not stripe, clerk or supabase)." },
+        "secret": { "type": "string", "minLength": 1, "maxLength": 4096, "writeOnly": true }, "settings": { "$ref": "#/components/schemas/IntegrationSettings" }
+      } },
+      "IntegrationUpdate": { "type": "object", "additionalProperties": false, "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 120 }, "secret": { "type": "string", "minLength": 1, "maxLength": 4096, "writeOnly": true },
+        "settings": { "$ref": "#/components/schemas/IntegrationSettings" }
+      } },
+      "Integration": { "type": "object", "properties": {
+        "object": { "const": "integration" }, "id": { "type": "string" }, "provider": { "enum": ["stripe", "clerk", "supabase", "webhook"] },
+        "name": { "type": "string" }, "slug": { "type": "string" }, "has_restricted_key": { "type": "boolean" },
+        "settings": { "type": "object", "properties": { "map_plan": { "type": "boolean" }, "delete_contact": { "type": "boolean" }, "secret_header": { "type": "string" } } },
+        "last_received_at": { "type": ["string", "null"], "format": "date-time" }, "created_at": { "type": "string", "format": "date-time" }, "updated_at": { "type": "string", "format": "date-time" }
+      } },
+      "CreatedIntegration": { "allOf": [{ "$ref": "#/components/schemas/Integration" }, { "type": "object", "properties": {
+        "token": { "type": "string" }, "url": { "type": "string", "format": "uri" }
+      } }] },
+      "InboundDelivery": { "type": "object", "properties": {
+        "id": { "type": "string" }, "integration_id": { "type": "string" }, "provider_event_id": { "type": "string" }, "status": { "enum": ["processed", "ignored", "failed"] },
+        "event_name": { "type": ["string", "null"] }, "contact_id": { "type": ["string", "null"] }, "error": { "type": ["string", "null"] }, "created_at": { "type": "string", "format": "date-time" }
+      } },
       "ContactTopic": {
         "type": "object",
         "required": [
@@ -18004,7 +19727,8 @@
             "type": "string",
             "enum": [
               "opt_in",
-              "opt_out"
+              "opt_out",
+              "pending"
             ]
           },
           "explicit": {
@@ -18055,14 +19779,17 @@
         "properties": {
           "key": {
             "type": "string",
-            "pattern": "^[A-Za-z0-9_]{1,50}$"
+            "pattern": "^[A-Za-z0-9_]{1,50}$",
+            "description": "New definitions cannot use topics or segments. Existing live legacy definitions with those keys can still update their fallback."
           },
           "type": {
             "type": "string",
             "description": "Defaults to `string`. Cannot change once set.",
             "enum": [
               "string",
-              "number"
+              "number",
+              "boolean",
+              "date"
             ]
           },
           "fallback_value": {
@@ -18075,9 +19802,13 @@
                 "type": "number"
               },
               {
+                "type": "boolean"
+              },
+              {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "Must match the property type, or be null. Date values are ISO strings: YYYY-MM-DD or a timestamp with seconds and Z or a numeric offset. Invalid calendar dates and unzoned timestamps are refused."
           }
         },
         "description": "Creating a key that already exists updates its fallback value."
@@ -18095,9 +19826,13 @@
                 "type": "number"
               },
               {
+                "type": "boolean"
+              },
+              {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "Must match the property type, or be null. Date values are ISO strings: YYYY-MM-DD or a timestamp with seconds and Z or a numeric offset. Invalid calendar dates and unzoned timestamps are refused."
           }
         }
       },
@@ -18125,7 +19860,9 @@
             "type": "string",
             "enum": [
               "string",
-              "number"
+              "number",
+              "boolean",
+              "date"
             ]
           },
           "fallback_value": {
@@ -18137,9 +19874,13 @@
                 "type": "number"
               },
               {
+                "type": "boolean"
+              },
+              {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "Must match the property type, or be null. Date values are ISO strings: YYYY-MM-DD or a timestamp with seconds and Z or a numeric offset. Invalid calendar dates and unzoned timestamps are refused."
           },
           "created_at": {
             "type": "string",
@@ -18388,14 +20129,16 @@
             "type": "string",
             "enum": [
               "subscribed",
-              "unsubscribed"
+              "unsubscribed",
+              "pending"
             ]
           },
           "subscription": {
             "type": "string",
             "enum": [
               "opt_in",
-              "opt_out"
+              "opt_out",
+              "pending"
             ]
           },
           "email": {
@@ -18413,6 +20156,7 @@
       },
       "SegmentInput": {
         "type": "object",
+        "additionalProperties": false,
         "required": [
           "name"
         ],
@@ -18425,11 +20169,16 @@
           "description": {
             "type": "string",
             "maxLength": 500
+          },
+          "rule": {
+            "anyOf": [{ "$ref": "#/components/schemas/Rule" }, { "type": "null" }],
+            "description": "Null or omitted creates a static list. A nonnull rule creates a dynamic filter, limited to five levels and twenty conditions."
           }
         }
       },
       "SegmentUpdate": {
         "type": "object",
+        "additionalProperties": false,
         "properties": {
           "name": {
             "type": "string",
@@ -18439,6 +20188,10 @@
           "description": {
             "type": "string",
             "maxLength": 500
+          },
+          "rule": {
+            "anyOf": [{ "$ref": "#/components/schemas/Rule" }, { "type": "null" }],
+            "description": "Omitted preserves the rule. Null converts to an empty static list. Converting a populated static list is a 409 until members are explicitly removed."
           }
         }
       },
@@ -18447,7 +20200,9 @@
         "required": [
           "object",
           "id",
-          "name"
+          "name",
+          "type",
+          "rule"
         ],
         "properties": {
           "object": {
@@ -18461,8 +20216,18 @@
             "type": "string"
           },
           "contacts": {
-            "type": "integer",
-            "description": "Member count. Present in list results only."
+            "type": ["integer", "null"],
+            "description": "Static list count or null for dynamic list rows. Detail always returns a numeric count, cached up to 30 seconds."
+          },
+          "description": {
+            "type": ["string", "null"]
+          },
+          "type": {
+            "type": "string",
+            "enum": ["static", "dynamic"]
+          },
+          "rule": {
+            "anyOf": [{ "$ref": "#/components/schemas/Rule" }, { "type": "null" }]
           },
           "created_at": {
             "type": "string",
@@ -18651,6 +20416,14 @@
           "file"
         ],
         "properties": {
+          "trigger_automations": {
+            "type": "string",
+            "enum": [
+              "true",
+              "false"
+            ],
+            "description": "Overrides the tenant import_trigger_automations default. Omission resolves and stores that default when this import is created. Enabled imports dispatch actual creation, effective topic subscription and static segment additions, not contact updates. Started runs have bulk priority."
+          },
           "file": {
             "type": "string",
             "description": "The CSV file, 200 MB at most.",
@@ -18658,7 +20431,11 @@
           },
           "column_map": {
             "type": "string",
-            "description": "JSON object mapping `email`, `first_name`, `last_name`, `unsubscribed`, and `properties.<key>` to `{ column, type }`. A field left out is found by its usual header name. Set `first_name`, `last_name`, or `unsubscribed` to `null` to leave that field out of the import even when the file has such a column."
+            "description": "JSON object mapping `email`, `first_name`, `last_name`, `unsubscribed`, and `properties.<key>` to `{ column, type }`. A field left out is found by its usual header name. Set `first_name`, `last_name`, or `unsubscribed` to `null` to leave that field out of the import even when the file has such a column. Property column types are string, number, boolean, and date; a declared property type wins. Boolean properties accept true/false, yes/no, or 1/0 case-insensitively. Dates accept ISO date-only values or zoned timestamps with seconds. Empty property cells are omitted; invalid nonempty boolean/date cells count as failed rows.",
+            "contentMediaType": "application/json",
+            "contentSchema": {
+              "$ref": "#/components/schemas/ImportColumnMap"
+            }
           },
           "on_conflict": {
             "type": "string",
@@ -18684,9 +20461,14 @@
           "object",
           "id",
           "status",
+          "trigger_automations",
           "counts"
         ],
         "properties": {
+          "trigger_automations": {
+            "type": "boolean",
+            "description": "The resolved setting stored when the import was created."
+          },
           "object": {
             "type": "string",
             "const": "contact_import"
@@ -18700,7 +20482,8 @@
               "queued",
               "in_progress",
               "completed",
-              "failed"
+              "failed",
+              "cancelled"
             ]
           },
           "counts": {
@@ -18847,7 +20630,8 @@
                   "type": "string",
                   "enum": [
                     "opt_in",
-                    "opt_out"
+                    "opt_out",
+                    "pending"
                   ]
                 }
               }
@@ -19074,6 +20858,7 @@
       },
       "Broadcast": {
         "type": "object",
+        "description": "Broadcasts are always Marketing. They respect opt-outs and carry recipient-specific unsubscribe links and one-click headers, with or without a topic.",
         "required": [
           "object",
           "id",
@@ -19360,6 +21145,440 @@
           }
         }
       },
+      "ImportColumn": {
+        "type": "object",
+        "required": [
+          "column"
+        ],
+        "properties": {
+          "column": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "string",
+              "number",
+              "boolean",
+              "date"
+            ]
+          }
+        }
+      },
+      "ImportColumnMap": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "email": {
+            "$ref": "#/components/schemas/ImportColumn"
+          },
+          "first_name": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImportColumn"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last_name": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImportColumn"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "unsubscribed": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ImportColumn"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "properties": {
+            "type": "object",
+            "propertyNames": {
+              "pattern": "^[A-Za-z0-9_]{1,50}$"
+            },
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ImportColumn"
+            }
+          }
+        }
+      },
+      "Rule": {
+        "description": "Shared contact/event grammar. Segment context excludes event fields, limits five total levels/twenty conditions and permits email.sent/delivered/opened/clicked/bounced boolean eq/neq with optional exclusive automation_id/broadcast_id scope and positive duration window. Email facts mean existence, exclude sandbox and use the inclusive recorded-event interval [statement time-duration, statement time]. No window means all recorded time; negative facts also match never-sent contacts. Automation contexts explicitly refuse email engagement. contact.segments in segments references static membership only; automation context includes fresh matched dynamic IDs. Legacy own properties retain precedence. event.received_at is immutable. within/not_within take positive durations; invalid dates match neither. SQL supports finite numeric and ISO values with malformed legacy guards, not universal JavaScript legacy-parser equivalence.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "field",
+              "operator"
+            ],
+            "properties": {
+              "type": {
+                "const": "rule"
+              },
+              "field": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 200
+              },
+              "operator": {
+                "type": "string",
+                "enum": [
+                  "eq",
+                  "neq",
+                  "gt",
+                  "gte",
+                  "lt",
+                  "lte",
+                  "contains",
+                  "not_contains",
+                  "starts_with",
+                  "ends_with",
+                  "within",
+                  "not_within",
+                  "exists",
+                  "is_empty"
+                ]
+              },
+              "value": {},
+              "scope": {
+                "oneOf": [
+                  { "type": "object", "additionalProperties": false, "required": ["automation_id"], "properties": { "automation_id": { "type": "string", "minLength": 1 } } },
+                  { "type": "object", "additionalProperties": false, "required": ["broadcast_id"], "properties": { "broadcast_id": { "type": "string", "minLength": 1 } } }
+                ]
+              },
+              "window": { "type": "string", "description": "Email engagement only: positive finite shared duration, such as 30 days." }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "rules"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "and",
+                  "or"
+                ]
+              },
+              "rules": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 50,
+                "items": {
+                  "$ref": "#/components/schemas/Rule"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "SendEmailConfig": {
+        "type": "object",
+        "description": "Automation Send email config. Transactional has no topic and does not enforce Marketing opt-outs. Marketing respects opt-outs and adds recipient-specific unsubscribe links and one-click headers. Omitted kind is accepted for legacy input and inferred as marketing when topic_id is present, otherwise transactional. Stored configs and responses always include kind. Disabled or paused drafts may keep Marketing steps without a topic, but create enabled, enable, or resume returns 422 until every Marketing step has a live topic. A Marketing template cannot be used transactionally. Runtime refuses a Marketing send if its topic is missing or deleted; it never falls back to Transactional.",
+        "required": [
+          "template"
+        ],
+        "properties": {
+          "template": {
+            "$ref": "#/components/schemas/TemplateRef"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "transactional",
+              "marketing"
+            ],
+            "description": "Optional for legacy input only. Marketing drafts may omit topic_id; Transactional cannot have topic_id."
+          },
+          "from": {
+            "type": "string"
+          },
+          "to": {
+            "type": "string",
+            "format": "email"
+          },
+          "subject": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 998
+          },
+          "reply_to": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1,
+                "maxItems": 50
+              }
+            ]
+          },
+          "topic_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Allowed only for Marketing. A live topic is required before enabling or resuming, but may be omitted in a disabled or paused draft."
+          },
+          "variables": {
+            "type": "object",
+            "additionalProperties": true
+          },
+          "variable_mapping": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Maps template variable names to dotted event.* or contact.* fields. Mappings override literal variables, read own properties only, and omit missing values. Fresh recipient and unsubscribe context stays protected."
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "kind": {
+                  "const": "transactional"
+                }
+              },
+              "required": [
+                "kind"
+              ]
+            },
+            "then": {
+              "not": {
+                "required": [
+                  "topic_id"
+                ]
+              }
+            }
+          }
+        ]
+      },
+      "StoredSendEmailConfig": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/SendEmailConfig"
+          }
+        ],
+        "required": [
+          "kind"
+        ],
+        "description": "Normalized automation Send email config. Responses always include the explicit kind, including for legacy input and incomplete Marketing drafts."
+      },
+      "TriggerConfig": {
+        "description": "Contact triggers use their internal namespace and never wake event waits. Legacy {event_name} inputs normalize to type:event. New event and wait names cannot start with @; old stored event names remain unchanged in responses.",
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "event_name"
+            ],
+            "properties": {
+              "type": {
+                "const": "event"
+              },
+              "event_name": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120,
+                "description": "New input names cannot start with @. Legacy stored event names are preserved in responses."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "const": "contact_created"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "const": "contact_updated"
+              },
+              "field": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_]+$",
+                "description": "Built-in or declared contact field, without contact. A field is required when from or to is supplied."
+              },
+              "from": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean",
+                  "null"
+                ]
+              },
+              "to": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean",
+                  "null"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "topic_id"
+            ],
+            "properties": {
+              "type": {
+                "const": "topic_subscribed"
+              },
+              "topic_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "segment_id"
+            ],
+            "properties": {
+              "type": {
+                "const": "segment_added"
+              },
+              "segment_id": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Static segment only."
+              }
+            }
+          }
+        ]
+      },
+      "ExitConfig": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false,
+        "description": "An empty config. Exit ends the run deliberately with exit_reason exit and has no outgoing connections."
+      },
+      "FilterConfig": {
+        "type": "object",
+        "required": [
+          "rule",
+          "scope"
+        ],
+        "properties": {
+          "rule": {
+            "$ref": "#/components/schemas/Rule"
+          },
+          "scope": {
+            "type": "string",
+            "enum": [
+              "next",
+              "following"
+            ]
+          }
+        },
+        "description": "next evaluates the rule once. following also saves a guard on the run, evaluated against fresh contact context and the run's triggering event before every later step, including Delay and Wait for event steps and resumed waits. Every saved guard must match. A failed Filter or guard ends the run with exit_reason filter and never follows a default connection. Already queued emails are not cancelled."
+      },
+      "BranchConfig": {
+        "type": "object",
+        "required": [
+          "paths"
+        ],
+        "properties": {
+          "paths": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 10,
+            "items": {
+              "type": "object",
+              "required": [
+                "key",
+                "label",
+                "rule"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 60,
+                  "pattern": "^[A-Za-z0-9_-]{1,60}$",
+                  "not": {
+                    "const": "otherwise"
+                  }
+                },
+                "label": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 120,
+                  "description": "Trimmed, nonempty display label."
+                },
+                "rule": {
+                  "$ref": "#/components/schemas/Rule"
+                }
+              }
+            }
+          }
+        },
+        "description": "Two to ten ordered paths with unique keys, validated by the API. Keys are nonempty and otherwise is reserved. Rules use fresh contact context and the run's triggering event. First-match routing evaluates paths in array order and takes the first matching rule; otherwise is implicit and chosen only when no rule matches. Each configured path and otherwise needs exactly one keyed branch connection. The step output records { path }."
+      },
+      "SplitConfig": {
+        "type": "object", "required": ["variants"],
+        "properties": { "variants": {
+          "type": "array", "minItems": 2, "maxItems": 4,
+          "items": { "type": "object", "required": ["key", "label", "weight"], "properties": {
+            "key": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,60}$" },
+            "label": { "type": "string", "minLength": 1, "maxLength": 120 },
+            "weight": { "type": "integer", "minimum": 0, "maximum": 100 }
+          } }
+        } },
+        "description": "2–4 unique stable keys. Whole-number weights sum to100; zero is allowed. Each variant, including zero-weight variants, needs exactly one variant edge with path=key. Assignment hashes only UTF8 run_id with SHA256, unsigned big-endian first4 bytes modulo100, against cumulative weights in order. Recorded {variant:key} survives retries and weight edits."
+      },
+      "SplitMetrics": {
+        "type": "object", "required": ["object", "automation_id", "step_key", "start_date", "end_date", "data"],
+        "properties": {
+          "object": { "const": "automation_split_metrics" }, "automation_id": { "type": "string" }, "step_key": { "type": "string" },
+          "start_date": { "type": "string", "format": "date-time" }, "end_date": { "type": "string", "format": "date-time" },
+          "data": { "type": "array", "items": { "type": "object", "required": ["key", "label", "weight", "runs", "sent", "delivered", "open_rate", "click_rate", "bounce_rate", "unsubscribed"],
+            "properties": { "key": { "type": "string" }, "label": { "type": "string" }, "weight": { "type": ["integer", "null"] },
+              "runs": { "type": "integer" }, "sent": { "type": "integer" }, "delivered": { "type": "integer" },
+              "opened": { "type": "integer" }, "clicked": { "type": "integer" }, "unique_opened": { "type": "integer" }, "unique_clicked": { "type": "integer" },
+              "bounced": { "type": "integer" }, "complained": { "type": "integer" }, "unsubscribed": { "type": "integer" },
+              "delivery_rate": { "type": "number" }, "open_rate": { "type": "number" }, "click_rate": { "type": "number" },
+              "bounce_rate": { "type": "number" }, "complaint_rate": { "type": "number" }, "unsubscribe_rate": { "type": "number" }
+            }
+          } }
+        }
+      },
       "AutomationStep": {
         "type": "object",
         "required": [
@@ -19379,6 +21598,10 @@
               "delay",
               "wait_for_event",
               "condition",
+              "filter",
+              "branch",
+              "split",
+              "exit",
               "add_to_segment",
               "contact_update",
               "contact_delete"
@@ -19387,9 +21610,162 @@
           "config": {
             "type": "object",
             "additionalProperties": true,
-            "description": "Depends on `type`. For `send_email`: `template` (required), `from` (optional when the template stores a sender), `to`, `subject`, `reply_to`, `variables`, and `topic_id`. With a `topic_id` the email is subscription mail, and a contact who unsubscribed from everything or opted out of that topic is skipped. Without one the email always sends, as a receipt or a password reset must."
+            "description": "Config depends on type: send_email uses SendEmailConfig, condition uses Rule, filter uses FilterConfig, branch uses BranchConfig, split uses SplitConfig, exit uses empty ExitConfig. Marketing requires a live topic before enable/resume and cannot fall back to Transactional. Variables retain literal data. Splits record a stable variant and route via variant edges."
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": { "properties": { "type": { "const": "split" } }, "required": ["type"] },
+            "then": { "required": ["config"], "properties": { "config": { "$ref": "#/components/schemas/SplitConfig" } } }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "trigger"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "required": [
+                "config"
+              ],
+              "properties": {
+                "config": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/TriggerConfig"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "event_name"
+                      ],
+                      "properties": {
+                        "event_name": {
+                          "type": "string",
+                          "pattern": "^[^@]",
+                          "minLength": 1,
+                          "maxLength": 120
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "send_email"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "required": [
+                "config"
+              ],
+              "properties": {
+                "config": {
+                  "$ref": "#/components/schemas/SendEmailConfig"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "condition"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "required": [
+                "config"
+              ],
+              "properties": {
+                "config": {
+                  "$ref": "#/components/schemas/Rule"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "exit"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "config": {
+                  "$ref": "#/components/schemas/ExitConfig"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "filter"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "config": {
+                  "$ref": "#/components/schemas/FilterConfig"
+                }
+              },
+              "required": [
+                "config"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "branch"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "config": {
+                  "$ref": "#/components/schemas/BranchConfig"
+                }
+              },
+              "required": [
+                "config"
+              ]
+            }
+          }
+        ]
       },
       "AutomationConnection": {
         "type": "object",
@@ -19414,10 +21790,46 @@
               "condition_met",
               "condition_not_met",
               "timeout",
-              "event_received"
+              "event_received",
+              "branch",
+              "variant"
             ]
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 60,
+            "pattern": "^[A-Za-z0-9_-]{1,60}$",
+            "description": "Required for branch (configured path or otherwise) and variant (configured variant key). Other types cannot carry path."
           }
-        }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "enum": ["branch", "variant"]
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "required": [
+                "path"
+              ]
+            },
+            "else": {
+              "not": {
+                "required": [
+                  "path"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Branch connections start only at Branch steps; every configured path and otherwise requires exactly one keyed edge. Variant connections start only at Split steps; every configured variant, including weight0, requires exactly one edge with path=key. Every target must be a real step, including Exit. Exit has no outgoing connections. Filter steps have only a default connection, never followed on failure."
       },
       "AutomationInput": {
         "type": "object",
@@ -19445,13 +21857,34 @@
           },
           "trigger": {
             "type": "string",
-            "description": "Event name. Used by the linear form."
+            "pattern": "^[^@]",
+            "description": "Event name. Used by the linear form. Contact triggers use a keyed trigger step with TriggerConfig."
+          },
+          "reentry": {
+            "type": "string",
+            "enum": [
+              "once",
+              "every_time"
+            ],
+            "description": "Defaults to once for new contact triggers and every_time for event triggers."
           },
           "steps": {
             "type": "array",
             "items": {
               "type": "object",
-              "additionalProperties": true
+              "additionalProperties": true,
+              "allOf": [
+                {
+                  "if": {
+                    "required": [
+                      "key"
+                    ]
+                  },
+                  "then": {
+                    "$ref": "#/components/schemas/AutomationStep"
+                  }
+                }
+              ]
             },
             "minItems": 1,
             "maxItems": 100,
@@ -19464,11 +21897,129 @@
             },
             "maxItems": 200
           }
-        }
+        },
+        "description": "Branch steps require exactly one outgoing branch connection per configured path key and one for otherwise. Split steps require exactly one variant connection per unique configured key, including zero-weight variants. Only branch/variant connections carry path. Each target is a real step; Exit has no outgoing connections. Filters can use only a default connection and never follow it on failure. The API validates unique step/path keys, connection sources and targets, and an acyclic graph. Disabled Marketing drafts may omit a send step's topic_id. Creating enabled returns 422 until each Marketing step has a live topic. Send configs normalize legacy omitted kind from topic_id, and Marketing templates cannot be used transactionally.",
+        "examples": [
+          {
+            "name": "Onboarding",
+            "status": "disabled",
+            "steps": [
+              {
+                "key": "start",
+                "type": "trigger",
+                "config": {
+                  "type": "contact_created"
+                }
+              },
+              {
+                "key": "audience",
+                "type": "filter",
+                "config": {
+                  "rule": {
+                    "type": "rule",
+                    "field": "contact.activated",
+                    "operator": "eq",
+                    "value": false
+                  },
+                  "scope": "following"
+                }
+              },
+              {
+                "key": "later",
+                "type": "delay",
+                "config": {
+                  "duration": "1 hour"
+                }
+              },
+              {
+                "key": "plan",
+                "type": "branch",
+                "config": {
+                  "paths": [
+                    {
+                      "key": "free",
+                      "label": "Free plan",
+                      "rule": {
+                        "type": "rule",
+                        "field": "contact.plan",
+                        "operator": "eq",
+                        "value": "free"
+                      }
+                    },
+                    {
+                      "key": "pro",
+                      "label": "Pro plan",
+                      "rule": {
+                        "type": "rule",
+                        "field": "contact.plan",
+                        "operator": "eq",
+                        "value": "pro"
+                      }
+                    }
+                  ]
+                }
+              },
+              {
+                "key": "welcome",
+                "type": "send_email",
+                "config": {
+                  "template": "welcome",
+                  "kind": "transactional"
+                }
+              },
+              {
+                "key": "end",
+                "type": "exit",
+                "config": {}
+              }
+            ],
+            "connections": [
+              {
+                "from": "start",
+                "to": "audience",
+                "type": "default"
+              },
+              {
+                "from": "audience",
+                "to": "later",
+                "type": "default"
+              },
+              {
+                "from": "later",
+                "to": "plan",
+                "type": "default"
+              },
+              {
+                "from": "plan",
+                "to": "welcome",
+                "type": "branch",
+                "path": "free"
+              },
+              {
+                "from": "plan",
+                "to": "end",
+                "type": "branch",
+                "path": "pro"
+              },
+              {
+                "from": "plan",
+                "to": "end",
+                "type": "branch",
+                "path": "otherwise"
+              },
+              {
+                "from": "welcome",
+                "to": "end",
+                "type": "default"
+              }
+            ]
+          }
+        ]
       },
       "AutomationUpdate": {
         "type": "object",
         "properties": {
+          "expected_version": { "type": "integer", "minimum": 0, "description": "Optional optimistic guard; stale versions return409 without writes." },
           "name": {
             "type": "string",
             "minLength": 1,
@@ -19478,6 +22029,7 @@
             "type": "string",
             "enum": [
               "enabled",
+              "paused",
               "disabled"
             ]
           },
@@ -19485,13 +22037,34 @@
             "type": "boolean"
           },
           "trigger": {
-            "type": "string"
+            "type": "string",
+            "pattern": "^[^@]"
+          },
+          "reentry": {
+            "type": "string",
+            "enum": [
+              "once",
+              "every_time"
+            ],
+            "description": "Changing trigger type retains the stored reentry value."
           },
           "steps": {
             "type": "array",
             "items": {
               "type": "object",
-              "additionalProperties": true
+              "additionalProperties": true,
+              "allOf": [
+                {
+                  "if": {
+                    "required": [
+                      "key"
+                    ]
+                  },
+                  "then": {
+                    "$ref": "#/components/schemas/AutomationStep"
+                  }
+                }
+              ]
             },
             "minItems": 1,
             "maxItems": 100
@@ -19504,7 +22077,54 @@
             "maxItems": 200
           }
         },
-        "description": "Changing `steps`, `connections`, or `trigger` requires the automation to be disabled, or disabled in the same request."
+        "description": "Changing steps, connections, or trigger requires an already paused or disabled automation, or disabling in the same request. Previously used keys cannot change type. Branch steps require exactly one outgoing branch connection per configured path key and one for otherwise. Split steps require exactly one variant connection per unique configured key, including zero-weight variants. Only branch/variant connections carry path. Each target is a real step; Exit has no outgoing connections. Filters can use only a default connection and never follow it on failure. The API validates unique step/path keys, connection sources and targets, and an acyclic graph. Disabled or paused Marketing drafts may omit a send step's topic_id. Enabling or resuming returns 422 until each Marketing step has a live topic. Marketing templates cannot be used transactionally."
+      },
+      "StoredAutomationStep": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/AutomationStep"
+          },
+          {
+            "if": {
+              "properties": {
+                "type": {
+                  "const": "send_email"
+                }
+              },
+              "required": [
+                "type"
+              ]
+            },
+            "then": {
+              "properties": {
+                "config": {
+                  "$ref": "#/components/schemas/StoredSendEmailConfig"
+                }
+              }
+            }
+          }
+        ],
+        "description": "Response step. Send email configs always carry an explicit Transactional or Marketing kind."
+      },
+      "DryRun": {
+        "type": "object",
+        "required": [
+          "stranded_runs",
+          "by_step"
+        ],
+        "properties": {
+          "stranded_runs": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "by_step": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
       },
       "Automation": {
         "type": "object",
@@ -19514,8 +22134,11 @@
           "name",
           "status",
           "trigger",
+          "trigger_config",
+          "reentry",
           "steps",
-          "connections"
+          "connections",
+          "version"
         ],
         "properties": {
           "object": {
@@ -19532,16 +22155,31 @@
             "type": "string",
             "enum": [
               "enabled",
+              "paused",
               "disabled"
             ]
           },
           "trigger": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Legacy event name; null for contact triggers."
+          },
+          "trigger_config": {
+            "$ref": "#/components/schemas/TriggerConfig"
+          },
+          "reentry": {
+            "type": "string",
+            "enum": [
+              "once",
+              "every_time"
+            ]
           },
           "steps": {
             "type": "array",
             "items": {
-              "$ref": "#/components/schemas/AutomationStep"
+              "$ref": "#/components/schemas/StoredAutomationStep"
             }
           },
           "connections": {
@@ -19557,6 +22195,11 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "version": {
+            "type": "integer",
+            "readOnly": true,
+            "minimum": 0
           }
         }
       },
@@ -19567,7 +22210,10 @@
           "name",
           "status",
           "trigger",
-          "run_count"
+          "trigger_config",
+          "reentry",
+          "run_count",
+          "version"
         ],
         "properties": {
           "id": {
@@ -19580,11 +22226,25 @@
             "type": "string",
             "enum": [
               "enabled",
+              "paused",
               "disabled"
             ]
           },
           "trigger": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "trigger_config": {
+            "$ref": "#/components/schemas/TriggerConfig"
+          },
+          "reentry": {
+            "type": "string",
+            "enum": [
+              "once",
+              "every_time"
+            ]
           },
           "run_count": {
             "type": "integer"
@@ -19596,6 +22256,11 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "version": {
+            "type": "integer",
+            "readOnly": true,
+            "minimum": 0
           }
         }
       },
@@ -19606,7 +22271,9 @@
           "id",
           "automation_id",
           "status",
-          "event"
+          "event",
+          "exit_reason",
+          "guards"
         ],
         "properties": {
           "object": {
@@ -19663,8 +22330,44 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "exit_reason": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "enum": [
+              "completed",
+              "exit",
+              "filter",
+              "stopped",
+              "stranded",
+              null
+            ],
+            "description": "completed is a natural ending; exit is an Exit step; filter is a failed Filter or saved guard; stopped is cancellation; stranded is a paused edit that removed or changed the next step. Running and failed runs have null; failed is not an exit reason."
+          },
+          "guards": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "filter",
+                "rule"
+              ],
+              "properties": {
+                "filter": {
+                  "type": "string",
+                  "description": "The originating Filter step key."
+                },
+                "rule": {
+                  "$ref": "#/components/schemas/Rule"
+                }
+              }
+            },
+            "description": "Saved following-filter guards, empty when no following filter was saved. Checked against fresh context before every later step, including resumed waits."
           }
-        }
+        },
+        "description": "Exit reasons explain normal completion or cancellation without changing run statuses. Failed runs carry null exit_reason and their failure in error."
       },
       "AutomationRunMetrics": {
         "type": "object",
@@ -19816,7 +22519,20 @@
                     },
                     "output": {
                       "type": "object",
-                      "additionalProperties": true
+                      "additionalProperties": true,
+                      "description": "Step result. Branch records { path: \"<configured key or otherwise>\" }. A failed saved guard records { exited: \"filter\", filter: \"<originating Filter step key>\" } on the later step it prevented.",
+                      "examples": [
+                        {
+                          "path": "free"
+                        },
+                        {
+                          "path": "otherwise"
+                        },
+                        {
+                          "exited": "filter",
+                          "filter": "audience"
+                        }
+                      ]
                     },
                     "error": {
                       "type": [
@@ -19839,7 +22555,8 @@
         "properties": {
           "name": {
             "type": "string",
-            "description": "Cannot start with `resend:` or `dispatch:`.",
+            "description": "Cannot start with `@`, `resend:` or `dispatch:`.",
+            "pattern": "^[^@]",
             "minLength": 1,
             "maxLength": 120
           },
@@ -19917,6 +22634,19 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          },
+          "fired_count": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "List only: tenant-live non-internal firings matched by definition name."
+          },
+          "last_fired_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time",
+            "description": "List only: most recent live firing; null when never fired."
           }
         }
       },
@@ -19928,7 +22658,8 @@
         "properties": {
           "event": {
             "type": "string",
-            "description": "Event name.",
+            "description": "Event name. Names starting with @ return 422.",
+            "pattern": "^[^@]",
             "minLength": 1,
             "maxLength": 120
           },
@@ -20984,6 +23715,408 @@
             "description": "`fake` or `ses`."
           }
         }
+      },
+      "AutomationEnrollInput": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "all"
+            ],
+            "properties": {
+              "all": {
+                "type": "boolean",
+                "const": true
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "segment_id"
+            ],
+            "properties": {
+              "segment_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        ]
+      },
+      "AutomationEnrollmentJob": {
+        "type": "object",
+        "required": [
+          "object",
+          "id",
+          "automation_id",
+          "segment_id",
+          "status",
+          "counts",
+          "error",
+          "created_at",
+          "completed_at"
+        ],
+        "properties": {
+          "object": {
+            "type": "string",
+            "const": "automation_enrollment_job"
+          },
+          "id": {
+            "type": "string"
+          },
+          "automation_id": {
+            "type": "string"
+          },
+          "segment_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "queued",
+              "in_progress",
+              "completed",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "counts": {
+            "type": "object",
+            "required": [
+              "total",
+              "processed",
+              "enrolled",
+              "skipped",
+              "failed"
+            ],
+            "properties": {
+              "total": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "processed": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "enrolled": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "skipped": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "failed": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "completed_at": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          }
+        }
+      },
+      "AutomationPreset": {
+        "type": "object",
+        "required": [
+          "slug",
+          "name",
+          "stage",
+          "description",
+          "when",
+          "trigger_config",
+          "reentry",
+          "events",
+          "properties",
+          "steps",
+          "connections",
+          "templates"
+        ],
+        "properties": {
+          "slug": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "stage": {
+            "type": "string",
+            "enum": [
+              "acquisition",
+              "onboarding",
+              "retention",
+              "reengagement",
+              "dunning",
+              "reactivation"
+            ]
+          },
+          "description": {
+            "type": "string"
+          },
+          "when": {
+            "type": "string"
+          },
+          "trigger_config": {
+            "$ref": "#/components/schemas/TriggerConfig"
+          },
+          "reentry": {
+            "type": "string",
+            "enum": [
+              "once",
+              "every_time"
+            ]
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "allOf": [
+                {
+                  "$ref": "#/components/schemas/EventInput"
+                },
+                {
+                  "required": [
+                    "schema"
+                  ]
+                }
+              ]
+            }
+          },
+          "properties": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "key",
+                "type"
+              ],
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "string",
+                    "number",
+                    "boolean",
+                    "date"
+                  ]
+                }
+              }
+            }
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StoredAutomationStep"
+            }
+          },
+          "connections": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AutomationConnection"
+            }
+          },
+          "templates": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Referenced library slugs, not tenant template IDs."
+          }
+        },
+        "description": "Built-in graph with library-slug template references. Newsletter topic_id remains {{topic_id}} until installation. Event schemas type-check present fields, not required values; callers remain responsible for the actual runtime payload. No tenant resources are created by listing or reading a preset."
+      },
+      "AutomationPresetDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/AutomationPreset"
+          },
+          {
+            "type": "object",
+            "required": [
+              "object"
+            ],
+            "properties": {
+              "object": {
+                "type": "string",
+                "const": "automation_preset"
+              }
+            }
+          }
+        ]
+      },
+      "AutomationInstallInput": {
+        "type": "object",
+        "required": [
+          "from"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 120,
+            "description": "Defaults to the preset name; live name conflicts return 409."
+          },
+          "from": {
+            "type": "string",
+            "maxLength": 998,
+            "description": "Sender address, optionally Name <email>. Requires a live verified tenant domain with sending enabled."
+          },
+          "topic_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Live same-tenant topic, required for newsletter-welcome. Other Marketing presets may install disabled without it."
+          }
+        }
+      },
+      "AutomationInstallation": {
+        "type": "object",
+        "required": [
+          "automation",
+          "templates",
+          "events",
+          "properties",
+          "next_steps"
+        ],
+        "properties": {
+          "automation": {
+            "$ref": "#/components/schemas/Automation"
+          },
+          "templates": {
+            "type": "object",
+            "required": [
+              "created",
+              "reused"
+            ],
+            "properties": {
+              "created": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "slug"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "slug": {
+                      "type": "string"
+                    }
+                  }
+                }
+              },
+              "reused": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "id",
+                    "slug"
+                  ],
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "slug": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "name"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "properties": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "key",
+                "type"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "key": {
+                  "type": "string"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "string",
+                    "number",
+                    "boolean",
+                    "date"
+                  ]
+                }
+              }
+            }
+          },
+          "next_steps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "description": "Atomic disabled installation. Existing templates and compatible dependencies are reused unchanged; reused drafts are not published. Review before enabling."
+      },
+      "EventListItem": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Event"
+          },
+          {
+            "type": "object",
+            "required": [
+              "fired_count",
+              "last_fired_at"
+            ]
+          }
+        ]
       }
     }
   }

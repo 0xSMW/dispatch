@@ -117,7 +117,7 @@
 }
 
 .importSteps li.done {
-  color: var(--primary);
+  color: var(--success);
 }
 
 .mapTable {

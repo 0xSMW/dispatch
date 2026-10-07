@@ -16,7 +16,7 @@ import { useFilters } from "../../hooks/useFilters";
 import { useList } from "../../hooks/useList";
 import { useMutation } from "../../hooks/useMutation";
 import { useAll } from "../../hooks/useResource";
-import { useClient } from "../../shell/session";
+import { useCan, useClient } from "../../shell/session";
 import type { Broadcast, List, Segment, Topic } from "../../types";
 
 export const broadcastStatuses = ["draft", "scheduled", "queued", "sent", "canceled"];
@@ -43,6 +43,7 @@ export function broadcastHref(row: Pick<Broadcast, "id" | "status">) {
 
 export function Broadcasts() {
   const client = useClient();
+  const can = useCan();
   const navigate = useNavigate();
   const filters = useFilters(["q", "status", "segment_id"]);
   const list = useList<Broadcast>("/broadcasts", filters);
@@ -78,7 +79,8 @@ export function Broadcasts() {
       list={list}
       noun="broadcasts"
       rowHref={broadcastHref}
-      empty={<Empty title="No broadcasts" body="Create a broadcast to send one email to a segment of your contacts." />}
+      empty={<Empty title="No broadcasts" body="Send a marketing email to a segment, respecting contact and topic opt-outs."
+        action={can ? <button type="button" onClick={() => setCreating(true)}>Create your first broadcast</button> : null} />}
       columns={[
         {
           header: "Name",
@@ -92,6 +94,7 @@ export function Broadcasts() {
           ),
         },
         { header: "Status", cell: (row) => <Badge value={row.status} /> },
+        { header: "Kind", cell: () => <Badge value="marketing" label="Marketing" /> },
         { header: "Segment", cell: (row) => segmentName(row.segment_id) },
         {
           header: "When",
@@ -163,6 +166,7 @@ function CreateBroadcast({ segments, onClose }: { segments: Segment[]; onClose: 
       submitDisabled={!form.from.trim() || !form.segment_id || !form.subject.trim()}
     >
       <div className="form">
+        <p className="fieldHint">Broadcasts are always Marketing: they respect contact and topic opt-outs and add an unsubscribe header.</p>
         <Field label="Name" value={form.name} onChange={set("name")} placeholder="October update" autoFocus hint="Defaults to the subject." />
         <Field label="From" value={form.from} onChange={set("from")} placeholder="Acme <news@acme.com>" required />
         <Select

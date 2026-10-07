@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { h, signIn } from "../../testing";
 import { api, requests, visit } from "../emails/visit";
 import { Domain, verification } from "./Domain";
 import { domain } from "./fixtures";
+import { toZone } from "./zone";
 
 describe("Domain", () => {
   beforeEach(() => signIn());
@@ -49,6 +50,50 @@ describe("Domain", () => {
     expect(screen.getByText("Provider")).toBeTruthy();
   });
 
+  it.each(["full", "read"])("downloads the current domain's zone without API mutation for %s users", async (permission) => {
+    signIn("sess_test", [permission]);
+    const row = domain({ dns_provider: "Cloudflare" });
+    const fetch = api({ "/domains/domain_1": row });
+    const saved = { createObjectURL: URL.createObjectURL, revokeObjectURL: URL.revokeObjectURL };
+    const createObjectURL = vi.fn((_blob: Blob) => "blob:zone");
+    const revokeObjectURL = vi.fn();
+    Object.assign(URL, { createObjectURL, revokeObjectURL });
+    const links: HTMLAnchorElement[] = [];
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      links.push(this);
+    });
+    onTestFinished(() => {
+      Object.assign(URL, saved);
+      click.mockRestore();
+    });
+    visit(h(Domain), "/domains/domain_1", "/domains/:id");
+    await screen.findByRole("heading", { name: row.name });
+    const callsBefore = fetch.mock.calls.length;
+
+    fireEvent.click(screen.getByRole("button", { name: "Download zone file" }));
+    expect(links[0]?.download).toBe("send.acme.test.zone");
+    expect(links[0]?.href).toBe("blob:zone");
+    const blob = createObjectURL.mock.calls[0]![0];
+    expect(blob).toBeInstanceOf(Blob);
+    expect(blob.type).toBe("text/plain;charset=utf-8");
+    const content = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result));
+      reader.onerror = () => reject(reader.error);
+      reader.readAsText(blob);
+    });
+    expect(content).toBe(toZone(row));
+    expect(content).toContain('IN TXT "v=DMARC1; p=none;"');
+    expect(content).toContain("IN CNAME links.localhost.");
+    await waitFor(() => expect(revokeObjectURL).toHaveBeenCalledWith("blob:zone"));
+    expect(fetch.mock.calls).toHaveLength(callsBefore);
+    if (permission === "read") {
+      expect(screen.queryByRole("button", { name: "Restart" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Domain actions" })).toBeNull();
+      expect(screen.queryByRole("button", { name: /Publish to Route 53/ })).toBeNull();
+    }
+  });
+
   it("opens a verified domain on Configuration and saves toggles with PATCH", async () => {
     const verified = domain({ status: "verified" });
     const fetch = api({
@@ -60,6 +105,7 @@ describe("Domain", () => {
     await screen.findByRole("heading", { name: "send.acme.test" });
     expect(screen.getByRole("tab", { name: "Configuration" }).getAttribute("aria-selected")).toBe("true");
     expect(screen.queryByRole("button", { name: "Restart" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Download zone file" })).toBeTruthy();
 
     fireEvent.click(screen.getByRole("switch", { name: /Click tracking/ }));
     await waitFor(() => expect(requests(fetch, "PATCH", "/domains/domain_1")[0]?.body).toEqual({ click_tracking: true }));

@@ -117,6 +117,9 @@ Receipt.PreviewProps = {
 } satisfies Props;
 Receipt.Subject = "Your {{{PRODUCT_NAME}}} receipt {{{RECEIPT_NUMBER}}}";
 Receipt.Category = "billing";
+Receipt.Kind = "transactional" as const;
+Receipt.Stage = null;
+Receipt.When = "Send after a payment is captured. Include the items, total, and payment details.";
 Receipt.Track = true;
 Receipt.Description = "Sent when a payment is captured, with the items and the total.";
 Receipt.Variables = [

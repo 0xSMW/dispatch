@@ -32,16 +32,17 @@ function Wrap({ id, label, hint, error, wide, className, children }: Common & { 
 export type FieldProps = Common & {
   value: string;
   onChange: (value: string) => void;
-  type?: "text" | "email" | "password" | "number" | "url" | "search" | "datetime-local";
+  type?: "text" | "email" | "password" | "number" | "url" | "search" | "date" | "datetime-local";
   placeholder?: string;
   mono?: boolean;
   autoFocus?: boolean;
   name?: string;
   autoComplete?: string;
+  step?: number | string;
 };
 
 /** Labeled text input. */
-export function Field({ value, onChange, type = "text", placeholder, mono, autoFocus, name, autoComplete, ...common }: FieldProps) {
+export function Field({ value, onChange, type = "text", placeholder, mono, autoFocus, name, autoComplete, step, ...common }: FieldProps) {
   const id = useId();
   return (
     <Wrap id={id} {...common}>
@@ -49,6 +50,7 @@ export function Field({ value, onChange, type = "text", placeholder, mono, autoF
         id={id}
         name={name}
         type={type}
+        step={step ?? (type === "number" ? "any" : undefined)}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}

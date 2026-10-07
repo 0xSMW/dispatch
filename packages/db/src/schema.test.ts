@@ -2,6 +2,13 @@ import { describe, expect, it } from "vitest";
 import { schema } from "./schema.js";
 
 describe("schema", () => {
+  it("backfills only the locked event-only cohort in bounded batches and skips scans on replay", () => {
+    const block = schema.slice(schema.indexOf("-- The migration entry point captures"));
+    expect(block).toContain("current_setting('dispatch.legacy_event_roots', true) = 'true'");
+    expect(block).toContain("where depth is null limit 1000");
+    expect(block).toContain("exit when changed = 0");
+    expect(block.slice(block.indexOf("do $$"))).not.toMatch(/trigger_type|data->|name\s*=/);
+  });
   it("adds password hashes and gives every tenant an Admin and a Viewer role, idempotently", () => {
     expect(schema).toContain("alter table users add column if not exists password_hash text;");
     // The full-access role tenants were made with becomes Admin, unless the tenant has one.
@@ -9,8 +16,9 @@ describe("schema", () => {
     // A Viewer role for each tenant that never had one. One an admin renamed or deleted is not
     // made again, and no clash can raise. This checks the statement's shape. Only applying the
     // schema twice to a real Postgres proves the second run is clean.
-    expect(schema).toMatch(/'Viewer', '\["read"\]'::jsonb\s+from tenants t\s+where not exists \(/);
-    expect(schema).toContain(`r.id = 'role_' || md5(t.id || ':viewer') or r.name = 'Viewer' or r.permissions = '["read"]'::jsonb`);
-    expect(schema).toMatch(/'Viewer'[\s\S]*?on conflict do nothing;\n`?$/);
+    const viewer = schema.match(/insert into roles[^;]*'Viewer'[^;]*;/)?.[0] ?? "";
+    expect(viewer).toMatch(/'Viewer', '\["read"\]'::jsonb\s+from tenants t\s+where not exists \(/);
+    expect(viewer).toContain(`r.id = 'role_' || md5(t.id || ':viewer') or r.name = 'Viewer' or r.permissions = '["read"]'::jsonb`);
+    expect(viewer).toMatch(/\)\s+on conflict do nothing;$/);
   });
 });

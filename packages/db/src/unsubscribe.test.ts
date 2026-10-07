@@ -7,6 +7,8 @@ import {
   unsubscribeHeaders,
   unsubscribeLinks,
   unsubscribeToken,
+  subscriptionLinks,
+  replaceUnsubscribe,
 } from "./unsubscribe.js";
 
 const secret = "test-secret";
@@ -26,9 +28,29 @@ function client(handler: (sql: string, params: unknown[]) => { rows: unknown[] }
 describe("unsubscribe tokens", () => {
   it("round trips without an expiry", () => {
     const token = unsubscribeToken(payload, secret);
-    expect(readUnsubscribeToken(token, secret)).toEqual(payload);
+    expect(readUnsubscribeToken(token, secret)).toEqual({ ...payload, email: null, topic_id: null, email_id: null });
     const body = JSON.parse(Buffer.from(token.split(".")[0], "base64url").toString("utf8"));
     expect(body).not.toHaveProperty("exp");
+  });
+
+  it("reads old tokens and preserves topic and email fields on new tokens", () => {
+    expect(readUnsubscribeToken(seal(payload, secret), secret)).toMatchObject({ ...payload, topic_id: null, email_id: null });
+    const token = unsubscribeToken({ tenant_id: "tenant_1", email: "Ada@Example.com", topic_id: "topic_1", email_id: "email_1" }, secret);
+    expect(readUnsubscribeToken(token, secret)).toMatchObject({ contact_id: null, email: "ada@example.com", topic_id: "topic_1", email_id: "email_1" });
+    expect(() => unsubscribeToken({ tenant_id: "tenant_1", contact_id: "contact_1", email: "ada@example.com" }, secret)).toThrow("exactly one");
+  });
+
+  it("uses one signed recipient link for the three variables and refuses missing configuration", () => {
+    const links = subscriptionLinks({ tenantId: "tenant_1", email: "ada@example.com", emailId: "email_1", secret, appUrl: "https://app.example", publicUrl: "https://api.example" });
+    expect(new Set(Object.values(links.context)).size).toBe(1);
+    expect(links.headers["List-Unsubscribe-Post"]).toBe("List-Unsubscribe=One-Click");
+    expect(() => subscriptionLinks({ tenantId: "tenant_1", email: "ada@example.com", emailId: "email_1" })).toThrow("signing secret");
+  });
+
+  it("replaces only unsubscribe placeholders in raw content, in both brace forms", () => {
+    expect(replaceUnsubscribe("{{UNSUBSCRIBE_URL}} {{{RESEND_UNSUBSCRIBE_URL}}} {{{DISPATCH_UNSUBSCRIBE_URL}}} {{name}}", {
+      UNSUBSCRIBE_URL: "https://app.example/one", RESEND_UNSUBSCRIBE_URL: "https://app.example/two", DISPATCH_UNSUBSCRIBE_URL: "https://app.example/three",
+    })).toBe("https://app.example/one https://app.example/two https://app.example/three {{name}}");
   });
 
   it("rejects a token sealed for another purpose, a tampered token, and a wrong secret", () => {
@@ -65,12 +87,33 @@ describe("unsubscribe tokens", () => {
 });
 
 describe("applyUnsubscribe", () => {
-  const contact = { id: "contact_1", email: "ada@example.com", unsubscribed_at: null };
+  const contact = {
+    id: "contact_1", email: "ada@example.com", first_name: "Ada", last_name: null, properties: {},
+    unsubscribed_at: null, deleted_at: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
+  };
+  const optedOut = { ...contact, unsubscribed_at: "2026-10-03T00:00:00Z" };
+
+  it("records an email-address opt-out on an existing contact without reviving it", async () => {
+    const db = client((sql) => {
+      if (sql.includes("from contacts")) return { rows: [contact] };
+      if (sql.includes("update contacts")) return { rows: [optedOut] };
+      return { rows: [] };
+    });
+    const change = await applyUnsubscribe(db, {
+      use: "unsub", tenant_id: "tenant_1", contact_id: null, email: "ada@example.com", broadcast_id: null,
+    }, { kind: "all" });
+    expect(change.contact.id).toBe(contact.id);
+    const update = db.queries.find((query) => query.sql.includes("update contacts"))!;
+    expect(update.sql).not.toContain("deleted_at =");
+    expect(update.params).toEqual(["tenant_1", contact.id]);
+    expect(db.queries.some((query) => query.sql.includes("insert into contacts"))).toBe(false);
+  });
 
   it("opts out of the broadcast's topic on one-click", async () => {
     const db = client((sql) => {
       if (sql.includes("from contacts")) return { rows: [contact] };
       if (sql.includes("from broadcasts")) return { rows: [{ topic_id: "topic_news" }] };
+      if (sql.includes("as before from topics")) return { rows: [{ id: "topic_news", before: "subscribed" }] };
       if (sql.includes("from topics t")) return { rows: [] };
       if (sql.includes("from topics")) return { rows: [{ id: "topic_news" }] };
       if (sql.includes("insert into topic_subscriptions")) return { rows: [{ topic_id: "topic_news", status: "unsubscribed" }] };
@@ -87,6 +130,7 @@ describe("applyUnsubscribe", () => {
   it("records the unsubscribe on the broadcast's email, which the metric counts", async () => {
     const db = client((sql) => {
       if (sql.includes("from contacts")) return { rows: [contact] };
+      if (sql.includes("update contacts")) return { rows: [optedOut] };
       if (sql.includes("from broadcasts")) return { rows: [{ topic_id: null }] };
       if (sql.includes("update broadcast_recipients")) return { rows: [{ email_id: "email_9" }] };
       if (sql.includes("insert into email_events")) return { rows: [{ id: "event_1", tenant_id: "tenant_1", request_id: null, email_id: "email_9", type: "email.unsubscribed", data: {} }] };
@@ -103,6 +147,7 @@ describe("applyUnsubscribe", () => {
   it("treats a deleted topic as no topic, so an old one-click link still works", async () => {
     const db = client((sql) => {
       if (sql.includes("from contacts")) return { rows: [contact] };
+      if (sql.includes("update contacts")) return { rows: [optedOut] };
       if (sql.includes("from broadcasts b")) return { rows: [{ topic_id: null }] };
       return { rows: [] };
     });
@@ -114,6 +159,7 @@ describe("applyUnsubscribe", () => {
   it("unsubscribes from everything on one-click when the broadcast has no topic", async () => {
     const db = client((sql) => {
       if (sql.includes("from contacts")) return { rows: [contact] };
+      if (sql.includes("update contacts")) return { rows: [optedOut] };
       if (sql.includes("from broadcasts")) return { rows: [{ topic_id: null }] };
       return { rows: [] };
     });
@@ -134,7 +180,30 @@ describe("applyUnsubscribe", () => {
     ).rejects.toMatchObject({ name: "not_found" });
   });
 
-  it("fails with not_found for a deleted contact", async () => {
+  it.each([
+    ["opt_out", "opt_in", false],
+    ["opt_in", "opt_out", true],
+  ])("uses the final repeated topic preference (%s then %s) for email fanout", async (first, last, unsubscribed) => {
+    const db = client((sql) => {
+      if (sql.includes("from contacts")) return { rows: [contact] };
+      if (sql.includes("from broadcasts")) return { rows: [{ topic_id: "topic_news" }] };
+      if (sql.includes("from topics")) return { rows: [{ id: "topic_news", before: "subscribed" }] };
+      if (sql.includes("insert into topic_subscriptions")) return { rows: [{ topic_id: "topic_news", status: last === "opt_out" ? "unsubscribed" : "subscribed" }] };
+      return { rows: [] };
+    });
+    await applyUnsubscribe(db, payload, {
+      kind: "topics",
+      topics: [
+        { id: "topic_news", subscription: first as string },
+        { id: "topic_news", subscription: last as string },
+      ],
+    });
+    const saved = db.queries.filter((query) => query.sql.includes("insert into topic_subscriptions"));
+    expect(saved.at(-1)?.params.at(-1)).toBe(last === "opt_out" ? "unsubscribed" : "subscribed");
+    expect(db.queries.some((query) => query.sql.includes("update broadcast_recipients"))).toBe(unsubscribed);
+  });
+
+  it("fails with not_found for a missing contact", async () => {
     const db = client(() => ({ rows: [] }));
     await expect(applyUnsubscribe(db, payload, { kind: "all" })).rejects.toMatchObject({ name: "not_found" });
   });

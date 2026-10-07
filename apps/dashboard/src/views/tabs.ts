@@ -14,11 +14,8 @@ export const audienceTabs: Tab[] = [
   { id: "properties", label: "Properties", to: "/audience/properties" },
   { id: "segments", label: "Segments", to: "/audience/segments" },
   { id: "topics", label: "Topics", to: "/audience/topics" },
-];
-
-export const automationTabs: Tab[] = [
-  { id: "automations", label: "Automations", to: "/automations" },
-  { id: "events", label: "Events", to: "/automations/events" },
+  { id: "forms", label: "Forms", to: "/audience/forms" },
+  { id: "suppressions", label: "Suppressions", to: "/emails/suppressions" },
 ];
 
 export const templateTabs: Tab[] = [
@@ -27,9 +24,11 @@ export const templateTabs: Tab[] = [
 ];
 
 export const settingsTabs: Tab[] = [
+  { id: "general", label: "General", to: "/settings/general" },
   { id: "team", label: "Team", to: "/settings/team" },
   { id: "usage", label: "Usage", to: "/settings/usage" },
   { id: "smtp", label: "SMTP", to: "/settings/smtp" },
+  { id: "integrations", label: "Integrations", to: "/settings/integrations" },
   { id: "brand", label: "Brand", to: "/settings/brand" },
   { id: "unsubscribe-page", label: "Unsubscribe page", to: "/settings/unsubscribe-page" },
 ];

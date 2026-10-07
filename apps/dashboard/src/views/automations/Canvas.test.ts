@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter, Outlet, RouterProvider } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -6,8 +7,13 @@ import { SessionProvider } from "../../shell/session";
 import { h, mockFetch, signIn, type Reply } from "../../testing";
 import { AutomationEditor } from "./AutomationEditor";
 import { Canvas, type CanvasProps } from "./Canvas";
-import { insertStep, keys, toTree, type Graph, type Tree } from "./graph";
+import { insertStep, keys, toTree, updateNode, type Graph, type Tree } from "./graph";
 import type { RunStep, StepActions } from "./Steps";
+import { zeroEmails } from "./EmailMetrics";
+
+// Keep this a source-file read, not Vite's browser asset-URL transform.
+const sourceUrl = import.meta.url;
+const canvasStyles = readFileSync(new URL("../../styles/canvas.css", sourceUrl), "utf8");
 
 // jsdom has no layout engine. React Flow needs these two to mount; with them it renders nodes
 // and edges from the sizes and handles `layout()` gives, but nothing is measured, panned, or zoomed.
@@ -42,10 +48,12 @@ function spies(): StepActions & { [K in keyof StepActions]: ReturnType<typeof vi
 }
 
 function show(props: Partial<CanvasProps> = {}) {
-  return render(h(Canvas, { tree, ...props }));
+  return render(h(SessionProvider, null, h(Canvas, { tree, ...props })));
 }
 
 beforeEach(() => {
+  signIn();
+  mockFetch(() => ({ body: { object: "list", has_more: false, data: [] } }));
   // New steps get a random key suffix. Tests count instead, so keys can be named.
   let next = 0;
   vi.spyOn(keys, "suffix").mockImplementation(() => String(++next));
@@ -60,14 +68,162 @@ afterEach(() => {
 });
 
 describe("Canvas", () => {
+  it("declares a natural-height, measured top-right immersive panel with a full usable-height cap and independently scrolling body", () => {
+    // CSS contract only. jsdom cannot establish compact/long rendered heights or real overlap.
+    const panel = canvasStyles.match(/\.canvasView\.immersive > \.canvasPanel\s*\{([^}]+)\}/)![1]!;
+    expect(panel).toContain("top: var(--canvas-panel-top)");
+    expect(panel).toContain("right: var(--canvas-overlay-gap, 12px)");
+    expect(panel).toContain("max-height: calc(100% - var(--canvas-panel-top) - var(--canvas-control-height) - 2 * var(--canvas-overlay-gap, 12px))");
+    expect(panel).not.toMatch(/(?:^|\n)\s*(?:bottom|height):/);
+    expect(panel).not.toMatch(/max-height:\s*(?:50|45)%/);
+    expect(panel).toContain("overflow: hidden");
+    expect(canvasStyles).toContain("--canvas-panel-top: calc(var(--canvas-controls-bottom, 0px) + var(--canvas-overlay-gap, 12px))");
+    const header = canvasStyles.match(/\.canvasView\.immersive .canvasPanel > \.stepHeader\s*\{([^}]+)\}/)![1]!;
+    expect(header).toContain("flex-shrink: 0");
+    expect(header).not.toContain("sticky");
+    const body = canvasStyles.match(/\.canvasView\.immersive .canvasPanelBody\s*\{([^}]+)\}/)![1]!;
+    expect(body).toContain("min-height: 0");
+    expect(body).toContain("overflow-y: auto");
+    const controls = canvasStyles.match(/\.canvasView\.immersive .react-flow__controls\s*\{([^}]+)\}/)![1]!;
+    expect(controls).toContain("height: var(--canvas-control-height)");
+    expect(controls).toContain("flex-direction: row");
+    expect(canvasStyles).not.toContain("bottom: 48px");
+    expect(canvasStyles).not.toContain("max-height: 45%");
+  });
+  it("lets the flat mobile menu shrink inside its grid track", () => {
+    // Source contract; the actual narrow viewport is verified separately in Chrome.
+    expect(canvasStyles.match(/\.app > \.sidebar\s*\{([^}]+)\}/)![1]!).toContain("min-width: 0");
+  });
+
+  it.each(["full", "viewer"])("keeps Delay and Update contact header/close/actions outside the fields body for %s", async (role) => {
+    if (role === "viewer") signIn("viewer", ["read"]);
+    const editable = role === "full";
+    const actions = spies();
+    const formTree = toTree([
+      { key: "trigger", type: "trigger", config: { event_name: "user.created" } },
+      { key: "delay", type: "delay", config: { duration: "1 hour" } },
+      { key: "update", type: "contact_update", config: { first_name: "Ada", properties: { plan: "pro" } } },
+    ], [{ from: "trigger", to: "delay" }, { from: "delay", to: "update" }]).tree;
+    show({ tree: formTree, immersive: true, actions, disabled: !editable });
+    for (const key of ["delay", "update"]) {
+      fireEvent.click(await screen.findByRole("button", { name: `Step ${key}` }));
+      const panel = screen.getByRole("region", { name: `Step ${key} settings` });
+      expect([...panel.children].map((child) => child.className)).toEqual(["stepHeader", "canvasPanelBody"]);
+      const body = panel.querySelector(".canvasPanelBody")!;
+      const header = panel.querySelector(".stepHeader")!;
+      expect(body.querySelectorAll("input, select, textarea").length).toBeGreaterThan(0);
+      for (const control of body.querySelectorAll("input, select, textarea")) expect(control).toHaveProperty("disabled", !editable);
+      const close = within(panel).getByRole("button", { name: "Close panel" });
+      expect(header.contains(close)).toBe(true);
+      expect(body.contains(close)).toBe(false);
+      if (editable) {
+        for (const label of ["Move up", "Move down", "Remove step"]) {
+          expect(header.contains(within(panel).getByRole("button", { name: label }))).toBe(true);
+        }
+      } else expect(within(panel).queryByRole("button", { name: "Remove step" })).toBeNull();
+      expect(document.querySelector(".react-flow__controls")).toBeTruthy();
+      fireEvent.scroll(body, { target: { scrollTop: 200 } });
+      expect(header.contains(close)).toBe(true); // Structural check; no claim of visible geometry.
+      fireEvent.click(close);
+      expect(document.querySelector(".canvasPanel")).toBeNull();
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Trigger" }));
+    expect(screen.getByRole("region", { name: "Trigger settings" }).querySelector(".canvasPanelBody")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Close panel" }));
+    if (editable) {
+      fireEvent.click(screen.getByRole("button", { name: "Add step after delay" }));
+      const picker = screen.getByRole("region", { name: "Add a step" });
+      const close = within(picker).getByRole("button", { name: "Close panel" });
+      expect(picker.querySelector(".canvasPanelBody")!.contains(close)).toBe(false);
+    } else {
+      expect(screen.queryByRole("button", { name: "Add step after delay" })).toBeNull();
+      expect(actions.change).not.toHaveBeenCalled();
+      expect(actions.insert).not.toHaveBeenCalled();
+    }
+  });
+
+  it("opts into a contextual inspector without changing default or stacked consumers", async () => {
+    const view = show();
+    await screen.findByRole("button", { name: "Trigger" });
+    expect(document.querySelector(".canvasView")?.className).toBe("canvasView");
+    expect(screen.getByRole("region", { name: "Step settings" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Trigger" }));
+    expect(screen.getByRole("region", { name: "Trigger settings" }).querySelector(".canvasPanelBody")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Close panel" }));
+    view.rerender(h(SessionProvider, null, h(Canvas, { tree, stacked: true })));
+    expect(document.querySelector(".canvasView")?.className).toBe("canvasView stacked");
+    expect(screen.getByRole("region", { name: "Step settings" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Trigger" }));
+    expect(screen.getByRole("region", { name: "Trigger settings" }).querySelector(".canvasPanelBody")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Close panel" }));
+    view.rerender(h(SessionProvider, null, h(Canvas, { tree, immersive: true })));
+    expect(document.querySelector(".canvasView")?.className).toBe("canvasView immersive");
+    expect(document.querySelector(".canvasPanel")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Trigger" }));
+    const panel = screen.getByRole("region", { name: "Trigger settings" });
+    expect(within(panel).getByLabelText("Event")).toHaveProperty("disabled", true);
+    fireEvent.click(within(panel).getByRole("button", { name: "Close panel" }));
+    expect(document.querySelector(".canvasPanel")).toBeNull();
+  });
+
+  it("dismisses and reopens the immersive inspector with draft edits, move controls and graph controls intact", async () => {
+    const actions = spies();
+    const view = show({ immersive: true, actions });
+    const node = await screen.findByRole("button", { name: "Step pause" });
+    expect(document.querySelector(".canvasPanel")).toBeNull();
+    const controls = document.querySelector(".react-flow__controls")!;
+    expect(within(controls as HTMLElement).getAllByRole("button")).toHaveLength(3);
+    expect(document.querySelector(".react-flow__node.draggable")).toBeNull();
+    fireEvent.click(node);
+    let panel = screen.getByRole("region", { name: "Step pause settings" });
+    fireEvent.change(within(panel).getByLabelText("Duration"), { target: { value: "3 hours" } });
+    const change = actions.change.mock.calls[0]![1] as (node: Tree["steps"][number]) => Tree["steps"][number];
+    const edited = updateNode(tree, "pause", change);
+    view.rerender(h(SessionProvider, null, h(Canvas, { tree: edited, immersive: true, actions })));
+    fireEvent.click(within(panel).getByRole("button", { name: "Move up" }));
+    expect(actions.move).toHaveBeenCalledWith([], 1, -1);
+    fireEvent.click(within(panel).getByRole("button", { name: "Close panel" }));
+    expect(document.querySelector(".canvasPanel")).toBeNull();
+    expect(document.activeElement).toBe(node);
+    expect(document.querySelector(".react-flow__controls")).toBe(controls);
+    fireEvent.click(node);
+    panel = screen.getByRole("region", { name: "Step pause settings" });
+    expect(within(panel).getByLabelText("Duration")).toHaveProperty("value", "3 hours");
+    fireEvent.keyDown(within(panel).getByLabelText("Duration"), { key: "Escape" });
+    expect(document.querySelector(".canvasPanel")).toBeNull();
+    expect(document.activeElement).toBe(node);
+    fireEvent.click(screen.getByRole("button", { name: "Add step after welcome" }));
+    expect(screen.getByRole("region", { name: "Add a step" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Branch" }));
+    expect(actions.insert).toHaveBeenCalledWith([], 1, "branch", "branch_1");
+    view.rerender(h(SessionProvider, null, h(Canvas, { tree: insertStep(edited, [], 1, "branch", "branch_1"), immersive: true, actions })));
+    const branch = screen.getByRole("region", { name: "Step branch_1 settings" });
+    expect(within(branch).getAllByLabelText("Path label")).toHaveLength(2);
+    fireEvent.change(within(branch).getAllByLabelText("Path label")[0]!, { target: { value: "Paid" } });
+    expect(actions.change).toHaveBeenLastCalledWith("branch_1", expect.any(Function));
+    expect(within(branch).getByRole("button", { name: "Add path" })).toBeTruthy();
+  });
+
+  it("shows shared email counts in builder and run nodes without loading metrics per node", async () => {
+    const options = { templates: [], segments: [], events: [], emailCounts: { welcome: { ...zeroEmails, sent: 4, opened: 2, clicked: 1 } } };
+    const view = show({ actions: spies(), options });
+    const node = await screen.findByRole("button", { name: "Step welcome" });
+    expect(within(node).getByText("4 sent · 2 opened · 1 clicked")).toBeTruthy();
+    view.rerender(h(SessionProvider, null, h(Canvas, { tree, options, run: new Map([["welcome", { key: "welcome", type: "send_email", status: "completed" }]]) })));
+    expect(within(screen.getByRole("button", { name: "Step welcome" })).getByText("4 sent · 2 opened · 1 clicked")).toBeTruthy();
+  });
+
   it("draws the trigger, each step, branch labels, and an end marker per open list", async () => {
     show({ actions: spies() });
     expect(await screen.findByRole("button", { name: "Trigger" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Trigger" }).className).toContain("nopan");
     for (const key of ["welcome", "pause", "pro", "upsell"]) expect(screen.getByRole("button", { name: `Step ${key}` })).toBeTruthy();
     expect(screen.getByText("True")).toBeTruthy();
     expect(screen.getByText("False")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Add step to False branch of pro" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add step to False branch of pro" }).className).toContain("nopan");
     expect(screen.getByRole("button", { name: "Add step at the end of True branch of pro" })).toBeTruthy();
+    expect(screen.getAllByText("The run ends here.")).toHaveLength(2);
     // The main list ends in a branch, so it has no end marker, as in the list.
     expect(screen.queryByRole("button", { name: "Add step at the end" })).toBeNull();
     expect(document.querySelectorAll(".react-flow__edge")).toHaveLength(6);
@@ -81,21 +237,25 @@ describe("Canvas", () => {
     const picker = screen.getByRole("region", { name: "Add a step" });
     expect(within(picker).getAllByRole("group").map((group) => group.getAttribute("aria-label"))).toEqual(["Messages", "Flow control", "Audience"]);
     expect(within(within(picker).getByRole("group", { name: "Flow control" })).getAllByRole("button").map((button) => button.textContent)).toEqual([
-      "Time delay",
+      "Delay",
       "Wait for event",
-      "True/false branch",
+      "Condition",
+      "Branch",
+      "Filter",
+      "Exit",
     ]);
     expect(within(within(picker).getByRole("group", { name: "Audience" })).getAllByRole("button").map((button) => button.textContent)).toEqual([
       "Update contact",
       "Delete contact",
       "Add to segment",
     ]);
-    fireEvent.click(within(picker).getByRole("button", { name: "Time delay" }));
+    fireEvent.click(within(picker).getByRole("button", { name: "Delay" }));
     expect(actions.insert).toHaveBeenCalledWith([], 1, "delay", "delay_1");
 
     // The parent applies the insert; the panel opens on the new step.
-    view.rerender(h(Canvas, { tree: insertStep(tree, [], 1, "delay", "delay_1"), actions }));
+    view.rerender(h(SessionProvider, null, h(Canvas, { tree: insertStep(tree, [], 1, "delay", "delay_1"), actions })));
     const panel = await screen.findByRole("region", { name: "Step delay_1 settings" });
+    expect(within(panel).getByText('Examples: "2 days", "1 hour". Up to 30 days.')).toBeTruthy();
     expect(within(panel).getByLabelText(/Duration/)).toHaveProperty("value", "1 hour");
   });
 
@@ -110,7 +270,9 @@ describe("Canvas", () => {
   it("opens a step's form in the side panel and edits, moves, and removes it through StepActions", async () => {
     const actions = spies();
     show({ actions, options: { templates: [{ value: "tpl_1", label: "Welcome" }], segments: [], events: [] } });
-    fireEvent.click(await screen.findByRole("button", { name: "Step pause" }));
+    const delay = await screen.findByRole("button", { name: "Step pause" });
+    expect(delay.className).toContain("nopan");
+    fireEvent.click(delay);
     const panel = screen.getByRole("region", { name: "Step pause settings" });
     fireEvent.change(within(panel).getByLabelText(/Duration/), { target: { value: "2 hours" } });
     expect(actions.change).toHaveBeenCalledWith("pause", expect.any(Function));
@@ -154,6 +316,27 @@ describe("Canvas", () => {
     expect(within(panel).getByText("headers: Too many headers")).toBeTruthy();
   });
 
+  it.each([
+    { config: { type: "contact_created" }, label: "Contact added", summary: "Any new contact" },
+    { config: { type: "contact_updated", field: "unsubscribed", from: false, to: true }, label: "Contact changes", summary: "unsubscribed: false → true" },
+    { config: { type: "topic_subscribed", topic_id: "topic_1" }, label: "Subscribed to topic", summary: "News" },
+    { config: { type: "segment_added", segment_id: "seg_1" }, label: "Added to segment", summary: "Trials" },
+  ])("draws the shared $label label and summary in the canvas and panel", async ({ config, label, summary }) => {
+    const contactTree = toTree([{ key: "trigger", type: "trigger", config }]).tree;
+    const onTrigger = vi.fn();
+    show({ tree: contactTree, actions: spies(), onTrigger, options: {
+      templates: [], events: [], segments: [{ value: "seg_1", label: "Trials" }], topics: [{ value: "topic_1", label: "News" }],
+    } });
+    const trigger = await screen.findByRole("button", { name: "Trigger" });
+    expect(within(trigger).getByText(label)).toBeTruthy();
+    expect(within(trigger).getByText(summary)).toBeTruthy();
+    fireEvent.click(trigger);
+    const panel = within(screen.getByRole("region", { name: "Trigger settings" }));
+    expect(panel.getByText(label)).toBeTruthy();
+    fireEvent.change(panel.getByLabelText("Trigger"), { target: { value: "contact_created" } });
+    expect(onTrigger).toHaveBeenCalledWith({ type: "contact_created" });
+  });
+
   it("shows each condition its own number when the selection moves between two of them", async () => {
     const nested = toTree(
       [
@@ -184,11 +367,12 @@ describe("Canvas", () => {
   });
 
   it("is read-only without actions or when disabled: no +, no move or remove, fields disabled", async () => {
-    for (const props of [{}, { actions: spies(), disabled: true }]) {
+    for (const props of [{}, { actions: spies(), disabled: true }, { immersive: true }, { immersive: true, actions: spies(), disabled: true }]) {
       const view = show(props);
       await screen.findByRole("button", { name: "Step welcome" });
       expect(screen.queryAllByRole("button", { name: /^Add step/ })).toHaveLength(0);
       expect(screen.getAllByText("End").length).toBeGreaterThan(0);
+      expect(screen.getAllByText("The run ends here.").length).toBeGreaterThan(0);
       fireEvent.click(screen.getByRole("button", { name: "Step welcome" }));
       const panel = screen.getByRole("region", { name: "Step welcome settings" });
       expect(within(panel).queryByRole("button", { name: "Remove step" })).toBeNull();
@@ -263,28 +447,69 @@ function open(path: string) {
 describe("AutomationEditor on the canvas", () => {
   beforeEach(() => signIn());
 
+  it("shares manual date types and send mappings across list and canvas without wire metadata", async () => {
+    const fetch = api((url, init) => init.method === "PATCH" ? { body: { ...automation, ...JSON.parse(String(init.body)) } } : undefined);
+    open("/automations/automation_1/editor?view=list");
+    const card = await screen.findByRole("article", { name: "Step pro" });
+    fireEvent.change(within(card).getByLabelText("Type"), { target: { value: "date" } });
+    fireEvent.change(within(card).getByLabelText("Value"), { target: { value: "2026-10-04" } });
+    fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Step pro" }));
+    const condition = screen.getByRole("region", { name: "Step pro settings" });
+    expect(within(condition).getByLabelText("Type")).toHaveProperty("value", "date");
+    fireEvent.change(within(condition).getByLabelText("Operator"), { target: { value: "within" } });
+    fireEvent.change(within(condition).getByLabelText("Duration"), { target: { value: "2 days" } });
+    fireEvent.click(screen.getByRole("button", { name: "Step welcome" }));
+    const send = screen.getByRole("region", { name: "Step welcome settings" });
+    fireEvent.click(within(send).getByRole("button", { name: "Add mapping" }));
+    fireEvent.change(within(send).getByLabelText("Variable name"), { target: { value: "received" } });
+    fireEvent.change(within(send).getByLabelText("Choose context field"), { target: { value: "event.received_at" } });
+    fireEvent.click(screen.getByRole("button", { name: "List" }));
+    expect(await within(screen.getByRole("article", { name: "Step welcome" })).findByLabelText("Context field")).toHaveProperty("value", "event.received_at");
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
+    const body = JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "PATCH")![1]!.body));
+    expect(body.steps[1].config.variable_mapping).toEqual({ received: "event.received_at" });
+    expect(body.steps[2].config).toEqual({ type: "rule", field: "event.plan", operator: "within", value: "2 days" });
+    expect(JSON.stringify(body)).not.toContain("ruleTypes");
+  });
+
+  it("keeps typed rule and mapping controls disabled for viewers", async () => {
+    signIn("sess_test", ["read"]);
+    api();
+    open("/automations/automation_1/editor?view=canvas");
+    fireEvent.click(await screen.findByRole("button", { name: "Step pro" }));
+    const condition = screen.getByRole("region", { name: "Step pro settings" });
+    for (const field of condition.querySelectorAll("select, input")) expect(field).toHaveProperty("disabled", true);
+    fireEvent.click(screen.getByRole("button", { name: "Step welcome" }));
+    expect(within(screen.getByRole("region", { name: "Step welcome settings" })).getByRole("button", { name: "Add mapping" })).toHaveProperty("disabled", true);
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+  });
+
   it("switches between List and Canvas and saves the same graph the list test saves", async () => {
     const fetch = api((url, init) =>
       url.pathname === "/automations/automation_1" && init.method === "PATCH" ? { body: { ...automation, ...JSON.parse(String(init.body)) } } : undefined,
     );
-    open("/automations/automation_1/editor");
+    open("/automations/automation_1/editor?view=list");
     await screen.findByRole("article", { name: "Step welcome" });
     expect(screen.getByRole("button", { name: "List" }).getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
 
     fireEvent.click(await screen.findByRole("button", { name: "Add step to False branch of pro" }));
-    fireEvent.click(screen.getByRole("button", { name: "Time delay" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delay" }));
     expect(await screen.findByRole("region", { name: "Step delay_1 settings" })).toBeTruthy();
     expect(screen.getByText("Unsaved changes")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
     const body = JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "PATCH")![1]!.body));
-    expect(body.steps.map((step: { key: string }) => step.key)).toEqual(["trigger", "welcome", "pro", "delay_1"]);
-    expect(body.steps[3]).toEqual({ key: "delay_1", type: "delay", config: { duration: "1 hour" } });
+    expect(body.steps.map((step: { key: string }) => step.key)).toEqual(["trigger", "welcome", "pro", "pro_condition_met_exit", "delay_1"]);
+    expect(body.steps[3]).toEqual({ key: "pro_condition_met_exit", type: "exit", config: {} });
+    expect(body.steps[4]).toEqual({ key: "delay_1", type: "delay", config: { duration: "1 hour" } });
     expect(body.connections).toEqual([
       { from: "trigger", to: "welcome", type: "default" },
       { from: "welcome", to: "pro", type: "default" },
+      { from: "pro", to: "pro_condition_met_exit", type: "condition_met" },
       { from: "pro", to: "delay_1", type: "condition_not_met" },
     ]);
 
@@ -351,5 +576,82 @@ describe("AutomationEditor on the canvas", () => {
     expect(within(drawer).getByRole("button", { name: "Step pro" }).className).toContain("tint skipped");
     const panel = within(drawer).getByRole("region", { name: "Step welcome settings" });
     expect(within(panel).getByText("Template tpl_1 not found")).toBeTruthy();
+    expect(drawer.querySelector(".canvasView.stacked")).toBeTruthy();
+    expect(drawer.querySelector(".canvasView.immersive")).toBeNull();
+  });
+
+  it.each([
+    { taken: true, viewer: false },
+    { taken: false, viewer: false },
+    { taken: true, viewer: true },
+    { taken: false, viewer: true },
+  ])("projects the taken shared Exit through the drawer List and Canvas (true=$taken, viewer=$viewer)", async ({ taken, viewer }) => {
+    if (viewer) signIn("sess_test", ["read"]);
+    const shared = {
+      ...automation,
+      steps: [
+        automation.steps[0]!,
+        automation.steps[2]!,
+        { key: "end", type: "exit", config: {} },
+      ],
+      connections: [
+        { from: "trigger", to: "pro", type: "default" },
+        { from: "pro", to: "end", type: "condition_met" },
+        { from: "pro", to: "end", type: "condition_not_met" },
+      ],
+    };
+    const history = [
+      { key: "pro", type: "condition", status: "completed", data: { result: taken } },
+      { key: "end", type: "exit", status: "completed", output: { exited: "exit", marker: "stored_exit_output" } },
+      { key: "removed_exit", type: "exit", status: "completed", output: { marker: "unknown_output" } },
+      { type: "delay", status: "completed", output: { marker: "unkeyed_output" } },
+    ];
+    const before = JSON.stringify(history);
+    api((url) => {
+      if (url.pathname === "/automations/automation_1") return { body: shared };
+      if (url.pathname === "/automations/automation_1/runs/run_1") return { body: {
+        object: "automation_run",
+        id: "run_1",
+        status: "completed",
+        event: { name: "user.created", payload: {} },
+        created_at: "2026-09-02T10:00:00.000Z",
+        updated_at: "2026-09-02T10:00:03.000Z",
+        steps: history,
+      } };
+      return undefined;
+    });
+    open("/automations/automation_1/editor?tab=runs&run=run_1&view=list");
+    const drawer = await screen.findByRole("dialog");
+    // Select List explicitly; these consumers receive only display-key results.
+    fireEvent.click(await within(drawer).findByRole("button", { name: "List" }));
+    const reached = taken ? "end" : "end_lane";
+    const skipped = taken ? "end_lane" : "end";
+    const card = await within(drawer).findByRole("article", { name: `Step ${reached}` });
+    const untaken = within(drawer).getByRole("article", { name: `Step ${skipped}` });
+    expect(card.className).toContain("tint success");
+    expect(within(card).getByText(/stored_exit_output/)).toBeTruthy();
+    expect(untaken.className).toContain("tint neutral skipped");
+    expect(within(untaken).getByText("Not reached in this run.")).toBeTruthy();
+    expect(within(untaken).queryByText(/stored_exit_output/)).toBeNull();
+    const otherPanel = within(drawer).getByRole("heading", { name: "Steps no longer in this automation" }).closest("section")!;
+    expect(within(otherPanel).getByText("removed_exit")).toBeTruthy();
+    expect(within(otherPanel).getByText(/unknown_output/)).toBeTruthy();
+    expect(within(otherPanel).getByText(/unkeyed_output/)).toBeTruthy();
+    expect(within(otherPanel).queryByText(/stored_exit_output/)).toBeNull();
+
+    fireEvent.click(within(drawer).getByRole("button", { name: "Canvas" }));
+    const node = await within(drawer).findByRole("button", { name: `Step ${reached}` });
+    expect(node.className).toContain("tint success");
+    const otherNode = within(drawer).getByRole("button", { name: `Step ${skipped}` });
+    expect(otherNode.className).toContain("tint skipped");
+    const focused = within(drawer).getByRole("region", { name: `Step ${reached} settings` });
+    expect(within(focused).getByText(/stored_exit_output/)).toBeTruthy();
+    fireEvent.click(otherNode);
+    const unfocused = within(drawer).getByRole("region", { name: `Step ${skipped} settings` });
+    expect(within(unfocused).getByText("Not reached in this run.")).toBeTruthy();
+    expect(within(unfocused).queryByText(/stored_exit_output/)).toBeNull();
+    expect(JSON.stringify(history)).toBe(before);
+    const serialized = toTree(shared.steps, shared.connections).tree;
+    expect(serialized.steps[0]?.branches?.condition_not_met?.[0]?.sharedKey).toBe("end");
   });
 });

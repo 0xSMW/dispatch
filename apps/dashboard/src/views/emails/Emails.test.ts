@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { toCsv } from "../../components/CsvExport";
 import { h, signIn } from "../../testing";
@@ -10,6 +10,7 @@ import { api, list, requests, visit } from "./visit";
 const email = (patch: Partial<Email> = {}): Email => ({
   object: "email",
   id: "email_1",
+  sandbox: false,
   message_id: null,
   from: "Acme <hello@acme.test>",
   to: ["ada@example.com"],
@@ -84,10 +85,26 @@ describe("Emails", () => {
     expect(screen.getByRole("menuitem", { name: "Copy ID" })).toBeTruthy();
   });
 
+  it.each(["queued", "delivered"])("labels sandbox emails separately while preserving %s status", async (status) => {
+    api({
+      "/emails": list([email({ sandbox: true, last_event: status }), email({ id: "email_2", to: ["bob@acme.com"], last_event: status })]),
+      "/api-keys": list([]),
+    });
+    visit(h(Emails), "/emails");
+    const sandbox = (await screen.findByText("ada@example.com")).closest("tr")!;
+    const real = screen.getByText("bob@acme.com").closest("tr")!;
+    expect(within(sandbox).getByText(status)).toBeTruthy();
+    expect(within(sandbox).getByText("Sandbox")).toBeTruthy();
+    expect(within(sandbox).getByTitle("Sandbox delivery is simulated. No email is sent externally.")).toBeTruthy();
+    expect(within(real).queryByText("Sandbox")).toBeNull();
+    expect(within(real).getByText(status)).toBeTruthy();
+  });
+
   it("exports the page as CSV with quoted fields", () => {
     const csv = toCsv([email({ subject: 'Hi, "Ada"', to: ["a@x.test", "b@x.test"] })], emailCsv);
     expect(csv).toBe(
-      'id,to,from,subject,status,created_at\r\nemail_1,a@x.test b@x.test,Acme <hello@acme.test>,"Hi, ""Ada""",delivered,2026-09-30T10:00:00.000Z\r\n',
+      'id,to,from,subject,status,sandbox,created_at\r\nemail_1,a@x.test b@x.test,Acme <hello@acme.test>,"Hi, ""Ada""",delivered,false,2026-09-30T10:00:00.000Z\r\n',
     );
+    expect(toCsv([email({ sandbox: true })], emailCsv)).toContain(",delivered,true,");
   });
 });

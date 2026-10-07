@@ -6,6 +6,8 @@ The callback receives `identifier`, `url`, `provider`, `theme`, `token`, `expire
 
 Use `magic-link` and pass `url` as `ACTION_URL`. `provider.from` is the From address Auth.js was configured with.
 
+Set `DISPATCH_API_URL` to your Dispatch API base URL (without a trailing slash) and `DISPATCH_API_KEY` to a sending key. Verify the domain used by `provider.from`.
+
 ```ts
 import type { EmailConfig } from "@auth/core/providers";
 
@@ -14,7 +16,7 @@ export async function sendVerificationRequest(params: {
   url: string;
   provider: EmailConfig;
 }) {
-  const response = await fetch(`${process.env.DISPATCH_BASE_URL}/emails`, {
+  const response = await fetch(`${process.env.DISPATCH_API_URL}/emails`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${process.env.DISPATCH_API_KEY}`,

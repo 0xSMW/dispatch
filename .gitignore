@@ -16,5 +16,7 @@ node_modules/
 DEV_TESTING.md
 __pycache__/
 examples/go/dispatch-example
-# Live tests against a local Postgres and Redis.
-apps/api/src/accept.test.ts
+.vercel
+.env*
+
+.pnpm-store/

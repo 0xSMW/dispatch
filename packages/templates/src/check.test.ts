@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { renderTemplate } from "@dispatchmail/core";
+import { renderTemplate, themeContext } from "@dispatchmail/core";
 import { describe, expect, it } from "vitest";
 import { themePairs } from "../emails/_theme";
 import library from "../library.json";
@@ -42,6 +42,7 @@ describe("sample renders", () => {
       LOGO_URL: "",
       BRAND_COLOR: "#18181b",
       BRAND_TEXT_COLOR: "#ffffff",
+      ...themeContext({ color: "#18181b" }),
       SUPPORT_EMAIL: "support@acme.example",
       SUPPORT_URL: "https://acme.example/support",
       PRIVACY_URL: "https://acme.example/privacy",

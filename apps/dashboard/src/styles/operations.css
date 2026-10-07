@@ -112,7 +112,7 @@ a.fileChip:hover {
 }
 
 .insight.success {
-  border-left-color: var(--primary);
+  border-left-color: var(--success);
 }
 
 /* Add domain */
@@ -156,13 +156,13 @@ a.fileChip:hover {
 }
 
 .stepper li.done {
-  color: var(--primary);
+  color: var(--success);
 }
 
 .stepper li.done::before {
   content: "✓";
-  border-color: var(--primary-border);
-  background: var(--primary-subtle);
+  border-color: var(--success-border);
+  background: var(--success-subtle);
 }
 
 .advanced {

@@ -8,6 +8,7 @@ export const stop = new Command("stop")
   .description("Disable an automation and stop its active runs")
   .argument("[id]", "Automation ID")
   .option("--yes", "Skip the confirmation prompt")
+  .option("--reset-reentry", "Allow contacts to enter again after the automation is re-enabled")
   .addHelpText(
     "after",
     helpText({
@@ -24,7 +25,9 @@ export const stop = new Command("stop")
         await confirm(`Stop automation ${target} and its active runs?`, options.yes, globals);
         return target;
       },
-      call: (api, target) => api.automations.stop(target),
+      call: (api, target) => options.resetReentry
+        ? api.automations.stop(target, { resetReentry: true })
+        : api.automations.stop(target),
       done: (automation: { id: string }) => `Stopped automation ${automation.id}`,
     });
   });

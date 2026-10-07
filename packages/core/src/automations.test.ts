@@ -1,16 +1,33 @@
 import { describe, expect, it } from "vitest";
 import {
   automationGraphSchema,
+  automationInstallSchema,
   automationIssues,
   automationSchema,
+  automationStopSchema,
   automationUpdateSchema,
   evaluate,
   eventSchema,
   eventSendSchema,
   normalizeAutomation,
   payloadIssues,
+  stepConfigs,
   type Rule
 } from "./index.js";
+
+describe("preset installation input", () => {
+  it("accepts existing sender syntax and optional name/topic fields", () => {
+    expect(automationInstallSchema.parse({ from: "Acme <hello@acme.com>", topic_id: "topic_1" }))
+      .toEqual({ from: "Acme <hello@acme.com>", topic_id: "topic_1" });
+  });
+  it.each([
+    {}, { from: "bad" }, { from: "hello@acme.com\r\nBcc: other@acme.com" },
+    { from: "hello@acme.com", name: "" }, { from: "hello@acme.com", name: "x".repeat(121) },
+    { from: "hello@acme.com", topic_id: "" }, { from: "hello@acme.com", topic_id: 3 },
+  ])("rejects malformed fields without graph initialization", (input) => {
+    expect(automationInstallSchema.safeParse(input).success).toBe(false);
+  });
+});
 
 const graph = {
   name: "Welcome series",
@@ -48,7 +65,7 @@ describe("normalizeAutomation", () => {
       ["step_3", "delay"],
       ["step_4", "send_email"]
     ]);
-    expect(result.steps[0]!.config).toEqual({ event_name: "user.signed_up" });
+    expect(result.steps[0]!.config).toEqual({ type: "event", event_name: "user.signed_up" });
     expect(result.steps[2]!.config).toEqual({ event_name: "user.activated", timeout: "3600 seconds" });
     expect(result.steps[3]!.config).toEqual({ duration: "60 seconds" });
     expect(result.steps[4]!.config).toMatchObject({ template: { id: "welcome", variables: { plan: "pro" } } });
@@ -69,14 +86,130 @@ describe("normalizeAutomation", () => {
 
   it("names the step whose config is wrong", () => {
     const steps = [{ key: "start", type: "trigger", config: {} }];
-    expect(() => normalizeAutomation({ steps })).toThrow(/event_name|Required/);
+    expect(() => normalizeAutomation({ steps })).toThrow(/event_name|Required|discriminator/);
     const parsed = automationGraphSchema.safeParse({ steps });
     expect(parsed.success).toBe(false);
-    if (!parsed.success) expect(parsed.error.issues[0]!.path).toEqual(["steps", 0, "config", "event_name"]);
+    if (!parsed.success) expect(parsed.error.issues[0]!.path).toEqual(["steps", 0, "config", "type"]);
   });
 });
 
 describe("automation schema", () => {
+  it.each([
+    [{ type: "event", event_name: "billing.changed" }, "billing.changed"],
+    [{ type: "contact_created" }, "@contact.created"],
+    [{ type: "contact_updated", field: "active", from: false, to: true }, "@contact.updated"],
+    [{ type: "topic_subscribed", topic_id: "topic_1" }, "@topic.subscribed:topic_1"],
+    [{ type: "segment_added", segment_id: "segment_1" }, "@segment.added:segment_1"],
+  ])("preserves the trigger config and stored key for %j", (config, trigger) => {
+    const input = { name: "Entry", steps: [{ key: "start", type: "trigger", config }], connections: [] };
+    const created = automationSchema.parse(input);
+    expect(created).toMatchObject({ trigger, trigger_type: config.type, trigger_config: config });
+    expect(automationGraphSchema.parse({ steps: created.steps, connections: created.connections })).toMatchObject({
+      trigger, trigger_type: config.type, trigger_config: config,
+    });
+  });
+
+  it("rejects new @ events while retaining stored legacy event normalization", () => {
+    const input = { name: "Legacy", steps: [{ key: "start", type: "trigger", config: { event_name: "@contact.created" } }] };
+    expect(automationSchema.safeParse(input).success).toBe(false);
+    expect(automationGraphSchema.safeParse(input).success).toBe(false);
+    expect(eventSchema.safeParse({ name: "@contact.created" }).success).toBe(false);
+    expect(eventSendSchema.safeParse({ event: "@contact.created" }).success).toBe(false);
+    expect(stepConfigs.wait_for_event.safeParse({ event_name: "@contact.created" }).success).toBe(false);
+    expect(normalizeAutomation(input, true).steps[0]!.config).toEqual({ type: "event", event_name: "@contact.created" });
+    expect(automationSchema.parse({ name: "Legacy event", trigger: "billing.changed", steps: [{ type: "delay", seconds: 60 }] })).toMatchObject({
+      trigger: "billing.changed", trigger_type: "event", trigger_config: { type: "event", event_name: "billing.changed" }, reentry: "every_time",
+    });
+  });
+
+  it.each([
+    ["create", automationSchema],
+    ["graph replacement", automationGraphSchema],
+  ] as const)("returns graph issues without throwing for a missing keyed trigger on %s", (_name, schema) => {
+    const input = {
+      name: "Missing trigger",
+      steps: [{ key: "later", type: "delay", config: { duration: "1 hour" } }],
+      connections: [],
+    };
+    const parsed = schema.safeParse(input);
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) expect(parsed.error.issues).toEqual([
+      { code: "custom", message: "An automation needs exactly one trigger step", path: ["connections"] },
+    ]);
+  });
+
+  it.each([
+    ["create", automationSchema],
+    ["graph replacement", automationGraphSchema],
+  ] as const)("rejects a disconnected keyed graph without a trigger on %s", (_name, schema) => {
+    const parsed = schema.safeParse({
+      name: "Disconnected",
+      steps: [
+        { key: "later", type: "delay", config: { duration: "1 hour" } },
+        { key: "end", type: "exit", config: {} },
+      ],
+      connections: [],
+    });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) expect(parsed.error.issues).toEqual([
+      { code: "custom", message: "An automation needs exactly one trigger step", path: ["connections"] },
+    ]);
+  });
+
+  it("retains all graph issues before rejecting a missing trigger", () => {
+    const parsed = automationGraphSchema.safeParse({
+      steps: [{ key: "later", type: "delay", config: { duration: "1 hour" } }],
+      connections: [{ from: "later", to: "missing" }],
+    });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) expect(parsed.error.issues.map((issue) => issue.message)).toEqual([
+      "An automation needs exactly one trigger step",
+      "Connection ends at unknown step missing",
+    ]);
+  });
+
+  it("round trips hyphenated send mappings through create and graph replacement", () => {
+    const input = {
+      name: "Plan changed",
+      steps: [
+        { key: "start", type: "trigger", config: { event_name: "billing.changed" } },
+        { key: "send", type: "send_email", config: { template: "tmpl_1", variable_mapping: { PLAN: "event.plan-id", NESTED_PLAN: "event.customer-data.plan-id" } } },
+      ],
+      connections: [{ from: "start", to: "send" }],
+    };
+    const created = automationSchema.parse(input);
+    const replaced = automationGraphSchema.parse(created);
+    expect(replaced.steps[1]!.config.variable_mapping).toEqual({ PLAN: "event.plan-id", NESTED_PLAN: "event.customer-data.plan-id" });
+    expect(replaced.steps).toEqual(created.steps);
+  });
+
+  it("defaults stop to preserving enrollment history and accepts only explicit booleans", () => {
+    expect(automationStopSchema.parse({})).toEqual({ reset_reentry: false });
+    expect(automationStopSchema.parse({ reset_reentry: undefined })).toEqual({ reset_reentry: false });
+    expect(automationStopSchema.parse({ reset_reentry: false })).toEqual({ reset_reentry: false });
+    expect(automationStopSchema.parse({ reset_reentry: true })).toEqual({ reset_reentry: true });
+  });
+
+  it.each(["true", "false", 1, 0, null, [], {}])("rejects the nonboolean reentry reset %j", (reset_reentry) => {
+    expect(automationStopSchema.safeParse({ reset_reentry }).success).toBe(false);
+  });
+
+  it("refuses unknown stop fields instead of silently accepting a misspelled reset", () => {
+    expect(automationStopSchema.safeParse({ reset_reentry: true, reset: true }).success).toBe(false);
+    expect(automationStopSchema.safeParse({ reset: true }).success).toBe(false);
+  });
+
+  it.each([
+    { type: "contact_created" },
+    { type: "contact_updated", field: "active", from: false, to: true },
+    { type: "topic_subscribed", topic_id: "topic_1" },
+    { type: "segment_added", segment_id: "segment_1" },
+  ])("defaults typed trigger %j to once while respecting explicit every_time", (config) => {
+    const input = { name: "Entry", steps: [{ key: "start", type: "trigger", config }] };
+    expect(automationSchema.parse(input).reentry).toBe("once");
+    expect(automationSchema.parse({ ...input, reentry: "every_time" }).reentry).toBe("every_time");
+  });
+
   it("reads status, defaults to disabled, and takes the trigger from the trigger step", () => {
     const parsed = automationSchema.parse(graph);
     expect(parsed.enabled).toBe(true);
@@ -85,6 +218,13 @@ describe("automation schema", () => {
     expect(automationSchema.parse({ ...graph, status: undefined, enabled: true }).enabled).toBe(true);
     expect(automationUpdateSchema.parse({ status: "disabled" }).enabled).toBe(false);
     expect(automationUpdateSchema.parse({ name: "x" }).enabled).toBeUndefined();
+  });
+  it("keeps paused distinct from legacy enabled and gives explicit status precedence", () => {
+    expect(automationUpdateSchema.parse({ status: "paused" })).toMatchObject({ status: "paused", enabled: true });
+    expect(automationUpdateSchema.parse({ enabled: true })).toMatchObject({ status: "enabled", enabled: true });
+    expect(automationUpdateSchema.parse({ enabled: false })).toMatchObject({ status: "disabled", enabled: false });
+    expect(automationUpdateSchema.parse({ status: "paused", enabled: false })).toMatchObject({ status: "paused", enabled: true });
+    expect(automationSchema.safeParse({ ...graph, status: "paused" }).success).toBe(false);
   });
 
   it("accepts delays up to 30 days in natural language", () => {

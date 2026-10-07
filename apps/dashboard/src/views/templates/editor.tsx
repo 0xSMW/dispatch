@@ -115,6 +115,8 @@ export type Flush = (() => Promise<void>) & {
   waiting: () => boolean;
 };
 
+export type SourceCheck = { id: "source.visual"; tone: "warn"; text: string };
+
 export function Source({
   html,
   text,
@@ -123,6 +125,8 @@ export function Source({
   disabled,
   textareaRef,
   flushRef,
+  placeholders,
+  onCheck,
 }: {
   html: string;
   text: string;
@@ -131,6 +135,8 @@ export function Source({
   disabled?: boolean;
   textareaRef?: Ref<HTMLTextAreaElement>;
   flushRef?: { current: Flush | null };
+  placeholders?: VisualProps["placeholders"];
+  onCheck?: (check: SourceCheck | null) => void;
 }) {
   const [tab, setTab] = useState<"html" | "text">("html");
   const [mode, setMode] = useState<"code" | "visual">("code");
@@ -141,6 +147,9 @@ export function Source({
   const [asking, setAsking] = useState(false);
   const [convert, setConvert] = useState(false);
   const handle = useRef<VisualHandle | null>(null);
+  useEffect(() => {
+    onCheck?.(note ? { id: "source.visual", tone: "warn", text: note } : null);
+  }, [note, onCheck]);
 
   const flush = useMemo<Flush>(
     () => Object.assign(() => handle.current?.flush() ?? Promise.resolve(), { waiting: () => handle.current?.waiting() ?? false }),
@@ -226,6 +235,7 @@ export function Source({
               html={html}
               convert={convert}
               handle={handle}
+              placeholders={placeholders}
               onHtml={onHtml}
               onReject={(reason, convertible) => {
                 setMode("code");

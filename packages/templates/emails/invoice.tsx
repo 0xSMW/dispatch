@@ -103,6 +103,9 @@ Invoice.PreviewProps = {
 } satisfies Props;
 Invoice.Subject = "Invoice {{{INVOICE_NUMBER}}} from {{{COMPANY_NAME}}}";
 Invoice.Category = "billing";
+Invoice.Kind = "transactional" as const;
+Invoice.Stage = null;
+Invoice.When = "Send when an invoice is issued. Include the amount due, due date, and payment link.";
 Invoice.Track = true;
 Invoice.Description = "Sent when an invoice is issued and payment is due.";
 Invoice.Variables = [

@@ -8,12 +8,15 @@ import { installLibraryTemplate, libraryEntry, listLibrary, loadLibrary, preview
 
 const library: LibraryFile = {
   version: "1.0.0",
+  automations: [],
   templates: [
     {
       slug: "password-reset",
       name: "Password reset",
       category: "authentication",
       kind: "transactional",
+      stage: null,
+      when: "Send after a password reset request.",
       track: false,
       subject: "Reset your {{{PRODUCT_NAME}}} password",
       description: "Sent when someone asks to reset their password.",
@@ -32,9 +35,10 @@ describe("template library", () => {
   it("lists the manifest without the html and text bodies", () => {
     const listed = listLibrary(library);
     expect(listed.object).toBe("list");
-    expect(listed.data[0]).toMatchObject({ slug: "password-reset", track: false });
+    expect(listed.data[0]).toMatchObject({ slug: "password-reset", track: false, stage: null, when: "Send after a password reset request." });
     expect(listed.data[0]).not.toHaveProperty("html");
     expect(listed.data[0]).not.toHaveProperty("text");
+    expect(listed.data[0]).not.toHaveProperty("preview_html");
   });
 
   it("renders a preview from the sample and the brand", () => {
@@ -47,11 +51,12 @@ describe("template library", () => {
     // The inbox preview text keeps its own field beside the rendered sample.
     expect(preview.preview).toBe(entry.preview);
     expect(preview).not.toHaveProperty("html");
+    expect(preview).toMatchObject({ stage: null, when: "Send after a password reset request." });
   });
 
   it("previews every template in the real library for a tenant with no brand set", async () => {
     const real = await loadLibrary();
-    expect(real.templates).toHaveLength(16);
+    expect(real.templates).toHaveLength(25);
     // What previewBrand() gives a new tenant: a name and nothing else.
     const brand = brandContext({}, { tenantName: "Acme", domain: "example.com", from: "support@example.com" });
     for (const entry of real.templates) {
@@ -60,6 +65,9 @@ describe("template library", () => {
       expect(preview.rendered.html, entry.slug).not.toContain("{{{");
     }
     expect(previewLibrary(libraryEntry(real, "newsletter"), brand).rendered.html).toContain("https://example.com/unsubscribe");
+    expect(listLibrary(real).data.find((entry) => entry.slug === "newsletter-welcome")).toMatchObject({
+      stage: "acquisition", kind: "marketing", when: expect.any(String),
+    });
   });
 
   it("names a missing slug", () => {
@@ -82,7 +90,7 @@ describe("template library", () => {
     const installed = await installLibraryTemplate(db, "tenant_1", library, "password-reset");
     expect(installed).toEqual({ object: "template", id: "template_reset" });
     const version = calls.find((call) => call.sql.includes("insert into template_versions"));
-    expect(version?.params?.[9]).toBe(JSON.stringify({ kind: "library", slug: "password-reset", version: "1.0.0" }));
+    expect(version?.params?.[9]).toBe(JSON.stringify({ kind: "library", slug: "password-reset", version: "1.0.0", send_kind: "transactional" }));
     expect(calls.some((call) => call.sql.includes("set published_version_id"))).toBe(true);
 
     const taken = {

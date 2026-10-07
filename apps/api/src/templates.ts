@@ -1,10 +1,22 @@
-import type { TemplateRecord } from "@dispatchmail/db";
+import type { TemplateRecord, TemplateWrite } from "@dispatchmail/db";
+import { templateKind } from "@dispatchmail/core";
+
+export function templateVersionSource(
+  current: Pick<TemplateRecord, "source" | "html" | "text">,
+  source: TemplateWrite["source"],
+): TemplateWrite["source"] {
+  const marketing = current.source?.send_kind === "marketing" ||
+    (current.source?.kind === "library" && templateKind(current) === "marketing");
+  // Keep intent, not the old library provenance or content, when a tenant edits a copy.
+  return marketing ? { ...(source ?? { kind: "custom" }), send_kind: "marketing" } : source;
+}
 
 export function presentTemplate(row: TemplateRecord) {
   return {
     object: "template" as const,
     id: row.id,
     name: row.name,
+    kind: templateKind(row),
     alias: row.alias ?? null,
     from: row.from_address ?? null,
     reply_to: row.reply_to ?? [],
@@ -38,6 +50,7 @@ export function presentVersion(row: {
 }) {
   return {
     id: row.id,
+    kind: templateKind(row),
     from: row.from_address ?? null,
     reply_to: row.reply_to ?? [],
     subject: row.subject ?? null,

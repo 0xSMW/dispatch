@@ -1,5 +1,10 @@
-import { describe, expect, it } from "vitest";
-import { everyDay, percent, runSeries } from "./RunMetrics";
+// @vitest-environment jsdom
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SessionProvider } from "../../shell/session";
+import { h, mockFetch, signIn } from "../../testing";
+import { everyDay, percent, RunMetrics, runSeries } from "./RunMetrics";
 
 const zero = { running: 0, completed: 0, failed: 0, cancelled: 0 };
 
@@ -39,5 +44,35 @@ describe("RunMetrics helpers", () => {
       ["Running", "info", 1],
       ["Cancelled", "neutral", 4],
     ]);
+  });
+});
+
+describe("RunMetrics goal card", () => {
+  beforeEach(() => signIn());
+  afterEach(() => { cleanup(); sessionStorage.clear(); vi.unstubAllGlobals(); });
+  it("shares the automation range and can narrow goals to an attributed email step", async () => {
+    const fetch = mockFetch((raw) => {
+      const path = new URL(raw).pathname;
+      if (path === "/goals") return { body: { object: "list", has_more: false, data: [{ id: "goal_1", name: "Paid", target: { event: "paid" }, window_days: 30 }] } };
+      if (path === "/goals/goal_1/metrics") return { body: { contacts_reached: 8, converted: 1, rate: 0.125, data: [], history: { available_from: null, limitation: "Recorded changes only." } } };
+      return { body: { total: 0, totals: zero, data: [] } };
+    });
+    const emails = {
+      data: { data: [{ automation_id: "automation_1", automation_step: "welcome", sent: 2, delivered: 2, opened: 0, clicked: 0, open_rate: 0, click_rate: 0, bounce_rate: 0, unsubscribed: 0 }] },
+      loading: false, error: null, reload: async () => {}, setData: () => {},
+    };
+    render(h(MemoryRouter, { initialEntries: ["/automations/automation_1?range=custom&start=2026-09-01&end=2026-09-03"] },
+      h(SessionProvider, null, h(RunMetrics, { automationId: "automation_1", emails }))));
+    await screen.findByText("12.5%");
+    const goalCalls = () => fetch.mock.calls.map(([raw]) => new URL(String(raw))).filter((url) => url.pathname === "/goals/goal_1/metrics");
+    const runQuery = new URL(String(fetch.mock.calls.find(([raw]) => new URL(String(raw)).pathname.endsWith("/runs/metrics"))![0])).searchParams;
+    expect(goalCalls()[0]!.searchParams.get("start_date")).toBe(runQuery.get("start_date"));
+    expect(goalCalls()[0]!.searchParams.get("end_date")).toBe(runQuery.get("end_date"));
+    expect(goalCalls()[0]!.searchParams.get("step_key")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Goal email step"), { target: { value: "welcome" } });
+    await waitFor(() => expect(goalCalls().at(-1)!.searchParams.get("step_key")).toBe("welcome"));
+    expect(goalCalls().at(-1)!.searchParams.get("automation_id")).toBe("automation_1");
+    expect(goalCalls().at(-1)!.searchParams.get("broadcast_id")).toBeNull();
+    expect(screen.getByLabelText("Runs by status")).toBeTruthy();
   });
 });

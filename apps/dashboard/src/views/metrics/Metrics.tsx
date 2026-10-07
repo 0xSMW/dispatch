@@ -6,6 +6,7 @@ import type { BadgeVariant } from "../../components/Badge";
 import { BarChart } from "../../components/BarChart";
 import type { Series } from "../../components/chart";
 import { Drawer } from "../../components/Drawer";
+import { Select } from "../../components/Field";
 import { Empty, Failed } from "../../components/Empty";
 import { PageHeader } from "../../components/PageHeader";
 import { Panel } from "../../components/Panel";
@@ -13,9 +14,10 @@ import { Skeleton } from "../../components/Skeleton";
 import { Table } from "../../components/Table";
 import { useFilters } from "../../hooks/useFilters";
 import { useList } from "../../hooks/useList";
-import { useResource } from "../../hooks/useResource";
+import { useAll, useResource } from "../../hooks/useResource";
 import { withQuery } from "../../lib/client";
-import type { Domain, Metrics as MetricsResponse } from "../../types";
+import type { Automation, Broadcast, Domain, Metrics as MetricsResponse } from "../../types";
+import { GoalConversions } from "../goals/GoalConversions";
 import {
   bucketLabel,
   buckets,
@@ -223,6 +225,8 @@ export function Metrics() {
         </div>
       ) : null}
 
+      {!span.error ? <GoalScopes start={base.start_date} end={base.end_date} /> : null}
+
       {error ? (
         <Failed
           message={error}
@@ -359,6 +363,28 @@ export function Metrics() {
 }
 
 const groupLabels: Record<Granularity, string> = { hourly: "By hour", daily: "By day", weekly: "By week", monthly: "By month" };
+
+/** Goal scope is independent of the email-domain filter; only the date range is shared. */
+function GoalScopes({ start, end }: { start: string; end: string }) {
+  const [scope, setScope] = useState("global");
+  const [selected, setSelected] = useState("");
+  const automations = useAll<Automation>(scope === "automation" ? "/automations" : null);
+  const broadcasts = useAll<Broadcast>(scope === "broadcast" ? "/broadcasts" : null);
+  const resource = scope === "automation" ? automations : broadcasts;
+  const rows = resource.data?.data ?? [];
+  const id = rows.find((row) => row.id === selected)?.id ?? rows[0]?.id;
+  return <div className="stack">
+    <Select label="Goal scope" value={scope} onChange={(next) => { setScope(next); setSelected(""); }}
+      options={[{ value: "global", label: "All real sends" }, { value: "automation", label: "Automation" }, { value: "broadcast", label: "Broadcast" }]} />
+    {scope !== "global" ? resource.error ? <Failed message={resource.error} onRetry={() => void resource.reload()} /> : resource.loading ? <Skeleton lines={2} /> : resource.data?.has_more ? <p role="alert">Not all scopes could be loaded.</p> : rows.length ? <Select
+      label={scope === "automation" ? "Goal automation" : "Goal broadcast"} value={id ?? ""} onChange={setSelected}
+      options={rows.map((row) => ({ value: row.id, label: row.name }))} /> : <p className="muted">No {scope === "automation" ? "automations" : "broadcasts"} available.</p> : null}
+    <p className="muted">Goal conversions share the date range, not the email-domain filter.</p>
+    {scope === "global" || (id && !resource.loading && !resource.error && !resource.data?.has_more) ? <GoalConversions
+      key={`${scope}:${id ?? ""}`} automationId={scope === "automation" ? id : undefined}
+      broadcastId={scope === "broadcast" ? id : undefined} start={start} end={end} /> : null}
+  </div>;
+}
 
 function Stat({
   label,

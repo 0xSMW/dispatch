@@ -114,6 +114,20 @@ describe("client", () => {
     }
   });
 
+  it("preserves a configured API prefix for sign-in and authenticated requests", async () => {
+    vi.stubEnv("VITE_API_URL", "https://api.dispatch.example/api");
+    try {
+      const fetch = mockFetch(() => ({ body: { token: "sess_x" } }));
+      const client = makeClient({ apiUrl: "https://api.dispatch.example/api/" });
+      await client.post("/sessions", { email: "hello@smw.ai", password: "test-password" });
+      expect(callAt(fetch).url).toBe("https://api.dispatch.example/api/sessions");
+      await client.get("/me");
+      expect(fetch.mock.calls[1][0]).toBe("https://api.dispatch.example/api/me");
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("builds query strings and skips empty values", () => {
     expect(withQuery("/emails", { limit: 40, status: "", q: undefined, after: "email_1" })).toBe("/emails?limit=40&after=email_1");
     expect(withQuery("/emails?limit=1", { q: "ada" })).toBe("/emails?limit=1&q=ada");

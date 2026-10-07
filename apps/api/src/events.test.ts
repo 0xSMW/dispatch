@@ -51,6 +51,15 @@ describe("event presenters", () => {
 });
 
 describe("event routes", () => {
+  it("lists tenant-scoped live firing counts and keeps zero/null and definition IDs", async () => {
+    const { app, query } = harness(() => ({ rows: [{ ...definition, fired_count: 0, last_fired_at: null }] }));
+    const result = await app.inject("/events");
+    expect(result.json().data).toEqual([{ object: "event", ...definition, fired_count: 0, last_fired_at: null }]);
+    expect(query.mock.calls[0]![0]).toContain("fired.tenant_id = event_schemas.tenant_id");
+    expect(query.mock.calls[0]![0]).toContain("fired.name = event_schemas.name");
+    expect(query.mock.calls[0]![0]).toContain("fired.name not like '@%' and fired.deleted_at is null");
+    expect(query.mock.calls[0]![1]).toEqual(["tenant_1", 21]);
+  });
   it("rejects a payload that breaks the event schema before firing", async () => {
     const { app } = harness((sql) => (sql.includes("from event_schemas") ? { rows: [definition] } : { rows: [] }));
     const response = await app.inject({
@@ -87,6 +96,28 @@ describe("event routes", () => {
     const { app } = harness(() => ({ rows: [] }));
     const response = await app.inject({ method: "POST", url: "/events/send", payload: { event: "anything", payload: { x: [1] } } });
     expect(response.statusCode).toBe(202);
+  });
+
+  it.each(["@contact.created", "@topic.subscribed:topic_1", "@segment.added:segment_1"])("refuses caller-supplied internal trigger name %s", async (name) => {
+    const { app, query } = harness(() => ({ rows: [] }));
+    const definition = await app.inject({ method: "POST", url: "/events", payload: { name } });
+    const send = await app.inject({ method: "POST", url: "/events/send", payload: { event: name, email: "ada@example.com" } });
+    expect(definition.statusCode).toBe(400);
+    expect(send.statusCode).toBe(422);
+    expect(query).not.toHaveBeenCalled();
+    expect(db.fireEvent).not.toHaveBeenCalled();
+  });
+
+  it("filters internal trigger events before pagination and refuses their detail route", async () => {
+    const fired = { id: "ce_internal", request_id: "req_1", name: "@contact.created", email: "ada@example.com", data: {}, created_at: definition.created_at };
+    const { app, query } = harness((sql) => ({ rows: sql.includes("id = $2") ? [fired] : [] }));
+    const list = await app.inject({ method: "GET", url: "/fired-events" });
+    expect(list.statusCode).toBe(200);
+    expect(list.json()).toEqual({ object: "list", has_more: false, data: [] });
+    expect(query.mock.calls[0]![0]).toContain("name not like '@%'");
+    const detail = await app.inject({ method: "GET", url: "/fired-events/ce_internal" });
+    expect(detail.statusCode).toBe(404);
+    expect(detail.json()).toMatchObject({ name: "not_found", message: "Event not found" });
   });
 
   it("refuses reserved definition names and finds definitions by name", async () => {

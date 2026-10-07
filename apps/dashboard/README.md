@@ -11,6 +11,8 @@ pnpm --filter @dispatchmail/dashboard build
 
 Build settings are read at build time: `VITE_API_URL` (the API's URL, required when the API is on another host than the dashboard, because the public unsubscribe and shared pages have no session to take it from), `VITE_ALLOW_REMOTE_API`, and `VITE_DOCS_URL`.
 
+`VITE_DOCS_URL` is the public docs directory URL (for example, `https://docs.example.org/dispatch/0.1.0/`). Learn chips append guide paths and anchors to it. Without it, they use `https://github.com/0xSMW/dispatch/blob/v<dashboard-version>/docs/`, with the version from this package's `package.json`. Only targets present in the public docs shipped with the build appear; lifecycle recipes stay hidden until their index ships. Rebuild after changing the URL or the docs.
+
 Sign in at `/login` with a user's email and password. The page trades them for a `sess_` token through `POST /sessions` and keeps only the token and the user, in `sessionStorage`. It asks for the API URL only when the build has no `VITE_API_URL`. A signed-in user changes their password from the account menu. The production host must serve `index.html` for unknown paths.
 
 ## Layout

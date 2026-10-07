@@ -46,6 +46,7 @@ describe("Contacts", () => {
     const fetch = api();
     show(h(Contacts), "/audience");
     await screen.findByText("ada@example.com");
+    expect(screen.getByRole("link", { name: "Suppressions" }).getAttribute("href")).toBe("/emails/suppressions");
     expect(calls(fetch)).toEqual(
       expect.arrayContaining(["GET /contacts?limit=40", "GET /contacts/stats", "GET /segments?limit=100"]),
     );
@@ -54,6 +55,17 @@ describe("Contacts", () => {
     expect(screen.getByText("Ada Lovelace")).toBeTruthy();
     expect(screen.getByText("unsubscribed")).toBeTruthy();
     expect(screen.getByRole("option", { name: "VIP" })).toBeTruthy();
+    const learn = within(screen.getByRole("navigation", { name: "Learn more" }));
+    expect(learn.getByRole("link", { name: "Properties" }).getAttribute("href")).toContain("audience.md#properties");
+    expect(learn.getByRole("link", { name: "Segments" }).getAttribute("href")).toContain("audience.md#segments");
+    expect(learn.getByRole("link", { name: "Topics" }).getAttribute("href")).toContain("audience.md#topics");
+  });
+
+  it("offers an add-contact action in the unfiltered empty state", async () => {
+    api({ "GET /contacts": list([]) });
+    show(h(Contacts), "/audience");
+    fireEvent.click(await screen.findByRole("button", { name: "Add your first contact" }));
+    expect(screen.getByRole("dialog", { name: "Add contact" })).toBeTruthy();
   });
 
   it("shows each contact's segments, three at most, with a count for the rest", async () => {

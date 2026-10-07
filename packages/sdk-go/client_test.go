@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -28,6 +29,60 @@ type recorded struct {
 type canned struct {
 	status int
 	body   any
+}
+
+func TestContactActivityExitReasons(t *testing.T) {
+	for _, reason := range []string{"completed", "exit", "filter", "stopped", "stranded", "null", "absent"} {
+		t.Run(reason, func(t *testing.T) {
+			row := Map{"object": "contact_activity", "id": "r1:completed", "type": "automation.run.completed",
+				"label": "done", "resource_id": "r1", "email_id": nil, "automation_id": "a1", "run_id": "r1",
+				"created_at": "2026-10-04T00:00:00Z"}
+			if reason == "null" {
+				row["exit_reason"] = nil
+			} else if reason != "absent" {
+				row["exit_reason"] = reason
+			}
+			payload, err := json.Marshal(row)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var typed ContactActivity
+			if err := json.Unmarshal(payload, &typed); err != nil {
+				t.Fatal(err)
+			}
+			if reason == "null" || reason == "absent" {
+				if typed.ExitReason != nil {
+					t.Fatalf("invented reason: %v", typed.ExitReason)
+				}
+			} else if typed.ExitReason == nil || string(*typed.ExitReason) != reason {
+				t.Fatalf("lost reason: %v", typed.ExitReason)
+			}
+			encoded, err := json.Marshal(typed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var decoded Map
+			if err := json.Unmarshal(encoded, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			if decoded["exit_reason"] != row["exit_reason"] {
+				t.Fatalf("reason changed: %s", encoded)
+			}
+			page := Map{"object": "list", "has_more": true, "data": []Map{row}}
+			path := "/contacts/c1/activity?after=r0%3Acompleted&limit=5"
+			client, calls := recorder(t, map[string]canned{"GET " + path: {status: 200, body: page}})
+			result, err := client.ContactActivity("c1", url.Values{"after": {"r0:completed"}, "limit": {"5"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.Data) != 1 || result.Data[0]["exit_reason"] != row["exit_reason"] || !result.HasMore {
+				t.Fatalf("activity response changed: %#v", result)
+			}
+			if len(*calls) != 1 || (*calls)[0].Path != path {
+				t.Fatalf("unexpected request: %#v", *calls)
+			}
+		})
+	}
 }
 
 func recorder(t *testing.T, responses map[string]canned) (*Client, *[]recorded) {
@@ -64,6 +119,329 @@ func TestNewClient(t *testing.T) {
 	}
 }
 
+func TestAutomationPauseContracts(t *testing.T) {
+	for _, status := range []string{AutomationEnabled, AutomationPaused, AutomationDisabled} {
+		t.Run(status, func(t *testing.T) {
+			want := Automation{ID: "a/1", Status: status, Version: 4, TriggerConfig: AutomationTriggerConfig{Type: TriggerContactCreated}, Reentry: ReentryOnce}
+			client, calls := recorder(t, map[string]canned{
+				"PATCH /automations/a%2F1":          {200, want},
+				"GET /automations/a%2F1":            {200, want},
+				"GET /automations?status=" + status: {200, ListResponse[Automation]{Object: "list", Data: []Automation{want}}},
+			})
+			updated, err := client.UpdateAutomation("a/1", AutomationUpdate{Status: status})
+			if err != nil || !reflect.DeepEqual(updated, &want) {
+				t.Fatalf("update: %+v, %v", updated, err)
+			}
+			if !reflect.DeepEqual((*calls)[0].Body, Map{"status": status}) {
+				t.Fatalf("update body: %#v", (*calls)[0].Body)
+			}
+			got, err := client.Automation("a/1")
+			if err != nil || !reflect.DeepEqual(got, &want) {
+				t.Fatalf("get: %+v, %v", got, err)
+			}
+			list, err := client.Automations(url.Values{"status": {status}})
+			if err != nil || len(list.Data) != 1 || !reflect.DeepEqual(list.Data[0], want) {
+				t.Fatalf("list: %+v, %v", list, err)
+			}
+		})
+	}
+	for _, enabled := range []bool{false, true} {
+		client, calls := recorder(t, nil)
+		if _, err := client.UpdateAutomation("a1", AutomationUpdate{Enabled: Ptr(enabled)}); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual((*calls)[0].Body, Map{"enabled": enabled}) {
+			t.Fatalf("legacy update: %#v", (*calls)[0].Body)
+		}
+		if _, err := client.CreateAutomation(AutomationInput{Name: "Legacy", Steps: []AutomationStep{}, Enabled: Ptr(enabled)}); err != nil {
+			t.Fatal(err)
+		}
+		body := (*calls)[1].Body.(map[string]any)
+		if body["enabled"] != enabled {
+			t.Fatalf("legacy create: %#v", body)
+		}
+		if _, exists := body["version"]; exists {
+			t.Fatal("create sent read-only version")
+		}
+	}
+	client, _ := recorder(t, map[string]canned{
+		"PATCH /automations/a1": {409, Map{"name": "conflict", "message": "Disabled cannot pause"}},
+	})
+	_, err := client.UpdateAutomation("a1", AutomationUpdate{Status: AutomationPaused})
+	var apiErr *Error
+	if !errors.As(err, &apiErr) || apiErr.Status != 409 {
+		t.Fatalf("conflict: %v", err)
+	}
+}
+
+func TestAutomationDryRunContracts(t *testing.T) {
+	for _, want := range []AutomationDryRun{
+		{StrandedRuns: 3, ByStep: map[string]int{"removed": 2, "send/email": 1}},
+		{StrandedRuns: 0, ByStep: map[string]int{}},
+	} {
+		client, calls := recorder(t, map[string]canned{
+			"PATCH /automations/a%2F1?dry_run=true": {200, want},
+			"PATCH /automations/a%2F1":              {200, Automation{ID: "a/1", Status: AutomationPaused, Version: 5}},
+		})
+		steps := []AutomationStep{
+			{Key: "start", Type: "trigger", Config: AutomationTriggerConfig{Type: TriggerContactUpdated, Field: "activated", From: json.RawMessage("false"), To: json.RawMessage("true")}},
+			{Key: "send", Type: "send_email", Config: SendEmailConfig{Template: "welcome", Variables: map[string]any{"camelKey": "literal"}}},
+		}
+		connections := []AutomationConnection{{From: "start", To: "send", Type: "default"}}
+		input := AutomationUpdate{Name: "Edited", Reentry: ReentryOnce, Steps: &steps, Connections: &connections}
+		result, err := client.DryRunAutomation("a/1", input)
+		if err != nil || !reflect.DeepEqual(result, &want) {
+			t.Fatalf("preview: %+v, %v", result, err)
+		}
+		expected := Map{
+			"name": "Edited", "reentry": "once",
+			"steps": []any{
+				Map{"key": "start", "type": "trigger", "config": Map{"type": "contact_updated", "field": "activated", "from": false, "to": true}},
+				Map{"key": "send", "type": "send_email", "config": Map{"template": "welcome", "variables": Map{"camelKey": "literal"}}},
+			},
+			"connections": []any{Map{"from": "start", "to": "send", "type": "default"}},
+		}
+		if !reflect.DeepEqual((*calls)[0].Body, expected) {
+			t.Fatalf("preview body: %#v", (*calls)[0].Body)
+		}
+		updated, err := client.UpdateAutomation("a/1", input)
+		if err != nil || updated.ID != "a/1" || updated.Version != 5 {
+			t.Fatalf("save: %+v, %v", updated, err)
+		}
+		if !reflect.DeepEqual((*calls)[1].Body, expected) {
+			t.Fatalf("save body: %#v", (*calls)[1].Body)
+		}
+	}
+	for _, status := range []int{403, 409, 422} {
+		client, _ := recorder(t, map[string]canned{
+			"PATCH /automations/a1?dry_run=true": {status, Map{"name": "conflict", "message": "Cannot save this graph"}},
+		})
+		result, err := client.DryRunAutomation("a1", AutomationUpdate{})
+		var apiErr *Error
+		if result != nil || !errors.As(err, &apiErr) || apiErr.Status != status {
+			t.Fatalf("error %d: %+v, %v", status, result, err)
+		}
+	}
+}
+
+func TestEnrollmentContracts(t *testing.T) {
+	job := Map{
+		"object": "automation_enrollment_job", "id": "j/1", "automation_id": "a/1",
+		"segment_id": nil, "status": "queued", "error": nil,
+		"created_at": "2026-10-03T00:00:00Z", "completed_at": nil,
+		"counts": Map{"total": 501, "processed": 0, "enrolled": 0, "skipped": 0, "failed": 0},
+	}
+	cancelled := Map{"object": "automation_enrollment_job", "id": "j/1", "status": "cancelled", "counts": job["counts"]}
+	client, calls := recorder(t, map[string]canned{
+		"POST /automations/a%2F1/enroll":              {202, job},
+		"GET /automations/a%2F1/enroll-jobs/j%2F1":    {200, job},
+		"DELETE /automations/a%2F1/enroll-jobs/j%2F1": {200, cancelled},
+		"DELETE /contacts/imports/i%2F1":              {200, Map{"object": "contact_import", "id": "i/1", "status": "cancelled"}},
+	})
+	created, err := client.Enroll("a/1", AutomationEnrollment{All: true}, "enroll-retry")
+	if err != nil || created.Status != "queued" || created.Counts.Total != 501 || created.SegmentID != nil || created.CompletedAt != nil || created.Error != nil {
+		t.Fatalf("create: %+v, %v", created, err)
+	}
+	if (*calls)[0].Headers.Get("Idempotency-Key") != "enroll-retry" {
+		t.Fatal("missing enrollment idempotency key")
+	}
+	if _, err := client.Enroll("a/1", AutomationEnrollment{SegmentID: "s/1"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := client.GetEnrollmentJob("a/1", "j/1")
+	if err != nil || !reflect.DeepEqual(got, created) {
+		t.Fatalf("get: %+v, %v", got, err)
+	}
+	stopped, err := client.CancelEnrollmentJob("a/1", "j/1")
+	if err != nil || stopped.Status != "cancelled" || stopped.Counts.Total != 501 {
+		t.Fatalf("cancel: %+v, %v", stopped, err)
+	}
+	imported, err := client.CancelContactImport("i/1")
+	if err != nil || imported["status"] != "cancelled" {
+		t.Fatalf("import: %v, %v", imported, err)
+	}
+	for index, want := range []Map{{"all": true}, {"segment_id": "s/1"}} {
+		if !reflect.DeepEqual((*calls)[index].Body, map[string]any(want)) {
+			t.Fatalf("body: %v", (*calls)[index].Body)
+		}
+	}
+	for _, index := range []int{2, 3, 4} {
+		if len((*calls)[index].Raw) != 0 {
+			t.Fatalf("unexpected body: %s", (*calls)[index].Raw)
+		}
+	}
+	if len(*calls) != 5 {
+		t.Fatalf("unexpected extra requests: %v", *calls)
+	}
+}
+
+func TestTypedPropertyAndMappingContracts(t *testing.T) {
+	client, calls := recorder(t, nil)
+	if _, err := client.CreateContactProperty(ContactPropertyInput{Key: "activated", Type: "boolean", FallbackValue: false}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.CreateContactProperty(ContactPropertyInput{Key: "last_active_at", Type: "date", FallbackValue: "2026-10-03T09:30:00+02:00"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.UpdateContactProperty("prop_1", nil); err != nil {
+		t.Fatal(err)
+	}
+	for index, want := range []Map{
+		{"key": "activated", "type": "boolean", "fallback_value": false},
+		{"key": "last_active_at", "type": "date", "fallback_value": "2026-10-03T09:30:00+02:00"},
+		{"fallback_value": nil},
+	} {
+		if !reflect.DeepEqual((*calls)[index].Body, map[string]any(want)) {
+			t.Fatalf("request %d: %#v", index, (*calls)[index].Body)
+		}
+	}
+	config := SendEmailConfig{Template: Map{"id": "template_1", "variables": Map{"PLAN": "contact.plan", "FLAG": false}}, VariableMapping: map[string]string{"PLAN": "contact.plan", "WHEN": "event.received_at"}}
+	if _, err := client.CreateAutomation(Map{"name": "Typed", "steps": []Map{{"key": "send", "type": "send_email", "config": config}}}); err != nil {
+		t.Fatal(err)
+	}
+	body := (*calls)[3].Body.(map[string]any)
+	got := body["steps"].([]any)[0].(map[string]any)["config"].(map[string]any)
+	if !reflect.DeepEqual(got["variable_mapping"], map[string]any{"PLAN": "contact.plan", "WHEN": "event.received_at"}) {
+		t.Fatalf("mappings: %#v", got)
+	}
+	if got["template"].(map[string]any)["variables"].(map[string]any)["PLAN"] != "contact.plan" {
+		t.Fatalf("literal changed: %#v", got)
+	}
+	if _, err := client.ImportContacts(ContactImportInput{File: []byte("email,when\na@example.com,2026-10-03\n"), ColumnMap: map[string]any{"properties": map[string]ImportColumn{"when": {Column: "when", Type: "date"}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string((*calls)[4].Raw), `"type":"date"`) {
+		t.Fatalf("date mapping missing: %s", (*calls)[4].Raw)
+	}
+}
+
+func TestAutomationTriggerContracts(t *testing.T) {
+	configs := []AutomationTriggerConfig{
+		{Type: TriggerEvent, EventName: "user.created"},
+		{Type: TriggerContactCreated},
+		{Type: TriggerContactUpdated},
+		{Type: TriggerContactUpdated, Field: "unsubscribed", From: json.RawMessage("false"), To: json.RawMessage("true")},
+		{Type: TriggerContactUpdated, Field: "properties.score", From: json.RawMessage("0"), To: json.RawMessage("42.5")},
+		{Type: TriggerContactUpdated, Field: "properties.last_active_at", From: json.RawMessage("null"), To: json.RawMessage(`"2026-10-03T09:30:00+02:00"`)},
+		{Type: TriggerContactUpdated, Field: "first_name", From: json.RawMessage(`"Ada"`), To: json.RawMessage("null")},
+		{Type: TriggerTopicSubscribed, TopicID: "topic_1"},
+		{Type: TriggerSegmentAdded, SegmentID: "segment_1"},
+	}
+	for _, config := range configs {
+		t.Run(string(config.Type)+"/"+config.Field, func(t *testing.T) {
+			var trigger *string
+			if config.Type == TriggerEvent {
+				trigger = Ptr(config.EventName)
+			}
+			want := Automation{ID: "a1", Name: "Contacts", Trigger: trigger, TriggerConfig: config, Reentry: ReentryEveryTime}
+			client, calls := recorder(t, map[string]canned{
+				"POST /automations":              {200, want},
+				"PATCH /automations/a1":          {200, want},
+				"GET /automations/a1":            {200, want},
+				"POST /automations/a1/duplicate": {200, want},
+				"GET /automations":               {200, ListResponse[Automation]{Object: "list", Data: []Automation{want}}},
+			})
+			steps := []AutomationStep{{Key: "start", Type: "trigger", Config: config}}
+			input := AutomationInput{Name: "Contacts", Steps: steps, Reentry: ReentryEveryTime}
+			created, err := client.CreateAutomation(input)
+			if err != nil || !reflect.DeepEqual(created, &want) {
+				t.Fatalf("create: %+v, %v", created, err)
+			}
+			body := (*calls)[0].Body.(map[string]any)
+			var expected map[string]any
+			raw, err := json.Marshal(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(raw, &expected); err != nil {
+				t.Fatal(err)
+			}
+			got := body["steps"].([]any)[0].(map[string]any)["config"]
+			if body["reentry"] != "every_time" || !reflect.DeepEqual(got, expected) {
+				t.Fatalf("wire config: %#v", body)
+			}
+			updated, err := client.UpdateAutomation("a1", Map{"steps": steps, "reentry": ReentryOnce})
+			if err != nil || !reflect.DeepEqual(updated, &want) || (*calls)[1].Body.(map[string]any)["reentry"] != "once" {
+				t.Fatalf("update: %+v, %v", updated, err)
+			}
+			if !reflect.DeepEqual((*calls)[1].Body.(map[string]any)["steps"].([]any)[0].(map[string]any)["config"], expected) {
+				t.Fatalf("update config changed: %#v", (*calls)[1].Body)
+			}
+			gotAutomation, err := client.Automation("a1")
+			if err != nil || !reflect.DeepEqual(gotAutomation, &want) {
+				t.Fatalf("get: %+v, %v", gotAutomation, err)
+			}
+			duplicate, err := client.DuplicateAutomation("a1")
+			if err != nil || !reflect.DeepEqual(duplicate, &want) {
+				t.Fatalf("duplicate: %+v, %v", duplicate, err)
+			}
+			list, err := client.Automations()
+			if err != nil || len(list.Data) != 1 || !reflect.DeepEqual(list.Data[0], want) {
+				t.Fatalf("list: %+v, %v", list, err)
+			}
+		})
+	}
+	client, calls := recorder(t, nil)
+	input := AutomationInput{Name: "Legacy", Trigger: "user.created", Steps: []AutomationStep{{Key: "start", Type: "trigger", Config: Map{"event_name": "user.created"}}}}
+	if _, err := client.CreateAutomation(input); err != nil {
+		t.Fatal(err)
+	}
+	body := (*calls)[0].Body.(map[string]any)
+	if body["trigger"] != "user.created" || body["steps"].([]any)[0].(map[string]any)["config"].(map[string]any)["event_name"] != "user.created" {
+		t.Fatalf("legacy trigger: %#v", body)
+	}
+	if _, exists := body["reentry"]; exists {
+		t.Fatalf("optional reentry was sent: %#v", body)
+	}
+}
+
+func TestMarketingSplitResponse(t *testing.T) {
+	split := []SplitEmail{{ID: "email_1", To: "ada@example.com", Sandbox: true}, {ID: "email_2", To: "bob@dispatch-fixture.net", Sandbox: false}}
+	result := Map{"id": "email_1", "emails": split}
+	client, _ := recorder(t, map[string]canned{
+		"POST /emails":       {200, result},
+		"POST /emails/batch": {200, Map{"data": []any{result}}},
+	})
+	email, err := client.Send(Map{"from": "a@example.com", "to": []string{"ada@example.com", "bob@dispatch-fixture.net"}, "topic_id": "topic_1", "text": "Hi"}, "")
+	if err != nil || !reflect.DeepEqual(email.Emails, split) {
+		t.Fatalf("split send: %+v, %v", email, err)
+	}
+	batch, err := client.Batch([]Map{{"to": []string{"ada@example.com", "bob@dispatch-fixture.net"}}}, "", "strict")
+	if err != nil || len(batch.Data) != 1 || !reflect.DeepEqual(batch.Data[0].Emails, split) {
+		t.Fatalf("split batch: %+v, %v", batch, err)
+	}
+}
+
+func TestSandboxResponses(t *testing.T) {
+	recipients := []EmailRecipient{
+		{ID: "rcpt_1", Email: "test@example.com", Kind: "cc", Status: "delivered", Sandbox: true, CreatedAt: "2026-10-03T10:00:00Z"},
+		{ID: "rcpt_2", Email: "ada@acme.com", Kind: "to", Status: "delivered", Sandbox: false, CreatedAt: "2026-10-03T10:00:00Z"},
+	}
+	sandbox := Map{"id": "email_1", "sandbox": true, "last_event": "delivered"}
+	client, _ := recorder(t, map[string]canned{
+		"POST /emails":        {200, sandbox},
+		"POST /emails/batch":  {200, Map{"data": []any{sandbox}}},
+		"GET /emails":         {200, Map{"object": "list", "has_more": false, "data": []any{sandbox}}},
+		"GET /emails/email_2": {200, Map{"id": "email_2", "sandbox": false, "last_event": "delivered", "recipients": recipients}},
+	})
+	sent, err := client.Send(Map{"from": "a@acme.com", "to": "test@example.com", "subject": "Test", "text": "Hi"}, "")
+	if err != nil || !sent.Sandbox {
+		t.Fatalf("sandbox send: %+v, %v", sent, err)
+	}
+	batch, err := client.Batch([]Map{{"to": "test@example.com"}}, "", "strict")
+	if err != nil || len(batch.Data) != 1 || !batch.Data[0].Sandbox {
+		t.Fatalf("sandbox batch: %+v, %v", batch, err)
+	}
+	page, err := client.Emails(nil)
+	if err != nil || len(page.Data) != 1 || !page.Data[0].Sandbox || page.Data[0].LastEvent != "delivered" {
+		t.Fatalf("sandbox list: %+v, %v", page, err)
+	}
+	detail, err := client.Email("email_2")
+	if err != nil || detail.Sandbox || detail.LastEvent != "delivered" || !reflect.DeepEqual(detail.Recipients, recipients) {
+		t.Fatalf("mixed detail: %+v, %v", detail, err)
+	}
+}
+
 func TestRoutes(t *testing.T) {
 	page := url.Values{"limit": {"5"}}
 	cases := []struct {
@@ -73,6 +451,8 @@ func TestRoutes(t *testing.T) {
 		path   string
 		body   any
 	}{
+		{"Settings", func(c *Client) error { _, err := c.Settings(); return err }, "GET", "/settings", nil},
+		{"UpdateSettings", func(c *Client) error { _, err := c.UpdateSettings(Map{"import_trigger_automations": true}); return err }, "PATCH", "/settings", map[string]any{"import_trigger_automations": true}},
 		{"Emails", func(c *Client) error { _, err := c.Emails(page); return err }, "GET", "/emails?limit=5", nil},
 		{"Email", func(c *Client) error { _, err := c.Email("e1"); return err }, "GET", "/emails/e1", nil},
 		{"UpdateEmail", func(c *Client) error { _, err := c.UpdateEmail("e1", Map{"scheduled_at": "in 1 hour"}); return err }, "PATCH", "/emails/e1", map[string]any{"scheduled_at": "in 1 hour"}},
@@ -80,6 +460,10 @@ func TestRoutes(t *testing.T) {
 		{"EmailJobs", func(c *Client) error { _, err := c.EmailJobs(url.Values{"email_id": {"e1"}}); return err }, "GET", "/email-jobs?email_id=e1", nil},
 		{"EmailJob", func(c *Client) error { _, err := c.EmailJob("j1"); return err }, "GET", "/email-jobs/j1", nil},
 		{"EmailMetrics", func(c *Client) error { _, err := c.EmailMetrics(url.Values{"metrics": {"sent"}}); return err }, "GET", "/emails/metrics?metrics=sent", nil},
+		{"AutomationEmailMetrics", func(c *Client) error {
+			_, err := c.EmailMetrics(url.Values{"automation_id": {"a1"}, "dimensions": {"step"}})
+			return err
+		}, "GET", "/emails/metrics?automation_id=a1&dimensions=step", nil},
 		{"ShareEmail", func(c *Client) error { _, err := c.ShareEmail("e1", "10m"); return err }, "POST", "/emails/e1/share", map[string]any{"expires_in": "10m"}},
 		{"ReceivedEmail", func(c *Client) error { _, err := c.ReceivedEmail("r1", url.Values{"html_format": {"cid"}}); return err }, "GET", "/emails/receiving/r1?html_format=cid", nil},
 		{"ReceivedAttachments", func(c *Client) error { _, err := c.ReceivedAttachments("r1"); return err }, "GET", "/emails/receiving/r1/attachments", nil},
@@ -274,6 +658,99 @@ func TestImportContactsUploadsMultipart(t *testing.T) {
 	content, _ := io.ReadAll(file)
 	if string(content) != "email\nada@x.com\n" || form.File["file"][0].Filename != "contacts.csv" {
 		t.Fatalf("file: %q", content)
+	}
+}
+
+func TestImportTriggerAutomations(t *testing.T) {
+	off, on := false, true
+	for _, tc := range []struct {
+		name   string
+		flag   *bool
+		stored bool
+		value  string
+	}{
+		{"omitted", nil, true, ""},
+		{"false", &off, false, "false"},
+		{"true", &on, true, "true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			imported := Map{"object": "contact_import", "id": "imp_1", "trigger_automations": tc.stored}
+			client, calls := recorder(t, map[string]canned{
+				"POST /contacts/imports":      {202, imported},
+				"GET /contacts/imports/imp_1": {200, imported},
+				"GET /contacts/imports":       {200, Map{"object": "list", "has_more": false, "data": []Map{imported}}},
+			})
+			created, err := client.ImportContacts(ContactImportInput{
+				File: []byte("email\nada@x.com\n"), TriggerAutomations: tc.flag,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sent := (*calls)[0]
+			mediaType, params, err := mime.ParseMediaType(sent.Headers.Get("Content-Type"))
+			if err != nil || sent.Method != "POST" || sent.Path != "/contacts/imports" || mediaType != "multipart/form-data" {
+				t.Fatalf("request: %+v, media type: %s, error: %v", sent, mediaType, err)
+			}
+			form, err := multipart.NewReader(bytes.NewReader(sent.Raw), params["boundary"]).ReadForm(1 << 20)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer form.RemoveAll()
+			values, exists := form.Value["trigger_automations"]
+			if tc.flag == nil {
+				if exists {
+					t.Fatalf("omitted flag was sent: %v", values)
+				}
+			} else if !reflect.DeepEqual(values, []string{tc.value}) {
+				t.Fatalf("flag = %v, want %q", values, tc.value)
+			}
+			if !reflect.DeepEqual(created, imported) {
+				t.Fatalf("create = %v, want %v", created, imported)
+			}
+			detail, err := client.ContactImport("imp_1")
+			if err != nil || !reflect.DeepEqual(detail, imported) {
+				t.Fatalf("detail = %v, error = %v", detail, err)
+			}
+			list, err := client.ContactImports()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(list.Data) != 1 || !reflect.DeepEqual(list.Data[0], imported) {
+				t.Fatalf("list = %+v", list)
+			}
+		})
+	}
+}
+
+func TestStopAutomationResetReentry(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []bool
+		body any
+	}{
+		{"omitted", nil, map[string]any{}},
+		{"false", []bool{false}, map[string]any{"reset_reentry": false}},
+		{"true", []bool{true}, map[string]any{"reset_reentry": true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, calls := recorder(t, map[string]canned{
+				"POST /automations/a1/stop": {200, Map{"object": "automation", "id": "a1", "stopped": 2}},
+			})
+			result, err := client.StopAutomation("a1", tc.args...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sent := (*calls)[0]
+			if sent.Method != "POST" || sent.Path != "/automations/a1/stop" || !reflect.DeepEqual(sent.Body, tc.body) {
+				t.Fatalf("request = %+v, want body %v", sent, tc.body)
+			}
+			if tc.args == nil && string(sent.Raw) != "{}" {
+				t.Fatalf("omitted options changed the legacy empty JSON body: %s", sent.Raw)
+			}
+			if result["stopped"] != float64(2) {
+				t.Fatalf("result = %v", result)
+			}
+		})
 	}
 }
 

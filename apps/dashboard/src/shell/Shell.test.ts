@@ -1,11 +1,11 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { h, mockFetch, signIn } from "../testing";
 import { useResource } from "../hooks/useResource";
 import { SessionProvider } from "./session";
-import { Shell } from "./Shell";
+import { EventsRedirect, nav, Shell } from "./Shell";
 
 function Login() {
   const location = useLocation();
@@ -76,6 +76,55 @@ describe("Shell keys", () => {
     vi.unstubAllGlobals();
   });
 
+  it.each([
+    { role: "full", width: 1440 }, { role: "viewer", width: 1440 },
+    { role: "full", width: 390 }, { role: "viewer", width: 390 },
+  ])("shares one flat original-order menu for $role at $width", ({ role, width }) => {
+    vi.stubGlobal("innerWidth", width);
+    if (role === "viewer") signIn("viewer", ["read"]);
+    open("/events");
+    const labels = ["Emails", "Broadcasts", "Automations", "Templates", "Audience", "Metrics", "Goals", "Domains",
+      "Logs", "API keys", "Webhooks", "Timeline", "Events", "Settings"];
+    expect(nav.map((item) => item.label)).toEqual(labels);
+    const menu = screen.getByRole("navigation", { name: "Main" });
+    const main = within(menu);
+    expect(main.getAllByRole("link").map((link) => link.textContent)).toEqual(labels);
+    expect([...menu.children].map((child) => child.tagName)).toEqual(labels.map(() => "A"));
+    expect(main.queryAllByRole("group")).toHaveLength(0);
+    expect(main.queryByText("Send")).toBeNull();
+    expect(main.queryByText("Engage")).toBeNull();
+    expect(main.getAllByRole("link").map((link) => link.getAttribute("href"))).toEqual(nav.map((item) => item.to));
+    expect(main.getByRole("link", { name: "Events" }).getAttribute("href")).toBe("/events");
+    expect(main.getByRole("link", { name: "Goals" }).getAttribute("href")).toBe("/goals");
+  });
+
+  it.each([
+    ["/automations/a/editor", true], ["/automations/a/editor?view=canvas", true],
+    ["/automations/a/editor?view=list", false], ["/automations/a/editor?tab=runs", false],
+    ["/automations/a/editor?tab=metrics&view=canvas", false], ["/automations", false],
+    ["/templates/a/editor", false], ["/events", false],
+  ])("scopes workspace chrome to the Canvas builder at %s", (path, workspace) => {
+    open(path as string);
+    expect(document.querySelector(".app")?.classList.contains("automationWorkspace")).toBe(workspace);
+    expect(screen.getByRole("navigation", { name: "Main" })).toBeTruthy();
+  });
+
+  it("replaces the old Events route while preserving search and hash", async () => {
+    function Destination() {
+      const location = useLocation();
+      const navigate = useNavigate();
+      return h("div", null, h("p", null, `${location.pathname}${location.search}${location.hash}`),
+        h("button", { onClick: () => navigate(-1) }, "Back"));
+    }
+    render(h(MemoryRouter, { initialEntries: ["/before", "/automations/events?limit=10&q=signup#recent"] },
+      h(Routes, null,
+        h(Route, { path: "/automations/events", element: h(EventsRedirect) }),
+        h(Route, { path: "*", element: h(Destination) }))));
+    expect(await screen.findByText("/events?limit=10&q=signup#recent")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(await screen.findByText("/before")).toBeTruthy();
+  });
+
   it("opens the API reference for the page with A, filled with its ids", () => {
     open("/domains/domain_1");
     fireEvent.keyDown(document.body, { key: "a" });
@@ -84,7 +133,7 @@ describe("Shell keys", () => {
     expect(call.textContent).toContain('curl -X POST "http://localhost:3100/domains/domain_1/verify"');
     expect(call.textContent).toContain("$DISPATCH_API_KEY");
 
-    fireEvent.click(within(drawer).getByRole("tab", { name: "Node.js" }));
+    fireEvent.click(within(drawer).getByRole("tab", { name: "TypeScript" }));
     expect(within(drawer).getByRole("region", { name: "POST /domains/domain_1/verify" }).textContent).toContain('dispatch.domains.verify("domain_1")');
   });
 

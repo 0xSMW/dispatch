@@ -122,6 +122,21 @@ Every response to an authenticated request carries `ratelimit-limit`, `ratelimit
 
 `POST /emails` and `POST /emails/batch` accept an `Idempotency-Key` header of 1 to 256 characters. A retry with the same key and body within 24 hours returns the first response without sending again.
 
+Email is either **Transactional** or **Marketing**:
+
+| Kind | Ordinary send | Behavior |
+|:---|:---|:---|
+| Transactional | Omit `topic_id`. | For receipts, password resets, and other product email. Does not enforce Marketing opt-outs or add unsubscribe links and headers. |
+| Marketing | Set `topic_id`. | Respects global and topic opt-outs, supplies recipient-specific unsubscribe links, and adds one-click headers. |
+
+There is no `kind` field on `POST /emails`, batches, or SDK `emails.send`. No contact, topic, segment, or automation is required for a Transactional send. Both kinds still follow sender verification, suppression, delivery, and sandbox rules.
+
+Set `topic_id` for Marketing email. Each recipient gets a signed preference link in `{{{UNSUBSCRIBE_URL}}}`, `{{{RESEND_UNSUBSCRIBE_URL}}}`, or `{{{DISPATCH_UNSUBSCRIBE_URL}}}`, and RFC 8058 one-click headers. Raw HTML and text also support `{{UNSUBSCRIBE_URL}}`. Only those placeholders are replaced in raw content. Caller unsubscribe variables and headers cannot replace the signed link; header names are matched case-insensitively. Scheduled content updates get the same protection. Opt-outs are checked again before delivery.
+
+A Marketing request with several recipients across `to`, `cc`, and `bcc` becomes separate emails. Addresses are deduplicated case-insensitively, in that order, with the first role kept as the `split_role` tag. Each email has one `to`, no `cc` or `bcc`, and its own link. The response is `{ "id": "first_email_id", "sandbox": false, "emails": [{ "id": "...", "to": "...", "sandbox": false }] }`. A batch keeps one result per accepted item, with `emails` on each split item. Idempotency covers the whole request and returns the same IDs on retry. Invalid content rolls back every recipient in that item; an opted-out recipient fails independently without rejecting other recipients. Single-recipient responses are `{ "id": "...", "sandbox": false }`, with `sandbox` set according to the recipient.
+
+Without `topic_id`, email is Transactional. Multi-recipient requests are not split, and caller headers and raw content are unchanged. Sandbox recipients are still simulated as described below. Neither path creates a contact just to send. Using an unsubscribe link for an unknown address may create an already opted-out contact; it never revives a deleted one. A link for a deleted topic opts that recipient out globally.
+
 `POST /emails/batch` takes up to 100 emails, as an array or as `{ "emails": [...] }`. Batch emails cannot have attachments. The `x-batch-validation` header picks the mode:
 
 - `strict`, the default, rejects the whole batch when one email is invalid.
@@ -129,17 +144,82 @@ Every response to an authenticated request carries `ratelimit-limit`, `ratelimit
 
 `scheduled_at` takes ISO 8601 or a phrase such as `in 1 hour`, at most 30 days ahead. A time with no offset, such as `2026-10-03T09:00`, and a phrase such as `tomorrow at 9am` are read as UTC. Send an offset to mean another timezone. An email in `queued` or `scheduled` can be changed with `PATCH /emails/{id}` or cancelled with `POST /emails/{id}/cancel`.
 
+### Sandbox recipients
+
+Dispatch renders and stores emails to test addresses normally, but never sends those recipients to SES or another provider, even in production. This applies to Transactional and Marketing sends, batches, broadcasts, and automations.
+
+- `example.com`, `example.net`, `example.org`, and their subdomains.
+- Domains under `.test`, `.example`, or `.invalid`.
+- The tenant's [configured `sandbox_domains`](../settings.md), including their subdomains.
+
+Domain matching is case-insensitive and respects hostname boundaries. Adding `qa.acme.com` does not sandbox `notqa.acme.com`. Sender verification, API key restrictions, content validation, and Marketing opt-outs still apply.
+
+Send responses and accepted batch items include a boolean `sandbox`, as does every entry in a split Marketing response's `emails` array. Each flag describes the email identified by its adjacent `id`, not the whole split request. `GET /emails` and `GET /emails/{id}` include `sandbox` and a `recipients` array of `{ email, kind, sandbox }`. Existing `to`, `cc`, and `bcc` arrays remain strings.
+
+The email flag is true only when all original recipients are sandbox recipients. Mixed emails have `sandbox: false`; only the real recipients are sent, and each original recipient's flag remains available for inspection.
+
+Sandbox emails keep normal `queued`, `scheduled`, and `delivered` statuses. The worker records `email.delivered` with `data.sandbox: true` to identify simulated delivery. It does not call the provider or invent a provider message ID for an all-sandbox email. For mixed emails, the simulated delivery event names only sandbox recipients, while real recipients still get provider delivery events. Webhook payloads carry the same `data.sandbox` marker. Do not treat that marker as confirmation of real delivery.
+
+Sandbox activity is excluded from real sending, delivery, and engagement metrics, including automation step metrics. Adding a sandbox domain before queued delivery also reconciles the broadcast's real Sent count. If a previously real email is explicitly retried after its domain becomes sandbox, the simulated retry does not remove earlier real metrics or click history. Stored sandbox routing remains sandbox even after a setting is removed.
+
+This is separate from the **SES account sandbox**, which restricts real delivery until AWS grants production access. Dispatch's sandbox recipients bypass the provider whether or not your SES account has production access.
+
 ## Broadcasts and automations
+
+Contact property definitions support `string`, `number`, `boolean`, and `date`. Contact values and definition fallbacks must match their declared type; null removes a stored property or clears a fallback. Dates remain ISO strings, either `YYYY-MM-DD` or a timestamp with seconds and `Z` or a numeric offset. Undeclared contact keys remain allowed. New definitions named `topics` or `segments` are refused, while existing live legacy definitions can still update their fallback. [CSV imports](../audience.md#csv-imports) support the same four types; invalid nonempty boolean/date cells count as failed rows.
+
+Rules can read fresh `contact.*` fields, receiving topic IDs in `contact.topics`, live static membership IDs in `contact.segments`, and recorded event time in `event.received_at`. Stored legacy properties named `topics` or `segments` win; event payloads cannot spoof `received_at`. `not_contains` negates `contains`. `within` and `not_within` use a positive finite duration such as `"7 days"` and inclusive endpoints; missing or invalid dates return false for both. See [conditions](../automations.md#conditions).
+
+The optional `send_email` config `variable_mapping` is a record from template variable names to dotted `event.*` or `contact.*` fields. Mapped values override literals, missing values are omitted, and paths read own properties only. `template.variables` remain literal and automatic event payload variables still work. Recipient and unsubscribe context stays protected. See [variable mappings](../automations.md#variable-mappings).
+
+Automations accept five trigger-step configs: `event`, `contact_created`, `contact_updated`, `topic_subscribed`, and `segment_added`. Legacy `{ "event_name": "..." }` configs remain event triggers. Responses include `trigger_config` and `reentry`; the existing `trigger` string remains the event name for event triggers and is null for contact triggers. `POST /contacts` starts matching enabled Contact added automations on insert or explicit revival, and Contact changes automations on actual changes to a live contact. Topic triggers use effective off-to-on receipt transitions, and segment triggers use actual new membership. No-op writes do not trigger these flows. See [trigger configs and sources](../automations.md#triggers).
+
+The optional `reentry` field is `once` or `every_time`. New contact triggers default to `once`; new event triggers and existing automations default to `every_time`. Changing the trigger keeps its stored rule. `once` prevents another enrollment of the same identified contact, including after completion or failure. Deleting a contact clears its once enrollments, so revival can enter again. Runs without an identified contact are not restricted by `once`.
+
+`POST /automations/{id}/stop` disables the automation and cancels active runs. It accepts an optional JSON `{ "reset_reentry": true }`; omission or `false` preserves enrollments. With `true`, only once enrollments of contacts whose active runs were actually cancelled by this stop are deleted. Completed runs keep their enrollments, other automations are unaffected, and no trigger is replayed. Already queued emails are separate resources and are not cancelled.
+
+Event names beginning with `@` are reserved for internal contact triggers and refused in new application events, definitions, event triggers, and event waits. Internal triggers are hidden from `/fired-events`, do not match event triggers or wake waits, and never require the application to fire an event manually. Step-triggered writes cannot start their own automation; cross-automation trigger chains stop at depth five.
+
+### Lifecycle presets
+
+List built-in graphs with `GET /template-library/automations` or preview one with `GET /template-library/automations/{slug}`. Install with authenticated full write permission:
+
+```http
+POST /template-library/automations/onboarding-drip/install
+Content-Type: application/json
+
+{"from":"Acme <hello@acme.com>","topic_id":"topic_123"}
+```
+
+HTTP 200 returns `{automation, templates: {created, reused}, events, properties, next_steps, request_id}`. The automation is disabled, every send binds your sender, and compatible existing dependencies and template copies are reused unchanged. A reused draft is not published. `name` is optional and defaults to the preset name.
+
+The sender needs a live verified tenant domain with sending enabled (403 otherwise); missing sender returns 422 `Choose a sender`. Newsletter welcome requires an explicit live same-tenant topic at installation, returning 422 `Choose a topic` without writes when omitted. Other Marketing presets may install without a topic, returning `Choose a topic for marketing steps`; enabling stays blocked until configured. Transactional steps never gain a topic. Unknown slugs return 404; malformed fields return 400; name, incompatible dependency, tombstone, or contention conflicts return 409 and roll back all installation writes. Review the graph and its emails before enabling. See the [six recipes](../automations/README.md).
+
+`GET /events` list rows include `fired_count` and nullable `last_fired_at`. Counts match live, tenant-scoped firings by definition name, excluding deleted and internal `@` events. A never-fired definition has `0` and `null`; detail responses remain unchanged.
+
+### Contact imports
+
+`POST /contacts/imports` accepts multipart CSV, optional JSON `column_map`, `segments`, and `topics` fields, and optional `on_conflict` (`upsert` or `skip`). Its optional `trigger_automations` field encodes a boolean as exactly `true` or `false`. Explicit `false` overrides a tenant default of `true`. When omitted, the tenant's `import_trigger_automations` setting, default `false`, is resolved and stored at creation. A later settings change never changes that queued import.
+
+Creation returns `{ "object": "contact_import", "id": "import_...", "trigger_automations": false }`, plus `request_id`. Import list entries and detail responses also expose the stored boolean.
+
+When enabled, imports fire Contact added on insert or revival, Subscribed to topic on an actual effective off-to-on transition, and Added to segment on actual membership insertion. They do not fire Contact changes. Runs have bulk priority and still follow the automation's re-entry rule. Processing retries do not duplicate triggers for changes already applied; a separate upload creates a new import. Turning on triggers does not clear opt-outs or bypass Marketing subscription and suppression checks. See [CSV imports](../audience.md#csv-imports).
+
+### Sending from flows
+
+Broadcasts are always **Marketing**. They respect opt-outs and supply recipient-specific unsubscribe links and one-click headers even without a topic. A topic scopes subscription preferences; omitting it does not make a broadcast Transactional.
 
 `POST /broadcasts/{id}/send` checks the broadcast before it changes state. It refuses an unverified or disabled sender domain, blocks that do not pair up, and content that needs a value no recipient would get, such as `{{{COMPANY_ADDRESS}}}` when the brand has no address. The check renders two sample contacts, one with every contact field the content names and one with none, so it also finds a variable inside `{{{#if contact.plan}}}` or `{{{#unless contact.first_name}}}`. A missing contact field is not refused. `{{{contact.first_name}}}` with no fallback prints as a blank for a contact with no first name, and the email still goes. The same holds for `FIRST_NAME`, `LAST_NAME`, and any `contact.*` property. A missing variable still fails a send through `POST /emails`. `GET /broadcasts/{id}/audience` returns `no_first_name` and `no_last_name`, the number of recipients who have no first or last name, and the dashboard's review step warns when the content prints a name with no fallback and outside an `#if` on that name. It also warns about a `contact.*` field that no property defines, which is blank for everyone and is usually a typo. `POST /broadcasts/{id}/render` returns the broadcast as a sample contact would get it.
 
-An automation's `send_email` step sends to everyone by default, like `POST /emails`, so it suits receipts and password resets. Give the step a `topic_id` to make it subscription mail: a contact who unsubscribed from everything, or opted out of that topic, is then skipped and the run goes on. So is a deleted contact, recorded as `contact_deleted`. A step without a topic still emails a deleted contact's address, as `POST /emails` would. `from` may be left out when the template stores a sender. `POST /events/send` only stores the event. The worker runs the steps.
+An automation's `send_email` config uses `kind: "transactional" | "marketing"`. Transactional has no topic and does not enforce Marketing subscriptions, including for a deleted contact's address. Marketing uses `topic_id`: global and topic opt-outs skip the send while the run continues; deleted contacts are skipped as `contact_deleted`. It supplies recipient-specific unsubscribe links and one-click headers, and rechecks opt-outs at delivery. A Marketing template cannot be used transactionally. `GET /templates` and template detail expose their derived `kind`; see [template kinds](../templates.md#transactional-or-marketing).
+
+Disabled or paused Marketing drafts may omit `topic_id`, but creating enabled, enabling, or resuming returns `422` until every Marketing step has a live topic. Execution refuses missing or deleted topics rather than falling back to Transactional. Legacy input without `kind` is inferred from `topic_id`, Marketing when present and Transactional otherwise; stored configs and responses always return explicit `kind`. `from` may be left out when the template stores a sender. `POST /events/send` stores the event and starts matching runs; the worker executes their steps. See [automation controls](../automations.md#transactional-or-marketing).
 
 An event is often the first time Dispatch hears of a person, such as a signup. When `email` matches no contact, `POST /events/send` adds one before the runs start. It lowercases the address, subscribes the contact, takes the name from the payload's `first_name` and `last_name`, and sends `contact.created` to webhooks. A name is used when it is a string of 1 to 120 characters after trimming. A live contact with no name gets the event's name and sends `contact.updated`. A name it already has is never changed. The body keeps Resend's shape, and both name fields are optional. A deleted contact stays deleted, since the deletion may have been a privacy request. Its event is stored and its runs start. Steps that change the contact or add it to a segment skip it, and so does a `send_email` step with a topic. Two events for the same new address at once create one contact.
 
 ## Email metrics
 
-`GET /emails/metrics` counts `email_events` for the tenant. With no dates it covers the 7 days before now. `end_date` is exclusive. `opened` counts every open event, and `unique_opened` counts distinct emails, so the two differ once one email is opened twice.
+`GET /emails/metrics` counts real `email_events` for the tenant, excluding simulated email and sandbox-recipient activity from totals and rates. Attribution belongs to each event, so later sandbox routing changes do not erase historical real activity. With no dates it covers the 7 days before now. `end_date` is exclusive. `opened` counts every open event, and `unique_opened` counts distinct emails, so the two differ once one email is opened twice.
 
 Rates are percentages rounded to two decimals. A zero denominator gives 0.
 
@@ -150,7 +230,13 @@ Rates are percentages rounded to two decimals. A zero denominator gives 0.
 - `complaint_rate` is complained / delivered.
 - `unsubscribe_rate` is unsubscribed / delivered.
 
-`unsubscribed` counts `email.unsubscribed` events, which are recorded when a recipient unsubscribes through a broadcast's link. `email` and `broadcast` cannot be dimensions together. `timezone` must be an IANA name.
+`unsubscribed` counts `email.unsubscribed` events, recorded once per email when a recipient unsubscribes through a Marketing or broadcast link. `email` and `broadcast` cannot be dimensions together. `timezone` must be an IANA name.
+
+Use `dimensions=automation` to group by `automation_id`. Use `dimensions=step&automation_id=...` to group by an automation's send steps, with `automation_id` and `automation_step` in each row. A step breakdown requires an `automation_id` filter; filters accept at most 100 IDs. Rates and totals follow the same rules as other email metrics. Attribution is stored by the worker, not taken from caller tags. Older automation emails can have a null step key; the dashboard lists those as earlier emails with an unknown step.
+
+## Contact history
+
+`GET /contacts/{id}/activity` lists contact, segment, topic, email, fired-event, and automation-run activity in time order, with ID cursors. Application events appear as `event.fired`; internal `@` events are excluded. Run rows include `automation_id` and `run_id`, with IDs `<run_id>:started` and `<run_id>:completed`. Terminal states `done`, `failed`, and `stopped` appear in the completed row's `label`. Email matching is case-insensitive, and repeated recipient addresses never repeat an activity ID.
 
 ## Sharing an email
 
@@ -167,8 +253,9 @@ The OpenAPI document has every parameter and field. By area:
 - API keys: `POST /api-keys`, `GET /api-keys`, `GET /api-keys/{id}`, `PATCH /api-keys/{id}`, `DELETE /api-keys/{id}`
 - Webhooks: `POST /webhooks`, `GET /webhooks`, `GET /webhooks/{id}`, `PATCH /webhooks/{id}`, `DELETE /webhooks/{id}`, `POST /webhooks/{id}/signing-secret/rotate`, `POST /webhooks/test`, `GET /webhooks/{id}/events`, `GET /webhooks/{id}/events/{event_id}`, `GET /webhooks/{id}/events/{event_id}/attempts`, `POST /webhooks/{id}/events/{event_id}/replay`. See [webhooks.md](../webhooks.md).
 - Templates: `POST /templates`, `GET /templates`, `GET /templates/{id}`, `PATCH /templates/{id}`, `DELETE /templates/{id}`, `POST /templates/{id}/versions`, `GET /templates/{id}/versions`, `POST /templates/{id}/publish`, `POST /templates/{id}/render`, `POST /templates/{id}/duplicate`. `{id}` also accepts the alias.
-- Template library: `GET /template-library`, `GET /template-library/{slug}`, `POST /template-library/{slug}/install`
-- Brand: `GET /brand`, `PATCH /brand`
+- Template library: `GET /template-library`, `GET /template-library/{slug}`, `POST /template-library/{slug}/install`, `GET /template-library/automations`, `GET /template-library/automations/{slug}`
+- Brand: `GET /brand`, `PATCH /brand`, `POST /brand/update-library`. See [theme tokens and safe updates](../templates/theme.md).
+- Goals: `GET /goals`, `POST /goals`, `GET /goals/{id}`, `PATCH /goals/{id}`, `DELETE /goals/{id}`, `GET /goals/{id}/metrics`. See [retroactive conversions and history limits](../goals.md).
 - Contacts: `POST /contacts`, `GET /contacts`, `GET /contacts/stats`, `GET /contacts/{id}`, `PATCH /contacts/{id}`, `DELETE /contacts/{id}`, `GET /contacts/{id}/activity`, `GET /contacts/{id}/segments`, `POST` and `DELETE /contacts/{id}/segments/{segment_id}`, `GET` and `PATCH /contacts/{id}/topics`. `{id}` also accepts the email address.
 - Imports: `POST /contacts/imports` (multipart CSV), `GET /contacts/imports`, `GET /contacts/imports/{id}`
 - Contact properties: `POST /contact-properties`, `GET /contact-properties`, `GET /contact-properties/{id}`, `PATCH /contact-properties/{id}`, `DELETE /contact-properties/{id}`

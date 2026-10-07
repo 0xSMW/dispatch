@@ -15,6 +15,8 @@ import { tokens, unsafePaste } from "./guard";
 import { api, calls, list, renderAt } from "./harness";
 import { TemplateEditor } from "./TemplateEditor";
 import Visual from "./Visual";
+import type { Editor as TipTap } from "./placeholders";
+import type { Variable } from "./render";
 
 type Editor = { commands: { focus: (at: "end") => boolean; insertContent: (value: string) => boolean } };
 
@@ -185,6 +187,61 @@ describe("what visual mode opens", () => {
     paste('<p><a href="javascript:alert(1)">x</a></p>');
     expect(current.getHTML()).toBe(before);
     expect(unsafePaste('<p><a href="https://acme.test">ok</a> and <img src="https://acme.test/a.png"></p>')).toBe(false);
+  });
+
+  for (const eventType of ["paste", "drop"] as const) {
+    it(`rejects raw native ${eventType} markup hidden in a fallback without changing the document or selection`, async () => {
+      const onHtml = vi.fn();
+      render(h(Visual, { html: "<p>Keep this sentence.</p>", convert: true, onHtml, onReject: vi.fn() }));
+      const current = (await editor()) as TipTap;
+      act(() => void current.commands.setTextSelection({ from: 2, to: 7 }));
+      const before = current.state.doc.toJSON();
+      const selection = current.state.selection.toJSON();
+      const target = document.querySelector(".tiptap")!;
+      const markups = [
+        '<span style="position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:99999;background:red">Overlay</span>',
+        '<a href="java&#x73;cript:alert(1)">Link</a>',
+        '<img src="data:image/png;base64,AAAA">',
+        '<img src="blob:https://acme.test/image">',
+        "<script>alert(1)</script>",
+        "<iframe src='/frame'></iframe>",
+        "<form>Form</form>",
+      ];
+      for (const markup of markups) {
+        const html = `<p>{{{name|${markup}}}}</p>`;
+        const event = new Event(eventType, { bubbles: true, cancelable: true });
+        Object.defineProperty(event, eventType === "paste" ? "clipboardData" : "dataTransfer", {
+          value: { files: [], types: ["text/html", "text/plain"], getData: (type: string) => type === "text/html" ? html : type === "text/plain" ? "{{{name|Text}}}" : "" },
+        });
+        expect(fireEvent(target, event), markup).toBe(false);
+        expect(current.state.doc.toJSON(), markup).toEqual(before);
+        expect(current.state.selection.toJSON(), markup).toEqual(selection);
+        expect(target.querySelector("span[style*='position'], a, img, script, iframe, form"), markup).toBeNull();
+      }
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      expect(onHtml).not.toHaveBeenCalled();
+    });
+  }
+
+  it("accepts safe native HTML and plain-text paste", async () => {
+    const onHtml = vi.fn();
+    render(h(Visual, { html: "<p>Start.</p>", convert: true, onHtml, onReject: vi.fn() }));
+    const current = await editor();
+    const target = document.querySelector(".tiptap")!;
+    const paste = (html: string, text: string) => {
+      act(() => void current.commands.focus("end"));
+      return fireEvent.paste(target, {
+        clipboardData: { files: [], types: html ? ["text/html", "text/plain"] : ["text/plain"], getData: (type: string) => type === "text/html" ? html : type === "text/plain" ? text : "" },
+      });
+    };
+    paste('<p>Safe &amp; <strong>ordinary</strong> <a href="https://acme.test">link</a></p>', "Safe & ordinary link");
+    expect(target.textContent).toContain("Safe & ordinary link");
+    expect(target.querySelector("strong")?.textContent).toBe("ordinary");
+    expect(target.querySelector("a")?.getAttribute("href")).toBe("https://acme.test");
+    paste("", 'Plain <span>literal</span> & "quoted"');
+    expect(target.textContent).toContain('Plain <span>literal</span> & "quoted"');
+    expect(target.querySelector("span")).toBeNull();
+    await waitFor(() => expect(onHtml).toHaveBeenCalled());
   });
 
   it("writes nothing from a read-only editor, whatever its menus let through", async () => {
@@ -366,5 +423,210 @@ describe("TemplateEditor in Visual mode", () => {
     const body = calls(fetch, "PATCH /templates/tpl_1")[0]!.body as { html: string };
     expect(body.html).toContain("Thanks.");
     expect(tokens(body.html)).toEqual(["{{{NAME}}}", "{{{PLAN}}}"]);
+  });
+});
+
+describe("Visual placeholder controls", () => {
+  async function select(key: string, occurrence = 0) {
+    const current = await editor() as TipTap;
+    let position = -1;
+    current.state.doc.descendants((node, pos) => {
+      if (!node.isText) return;
+      const index = node.text!.indexOf(key);
+      if (index >= 0 && occurrence-- === 0) position = pos + index + 1;
+    });
+    expect(position).toBeGreaterThan(0);
+    act(() => {
+      (document.querySelector(".tiptap") as HTMLElement).focus();
+      current.commands.setTextSelection(position);
+    });
+    return current;
+  }
+  function setup(html: string, variables: Variable[] = []) {
+    const onHtml = vi.fn();
+    const changed = vi.fn();
+    function Page() {
+      const [values, setValues] = useState(variables);
+      const [fallbacks] = useState({ current: new Map<string, string | number>() });
+      return h(Visual, {
+        html, convert: true, onHtml, onReject: vi.fn(),
+        placeholders: { variables: values, fallbacks, onChange: (key, change) => {
+          changed(key, change);
+          setValues((current) => current.map((item) => item.key === key ? { ...item, ...change } : item));
+        } },
+      });
+    }
+    render(h(Page));
+    return { onHtml, changed };
+  }
+  it("opens the shared controls without editing HTML and round-trips a saved fallback", async () => {
+    const { onHtml, changed } = setup("<p>Hi {{{NAME}}}.</p>", [{ key: "NAME", type: "string", fallback_value: "Ada" }]);
+    await select("NAME");
+    const panel = within(screen.getByRole("complementary", { name: "Placeholder controls" }));
+    expect((panel.getByLabelText("Name") as HTMLInputElement).value).toBe("NAME");
+    expect((panel.getByLabelText("List item") as HTMLInputElement).value).toBe("Not a list item");
+    fireEvent.click(panel.getByRole("button", { name: "Required" }));
+    expect(changed).toHaveBeenLastCalledWith("NAME", { fallback_value: null });
+    fireEvent.click(panel.getByRole("button", { name: "Optional" }));
+    expect(changed).toHaveBeenLastCalledWith("NAME", { fallback_value: "Ada" });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(onHtml).not.toHaveBeenCalled();
+  });
+  it("renames only the selected token, preserving its inline fallback, marks and duplicate", async () => {
+    const { onHtml } = setup("<p>Hi <strong>{{{NAME|there}}}</strong> and {{{NAME}}}.</p>");
+    await select("NAME");
+    const panel = within(screen.getByRole("complementary", { name: "Placeholder controls" }));
+    fireEvent.change(panel.getByLabelText("Name"), { target: { value: "FIRST" } });
+    fireEvent.blur(panel.getByLabelText("Name"));
+    await waitFor(() => expect(onHtml).toHaveBeenCalled());
+    const html = String(onHtml.mock.calls.at(-1)![0]);
+    expect(tokens(html)).toEqual(["{{{FIRST|there}}}", "{{{NAME}}}"]);
+    expect(html).toContain("<strong>{{{FIRST|there}}}</strong>");
+  });
+  it("keeps the inspector usable when browser selection moves on blur into its controls", async () => {
+    setup("<p>Hi {{{NAME}}}.</p>", [{ key: "NAME", type: "string", fallback_value: "Ada" }]);
+    const current = await select("NAME");
+    const panel = within(screen.getByRole("complementary", { name: "Placeholder controls" }));
+    const required = panel.getByRole("button", { name: "Required" });
+    // Native focus blurs ProseMirror before React's focus capture runs on the panel.
+    act(() => (panel.getByLabelText("Fallback for NAME") as HTMLElement).focus());
+    act(() => void current.commands.setTextSelection(2));
+    fireEvent.click(required);
+    expect(panel.getByRole("button", { name: "Optional" })).toBeTruthy();
+    fireEvent.click(panel.getByRole("button", { name: "Optional" }));
+    expect((panel.getByLabelText("Fallback for NAME") as HTMLInputElement).value).toBe("Ada");
+    fireEvent.focus(document.querySelector(".tiptap")!);
+    act(() => void current.commands.setTextSelection(3));
+    expect(screen.queryByRole("complementary", { name: "Placeholder controls" })).toBeNull();
+  });
+  it("keeps lists Required, exposes list-item scope and edits an item fallback without declaring it", async () => {
+    const { onHtml, changed } = setup("<p>{{{#each ITEMS}}}</p><p>{{{name|Widget}}}</p><p>{{{/each}}}</p>", [{ key: "ITEMS", type: "list", fallback_value: null }]);
+    await select("ITEMS");
+    let panel = within(screen.getByRole("complementary", { name: "Placeholder controls" }));
+    expect((panel.getByRole("button", { name: "Required" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(panel.queryByRole("button", { name: "Optional" })).toBeNull();
+    await select("name");
+    panel = within(screen.getByRole("complementary", { name: "Placeholder controls" }));
+    expect((panel.getByLabelText("List item") as HTMLInputElement).value).toBe("Item in ITEMS");
+    fireEvent.change(panel.getByLabelText("Fallback for name"), { target: { value: "Product" } });
+    await waitFor(() => expect(onHtml).toHaveBeenCalled());
+    expect(tokens(String(onHtml.mock.calls.at(-1)![0]))).toEqual(["{{{#each ITEMS}}}", "{{{name|Product}}}", "{{{/each}}}"]);
+    expect(changed).not.toHaveBeenCalled();
+  });
+  it("restores a hidden item fallback after dismissing and reselecting the inspector", async () => {
+    const { onHtml, changed } = setup("<p>Intro</p><p>{{{#each ITEMS}}}</p><p>{{{name|Widget}}}</p><p>{{{/each}}}</p>");
+    const current = await select("name");
+    fireEvent.click(within(screen.getByRole("complementary")).getByRole("button", { name: "Required" }));
+    expect(current.state.doc.textContent).toContain("{{{name}}}");
+    await waitFor(() => expect(String(onHtml.mock.calls.at(-1)?.[0])).toContain("{{{name}}}"));
+    act(() => void current.commands.setTextSelection(1));
+    expect(screen.queryByRole("complementary")).toBeNull();
+    await select("name");
+    const panel = within(screen.getByRole("complementary"));
+    fireEvent.click(panel.getByRole("button", { name: "Optional" }));
+    expect((panel.getByLabelText("Fallback for name") as HTMLInputElement).value).toBe("Widget");
+    expect((panel.getByLabelText("List item") as HTMLInputElement).value).toBe("Item in ITEMS");
+    await waitFor(() => expect(String(onHtml.mock.calls.at(-1)?.[0])).toContain("{{{name|Widget}}}"));
+    expect(changed).not.toHaveBeenCalled();
+  });
+  it("keeps same-name item occurrences independent through nearby edits and renaming", async () => {
+    setup("<p>Intro</p><p>{{{#each ITEMS}}}</p><p>{{{name|First}}}</p><p>{{{name|Second}}}</p><p>{{{/each}}}</p>");
+    const current = await select("name", 0);
+    fireEvent.click(within(screen.getByRole("complementary")).getByRole("button", { name: "Required" }));
+    await select("name", 1);
+    fireEvent.click(within(screen.getByRole("complementary")).getByRole("button", { name: "Required" }));
+    act(() => {
+      current.commands.setTextSelection(1);
+      current.commands.insertContent("Nearby & ");
+    });
+    expect(screen.queryByRole("complementary")).toBeNull();
+    await select("name", 0);
+    let panel = within(screen.getByRole("complementary"));
+    fireEvent.change(panel.getByLabelText("Name"), { target: { value: "description" } });
+    fireEvent.blur(panel.getByLabelText("Name"));
+    act(() => void current.commands.setTextSelection(1));
+    await select("description");
+    panel = within(screen.getByRole("complementary"));
+    fireEvent.click(panel.getByRole("button", { name: "Optional" }));
+    expect((panel.getByLabelText("Fallback for description") as HTMLInputElement).value).toBe("First");
+    await select("name");
+    panel = within(screen.getByRole("complementary"));
+    fireEvent.click(panel.getByRole("button", { name: "Optional" }));
+    expect((panel.getByLabelText("Fallback for name") as HTMLInputElement).value).toBe("Second");
+    expect(current.state.doc.textContent).toContain("{{{description|First}}}{{{name|Second}}}");
+  });
+  it("does not give a deleted occurrence's hidden fallback to a new token at that position", async () => {
+    setup("<p>{{{#each ITEMS}}}</p><p>{{{name|Old}}}</p><p>{{{/each}}}</p>");
+    const current = await select("name");
+    fireEvent.click(within(screen.getByRole("complementary")).getByRole("button", { name: "Required" }));
+    let from = 0;
+    current.state.doc.descendants((node, pos) => {
+      if (node.text === "{{{name}}}") from = pos;
+    });
+    act(() => {
+      current.view.dispatch(current.state.tr.replaceWith(from, from + "{{{name}}}".length, current.schema.text("{{{name}}}")));
+    });
+    await select("name");
+    const panel = within(screen.getByRole("complementary"));
+    fireEvent.click(panel.getByRole("button", { name: "Optional" }));
+    expect((panel.getByLabelText("Fallback for name") as HTMLInputElement).value).toBe("");
+  });
+  it("clears hidden item defaults when the document is replaced", async () => {
+    const controls = { variables: [], fallbacks: { current: new Map<string, string | number>() }, onChange: vi.fn() };
+    const props = { convert: true, onHtml: vi.fn(), onReject: vi.fn(), placeholders: controls };
+    const page = render(h(Visual, { ...props, html: "<p>{{{#each ITEMS}}}</p><p>{{{name|Old}}}</p><p>{{{/each}}}</p>" }));
+    await select("name");
+    fireEvent.click(within(screen.getByRole("complementary")).getByRole("button", { name: "Required" }));
+    page.rerender(h(Visual, { ...props, html: "<p>Replacement</p><p>{{{#each ITEMS}}}</p><p>{{{name}}}</p><p>{{{/each}}}</p>" }));
+    await waitFor(() => expect(document.querySelector(".visualCanvas:not(.checking) .tiptap")?.textContent).toContain("Replacement"));
+    await select("name");
+    const panel = within(screen.getByRole("complementary"));
+    fireEvent.click(panel.getByRole("button", { name: "Optional" }));
+    expect((panel.getByLabelText("Fallback for name") as HTMLInputElement).value).toBe("");
+  });
+  it("saves sensitive inspector defaults literally and reloads them without interpreting markup", async () => {
+    const { onHtml } = setup("<p>{{{#each ITEMS}}}</p><p>{{{name|Widget}}}</p><p>{{{/each}}}</p>");
+    await select("name");
+    const fallback = `R&D "<em>plain</em>" &amp; &#39;`;
+    fireEvent.change(within(screen.getByRole("complementary")).getByLabelText("Fallback for name"), { target: { value: fallback } });
+    await waitFor(() => expect(onHtml).toHaveBeenCalled());
+    const saved = String(onHtml.mock.calls.at(-1)![0]);
+    expect(saved).toContain(`{{{name|${fallback}}}}`);
+    expect(document.querySelector(".tiptap em")).toBeNull();
+    cleanup();
+    // No conversion is needed for the actual saved HTML. Ordinary edits still work.
+    const write = vi.fn();
+    render(h(Visual, { html: saved, onHtml: write, onReject: vi.fn() }));
+    await type(" Ordinary & <safe>");
+    await waitFor(() => expect(write).toHaveBeenCalled());
+    expect(String(write.mock.calls.at(-1)![0])).toContain(`{{{name|${fallback}}}}`);
+    expect(String(write.mock.calls.at(-1)![0])).toMatch(/Ordinary\s+&amp;\s+&lt;safe&gt;/);
+    expect(document.querySelector(".tiptap em")).toBeNull();
+  });
+  it("renames a list whose name is each without changing the block command", async () => {
+    const { onHtml } = setup("<p>{{{#each each}}}</p><p>{{{name}}}</p><p>{{{/each}}}</p>", [{ key: "each", type: "list", fallback_value: null }]);
+    const current = await editor() as TipTap;
+    let position = -1;
+    current.state.doc.descendants((node, pos) => {
+      if (node.text?.includes("#each each")) position = pos + node.text.indexOf("#each each") + 7;
+    });
+    act(() => {
+      (document.querySelector(".tiptap") as HTMLElement).focus();
+      current.commands.setTextSelection(position);
+    });
+    const input = within(screen.getByRole("complementary", { name: "Placeholder controls" })).getByLabelText("Name");
+    fireEvent.change(input, { target: { value: "ITEMS" } });
+    fireEvent.blur(input);
+    await waitFor(() => expect(onHtml).toHaveBeenCalled());
+    expect(tokens(String(onHtml.mock.calls.at(-1)![0]))).toEqual(["{{{#each ITEMS}}}", "{{{name}}}", "{{{/each}}}"]);
+  });
+  it("clears the panel outside a token and never treats text split by markup as a placeholder", async () => {
+    setup("<p>Hi {{{NAME}}} and {{{FI<strong>RST</strong>}}}.</p>");
+    const current = await select("NAME");
+    expect(screen.getByRole("complementary", { name: "Placeholder controls" })).toBeTruthy();
+    act(() => void current.commands.setTextSelection(2));
+    expect(screen.queryByRole("complementary", { name: "Placeholder controls" })).toBeNull();
+    await select("RST");
+    expect(screen.queryByRole("complementary", { name: "Placeholder controls" })).toBeNull();
   });
 });

@@ -1,3 +1,11 @@
+import { createContext, useContext } from "react";
+import { themeContext, themeVariables } from "@dispatchmail/core";
+
+export type EmailTheme = ReturnType<typeof themeContext>;
+export const themePlaceholders = Object.fromEntries(
+  themeVariables.map((key) => [key, `{{{${key}}}}`]),
+) as EmailTheme;
+
 export type Brand = {
   productName: string;
   productUrl: string;
@@ -14,7 +22,19 @@ export type Brand = {
   year?: string;
   // Marketing emails only. A broadcast fills the placeholder for each recipient, so it is the default.
   unsubscribeUrl?: string;
+  // CSS-ready values, including px units, or reserved placeholders from the library build.
+  theme?: Partial<EmailTheme>;
 };
+
+export function emailTheme(brand?: Brand): EmailTheme {
+  return { ...themeContext({ color: brand?.color }), ...brand?.theme };
+}
+
+export const ThemeContext = createContext<EmailTheme | null>(null);
+export function useTheme(brand?: Brand): EmailTheme {
+  const inherited = useContext(ThemeContext);
+  return brand ? emailTheme(brand) : inherited ?? emailTheme();
+}
 
 export type EmailVariable = {
   key: string;
@@ -47,29 +67,31 @@ export const fontFamily =
   "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif";
 
 export const text = {
-  fontFamily,
-  fontSize: "16px",
+  // Recipes cannot read context before Layout renders. Inherit its tokenized body styles
+  // instead of leaving unresolved placeholders in standalone React Email previews.
+  fontFamily: "inherit",
+  fontSize: "inherit",
   lineHeight: "1.5",
-  color: light.text,
+  color: "inherit",
   marginTop: "0",
   marginBottom: "16px",
 };
 
 export const heading = {
-  fontFamily,
+  fontFamily: "inherit",
   fontSize: "24px",
   lineHeight: "1.3",
   fontWeight: "600",
-  color: light.text,
+  color: "inherit",
   marginTop: "0",
   marginBottom: "16px",
 };
 
 export const muted = {
-  fontFamily,
-  fontSize: "14px",
+  fontFamily: "inherit",
+  fontSize: "inherit",
   lineHeight: "1.5",
-  color: light.muted,
+  color: "inherit",
   marginTop: "0",
   marginBottom: "16px",
 };

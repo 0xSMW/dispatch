@@ -812,4 +812,314 @@ where not exists (
     and (r.id = 'role_' || md5(t.id || ':viewer') or r.name = 'Viewer' or r.permissions = '["read"]'::jsonb)
 )
 on conflict do nothing;
+
+-- Tenant settings.
+alter table tenants add column if not exists settings jsonb not null default '{}';
+
+-- Recipient links for marketing mail.
+alter table emails add column if not exists contact_id text;
+
+-- Automation email attribution. Old messages have no recoverable step key.
+alter table emails add column if not exists automation_id text;
+alter table emails add column if not exists automation_step text;
+update emails e set automation_id = a.id
+from automations a, automation_runs r
+where e.automation_id is null
+  and e.created_at < '2026-10-04T00:00:00Z'::timestamptz
+  and e.tags ? 'automation_run_id'
+  and a.tenant_id = e.tenant_id and a.id = e.tags->>'automation_id'
+  and r.tenant_id = e.tenant_id and r.id = e.tags->>'automation_run_id' and r.automation_id = a.id;
+
+-- Contact event history, also used by lifecycle attribution.
+create index if not exists custom_events_tenant_email_created_idx
+  on custom_events (tenant_id, lower(email), created_at desc);
+
+-- Shared, expiring counters and bounded workflow coordination.
+create table if not exists counters (
+  key text primary key,
+  value bigint not null check (value >= 0),
+  expires_at timestamptz not null,
+  window_id text not null
+);
+create index if not exists counters_expires_at_idx on counters (expires_at);
+create table if not exists worker_leases (
+  name text primary key,
+  owner text not null,
+  expires_at timestamptz not null
+);
+create table if not exists send_slots (
+  region text primary key,
+  available_at timestamptz not null
+);
+
+-- Sandbox attribution is stored separately from delivery status, including mixed recipients.
+alter table emails add column if not exists sandbox boolean not null default false;
+alter table email_recipients add column if not exists sandbox boolean not null default false;
+
+-- Boolean and ISO date contact property definitions.
+alter table contact_properties drop constraint if exists contact_properties_type_check;
+alter table contact_properties add constraint contact_properties_type_check
+  check (type in ('string', 'number', 'boolean', 'date'));
+
+-- Contact trigger namespaces and transactional transition history.
+alter table automations add column if not exists trigger_type text not null default 'event';
+alter table automations drop constraint if exists automations_trigger_type_check;
+alter table automations add constraint automations_trigger_type_check
+  check (trigger_type in ('event', 'contact_created', 'contact_updated', 'topic_subscribed', 'segment_added'));
+create index if not exists automations_tenant_trigger_type_idx
+  on automations (tenant_id, trigger_type, trigger) where deleted_at is null and enabled;
+alter table automations add column if not exists reentry text not null default 'every_time';
+alter table automations drop constraint if exists automations_reentry_check;
+alter table automations add constraint automations_reentry_check check (reentry in ('once', 'every_time'));
+create table if not exists automation_enrollments (
+  tenant_id text not null references tenants(id) on delete cascade,
+  automation_id text not null references automations(id) on delete cascade,
+  contact_id text not null,
+  created_at timestamptz not null default now(),
+  primary key (automation_id, contact_id)
+);
+create table if not exists contact_changes (
+  id text primary key,
+  tenant_id text not null references tenants(id) on delete cascade,
+  contact_id text not null,
+  field text not null,
+  from_value jsonb,
+  to_value jsonb,
+  request_id text not null,
+  created_at timestamptz not null default now()
+);
+create index if not exists contact_changes_tenant_contact_created_idx
+  on contact_changes (tenant_id, contact_id, created_at);
+
+-- Imports persist their resolved opt-in, and their runs are marked for bulk claiming.
+alter table contact_imports add column if not exists trigger_automations boolean not null default false;
+alter table automation_runs add column if not exists priority text not null default 'normal';
+alter table automation_runs drop constraint if exists automation_runs_priority_check;
+alter table automation_runs add constraint automation_runs_priority_check check (priority in ('normal', 'bulk'));
+-- Keep enrollment identity stable if a contact changes its email before cancellation.
+alter table automation_runs add column if not exists contact_id text;
+-- Explicit enrollment pages commit their receipts, cursor, progress and runs together.
+create table if not exists automation_enrollment_jobs (
+  id text primary key,
+  tenant_id text not null references tenants(id) on delete cascade,
+  automation_id text not null references automations(id) on delete cascade,
+  segment_id text,
+  status text not null default 'queued' check (status in ('queued', 'in_progress', 'completed', 'failed', 'cancelled')),
+  counts jsonb not null default '{"total":0,"processed":0,"enrolled":0,"skipped":0,"failed":0}',
+  cursor text,
+  idempotency_key text,
+  input_hash text not null,
+  error text,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  completed_at timestamptz,
+  unique (tenant_id, automation_id, idempotency_key)
+);
+create table if not exists automation_enrollment_job_contacts (
+  job_id text not null references automation_enrollment_jobs(id) on delete cascade,
+  contact_id text not null,
+  primary key (job_id, contact_id)
+);
+create index if not exists automation_enrollment_jobs_ready_idx on automation_enrollment_jobs (updated_at, id)
+  where status in ('queued', 'in_progress');
+create index if not exists contacts_enrollment_idx on contacts (tenant_id, id) where deleted_at is null;
+create index if not exists contact_changes_created_idx on contact_changes (created_at, id);
+alter table contact_imports drop constraint if exists contact_imports_status_check;
+alter table contact_imports add constraint contact_imports_status_check
+  check (status in ('queued', 'in_progress', 'completed', 'failed', 'cancelled'));
+alter table contact_imports add column if not exists claim_version integer not null default 0;
+
+-- Pausing holds execution without changing runs, waits or contact/event history.
+alter table automations add column if not exists paused_at timestamptz;
+alter table automations add column if not exists version integer not null default 0;
+alter table automations drop constraint if exists automations_pause_check;
+alter table automations add constraint automations_pause_check check (enabled or paused_at is null);
+create index if not exists automations_active_trigger_idx on automations (tenant_id, trigger_type, trigger)
+  where deleted_at is null and enabled and paused_at is null;
+
+-- Keys are permanent type reservations, including writes by future installers.
+alter table automations add column if not exists used_keys jsonb not null default '{}';
+create or replace function automation_keys(steps jsonb) returns jsonb
+language sql immutable as $$
+  select coalesce(jsonb_object_agg(
+    coalesce(step->>'key', 'step_' || ordinal::text),
+    case step->>'type' when 'wait' then 'wait_for_event' when 'update_contact' then 'contact_update' else step->>'type' end
+  ), '{}'::jsonb) || case when not exists (select 1 from jsonb_array_elements(steps) s where s ? 'key')
+    then '{"trigger":"trigger"}'::jsonb else '{}'::jsonb end
+  from jsonb_array_elements(steps) with ordinality s(step, ordinal)
+$$;
+update automations set used_keys = automation_keys(steps) where used_keys = '{}'::jsonb;
+create or replace function reserve_automation_keys() returns trigger language plpgsql as $$
+declare
+  history jsonb;
+  entry record;
+begin
+  history := case when TG_OP = 'UPDATE' then OLD.used_keys else '{}'::jsonb end;
+  for entry in select * from jsonb_each_text(automation_keys(NEW.steps)) loop
+    if history ? entry.key and history->>entry.key <> entry.value then
+      raise exception 'Step key % was already used for %. Use a new key for %.',
+        entry.key, history->>entry.key, entry.value using errcode = '23514';
+    end if;
+  end loop;
+  NEW.used_keys := history || automation_keys(NEW.steps);
+  return NEW;
+end
+$$;
+drop trigger if exists automations_reserve_keys on automations;
+create trigger automations_reserve_keys before insert or update of steps, used_keys on automations
+  for each row execute function reserve_automation_keys();
+
+-- Waiting rows own their matching config. Only old waiting rows are backfilled once.
+update automation_steps s set data = coalesce(s.data, '{}'::jsonb) || jsonb_build_object('wait_config', coalesce((
+  select case when step ? 'key' then coalesce(step->'config', '{}'::jsonb) else step - 'type' end
+  from jsonb_array_elements(a.steps) with ordinality e(step, ordinal)
+  where (s.step_key is not null and coalesce(step->>'key', 'step_' || ordinal::text) = s.step_key)
+    or (s.step_key is null and not (step ? 'key') and ordinal = s.step_index + 1)
+  limit 1
+), '{}'::jsonb))
+from automation_runs r join automations a on a.tenant_id = r.tenant_id and a.id = r.automation_id
+where s.tenant_id = r.tenant_id and s.run_id = r.id and s.state = 'waiting'
+  and not (coalesce(s.data, '{}'::jsonb) ? 'wait_config');
+
+-- Explicit flow exits and durable, fresh-state following filters.
+alter table automation_runs add column if not exists exit_reason text;
+alter table automation_runs add column if not exists guards jsonb not null default '[]';
+alter table automation_runs drop constraint if exists automation_runs_exit_reason_check;
+alter table automation_runs add constraint automation_runs_exit_reason_check
+  check (exit_reason in ('completed', 'exit', 'filter', 'stopped', 'stranded'));
+alter table automation_runs drop constraint if exists automation_runs_guards_check;
+alter table automation_runs add constraint automation_runs_guards_check check (jsonb_typeof(guards) = 'array');
+update automation_runs set exit_reason = case
+  when state = 'done' then 'completed'
+  when error = 'Its next step was removed or changed while the automation was paused' then 'stranded'
+  else 'stopped' end
+where exit_reason is null and state in ('done', 'stopped');
+
+-- Persist legacy send intent in bounded batches. Explicit Marketing without a topic stays so.
+do $$
+declare changed integer;
+begin
+  loop
+    with batch as (
+      select id from automations a where exists (
+        select 1 from jsonb_array_elements(a.steps) s
+        where s->>'type' = 'send_email'
+          and not (case when s ? 'key' then coalesce(s->'config', '{}') else s end ? 'kind')
+      ) order by id limit 500
+    )
+    update automations a set steps = (
+      select jsonb_agg(case
+        when s->>'type' <> 'send_email' then s
+        when s ? 'key' then jsonb_set(s, '{config}', coalesce(s->'config', '{}') ||
+          jsonb_build_object('kind', coalesce(s->'config'->>'kind',
+            case when nullif(s->'config'->>'topic_id', '') is null then 'transactional' else 'marketing' end)))
+        else s || jsonb_build_object('kind', coalesce(s->>'kind',
+          case when nullif(s->>'topic_id', '') is null then 'transactional' else 'marketing' end))
+        end order by ordinal)
+      from jsonb_array_elements(a.steps) with ordinality e(s, ordinal)
+    ) from batch where a.id = batch.id;
+    get diagnostics changed = row_count;
+    exit when changed = 0;
+  end loop;
+end $$;
+-- Immutable enrollment depth. Old rows have no reliable original provenance:
+-- caller payloads and edited trigger kinds cannot safely supply a backfill.
+-- Leave those rows explicitly unknown rather than trusting a legacy @ name.
+alter table automation_runs add column if not exists depth integer;
+do $$ begin
+  if not exists (select 1 from pg_constraint where conrelid = 'automation_runs'::regclass
+    and conname = 'automation_runs_depth_check') then
+    alter table automation_runs add constraint automation_runs_depth_check check (depth between 0 and 4);
+  end if;
+end $$;
+-- The migration entry point captures the supported pre-contact-trigger schema
+-- under locks, before trigger_type is introduced above. Its only run writer was
+-- fireEvent, so these roots are known zero regardless of event names/payloads.
+-- Mixed-era unknown rows stay NULL. The transaction-local flag is false on replay,
+-- avoiding even a scan; the one-time update uses bounded batches.
+do $$
+declare changed integer;
+begin
+  if current_setting('dispatch.legacy_event_roots', true) = 'true' then
+    loop
+      update automation_runs set depth = 0
+      where ctid in (select ctid from automation_runs where depth is null limit 1000);
+      get diagnostics changed = row_count;
+      exit when changed = 0;
+    end loop;
+  end if;
+end $$;
+-- Dynamic audiences. Index creation can lock writes on large installations.
+alter table segments add column if not exists rule jsonb;
+create index if not exists emails_tenant_contact_created_idx on emails (tenant_id, contact_id, created_at);
+create index if not exists email_recipients_tenant_address_idx on email_recipients (tenant_id, lower(email));
+-- Public consent and inbound management support. All effects use caller-owned transactions.
+alter table topic_subscriptions drop constraint if exists topic_subscriptions_status_check;
+alter table topic_subscriptions add constraint topic_subscriptions_status_check
+  check (status in ('subscribed', 'unsubscribed', 'pending'));
+create table if not exists forms (
+  id text primary key, tenant_id text not null references tenants(id),
+  name text not null, key text not null unique, topic_ids text[] not null, properties text[] not null default '{}',
+  double_opt_in boolean not null default true, from_email text not null, allowed_origins text[] not null,
+  redirect_url text, created_at timestamptz not null default now(), updated_at timestamptz not null default now(),
+  deleted_at timestamptz
+);
+create index if not exists forms_tenant_created_idx on forms (tenant_id, created_at, id);
+-- The reservation helper locks the tenant counter first, then the address/form row.
+-- Day boundaries are UTC; address limits are a rolling 24 hours using database time.
+create table if not exists confirmation_days (
+  tenant_id text not null references tenants(id), day date not null, sends integer not null default 0,
+  primary key (tenant_id, day)
+);
+create table if not exists confirmation_sends (
+  tenant_id text not null references tenants(id), form_id text not null references forms(id),
+  email text not null, sent_at timestamptz not null default now(),
+  primary key (tenant_id, form_id, email)
+);
+create table if not exists confirmations (
+  id text primary key, tenant_id text not null references tenants(id), form_id text not null references forms(id),
+  contact_id text not null references contacts(id), topic_ids text[] not null,
+  expires_at timestamptz not null, used_at timestamptz, created_at timestamptz not null default now()
+);
+create index if not exists confirmations_contact_idx on confirmations (tenant_id, contact_id);
+create table if not exists integrations (
+  id text primary key, tenant_id text not null references tenants(id), provider text not null
+    check (provider in ('stripe', 'clerk', 'supabase', 'webhook')),
+  name text not null, slug text not null, token_hash text not null unique, secret text not null,
+  settings jsonb not null default '{}', last_received_at timestamptz,
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now(), deleted_at timestamptz,
+  unique (tenant_id, slug)
+);
+create table if not exists inbound_deliveries (
+  id text primary key, tenant_id text not null references tenants(id),
+  integration_id text not null references integrations(id), provider_event_id text not null,
+  status text not null, event_name text, contact_id text, error text,
+  created_at timestamptz not null default now(), unique (integration_id, provider_event_id)
+);
+create index if not exists inbound_deliveries_created_idx on inbound_deliveries (tenant_id, integration_id, created_at, id);
+
+-- Global bounded retention scans follow the worker's ordinary log retention cadence.
+create index if not exists inbound_deliveries_retention_idx on inbound_deliveries (created_at, id);
+
+-- Retroactive goals use sends and retained contact/event history, not attachment.
+create table if not exists goals (
+  id text primary key, tenant_id text not null references tenants(id) on delete cascade,
+  name text not null, target jsonb not null, eligibility jsonb,
+  window_days integer not null default 30 check (window_days between 1 and 365),
+  created_at timestamptz not null default now(), updated_at timestamptz not null default now(), deleted_at timestamptz
+);
+create index if not exists goals_tenant_live_idx on goals (tenant_id, created_at, id) where deleted_at is null;
+create index if not exists custom_events_goal_idx on custom_events (tenant_id, lower(email), created_at) where deleted_at is null;
+
+-- Split reporting binds an email to its recorded run, never to a recipient guess.
+alter table emails add column if not exists automation_run_id text;
+update emails e set automation_run_id = r.id
+from automation_runs r
+where e.automation_run_id is null and e.created_at < '2026-10-06T00:00:00Z'::timestamptz
+  and r.tenant_id = e.tenant_id and r.id = e.tags->>'automation_run_id'
+  and r.automation_id = e.automation_id;
+create index if not exists emails_automation_run_idx on emails (tenant_id, automation_id, automation_run_id)
+  where automation_run_id is not null;
+create index if not exists automation_steps_split_idx on automation_steps (tenant_id, step_key, run_id, created_at)
+  where type = 'split' and state = 'done';
 `;

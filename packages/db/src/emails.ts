@@ -1,8 +1,10 @@
 import { convert } from "html-to-text";
 import type { Queryable } from "./index.js";
 import { findBy, publishedTemplate } from "./index.js";
-import { ApiError, brandContext, id, parseAddress, prepareTracking, renderTemplate, toArray, type BrandRecord } from "@dispatchmail/core";
+import { ApiError, brandContext, id, parseAddress, prepareTracking, renderTemplate, reservedVariables, sandboxAddress, toArray, type BrandRecord } from "@dispatchmail/core";
+import { settings } from "./settings.js";
 import { appendEvent, fanoutEvent } from "./events.js";
+import { replaceUnsubscribe } from "./unsubscribe.js";
 
 export type IngestEmailRecipient = {
   email: string;
@@ -25,10 +27,15 @@ export type IngestEmailInput = {
   text?: string | null;
   template?: string;
   variables?: Record<string, unknown>;
+  context?: Record<string, unknown>;
   headers?: Record<string, string>;
   tags?: Record<string, string>;
   topicId?: string | null;
   broadcastId?: string | null;
+  contactId?: string | null;
+  automationId?: string | null;
+  automationStep?: string | null;
+  automationRunId?: string | null;
   scheduledAt?: Date | null;
   idempotencyKey?: string | null;
   apiKeyId?: string | null;
@@ -47,6 +54,7 @@ export type IngestEmailResult = {
   status: string;
   scheduled_at: string | null;
   created_at: string;
+  sandbox: boolean;
 };
 
 export type TrackingResult = {
@@ -59,8 +67,8 @@ export async function emailDetail(db: Queryable, tenantId: string, emailId: stri
     deletedCol: null,
     errorMessage: "Email not found",
   });
-  const recipients = await db.query<{ id: string; email: string; kind: "to" | "cc" | "bcc"; status: string }>(
-    "select id, email, kind, status, created_at from email_recipients where tenant_id = $1 and email_id = $2 order by created_at, id",
+  const recipients = await db.query<{ id: string; email: string; kind: "to" | "cc" | "bcc"; status: string; sandbox: boolean; created_at: string }>(
+    "select id, email, kind, status, sandbox, created_at from email_recipients where tenant_id = $1 and email_id = $2 order by created_at, id",
     [tenantId, emailId],
   );
   return { ...email, recipients: recipients.rows };
@@ -90,17 +98,32 @@ export async function ingestEmail(
       fromName = stored.name;
     }
     if (!replyTo?.length && template.reply_to?.length) replyTo = template.reply_to;
-    const rendered = renderTemplate(template, input.variables ?? {}, brandContext(brand.brand, {
-      tenantName: brand.name,
-      domain: brand.domain,
-      from: fromAddress,
-    }));
+    const variables = input.context ? Object.fromEntries(Object.entries(input.variables ?? {}).filter(([key]) => !reservedVariables.includes(key))) : input.variables ?? {};
+    let rendered: ReturnType<typeof renderTemplate>;
+    try {
+      rendered = renderTemplate(template, variables, { ...brandContext(brand.brand, {
+        tenantName: brand.name,
+        domain: brand.domain,
+        from: fromAddress,
+      }), ...input.context });
+    } catch (error) {
+      const missing = (error as { missing?: string[] })?.missing;
+      if (!input.topicId && error instanceof ApiError && missing?.some((key) => /^(?:DISPATCH_|RESEND_)?UNSUBSCRIBE_URL$/.test(key))) {
+        throw new ApiError("validation_error", 422, "This template prints an unsubscribe link, so it needs topic_id. Send it as marketing, or remove the link.");
+      }
+      throw error;
+    }
     subject = subject ?? rendered.subject;
     html = html ?? rendered.html;
     text = text ?? rendered.text;
     templateId = template.template_id;
     templateVersionId = template.id;
     templateTrack = template.track !== false;
+  }
+
+  if (input.topicId && !input.template && input.context) {
+    html = replaceUnsubscribe(html, input.context);
+    text = replaceUnsubscribe(text, input.context);
   }
 
   if (!fromAddress) {
@@ -158,18 +181,20 @@ export async function ingestEmail(
        from contacts c
        join topics t on t.id = $3 and t.tenant_id = c.tenant_id and t.deleted_at is null
        left join topic_subscriptions s on s.topic_id = t.id and s.contact_id = c.id
-       where c.tenant_id = $1 and lower(c.email) = any($2) and c.deleted_at is null
-         and (s.status = 'unsubscribed' or (s.id is null and t.default_status = 'unsubscribed'))`,
+       where c.tenant_id = $1 and lower(c.email) = any($2)
+         and (c.deleted_at is not null or c.unsubscribed_at is not null or s.status <> 'subscribed' or (s.id is null and t.default_status = 'unsubscribed'))`,
       [input.tenantId, lowered, input.topicId],
     );
     for (const row of opted.rows) optedOut.add(row.email.toLowerCase());
   }
 
+  const tenantSettings = await settings(client, input.tenantId);
   const prepared = recipients.map((recipient) => {
     const email = recipient.email.toLowerCase();
     const status = suppressedEmails.has(email) ? "suppressed" : optedOut.has(email) ? "failed" : "queued";
-    return { ...recipient, status };
+    return { ...recipient, status, sandbox: sandboxAddress(recipient.email, tenantSettings.sandbox_domains) };
   });
+  const sandbox = prepared.length > 0 && prepared.every((recipient) => recipient.sandbox);
   const sendable = prepared.filter((recipient) => recipient.status === "queued");
 
   const emailId = input.emailId ?? id("email");
@@ -191,10 +216,10 @@ export async function ingestEmail(
   const email = await client.query<IngestEmailResult>(
     `insert into emails (
       id, tenant_id, request_id, idempotency_key, from_email, from_name, reply_to, subject, html, html_tracked, text,
-      template_id, template_version_id, headers, tags, topic_id, broadcast_id, status, scheduled_at, api_key_id
+      template_id, template_version_id, headers, tags, topic_id, broadcast_id, status, scheduled_at, api_key_id, contact_id, automation_id, automation_step, sandbox, automation_run_id
     )
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
-     returning id, request_id, from_email as from, subject, status, scheduled_at, created_at`,
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
+     returning id, request_id, from_email as from, subject, status, scheduled_at, created_at, sandbox`,
     [
       emailId,
       input.tenantId,
@@ -216,12 +241,17 @@ export async function ingestEmail(
       initialStatus,
       scheduledAt,
       input.apiKeyId ?? null,
+      input.contactId ?? null,
+      input.automationId ?? null,
+      input.automationStep ?? null,
+      sandbox,
+      input.automationRunId ?? null,
     ],
   );
 
   const inserted = await client.query<{ id: string; email: string; status: string }>(
-    `insert into email_recipients (id, tenant_id, email_id, email, kind, status)
-     select * from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[])
+    `insert into email_recipients (id, tenant_id, email_id, email, kind, status, sandbox)
+     select * from unnest($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::boolean[])
      returning id, email, status`,
     [
       prepared.map(() => id("rcpt")),
@@ -230,6 +260,7 @@ export async function ingestEmail(
       prepared.map((recipient) => recipient.email),
       prepared.map((recipient) => recipient.kind),
       prepared.map((recipient) => recipient.status),
+      prepared.map((recipient) => recipient.sandbox),
     ],
   );
 
@@ -275,7 +306,7 @@ export async function ingestEmail(
   }
 
   const toList = prepared.filter((recipient) => recipient.kind === "to").map((recipient) => recipient.email);
-  return { email: { ...email.rows[0], to: toList }, tracking };
+  return { email: { ...email.rows[0], sandbox, to: toList }, tracking };
 }
 
 type TrackingDomain = {

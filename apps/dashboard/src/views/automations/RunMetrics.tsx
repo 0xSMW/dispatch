@@ -1,13 +1,21 @@
+import { useState } from "react";
 import { BarChart } from "../../components/BarChart";
 import { DateRange, useDateRange } from "../../components/DateRange";
 import { Failed } from "../../components/Empty";
 import { FilterBar } from "../../components/FilterBar";
+import { Select } from "../../components/Field";
 import { Panel } from "../../components/Panel";
 import { Skeleton } from "../../components/Skeleton";
 import { useResource } from "../../hooks/useResource";
+import { Table } from "../../components/Table";
+import type { ResourceState } from "../../hooks/useResource";
+import { emailRows, type EmailReport } from "./EmailMetrics";
+import { branchesOf, branchSteps, type Tree, type Node } from "./graph";
+import { SplitMetrics } from "./SplitMetrics";
 import { withQuery } from "../../lib/client";
-import type { RunCounts, RunMetrics as Metrics } from "../../types";
+import type { RunCounts, RunMetrics as Metrics, SplitReport } from "../../types";
 import type { Series } from "../../components/chart";
+import { GoalConversions } from "../goals/GoalConversions";
 import "../../styles/audience.css";
 import "../../styles/automations.css";
 
@@ -64,16 +72,45 @@ export function runSeries(days: Metrics["data"]): Series[] {
 }
 
 /** The builder's Metrics tab: status shares and runs per day, from `GET /automations/:id/runs/metrics`. */
-export function RunMetrics({ automationId }: { automationId: string }) {
+export function RunMetrics({ automationId, tree = null, names = {}, emails, onWinner, winnerDisabled = true, winnerBusy = false }: {
+  automationId: string; tree?: Tree | null; names?: Record<string, string>; emails?: ResourceState<EmailReport>;
+  onWinner?: (stepKey: string, variant: string) => Promise<void>; winnerDisabled?: boolean; winnerBusy?: boolean;
+}) {
   const range = useDateRange();
   const metrics = useResource<Metrics>(withQuery(`/automations/${automationId}/runs/metrics`, { start_date: range.start, end_date: range.end }));
   const data = metrics.data;
+  const [stepKey, setStepKey] = useState("");
+  const steps = emailRows(tree, names, emails?.data ?? null).filter((row) => row.key !== "legacy");
+  const selectedStep = steps.some((row) => row.key === stepKey) ? stepKey : "";
 
   return (
     <div className="stack">
       <FilterBar search={false}>
         <DateRange />
       </FilterBar>
+      {steps.length ? <Select label="Goal email step" value={selectedStep} onChange={setStepKey}
+        options={[{ value: "", label: "All automation emails" }, ...steps.map((row) => ({ value: row.key, label: `${row.name} · ${row.key}` }))]} /> : null}
+      <GoalConversions automationId={automationId} stepKey={selectedStep || undefined} start={range.start} end={range.end} />
+      {splitSteps(tree?.steps ?? []).map((step) => <SplitComparison key={step.key} automationId={automationId} stepKey={step.key}
+        start={range.start} end={range.end} disabled={winnerDisabled} busy={winnerBusy} onWinner={onWinner} />)}
+      {emails ? <Panel title="Emails">
+        <Table
+          rows={emailRows(tree, names, emails.data)}
+          rowKey={(row) => row.id}
+          loading={emails.loading}
+          error={emails.error}
+          onRetry={() => void emails.reload()}
+          columns={[
+            { header: "Email", cell: (row) => <><strong>{row.name}</strong><div className="mono dim">{row.key}</div></> },
+            { header: "Sent", cell: (row) => row.sent.toLocaleString() },
+            { header: "Delivered", cell: (row) => row.delivered.toLocaleString() },
+            { header: "Open rate", cell: (row) => `${row.open_rate}%` },
+            { header: "Click rate", cell: (row) => `${row.click_rate}%` },
+            { header: "Bounce rate", cell: (row) => `${row.bounce_rate}%` },
+            { header: "Unsubscribes", cell: (row) => row.unsubscribed.toLocaleString() },
+          ]}
+        />
+      </Panel> : null}
       {metrics.error ? (
         <Failed message={metrics.error} onRetry={() => void metrics.reload()} />
       ) : !data ? (
@@ -102,4 +139,17 @@ export function RunMetrics({ automationId }: { automationId: string }) {
       )}
     </div>
   );
+}
+
+export function splitSteps(nodes: Node[]): Node[] {
+  return nodes.flatMap((node) => [...(node.type === "split" ? [node] : []), ...branchesOf(node).flatMap((branch) => splitSteps(branchSteps(node, branch)))]);
+}
+
+function SplitComparison({ automationId, stepKey, start, end, disabled, busy, onWinner }: {
+  automationId: string; stepKey: string; start?: string; end?: string; disabled: boolean; busy: boolean;
+  onWinner?: (stepKey: string, variant: string) => Promise<void>;
+}) {
+  const report = useResource<SplitReport>(withQuery(`/automations/${encodeURIComponent(automationId)}/steps/${encodeURIComponent(stepKey)}/metrics`, { start_date: start, end_date: end }));
+  return <SplitMetrics report={report.data} loading={report.loading} error={report.error} onRetry={() => void report.reload()}
+    disabled={disabled} busy={busy} onWinner={onWinner ? async (variant) => { await onWinner(stepKey, variant); await report.reload(); } : undefined} />;
 }

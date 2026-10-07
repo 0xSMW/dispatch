@@ -33,8 +33,13 @@ describe("timelineHref", () => {
     expect(timelineHref(item("email_event", "ev_1", "email_1"))).toBe("/emails/email_1");
     expect(timelineHref(item("received_email", "rcv_1"))).toBe("/emails/receiving/rcv_1");
     expect(timelineHref(item("webhook_attempt", "att_1", "wh_1"))).toBe("/webhooks/wh_1");
-    expect(timelineHref(item("automation_run", "run_1", "auto_1"))).toBe("/automations/auto_1/editor");
+    expect(timelineHref(item("automation_run", "run_1", "auto_1"))).toBe("/automations/auto_1/editor?tab=runs&run=run_1");
     expect(timelineHref(item("api_log", "log_1"))).toBe("/logs/log_1");
     expect(timelineHref(item("custom_event", "evt_1"))).toBeNull();
+  });
+
+  it("preserves the selected automation run and safely encodes its identifiers", () => {
+    expect(timelineHref(item("automation_run", "run/1", "auto?1"))).toBe("/automations/auto%3F1/editor?tab=runs&run=run%2F1");
+    expect(timelineHref(item("automation_run", "run_1"))).toBeNull();
   });
 });

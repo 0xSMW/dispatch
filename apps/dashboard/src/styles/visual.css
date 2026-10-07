@@ -49,6 +49,30 @@
   font-size: 13px;
 }
 
+.visualLayout {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.visualLayout.withPlaceholder {
+  grid-template-columns: minmax(0, 1fr) 220px;
+}
+
+.placeholderPanel {
+  align-self: start;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+@media (max-width: 640px) {
+  .visualLayout.withPlaceholder {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 /* The canvas is a white page with dark text in both themes, like the preview frame. */
 .visualCanvas {
   min-height: 460px;

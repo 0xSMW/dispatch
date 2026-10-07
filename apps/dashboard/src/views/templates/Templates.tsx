@@ -15,6 +15,8 @@ import { toast } from "../../components/Toast";
 import { useFilters } from "../../hooks/useFilters";
 import { useList } from "../../hooks/useList";
 import { useMutation } from "../../hooks/useMutation";
+import { learnLinks } from "../../lib/docs";
+import { kindLabels, templateKind } from "../../lib/emailKind";
 import { useCan, useClient } from "../../shell/session";
 import type { Template } from "../../types";
 import { templateTabs } from "../tabs";
@@ -45,6 +47,7 @@ export function Templates() {
     <div className="page">
       <PageHeader
         title="Templates"
+        learn={learnLinks("templates")}
         actions={
           <>
             <Link className="button secondary" to="/templates/library">
@@ -166,6 +169,7 @@ function TemplateCard({ row, brand, menu }: { row: Template; brand: Record<strin
         <div className="cardMeta">
           {row.alias ? <span className="mono">{row.alias}</span> : null}
           <Badge value={row.status} />
+          <Badge value={templateKind(row)} label={kindLabels[templateKind(row)]} />
           {row.status === "published" && row.has_unpublished_versions ? <Badge value="pending" label="Unpublished changes" /> : null}
         </div>
         <div className="cardMeta">

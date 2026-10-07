@@ -18,7 +18,34 @@ export type Result<T> = ({ data: T; error: null } | { data: null; error: ErrorBo
 export type Page = { limit?: number } & ({ after?: string; before?: never } | { before?: string; after?: never });
 export type List<T = Row> = { object: "list"; has_more: boolean; data: T[] };
 export type Row = { id: string; object?: string; [key: string]: unknown };
+export type ContactActivity = Row & {
+  object: "contact_activity";
+  type: string;
+  resource_id: string | null;
+  label: string | null;
+  email_id: string | null;
+  automation_id?: string | null;
+  run_id?: string | null;
+  exit_reason?: AutomationExitReason | null;
+  created_at: string;
+};
 export type Deleted = { object: string; id: string; deleted: true };
+
+export type EmailRecipient = {
+  id?: string;
+  email: string;
+  kind: "to" | "cc" | "bcc";
+  status: string;
+  sandbox: boolean;
+  created_at?: string;
+};
+export type Email = Row & {
+  /** True only when every original recipient is sandbox; no email is sent externally. */
+  sandbox: boolean;
+  last_event: string;
+  recipients: EmailRecipient[];
+};
+export type EmailDetail = Email;
 
 type Body = Record<string, unknown>;
 type CallOptions = { idempotencyKey?: string; headers?: Record<string, string>; auth?: boolean };
@@ -76,6 +103,7 @@ export type MetricsOptions = {
   domainId?: string[];
   emailId?: string[];
   broadcastId?: string[];
+  automationId?: string[];
 };
 
 export type DomainCreate = {
@@ -98,6 +126,15 @@ export type ApiKeyCreate = {
   domainId?: string;
 };
 
+export type LifecycleEventType = "email.unsubscribed" | "automation.run.started" | "automation.run.completed" | "automation.run.failed";
+export type AutomationRunEvent = {
+  automation_id: string;
+  run_id: string;
+  contact_id: string | null;
+  state: string;
+  exit_reason: AutomationExitReason | null;
+};
+
 export type WebhookCreate = {
   endpoint?: string;
   url?: string;
@@ -107,6 +144,12 @@ export type WebhookCreate = {
 };
 
 export type TemplateVariable = { key: string; type?: "string" | "number" | "list"; fallbackValue?: string | number | null };
+
+export type SendKind = "transactional" | "marketing";
+export type Template = Row & {
+  /** Derived from library source.send_kind or unsubscribe placeholders in the content. */
+  kind: SendKind;
+};
 
 export type TemplateCreate = {
   name: string;
@@ -118,8 +161,9 @@ export type TemplateCreate = {
   text?: string;
   react?: unknown;
   variables?: Array<string | TemplateVariable>;
+  track?: boolean;
   publish?: boolean;
-  source?: { kind: string; path?: string; slug?: string; version?: string };
+  source?: { kind: string; path?: string; slug?: string; version?: string; send_kind?: SendKind };
 };
 
 export type TemplateUpdate = Partial<Omit<TemplateCreate, "alias" | "html" | "text">> & {
@@ -147,14 +191,41 @@ export type ContactUpdate = ({ id: string; email?: never } | { email: string; id
   unsubscribed?: boolean;
 };
 
+export type PropertyType = "string" | "number" | "boolean" | "date";
+/** Dates are ISO strings; null clears a fallback. */
+export type PropertyValue = string | number | boolean | null;
+export type ContactProperty = Row & {
+  object: "contact_property";
+  key: string;
+  type: PropertyType;
+  fallback_value: PropertyValue;
+};
+export type ContactPropertyCreate = { key: string; type?: PropertyType; fallbackValue?: PropertyValue };
+export type ImportColumn = { column: string; type?: PropertyType };
+/** Nested column-map keys use the API's snake_case names. */
+export type ImportColumnMap = {
+  email?: ImportColumn;
+  first_name?: ImportColumn | null;
+  last_name?: ImportColumn | null;
+  unsubscribed?: ImportColumn | null;
+  properties?: Record<string, ImportColumn>;
+};
+
 export type ContactImport = {
   file: Blob | string;
   filename?: string;
   // Sent as given. The API's keys are snake_case: { email: { column }, first_name: { column }, properties: { key: { column, type } } }.
-  columnMap?: Record<string, unknown>;
+  columnMap?: ImportColumnMap | Record<string, unknown>;
   onConflict?: "upsert" | "skip";
   segments?: Array<{ id: string }>;
   topics?: Array<{ id: string; subscription?: "opt_in" | "opt_out" }>;
+  /** Omit to use the tenant default, resolved and stored when the import is created. */
+  triggerAutomations?: boolean;
+};
+
+export type ContactImportResult = Row & {
+  object: "contact_import";
+  trigger_automations: boolean;
 };
 
 export type TopicCreate = {
@@ -185,12 +256,137 @@ export type BroadcastCreate = {
 
 export type RecipientType = "sent" | "delivered" | "opened" | "clicked" | "bounced" | "complained" | "unsubscribed" | "suppressed";
 
+export type Operator = "eq" | "neq" | "gt" | "gte" | "lt" | "lte" | "contains" | "not_contains" | "starts_with" | "ends_with" | "within" | "not_within" | "exists" | "is_empty";
+export type Rule =
+  | { type: "rule"; field: string; operator: Operator; value?: unknown; scope?: { automation_id: string; broadcast_id?: never } | { broadcast_id: string; automation_id?: never }; window?: string }
+  | { type: "and" | "or"; rules: Rule[] };
+
+export type Segment = Row & {
+  object: "segment"; id: string; name: string; description?: string | null;
+  type: "static" | "dynamic"; rule: Rule | null; contacts?: number | null;
+  created_at: string; updated_at: string;
+};
+export type SegmentPreview = { count: number; sample: Row[] };
+
+export type StepType = "trigger" | "send_email" | "delay" | "wait_for_event" | "condition" | "add_to_segment" | "contact_update" | "contact_delete" | "exit" | "filter" | "branch" | "split";
+export type ConnectionType = "default" | "condition_met" | "condition_not_met" | "timeout" | "event_received" | "branch" | "variant";
+export type SplitVariant = { key: string; label: string; weight: number };
+export type SplitConfig = { variants: SplitVariant[] };
+export type SplitMetric = Omit<SplitVariant, "weight"> & { weight: number | null; runs: number; sent: number; delivered: number; open_rate: number; click_rate: number; bounce_rate: number; unsubscribed: number; [metric: string]: unknown };
+export type SplitReport = { object: "automation_split_metrics"; automation_id: string; step_key: string; start_date: string; end_date: string; data: SplitMetric[] };
+export type ExitConfig = Record<string, never>;
+/** next tests once; following also saves a guard checked before every later step. */
+export type FilterConfig = { rule: Rule; scope: "next" | "following" };
+export type BranchPath = { key: string; label: string; rule: Rule };
+/** Two to ten ordered paths, with unique nonempty keys other than "otherwise". */
+export type BranchConfig = { paths: BranchPath[] };
+export type AutomationConnection = {
+  from: string;
+  to: string;
+  type?: string;
+  /** Branch path key (or "otherwise"), or a configured variant key for type variant. */
+  path?: string;
+};
+export type AutomationExitReason = "completed" | "exit" | "filter" | "stopped" | "stranded";
+export type AutomationGuard = { filter: string; rule: Rule };
+export type AutomationRun = Row & {
+  object: "automation_run";
+  automation_id: string;
+  status: "running" | "completed" | "failed" | "cancelled";
+  exit_reason: AutomationExitReason | null;
+  guards: AutomationGuard[];
+  event: { id: string; name: string; email: string | null };
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+};
+export type AutomationRunDetail = AutomationRun & {
+  event: AutomationRun["event"] & { payload: Record<string, unknown> };
+  steps: Array<{
+    key: string;
+    type: StepType;
+    status: string;
+    started_at: string | null;
+    completed_at: string | null;
+    output: Record<string, unknown>;
+    error: string | null;
+  }>;
+};
+/** Step config keys are sent as given, using snake_case. Variables stay literal. */
+export type SendEmailConfig = {
+  template: string | { id: string; variables?: Record<string, unknown> };
+  /** Omit for legacy topic_id inference. Marketing drafts may omit topic_id, but cannot run. */
+  kind?: SendKind;
+  from?: string;
+  to?: string;
+  subject?: string;
+  reply_to?: string | string[];
+  topic_id?: string;
+  variables?: Record<string, unknown>;
+  variable_mapping?: Record<string, string>;
+};
+
+/** Dates are ISO strings; transition values retain their JSON primitive types. */
+export type AutomationTriggerConfig =
+  | { type: "event"; event_name: string }
+  | { type: "contact_created" }
+  | { type: "contact_updated"; field?: string; from?: PropertyValue; to?: PropertyValue }
+  | { type: "topic_subscribed"; topic_id: string }
+  | { type: "segment_added"; segment_id: string };
+
+export type AutomationReentry = "once" | "every_time";
+export type AutomationStatus = "enabled" | "paused" | "disabled";
+
+export type AutomationDryRun = {
+  stranded_runs: number;
+  by_step: Record<string, number>;
+};
+
+export type AutomationEnrollment = { segmentId: string; all?: never } | { all: true; segmentId?: never };
+
+export type AutomationEnrollmentJob = {
+  object: "automation_enrollment_job";
+  id: string;
+  automation_id: string;
+  segment_id: string | null;
+  status: "queued" | "in_progress" | "completed" | "failed" | "cancelled";
+  counts: { total: number; processed: number; enrolled: number; skipped: number; failed: number };
+  error: string | null;
+  created_at: string;
+  completed_at: string | null;
+};
+
+export type Automation = Row & {
+  status: AutomationStatus;
+  readonly version: number;
+  trigger: string | null;
+  trigger_config: AutomationTriggerConfig;
+  reentry: AutomationReentry;
+};
+
 export type AutomationCreate = {
   name: string;
   status?: "enabled" | "disabled";
+  enabled?: boolean;
+  version?: never;
   steps: Array<Record<string, unknown>>;
-  connections?: Array<{ from: string; to: string; type?: string }>;
+  connections?: AutomationConnection[];
   trigger?: string;
+  reentry?: AutomationReentry;
+  [key: string]: unknown;
+};
+
+export type AutomationUpdate = {
+  name?: string;
+  /** Pause holds runs; enabling resumes them; disabling stops them. */
+  status?: AutomationStatus;
+  enabled?: boolean;
+  version?: never;
+  expectedVersion?: number;
+  steps?: Array<Record<string, unknown>>;
+  connections?: AutomationConnection[];
+  trigger?: string;
+  reentry?: AutomationReentry;
   [key: string]: unknown;
 };
 
@@ -200,6 +396,54 @@ export type EventSend = ({ contactId: string; email?: never } | { email: string;
 };
 
 export type EventSchema = Record<string, "string" | "number" | "boolean" | "date">;
+
+export type Event = Row & {
+  name: string;
+  schema: EventSchema;
+  /** Included in list responses; unchanged detail responses may omit these. */
+  fired_count?: number;
+  last_fired_at?: string | null;
+};
+
+export type AutomationInstallInput = {
+  name?: string;
+  from: string;
+  /** Marketing topic; required for newsletter-welcome's subscription trigger. */
+  topicId?: string;
+};
+
+export type AutomationInstallation = {
+  automation: Automation;
+  templates: {
+    created: Array<{ id: string; slug: string }>;
+    reused: Array<{ id: string; slug: string }>;
+  };
+  events: Array<{ id: string; name: string }>;
+  properties: Array<{ id: string; key: string; type: PropertyType }>;
+  next_steps: string[];
+  request_id?: string;
+};
+
+export type LibraryStage = "acquisition" | "onboarding" | "retention" | "reengagement" | "dunning" | "reactivation";
+
+/** Read-only library definition. Template references are library slugs, not tenant IDs. */
+export type AutomationPreset = {
+  slug: string;
+  name: string;
+  stage: LibraryStage;
+  description: string;
+  when: string;
+  /** Newsletter topic_id is the {{topic_id}} install placeholder. */
+  trigger_config: AutomationTriggerConfig;
+  reentry: AutomationReentry;
+  events: Array<{ name: string; schema: EventSchema }>;
+  properties: Array<{ key: string; type: PropertyType }>;
+  steps: Array<{ key: string; type: StepType; config: Record<string, unknown> }>;
+  connections: Array<{ from: string; to: string; type: ConnectionType; path?: string }>;
+  templates: string[];
+};
+
+export type AutomationPresetDetail = AutomationPreset & { object: "automation_preset" };
 
 const seg = encodeURIComponent;
 
@@ -276,12 +520,16 @@ export class Dispatch {
   readonly contactProperties = new ContactProperties(this);
   readonly segments = new Segments(this);
   readonly topics = new Topics(this);
+  readonly forms = new Forms(this);
+  readonly goals = new Goals(this);
+  readonly integrations = new Integrations(this);
   readonly suppressions = new Suppressions(this);
   readonly broadcasts = new Broadcasts(this);
   readonly automations = new Automations(this);
   readonly events = new Events(this);
   readonly logs = new Logs(this);
   readonly brand = new Brand(this);
+  readonly settings = new Settings(this);
   readonly usage = new Single(this, "/usage");
   readonly system = new Single(this, "/system");
   // Sent with the key. Where public setup is on the route ignores it, and in production the route needs it.
@@ -459,13 +707,15 @@ class EmailJobs extends Resource {
   }
 }
 
+export type SendResult = { id: string; sandbox: boolean; emails?: Array<{ id: string; to: string; sandbox: boolean }> };
+
 class Emails extends Resource {
   readonly attachments = new EmailAttachments(this.client);
   readonly receiving = new Receiving(this.client);
   readonly jobs = new EmailJobs(this.client);
 
   async send(payload: SendOptions, options: { idempotencyKey?: string } = {}) {
-    return this.client.call<{ id: string }>("POST", "/emails", wire(await content(payload)), options);
+    return this.client.call<SendResult>("POST", "/emails", wire(await content(payload)), options);
   }
 
   create(payload: SendOptions, options: { idempotencyKey?: string } = {}) {
@@ -473,11 +723,11 @@ class Emails extends Resource {
   }
 
   get(id: string) {
-    return this.client.call<Row>("GET", `/emails/${seg(id)}`);
+    return this.client.call<EmailDetail>("GET", `/emails/${seg(id)}`);
   }
 
   list(page: Page & { status?: string; from?: string; to?: string; q?: string; api_key_id?: string } = {}) {
-    return this.client.call<List>("GET", `/emails${query(page)}`);
+    return this.client.call<List<Email>>("GET", `/emails${query(page)}`);
   }
 
   update({ id, ...payload }: EmailUpdate) {
@@ -517,7 +767,7 @@ class Batch extends Resource {
     const emails = Array.isArray(payload) ? payload : payload.emails;
     const body = [];
     for (const email of emails) body.push(wire(await content(email)));
-    return this.client.call<{ data: Array<{ id: string }>; errors?: Array<{ index: number; message: string }> }>(
+    return this.client.call<{ data: SendResult[]; errors?: Array<{ index: number; message: string }> }>(
       "POST",
       "/emails/batch",
       body,
@@ -662,6 +912,18 @@ class TemplateLibrary extends Resource {
     return this.client.call<List>("GET", "/template-library");
   }
 
+  automations() {
+    return this.client.call<List<AutomationPreset>>("GET", "/template-library/automations");
+  }
+
+  automation(slug: string) {
+    return this.client.call<AutomationPresetDetail>("GET", `/template-library/automations/${seg(slug)}`);
+  }
+
+  installAutomation(slug: string, input: AutomationInstallInput) {
+    return this.client.call<AutomationInstallation>("POST", `/template-library/automations/${seg(slug)}/install`, wire(input));
+  }
+
   get(slug: string) {
     return this.client.call<Row>("GET", `/template-library/${seg(slug)}`);
   }
@@ -689,11 +951,11 @@ class Templates extends Resource {
   }
 
   get(idOrAlias: string) {
-    return this.client.call<Row>("GET", `/templates/${seg(idOrAlias)}`);
+    return this.client.call<Template>("GET", `/templates/${seg(idOrAlias)}`);
   }
 
   list(page: Page & { q?: string; status?: "draft" | "published" } = {}) {
-    return this.client.call<List>("GET", `/templates${query(page)}`);
+    return this.client.call<List<Template>>("GET", `/templates${query(page)}`);
   }
 
   async update(idOrAlias: string, payload: TemplateUpdate) {
@@ -764,17 +1026,21 @@ class ContactImports extends Resource {
     if (input.onConflict) form.append("on_conflict", input.onConflict);
     if (input.segments) form.append("segments", JSON.stringify(input.segments));
     if (input.topics) form.append("topics", JSON.stringify(input.topics));
+    if (input.triggerAutomations !== undefined) form.append("trigger_automations", String(input.triggerAutomations));
     const file = typeof input.file === "string" ? new Blob([input.file], { type: "text/csv" }) : input.file;
     form.append("file", file, input.filename ?? "contacts.csv");
-    return this.client.call<{ object: "contact_import"; id: string }>("POST", "/contacts/imports", form);
+    return this.client.call<ContactImportResult>("POST", "/contacts/imports", form);
   }
 
   list(page: Page & { status?: string } = {}) {
-    return this.client.call<List>("GET", `/contacts/imports${query(page)}`);
+    return this.client.call<List<ContactImportResult>>("GET", `/contacts/imports${query(page)}`);
   }
 
   get(id: string) {
-    return this.client.call<Row>("GET", `/contacts/imports/${seg(id)}`);
+    return this.client.call<ContactImportResult>("GET", `/contacts/imports/${seg(id)}`);
+  }
+  cancel(id: string) {
+    return this.client.call<ContactImportResult>("DELETE", `/contacts/imports/${seg(id)}`);
   }
 }
 
@@ -810,25 +1076,25 @@ class Contacts extends Resource {
   }
 
   activity(idOrEmail: string, page: Page = {}) {
-    return this.client.call<List>("GET", `/contacts/${seg(idOrEmail)}/activity${query(page)}`);
+    return this.client.call<List<ContactActivity>>("GET", `/contacts/${seg(idOrEmail)}/activity${query(page)}`);
   }
 }
 
 class ContactProperties extends Resource {
-  create(payload: { key: string; type?: "string" | "number"; fallbackValue?: string | number | null }) {
-    return this.client.call<Row>("POST", "/contact-properties", wire(payload));
+  create(payload: ContactPropertyCreate) {
+    return this.client.call<ContactProperty>("POST", "/contact-properties", wire(payload));
   }
 
   list(page: Page = {}) {
-    return this.client.call<List>("GET", `/contact-properties${query(page)}`);
+    return this.client.call<List<ContactProperty>>("GET", `/contact-properties${query(page)}`);
   }
 
   get(id: string) {
-    return this.client.call<Row>("GET", `/contact-properties/${seg(id)}`);
+    return this.client.call<ContactProperty>("GET", `/contact-properties/${seg(id)}`);
   }
 
-  update({ id, ...payload }: { id: string; fallbackValue?: string | number | null }) {
-    return this.client.call<Row>("PATCH", `/contact-properties/${seg(id)}`, wire(payload));
+  update({ id, ...payload }: { id: string; fallbackValue?: PropertyValue }) {
+    return this.client.call<ContactProperty>("PATCH", `/contact-properties/${seg(id)}`, wire(payload));
   }
 
   remove(id: string) {
@@ -837,20 +1103,24 @@ class ContactProperties extends Resource {
 }
 
 class Segments extends Resource {
-  create(payload: { name: string; description?: string }) {
-    return this.client.call<Row>("POST", "/segments", wire(payload));
+  create(payload: { name: string; description?: string; rule?: Rule | null }) {
+    return this.client.call<Segment>("POST", "/segments", wire(payload));
   }
 
   list(page: Page = {}) {
-    return this.client.call<List>("GET", `/segments${query(page)}`);
+    return this.client.call<List<Segment>>("GET", `/segments${query(page)}`);
   }
 
   get(id: string) {
-    return this.client.call<Row>("GET", `/segments/${seg(id)}`);
+    return this.client.call<Segment>("GET", `/segments/${seg(id)}`);
   }
 
-  update(id: string, payload: { name?: string; description?: string }) {
-    return this.client.call<Row>("PATCH", `/segments/${seg(id)}`, wire(payload));
+  update(id: string, payload: { name?: string; description?: string; rule?: Rule | null }) {
+    return this.client.call<Segment>("PATCH", `/segments/${seg(id)}`, wire(payload));
+  }
+
+  preview(rule: Rule) {
+    return this.client.call<SegmentPreview>("POST", "/segments/preview", { rule });
   }
 
   remove(id: string) {
@@ -970,7 +1240,7 @@ class Broadcasts extends Resource {
 
 class AutomationRuns extends Resource {
   list(automationId: string, page: Page & { status?: string; startDate?: string; endDate?: string } = {}) {
-    return this.client.call<List>("GET", `/automations/${seg(automationId)}/runs${query(page)}`);
+    return this.client.call<List<AutomationRun>>("GET", `/automations/${seg(automationId)}/runs${query(page)}`);
   }
 
   metrics(automationId: string, range: { startDate?: string; endDate?: string } = {}) {
@@ -978,27 +1248,50 @@ class AutomationRuns extends Resource {
   }
 
   get(automationId: string, runId: string) {
-    return this.client.call<Row>("GET", `/automations/${seg(automationId)}/runs/${seg(runId)}`);
+    return this.client.call<AutomationRunDetail>("GET", `/automations/${seg(automationId)}/runs/${seg(runId)}`);
   }
 }
 
 class Automations extends Resource {
+  splitMetrics(id: string, stepKey: string, range: { startDate?: string; endDate?: string } = {}) {
+    return this.client.call<SplitReport>("GET", `/automations/${seg(id)}/steps/${seg(stepKey)}/metrics${query(range)}`);
+  }
+  /** Requires an already paused version. Resume separately only after success. */
+  pickWinner(id: string, stepKey: string, input: { variant: string; version: number }) {
+    return this.client.call<Automation>("POST", `/automations/${seg(id)}/steps/${seg(stepKey)}/winner`, input);
+  }
   readonly runs = new AutomationRuns(this.client);
-
-  create(payload: AutomationCreate) {
-    return this.client.call<Row>("POST", "/automations", wire(payload));
+  /** Explicitly enroll current live contacts into an enabled, unpaused contact flow. */
+  enroll(id: string, input: AutomationEnrollment, options: { idempotencyKey?: string } = {}) {
+    return this.client.call<AutomationEnrollmentJob>("POST", `/automations/${seg(id)}/enroll`, wire(input), options);
+  }
+  getEnrollmentJob(id: string, jobId: string) {
+    return this.client.call<AutomationEnrollmentJob>("GET", `/automations/${seg(id)}/enroll-jobs/${seg(jobId)}`);
+  }
+  /** Cancel between batches; runs already created are not cancelled. */
+  cancelEnrollmentJob(id: string, jobId: string) {
+    return this.client.call<AutomationEnrollmentJob>("DELETE", `/automations/${seg(id)}/enroll-jobs/${seg(jobId)}`);
   }
 
-  list(page: Page & { status?: string } = {}) {
-    return this.client.call<List>("GET", `/automations${query(page)}`);
+  create(payload: AutomationCreate) {
+    return this.client.call<Automation>("POST", "/automations", wire(payload));
+  }
+
+  list(page: Page & { status?: AutomationStatus } = {}) {
+    return this.client.call<List<Automation>>("GET", `/automations${query(page)}`);
   }
 
   get(id: string) {
-    return this.client.call<Row>("GET", `/automations/${seg(id)}`);
+    return this.client.call<Automation>("GET", `/automations/${seg(id)}`);
   }
 
-  update(id: string, payload: Partial<AutomationCreate>) {
-    return this.client.call<Row>("PATCH", `/automations/${seg(id)}`, wire(payload));
+  update(id: string, payload: AutomationUpdate) {
+    return this.client.call<Automation>("PATCH", `/automations/${seg(id)}`, wire(payload));
+  }
+
+  /** Preview an ordinary update with the same validation, without saving any changes. */
+  dryRun(id: string, payload: AutomationUpdate) {
+    return this.client.call<AutomationDryRun>("PATCH", `/automations/${seg(id)}?dry_run=true`, wire(payload));
   }
 
   remove(id: string) {
@@ -1006,11 +1299,12 @@ class Automations extends Resource {
   }
 
   duplicate(id: string, options: { name?: string } = {}) {
-    return this.client.call<Row>("POST", `/automations/${seg(id)}/duplicate`, wire(options));
+    return this.client.call<Automation>("POST", `/automations/${seg(id)}/duplicate`, wire(options));
   }
 
-  stop(id: string) {
-    return this.client.call<Row>("POST", `/automations/${seg(id)}/stop`, {});
+  /** Reset only once enrollments for contacts whose active runs this stop actually cancels. */
+  stop(id: string, options: { resetReentry?: boolean } = {}) {
+    return this.client.call<Row>("POST", `/automations/${seg(id)}/stop`, wire(options));
   }
 }
 
@@ -1032,19 +1326,19 @@ class Events extends Resource {
   }
 
   create(payload: { name: string; schema?: EventSchema }) {
-    return this.client.call<Row>("POST", "/events", wire(payload));
+    return this.client.call<Event>("POST", "/events", wire(payload));
   }
 
   get(idOrName: string) {
-    return this.client.call<Row>("GET", `/events/${seg(idOrName)}`);
+    return this.client.call<Event>("GET", `/events/${seg(idOrName)}`);
   }
 
   list(page: Page = {}) {
-    return this.client.call<List>("GET", `/events${query(page)}`);
+    return this.client.call<List<Event>>("GET", `/events${query(page)}`);
   }
 
   update(idOrName: string, payload: { schema: EventSchema }) {
-    return this.client.call<Row>("PATCH", `/events/${seg(idOrName)}`, wire(payload));
+    return this.client.call<Event>("PATCH", `/events/${seg(idOrName)}`, wire(payload));
   }
 
   remove(idOrName: string) {
@@ -1074,6 +1368,91 @@ class Brand extends Resource {
 
   update(payload: Body) {
     return this.client.call<Row>("PATCH", "/brand", wire(payload));
+  }
+  updateLibrary() {
+    return this.client.call<LibraryUpdates>("POST", "/brand/update-library");
+  }
+}
+export type LibraryUpdates = { updated: Array<{ id: string; name: string; slug: string }>; skipped: Array<{ id: string; name: string; slug: string; reason?: string }> };
+export type GoalInput = { name: string; target: { event: string } | { rule: Rule }; eligibility?: Rule | null; windowDays?: number };
+export type Goal = Row & { object: "goal"; name: string; target: GoalInput["target"]; eligibility: Rule | null; window_days: number; created_at: string; updated_at: string };
+export type GoalMetricsOptions = { automationId?: string; broadcastId?: string; stepKey?: string; startDate?: string; endDate?: string };
+export type GoalMetrics = {
+  object: "goal_metrics"; goal_id: string; start_date: string; end_date: string;
+  contacts_reached: number; converted: number; rate: number;
+  data: Array<{ date: string; contacts_reached: number; converted: number; rate: number }>;
+  history: { available_from: string | null; limitation: string };
+};
+class Goals extends Resource {
+  list(page: Page = {}) { return this.client.call<List<Goal>>("GET", `/goals${query(page)}`); }
+  get(id: string) { return this.client.call<Goal>("GET", `/goals/${seg(id)}`); }
+  create(input: GoalInput) { return this.client.call<Goal>("POST", "/goals", wire(input)); }
+  update(id: string, input: Partial<GoalInput>) { return this.client.call<Goal>("PATCH", `/goals/${seg(id)}`, wire(input)); }
+  remove(id: string) { return this.client.call<Deleted>("DELETE", `/goals/${seg(id)}`); }
+  metrics(id: string, options: GoalMetricsOptions = {}) { return this.client.call<GoalMetrics>("GET", `/goals/${seg(id)}/metrics${query(options)}`); }
+}
+
+export type TenantSettings = {
+  object: "settings";
+  import_trigger_automations: boolean;
+  sandbox_domains: string[];
+  confirmation_daily_limit: number;
+};
+
+class Settings extends Resource {
+  get() {
+    return this.client.call<TenantSettings>("GET", "/settings");
+  }
+
+  update(payload: { importTriggerAutomations?: boolean; sandboxDomains?: string[]; confirmationDailyLimit?: number }) {
+    return this.client.call<TenantSettings>("PATCH", "/settings", wire(payload));
+  }
+}
+export type FormInput = {
+  name: string; topicIds: string[]; properties?: string[]; doubleOptIn?: boolean;
+  fromEmail: string; allowedOrigins: string[]; redirectUrl?: string | null;
+};
+export type SignupForm = Row & {
+  object: "form"; name: string; key: string; topic_ids: string[]; properties: string[];
+  double_opt_in: boolean; from_email: string; allowed_origins: string[]; redirect_url: string | null;
+};
+class Forms extends Resource {
+  list(page: Page = {}) { return this.client.call<List<SignupForm>>("GET", `/forms${query(page)}`); }
+  get(id: string) { return this.client.call<SignupForm>("GET", `/forms/${seg(id)}`); }
+  create(input: FormInput) { return this.client.call<SignupForm>("POST", "/forms", wire(input)); }
+  update(id: string, input: Partial<FormInput>) { return this.client.call<SignupForm>("PATCH", `/forms/${seg(id)}`, wire(input)); }
+  remove(id: string) { return this.client.call<Deleted>("DELETE", `/forms/${seg(id)}`); }
+}
+export type IntegrationSettings = {
+  mapPlan?: boolean; deleteContact?: boolean; secretHeader?: string; stripeRestrictedKey?: string | null;
+};
+export type IntegrationInput = {
+  provider: "stripe" | "clerk" | "supabase" | "webhook"; name: string; secret: string;
+  slug?: string; settings?: IntegrationSettings;
+};
+export type IntegrationUpdate = Partial<Pick<IntegrationInput, "name" | "secret" | "settings">>;
+export type Integration = Row & {
+  object: "integration"; provider: IntegrationInput["provider"]; name: string; slug: string;
+  settings: { map_plan?: boolean; delete_contact?: boolean; secret_header?: string };
+  has_restricted_key: boolean; last_received_at: string | null; created_at: string; updated_at: string;
+};
+export type CreatedIntegration = Integration & { token: string; url: string };
+export type InboundDelivery = Row & {
+  integration_id: string; provider_event_id: string; status: "processed" | "ignored" | "failed";
+  event_name: string | null; contact_id: string | null; error: string | null; created_at: string;
+};
+function integrationWire(input: IntegrationInput | IntegrationUpdate) {
+  return { ...wire(input), ...(input.settings === undefined ? {} : { settings: wire(input.settings) }) };
+}
+class Integrations extends Resource {
+  list(page: Page = {}) { return this.client.call<List<Integration>>("GET", `/integrations${query(page)}`); }
+  get(id: string) { return this.client.call<Integration>("GET", `/integrations/${seg(id)}`); }
+  create(input: IntegrationInput) { return this.client.call<CreatedIntegration>("POST", "/integrations", integrationWire(input)); }
+  update(id: string, input: IntegrationUpdate) { return this.client.call<Integration>("PATCH", `/integrations/${seg(id)}`, integrationWire(input)); }
+  remove(id: string) { return this.client.call<Deleted>("DELETE", `/integrations/${seg(id)}`); }
+  rotate(id: string) { return this.client.call<CreatedIntegration>("POST", `/integrations/${seg(id)}/rotate`, {}); }
+  deliveries(id: string, options: { limit?: number } = {}) {
+    return this.client.call<List<InboundDelivery>>("GET", `/integrations/${seg(id)}/deliveries${query(options)}`);
   }
 }
 

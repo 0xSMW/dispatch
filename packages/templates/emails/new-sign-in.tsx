@@ -73,6 +73,9 @@ NewSignIn.PreviewProps = {
 } satisfies Props;
 NewSignIn.Subject = "New sign-in to your {{{PRODUCT_NAME}}} account";
 NewSignIn.Category = "authentication";
+NewSignIn.Kind = "transactional" as const;
+NewSignIn.Stage = null;
+NewSignIn.When = "Send after a new sign-in is recorded. Include the session details and a link to revoke it.";
 NewSignIn.Track = false;
 NewSignIn.Description = "Sent when an account is signed in from a new session.";
 NewSignIn.Variables = [

@@ -2,8 +2,12 @@ import { readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { ReactNode } from "react";
-import type { EmailVariable } from "../emails/_theme";
-import type { Library, LibraryTemplate } from "./types";
+import { reservedVariables } from "@dispatchmail/core";
+import { themePairs, themePlaceholders, type EmailVariable } from "../emails/_theme";
+import { checkLibrary, checkTemplateVariables } from "./check";
+import { paymentInput } from "./fixtures";
+import { presetIssues, presets } from "./presets";
+import type { Library, LibraryStage, LibraryTemplate } from "./types";
 
 process.env.NODE_ENV = "production";
 
@@ -24,6 +28,15 @@ const order = [
   "shipping-update",
   "notification",
   "newsletter",
+  "newsletter-welcome",
+  "setup-reminder",
+  "feature-tips",
+  "upgrade-invite",
+  "we-miss-you",
+  "come-back-offer",
+  "card-update-reminder",
+  "subscription-canceled",
+  "confirm-subscription",
 ];
 
 const names: Record<string, string> = {
@@ -43,9 +56,36 @@ const names: Record<string, string> = {
   "shipping-update": "Shipping update",
   notification: "Notification",
   newsletter: "Newsletter",
+  "newsletter-welcome": "Newsletter welcome",
+  "setup-reminder": "Setup reminder",
+  "feature-tips": "Feature tips",
+  "upgrade-invite": "Upgrade invite",
+  "we-miss-you": "We miss you",
+  "come-back-offer": "Come back offer",
+  "card-update-reminder": "Card update reminder",
+  "subscription-canceled": "Subscription canceled",
+  "confirm-subscription": "Confirm subscription",
+};
+
+// Per-template input contracts; preset bindings and actual finite payment values
+// are checked separately below. Runtime callers still supply required values.
+// Signup confirmation supplies CONFIRM_URL; other emails use their own fallbacks.
+const lifecycleInputs: Record<string, readonly string[]> = {
+  welcome: [],
+  "newsletter-welcome": [],
+  "setup-reminder": [],
+  "feature-tips": [],
+  "upgrade-invite": [],
+  "we-miss-you": [],
+  "come-back-offer": [],
+  "payment-failed": ["AMOUNT", "UPDATE_PAYMENT_URL", "INVOICE_NUMBER"],
+  "card-update-reminder": ["AMOUNT", "UPDATE_PAYMENT_URL", "INVOICE_NUMBER"],
+  "subscription-canceled": ["AMOUNT", "UPDATE_PAYMENT_URL", "INVOICE_NUMBER"],
+  "confirm-subscription": ["CONFIRM_URL"],
 };
 
 const brand = {
+  theme: themePlaceholders,
   productName: "{{{PRODUCT_NAME}}}",
   productUrl: "{{{PRODUCT_URL}}}",
   logoUrl: "{{{LOGO_URL}}}",
@@ -71,6 +111,9 @@ type TemplateComponent = {
   PreviewProps?: Record<string, unknown>;
   Subject: string;
   Category: string;
+  Kind: LibraryTemplate["kind"];
+  Stage: LibraryStage | null;
+  When: string;
   Track: boolean;
   Description: string;
   Variables: EmailVariable[];
@@ -91,8 +134,15 @@ async function load(): Promise<RenderModule> {
 function placeholderProps(variables: EmailVariable[], listPlaceholder: (key: string, fields: string[]) => unknown) {
   const props: Record<string, unknown> = {};
   for (const variable of variables) {
+    // Recipient names are context, not API-declared variables. Their optional defaults
+    // must travel in the placeholder because stored declarations reject reserved names.
+    const fallback = reservedVariables.includes(variable.key) ? variable.fallback_value : null;
+    if (fallback !== undefined && fallback !== null && /[}&<"']/.test(String(fallback))) {
+      throw new Error(`Use a plain inline fallback for reserved variable ${variable.key}`);
+    }
     props[variable.prop] =
-      variable.type === "list" ? listPlaceholder(variable.key, variable.fields ?? []) : `{{{${variable.key}}}}`;
+      variable.type === "list" ? listPlaceholder(variable.key, variable.fields ?? [])
+        : fallback === undefined || fallback === null ? `{{{${variable.key}}}}` : `{{{${variable.key}|${fallback}}}}`;
   }
   return props;
 }
@@ -139,12 +189,14 @@ async function main() {
       slug,
       name: names[slug] ?? slug,
       category: component.Category,
-      kind: component.Category === "marketing" ? "marketing" : "transactional",
+      kind: component.Kind,
+      stage: component.Stage,
+      when: component.When,
       track: component.Track,
       subject: component.Subject,
       description: component.Description,
       preview: component.Preview,
-      variables: variables.map((variable) => ({
+      variables: variables.filter((variable) => !reservedVariables.includes(variable.key)).map((variable) => ({
         key: variable.key,
         type: variable.type,
         fallback_value: variable.fallback_value === undefined ? null : variable.fallback_value,
@@ -157,7 +209,17 @@ async function main() {
     });
   }
 
-  const library: Library = { version: "1.0.0", templates };
+  const library: Library = { version: "1.0.0", templates, automations: presets };
+  const payment = await paymentInput();
+  const failures = [
+    ...checkLibrary(library, themePairs),
+    ...templates.flatMap((entry) => Object.hasOwn(lifecycleInputs, entry.slug)
+      ? checkTemplateVariables(entry, lifecycleInputs[entry.slug])
+      : []),
+    ...library.automations.flatMap((preset) => presetIssues(preset, templates,
+      preset.slug === "failed-payment" ? { triggerData: payment } : {})),
+  ];
+  if (failures.length > 0) throw new Error(`Template library checks failed:\n${failures.join("\n")}`);
   // LIBRARY_OUT lets the freshness test build to a temporary file and compare.
   const target = process.env.LIBRARY_OUT ?? fileURLToPath(new URL("../library.json", import.meta.url));
   writeFileSync(target, `${JSON.stringify(library, null, 2)}\n`);

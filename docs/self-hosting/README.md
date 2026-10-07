@@ -2,7 +2,7 @@
 
 Dispatch is three Node processes, a static dashboard, and two services. You run the API, the worker, and optionally the SMTP relay, and you serve the dashboard's built files. They need Postgres (the compose file runs 16), Redis, and either a shared disk or an S3 bucket. Sending goes through Amazon SES.
 
-There is no reference deployment yet. `infra/terraform` holds an empty module, not a working deployment. The steps below are what a deployment has to do.
+There is no complete reference deployment yet. `infra/terraform` creates a private, encrypted content bucket and two SQS queues. It does not deploy the application, database, Redis, IAM runtime roles, SES configuration sets, event subscriptions, or HTTPS endpoints. The steps below are what a deployment has to do.
 
 ## Try it on one machine
 
@@ -19,7 +19,7 @@ pnpm dev
 - Dashboard: `http://localhost:5173`
 - Mailpit: `http://localhost:8025`
 
-This runs with the fake provider and local storage. See [local.md](../local.md).
+This runs with the fake provider and local storage. The Compose ports bind to `127.0.0.1` only. Postgres uses public development credentials, and Redis and Mailpit have no authentication. Keep this stack on your own machine; do not expose its ports or use it as a production deployment. See [local.md](../local.md).
 
 ## Production settings
 
@@ -35,10 +35,10 @@ PUBLIC_URL=https://api.mail.example.com
 APP_URL=https://dashboard.mail.example.com
 CORS_ORIGINS=https://dashboard.mail.example.com
 SES_PROVIDER=ses
-AWS_REGION=us-east-1
+AWS_REGION=us-west-2
 STORAGE_BACKEND=s3
 S3_BUCKET=<bucket>
-SES_EVENTS_QUEUE_URL=https://sqs.us-east-1.amazonaws.com/<account>/<events-queue>
+SES_EVENTS_QUEUE_URL=https://sqs.us-west-2.amazonaws.com/<account>/<events-queue>
 TRACKING_DOMAIN=<host that serves the API over HTTPS, such as track.mail.example.com>
 ```
 
@@ -82,6 +82,8 @@ Each domain sends from the region it was created in. Dispatch creates the SES id
 
 - `dispatch-default`, used for normal sends and set on every new identity
 - `dispatch-tls-required`, used for domains with `tls: enforced`. Set its TLS policy to require.
+
+Verify `DeliveryOptions.TlsPolicy` is `REQUIRE` for `dispatch-tls-required` after creation and on later provisioning runs. The account-specific `scripts/provision-aws.py` reconciles and verifies this setting on every run; its account, domain, and Vercel role settings must be reviewed before using it for another deployment.
 
 Give both an event destination for send, delivery, bounce, complaint, delivery delay, reject, and rendering failure events, delivered to the SQS queue named by `SES_EVENTS_QUEUE_URL`. The worker parses each message body as the SES event itself, so when SNS sits between SES and SQS, turn on raw message delivery on the subscription. Dispatch tags every message with `dispatch_email_id` and `dispatch_tenant_id` and uses those tags to match events to emails. Without the queue, emails stop at `sent`, and bounces and complaints never suppress anyone.
 

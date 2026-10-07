@@ -171,6 +171,46 @@ describe("log filters and presenter", () => {
     expect(hideLinks(null)).toBeNull();
   });
 
+  describe.each(["http", "https", "HtTp", "hTtPs", "HTTP", "HTTPS"])("capability links with %s schemes", (scheme) => {
+    const families = ["unsubscribe", "confirm", "inbound", "click", "open", "files", "shared"];
+
+    it.each(families)("hides the accepted %s path and query forms", (family) => {
+      expect(hideLinks(`${scheme}://api.acme.test/${family}/tok_${family}`)).toBe("#link-hidden");
+      expect(hideLinks(`${scheme}://api.acme.test/${family}?token=tok_${family}`)).toBe("#link-hidden");
+    });
+
+    it("hides every HTML and text link in nested viewer logs without changing full-role bodies", () => {
+      const links = families.map((family) => `${scheme}://api.acme.test/${family}/tok_${family}`);
+      const ordinary = `Keep this text and ${scheme}://acme.test/pricing unchanged.`;
+      const html = `${links.map((link) => `<a href="${link}">Continue</a>`).join(" ")} ${ordinary}`;
+      const text = `${links.join("\n")}\n${ordinary}`;
+      const hiddenHtml = `${links.map(() => '<a href="#link-hidden">Continue</a>').join(" ")} ${ordinary}`;
+      const hiddenText = `${links.map(() => "#link-hidden").join("\n")}\n${ordinary}`;
+      const row = {
+        id: "log_1",
+        created_at: "2026-10-01T00:00:00.000Z",
+        path: "/emails/email_1",
+        method: "GET",
+        status: 200,
+        request_body: { nested: [{ html, text, ordinary, count: 7, enabled: true, empty: null }] },
+        response_body: { email: { html, text }, messages: [text, { html }], ordinary },
+      };
+
+      expect(hideLinks(html)).toBe(hiddenHtml);
+      expect(hideLinks(text)).toBe(hiddenText);
+      expect(presentLog(row, true, true)).toMatchObject({
+        request_body: { nested: [{ html: hiddenHtml, text: hiddenText, ordinary, count: 7, enabled: true, empty: null }] },
+        response_body: { email: { html: hiddenHtml, text: hiddenText }, messages: [hiddenText, { html: hiddenHtml }], ordinary },
+      });
+      expect(presentLog(row, true)).toMatchObject({
+        request_body: row.request_body,
+        response_body: row.response_body,
+      });
+      expect(row.request_body.nested[0]?.html).toBe(html);
+      expect(row.response_body.email.text).toBe(text);
+    });
+  });
+
   it("cuts a webhook URL to its host for a read-only user", () => {
     expect(hostOnly("https://hooks.slack.com/services/T000/B000/secret")).toBe("https://hooks.slack.com/…");
     expect(hostOnly("https://user:pass@acme.test/")).toBe("https://acme.test/");
@@ -187,13 +227,13 @@ describe("log filters and presenter", () => {
       request_body: { expires_in: "1h" },
       response_body: { object: "email", id: "email_1", url: "https://app.example.com/shared?token=abc", attachments: [{ download_url: "https://files/x" }], raw: "https://files/raw" },
     };
-    expect(presentLog(row, true).response_body).toMatchObject({ url: "https://app.example.com/shared?token=abc" });
+    expect(presentLog(row, true)).toMatchObject({ response_body: { url: "https://app.example.com/shared?token=abc" } });
     expect(presentLog(row, true, true)).toMatchObject({
       request_body: { expires_in: "1h" },
       response_body: { id: "email_1", url: "[redacted]", attachments: [{ download_url: "[redacted]" }], raw: "[redacted]" },
     });
     // A stored email body in a log keeps its links from a read-only user too.
     const email = { ...row, path: "/emails/email_1", method: "GET", response_body: { html: '<a href="https://api.acme.test/unsubscribe/tok_1">u</a>' } };
-    expect(presentLog(email, true, true).response_body).toEqual({ html: '<a href="#link-hidden">u</a>' });
+    expect(presentLog(email, true, true)).toMatchObject({ response_body: { html: '<a href="#link-hidden">u</a>' } });
   });
 });

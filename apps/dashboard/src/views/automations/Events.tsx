@@ -19,7 +19,6 @@ import { useMutation } from "../../hooks/useMutation";
 import { shortJson } from "../../lib/utils";
 import { useCan, useClient } from "../../shell/session";
 import type { EventDefinition, FiredEvent } from "../../types";
-import { automationTabs } from "../tabs";
 import { EventInput } from "./Steps";
 
 export const fieldTypes = ["string", "number", "boolean", "date"] as const;
@@ -38,7 +37,7 @@ export function samplePayload(schema: EventDefinition["schema"]): Record<string,
   return Object.fromEntries(Object.entries(schema).map(([name, type]) => [name, samples[type] ?? ""]));
 }
 
-/** `/automations/events`: event definitions (`/events`), fired events (`/fired-events`), and test sends. */
+/** `/events`: event definitions, fired events, and test sends. */
 export function Events() {
   const client = useClient();
   const can = useCan();
@@ -50,10 +49,15 @@ export function Events() {
   const [sending, setSending] = useState<string | null>(null);
   const [viewing, setViewing] = useState<FiredEvent | null>(null);
 
+  function reload() {
+    void definitions.reload();
+    void fired.reload();
+  }
+
   return (
     <ListPage
-      title="Automations"
-      tabs={automationTabs}
+      title="Events"
+      description={<>Sending <code>POST /events/send</code> with a new email address creates a contact. Fire a signup event to add the contact and start matching automations.</>}
       actions={
         <>
           <button type="button" className="secondary" onClick={() => setSending("")}>
@@ -70,10 +74,13 @@ export function Events() {
       empty={
         <Empty
           title="No events defined"
-          body="Define an event's fields so payloads are checked when they arrive. Automations also run on events with no definition."
+          body="Define an event to check incoming payloads and track activity."
+          action={can ? <button type="button" onClick={() => setCreating(true)}>Define your first event</button> : null}
         />
       }
       columns={[
+        { header: "Fired", cell: (row) => (row.fired_count ?? 0).toLocaleString() },
+        { header: "Last fired", cell: (row) => row.last_fired_at ? <Time value={row.last_fired_at} /> : <span className="dim">Never</span> },
         {
           header: "Event",
           cell: (row) => (
@@ -117,7 +124,7 @@ export function Events() {
       <Panel
         title="Fired events"
         actions={
-          <button type="button" className="secondary small" onClick={() => void fired.reload()} disabled={fired.loading}>
+          <button type="button" className="secondary small" onClick={reload} disabled={fired.loading}>
             <RefreshCw size={14} />
             Refresh
           </button>
@@ -152,7 +159,7 @@ export function Events() {
           initial={sending}
           definitions={definitions.rows}
           onClose={() => setSending(null)}
-          onDone={() => void fired.reload()}
+          onDone={reload}
         />
       ) : null}
       {viewing ? (

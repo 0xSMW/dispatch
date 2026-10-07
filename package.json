@@ -4,6 +4,10 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.28.0",
+  "engines": {
+    "node": "24.x",
+    "pnpm": "10.28.0"
+  },
   "scripts": {
     "build": "pnpm -r build",
     "check": "pnpm -r check",
@@ -19,16 +23,40 @@
     "format": "prettier --write .",
     "lint": "pnpm -r lint",
     "load": "tsx scripts/load.ts",
+    "audit:prod": "node scripts/audit-production.mjs",
     "test": "vitest run",
     "test:unit": "vitest run --exclude apps/api/src/accept.test.ts",
-    "typecheck": "pnpm -r typecheck"
+    "llms": "tsx scripts/llms.ts",
+    "test:llms": "tsx --test scripts/llms.test.ts",
+    "typecheck": "pnpm -r typecheck",
+    "build:vercel": "node scripts/build-vercel.mjs"
   },
   "devDependencies": {
-    "@types/node": "^22.15.29",
+    "@types/node": "^24.19.1",
     "dotenv": "^16.5.0",
     "prettier": "^3.5.3",
     "tsx": "^4.19.4",
     "typescript": "^5.8.3",
     "vitest": "^3.1.4"
+  },
+  "volta": {
+    "node": "24.21.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "@types/node": "^24.19.1",
+      "source-map-js": "1.2.2",
+      "@workflow/core>devalue": "5.9.3",
+      "@workflow/core>nanoid": "5.1.16",
+      "fast-uri@3": "3.1.8",
+      "find-my-way@9": "9.9.0",
+      "postcss@8": "8.5.28",
+      "nanoid@3": "3.3.18",
+      "esbuild@0.28": "0.28.2",
+      "@babel/core@7": "7.29.7",
+      "browserslist@4": "4.29.3",
+      "baseline-browser-mapping@2": "2.11.27",
+      "vite@6": "6.4.3"
+    }
   }
 }

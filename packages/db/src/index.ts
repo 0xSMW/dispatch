@@ -1,5 +1,24 @@
 import pg from "pg";
 import { ApiError, id, list, type TemplateVariable } from "@dispatchmail/core";
+import { contactColumns, type ContactRow } from "./audience.js";
+export { settings, updateSettings } from "./settings.js";
+export * from "./forms.js";
+export * from "./goals.js";
+export * from "./splits.js";
+export * from "./library-updates.js";
+export * from "./consent.js";
+export * from "./inbound/management.js";
+export * from "./inbound/security.js";
+export * from "./inbound/application.js";
+export * from "./inbound/receiver.js";
+export * from "./inbound/deliveries.js";
+export { fireEventWithClient } from "./automations.js";
+export { assertSendKinds } from "./send-kinds.js";
+export { migrate } from "./migration.js";
+// Compiler and bounded read helpers share the fixed contacts alias c.
+export { segmentPredicate, segmentFilter, segmentCount, segmentPreview, assertSegmentRule } from "./segments.js";
+export { segmentMatch, contactSegments } from "./segment-matches.js";
+export { staticSegment, assertSegmentSteps, updateSegment, segmentColumns } from "./segment-writes.js";
 
 const { Pool } = pg;
 
@@ -17,7 +36,7 @@ export function connect(
     connectionString: databaseUrl,
     max: Number(process.env.DB_POOL_SIZE ?? 20),
     idleTimeoutMillis: 30_000,
-    connectionTimeoutMillis: 5_000,
+    connectionTimeoutMillis: Number(process.env.DB_CONNECT_TIMEOUT_MS ?? 15_000),
   });
 }
 
@@ -83,28 +102,10 @@ export async function upsertContact(
   const data = { ...given, email: given.email.toLowerCase() };
   const hasProps = data.properties !== undefined;
   const hasUnsub = data.unsubscribed !== undefined;
-  const row = await client.query<{
-    id: string;
-    email: string;
-    first_name: string | null;
-    last_name: string | null;
-    properties: Record<string, unknown>;
-    unsubscribed_at: string | null;
-    created_at: string;
-    updated_at: string;
-    created: boolean;
-  }>(
+  const row = await client.query<ContactRow>(
     `insert into contacts (id, tenant_id, email, first_name, last_name, properties, unsubscribed_at)
      values ($1, $2, $3, $4, $5, $6, case when $7::boolean then now() else null end)
-     on conflict (tenant_id, email) do update set
-       first_name = coalesce(excluded.first_name, contacts.first_name),
-       last_name = coalesce(excluded.last_name, contacts.last_name),
-       properties = case when $8::boolean then excluded.properties else contacts.properties end,
-       unsubscribed_at = case when $9::boolean then (case when $7::boolean then now() else null end) else contacts.unsubscribed_at end,
-       deleted_at = null,
-       updated_at = now()
-     returning id, email, first_name, last_name, properties, unsubscribed_at, created_at, updated_at,
-       (contacts.xmax = 0) as created`,
+     on conflict do nothing returning ${contactColumns}`,
     [
       id("contact"),
       tenantId,
@@ -113,11 +114,26 @@ export async function upsertContact(
       data.last_name ?? null,
       JSON.stringify(data.properties ?? {}),
       data.unsubscribed ?? false,
-      hasProps,
-      hasUnsub,
     ],
   );
-  return row.rows[0];
+  if (row.rows[0]) return { ...row.rows[0], created: true, revived: false, before: null };
+  const locked = await client.query<ContactRow & { deleted_at: string | null }>(
+    `select ${contactColumns}, deleted_at from contacts where tenant_id = $1 and lower(email) = lower($2) limit 1 for update`,
+    [tenantId, data.email]
+  );
+  const before = locked.rows[0];
+  if (!before) throw new ApiError("conflict", 409, "Contact changed during creation");
+  const updated = await client.query<ContactRow>(
+    `update contacts set first_name = coalesce($3, first_name), last_name = coalesce($4, last_name),
+       properties = case when $5::boolean then $6::jsonb else properties end,
+       unsubscribed_at = case when not $7::boolean then unsubscribed_at
+         when $8::boolean then coalesce(unsubscribed_at, now()) else null end,
+       deleted_at = null, updated_at = now()
+     where tenant_id = $1 and id = $2 returning ${contactColumns}`,
+    [tenantId, before.id, data.first_name ?? null, data.last_name ?? null, hasProps,
+      JSON.stringify(data.properties ?? {}), hasUnsub, data.unsubscribed ?? false]
+  );
+  return { ...updated.rows[0]!, created: false, revived: Boolean(before.deleted_at), before };
 }
 
 export async function incrementUsage(
@@ -323,13 +339,20 @@ export * from "./accept.js";
 export * from "./activity.js";
 export * from "./audience.js";
 export * from "./automations.js";
+export * from "./automation-edits.js";
+export * from "./contact-triggers.js";
+export * from "./enrollment-jobs.js";
+export * from "./claims.js";
 export * from "./broadcasts.js";
 export * from "./emails.js";
 export * from "./events.js";
+export * from "./run-events.js";
+export * from "./retry.js";
 export * from "./imports.js";
 export * from "./keys.js";
 export * from "./metrics.js";
 export * from "./received.js";
 export * from "./templates.js";
+export * from "./presets.js";
 export * from "./tenants.js";
 export * from "./unsubscribe.js";

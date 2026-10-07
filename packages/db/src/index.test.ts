@@ -45,14 +45,20 @@ describe("publishedTemplate", () => {
 });
 
 describe("upsertContact", () => {
+  const stored = {
+    id: "cnt_1", email: "ada@example.com", first_name: null, last_name: null, properties: {},
+    unsubscribed_at: null, created_at: "2026-10-01T00:00:00Z", updated_at: "2026-10-01T00:00:00Z",
+  };
+
   it("handles email string", async () => {
     const mockDb = {
       query: vi.fn().mockResolvedValue({
-        rows: [{ id: "cnt_1", email: "ada@example.com" }]
+        rows: [stored]
       })
     };
     const contact = await upsertContact(mockDb, "tenant_1", "ada@example.com");
     expect(contact.id).toBe("cnt_1");
+    expect(contact).toMatchObject({ created: true, revived: false, before: null });
     expect(mockDb.query).toHaveBeenCalledWith(
       expect.stringContaining("insert into contacts"),
       expect.arrayContaining(["tenant_1", "ada@example.com"])
@@ -62,15 +68,34 @@ describe("upsertContact", () => {
   it("handles contact object with properties and unsubscribe status", async () => {
     const mockDb = {
       query: vi.fn().mockResolvedValue({
-        rows: [{ id: "cnt_1", email: "ada@example.com", unsubscribed_at: "2026-10-01T00:00:00Z" }]
+        rows: [{ ...stored, first_name: "Ada", properties: { plan: "pro" }, unsubscribed_at: "2026-10-01T00:00:00Z" }]
       })
     };
     const contact = await upsertContact(mockDb, "tenant_1", {
       email: "ada@example.com",
       first_name: "Ada",
+      properties: { plan: "pro" },
       unsubscribed: true
     });
     expect(contact.unsubscribed_at).toBe("2026-10-01T00:00:00Z");
+    expect(mockDb.query.mock.calls[0]![1]!.slice(2)).toEqual(["ada@example.com", "Ada", null, '{"plan":"pro"}', true]);
+  });
+
+  it.each([null, "2026-10-02T00:00:00Z"])("locks a conflicting contact and returns its complete previous snapshot (deleted_at=%s)", async (deletedAt) => {
+    const before = { ...stored, first_name: "Grace", properties: { plan: "free" }, unsubscribed_at: "2026-10-01T00:00:00Z", deleted_at: deletedAt };
+    const after = { ...stored, first_name: "Ada", properties: { plan: "pro" }, unsubscribed_at: before.unsubscribed_at };
+    const query = vi.fn().mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [before] }).mockResolvedValueOnce({ rows: [after] });
+    const contact = await upsertContact({ query }, "tenant_1", { email: "ADA@example.com", first_name: "Ada", properties: { plan: "pro" } });
+    expect(contact).toEqual({ ...after, created: false, revived: Boolean(deletedAt), before });
+    expect(query.mock.calls[1]).toEqual([expect.stringContaining("limit 1 for update"), ["tenant_1", "ada@example.com"]]);
+    expect(query.mock.calls[2]![1]).toEqual(["tenant_1", "cnt_1", "Ada", null, true, '{"plan":"pro"}', false, false]);
+    expect(before.properties).toEqual({ plan: "free" });
+  });
+
+  it("does not invent a before snapshot when a concurrent contact disappears", async () => {
+    const query = vi.fn().mockResolvedValue({ rows: [] });
+    await expect(upsertContact({ query }, "tenant_1", "ada@example.com")).rejects.toMatchObject({ name: "conflict", statusCode: 409 });
+    expect(query).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -215,6 +240,7 @@ describe("paginate", () => {
 describe("acceptEmail", () => {
   function emailDb() {
     const query = vi.fn().mockImplementation((sql: string) => {
+      if (sql.includes("select settings from tenants")) return Promise.resolve({ rowCount: 1, rows: [{ settings: {} }] });
       if (sql.includes("from domains")) return Promise.resolve({ rowCount: 1, rows: [{ id: "dom_1" }] });
       if (sql.includes("from suppressions")) return Promise.resolve({ rowCount: 0, rows: [] });
       if (sql.includes("insert into emails")) {
@@ -239,6 +265,40 @@ describe("acceptEmail", () => {
     expect(result).toMatchObject({ email: { id: "email_1" } });
     expect(client.connect).not.toHaveBeenCalled();
     expect(client.query).toHaveBeenCalledWith(expect.stringContaining("insert into emails"), expect.any(Array));
+  });
+
+  it("creates the parent email before inserting inline attachment metadata", async () => {
+    const client = emailDb();
+    const originalQuery = client.query.getMockImplementation()!;
+    const emailIds = new Set<string>();
+    client.query.mockImplementation((sql: string, params: unknown[]) => {
+      if (sql.includes("insert into emails")) emailIds.add(params[0] as string);
+      if (sql.includes("insert into email_attachments")) {
+        for (const emailId of params[2] as string[]) {
+          if (!emailIds.has(emailId)) throw new Error("email_attachments_email_id_fkey");
+        }
+      }
+      return originalQuery(sql);
+    });
+    const storeAttachment = vi.fn().mockResolvedValue(undefined);
+    await acceptEmail(
+      client as never,
+      {
+        from: "hello@example.com", to: "ada@example.com", subject: "Hi", text: "Hello",
+        attachments: [{ filename: "a.txt", content: "YQ==", disposition: "inline", content_id: "logo" }],
+      },
+      { tenant_id: "tenant_1", request_id: "req_1" },
+      { client, storeAttachment },
+    );
+    const insert = client.query.mock.calls.find((call) => String(call[0]).includes("insert into email_attachments"))!;
+    const params = insert[1] as unknown[];
+    expect(params[2]).toEqual([...emailIds]);
+    expect(params[3]).toEqual(["a.txt"]);
+    expect(params[5]).toEqual(["logo"]);
+    expect(params[6]).toEqual(["inline"]);
+    expect(params[7]).toEqual([1]);
+    expect(storeAttachment).toHaveBeenCalledWith((params[9] as string[])[0], Buffer.from("a"));
+    expect(client.connect).not.toHaveBeenCalled();
   });
 
   it("rejects a reused idempotency key that carries a different payload", async () => {
@@ -327,6 +387,7 @@ describe("acceptEmail with a schedule phrase and a template sender", () => {
       calls.push({ sql, params });
       const custom = extra(sql, params);
       if (custom) return Promise.resolve(custom);
+      if (sql.includes("select settings from tenants")) return Promise.resolve({ rowCount: 1, rows: [{ settings: {} }] });
       if (sql.includes("from domains")) return Promise.resolve({ rowCount: 1, rows: [{ id: "dom_1", name: "example.com", sending: "enabled" }] });
       if (sql.includes("insert into emails")) {
         return Promise.resolve({
@@ -405,7 +466,7 @@ describe("acceptEmail with a schedule phrase and a template sender", () => {
         client as never,
         { from: "hello@example.com", to: "ada@example.com", subject: "Hi", text: "Hello", topic_id: "topic_typo" },
         { tenant_id: "tenant_1", request_id: "req_1" },
-        { client }
+        { client, unsubscribe: { secret: "test-secret", appUrl: "https://app.example", publicUrl: "https://api.example" } }
       )
     ).rejects.toMatchObject({ statusCode: 422, message: "Topic not found" });
     expect(client.calls.some((call) => call.sql.includes("insert into emails"))).toBe(false);
@@ -490,6 +551,7 @@ describe("acceptBatch", () => {
       if (["begin", "commit", "rollback", "savepoint batch_item", "release savepoint batch_item", "rollback to savepoint batch_item"].includes(sql)) {
         return { rows: [], rowCount: 0 };
       }
+      if (sql.includes("select settings from tenants")) return { rowCount: 1, rows: [{ settings: {} }] };
       if (sql.includes("from domains")) {
         const name = params?.[1];
         return name === "example.com"
@@ -509,21 +571,21 @@ describe("acceptBatch", () => {
     const result = await acceptBatch(
       db as never,
       [
-        { from: "hello@example.com", to: "ada@example.com", subject: "Hi", text: "Hello" },
-        { from: "hello@missing.test", to: "ada@example.com", subject: "Hi", text: "Hello" }
+        { from: "hello@example.com", to: "ada@dispatch-fixture.net", subject: "Hi", text: "Hello" },
+        { from: "hello@missing.test", to: "ada@dispatch-fixture.net", subject: "Hi", text: "Hello" }
       ],
       { tenant_id: "tenant_1", request_id: "req_1" },
       { validation: "permissive" }
     );
-    expect(result.data).toEqual([{ id: expect.any(String) }]);
+    expect(result.data).toEqual([{ id: expect.any(String), sandbox: false }]);
     expect(result.errors).toEqual([{ index: 1, message: "Sender domain is not verified" }]);
 
     const mixed = await acceptBatch(
       db as never,
       [
         { from: "hello@example.com", to: "not-an-email", subject: "Hi", text: "Hello" },
-        { from: "hello@example.com", to: "ada@example.com", subject: "Hi", text: "Hello", attachments: [] },
-        { from: "hello@example.com", to: "ada@example.com", subject: "Hi", text: "Hello" }
+        { from: "hello@example.com", to: "ada@dispatch-fixture.net", subject: "Hi", text: "Hello", attachments: [] },
+        { from: "hello@example.com", to: "ada@dispatch-fixture.net", subject: "Hi", text: "Hello" }
       ],
       { tenant_id: "tenant_1", request_id: "req_1" },
       { validation: "permissive" }
@@ -556,6 +618,7 @@ describe("ingestEmail", () => {
     const { ingestEmail } = await import("./emails.js");
     const mockClient = {
       query: vi.fn().mockImplementation((sql: string) => {
+        if (sql.includes("select settings from tenants")) return Promise.resolve({ rowCount: 1, rows: [{ settings: {} }] });
         if (sql.includes("from domains")) {
           return Promise.resolve({ rowCount: 1, rows: [{ id: "dom_1" }] });
         }
@@ -605,6 +668,7 @@ describe("ingestEmail", () => {
     const mockClient = {
       query: vi.fn().mockImplementation((sql: string, params: unknown[] = []) => {
         queries.push({ sql, params });
+        if (sql.includes("select settings from tenants")) return Promise.resolve({ rowCount: 1, rows: [{ settings: {} }] });
         if (sql.includes("from domains")) {
           return Promise.resolve({
             rowCount: 1,
@@ -669,6 +733,7 @@ describe("ingestEmail", () => {
     const mockClient = {
       query: vi.fn().mockImplementation((sql: string, params: unknown[] = []) => {
         queries.push({ sql, params });
+        if (sql.includes("select settings from tenants")) return Promise.resolve({ rowCount: 1, rows: [{ settings: {} }] });
         if (sql.includes("from templates")) {
           return Promise.resolve({
             rowCount: 1,

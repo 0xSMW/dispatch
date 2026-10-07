@@ -16,6 +16,8 @@ type DefinitionRow = {
   schema: Record<string, string>;
   created_at: string;
   updated_at: string;
+  fired_count?: number;
+  last_fired_at?: string | null;
 };
 
 const definitionColumns = "id, name, schema, created_at, updated_at";
@@ -87,7 +89,13 @@ export function registerEvents(
 
   app.get("/events", async (request) => {
     const page = await paginate<DefinitionRow>(db, "event_schemas", request.auth!.tenant_id, paging(request), {
-      select: definitionColumns,
+      select: `${definitionColumns},
+        (select count(*)::integer from custom_events fired
+         where fired.tenant_id = event_schemas.tenant_id and fired.name = event_schemas.name
+           and fired.name not like '@%' and fired.deleted_at is null) as fired_count,
+        (select max(fired.created_at) from custom_events fired
+         where fired.tenant_id = event_schemas.tenant_id and fired.name = event_schemas.name
+           and fired.name not like '@%' and fired.deleted_at is null) as last_fired_at`,
       deletedCol: "deleted_at",
     });
     return { object: page.object, has_more: page.has_more, data: page.data.map(presentDefinition) };
@@ -117,6 +125,8 @@ export function registerEvents(
   });
 
   app.post("/events/send", async (request, reply) => {
+    const name = (request.body as { event?: unknown } | undefined)?.event;
+    if (typeof name === "string" && name.startsWith("@")) throw new ApiError("validation_error", 422, "Event names cannot start with @");
     const input = eventSendSchema.parse(request.body);
     const tenantId = request.auth!.tenant_id;
     const email = input.contact_id
@@ -140,6 +150,7 @@ export function registerEvents(
     const page = await paginate<FiredEvent>(db, "custom_events", request.auth!.tenant_id, paging(request), {
       select: "id, request_id, name, email, data, created_at",
       deletedCol: "deleted_at",
+      where: "name not like '@%'",
     });
     return { object: page.object, has_more: page.has_more, data: page.data.map(presentFired) };
   });
@@ -149,6 +160,7 @@ export function registerEvents(
       select: "id, request_id, name, email, data, created_at",
       errorMessage: "Event not found",
     });
+    if (row.name.startsWith("@")) throw new ApiError("not_found", 404, "Event not found");
     return presentFired(row);
   });
 }

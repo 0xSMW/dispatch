@@ -19,36 +19,64 @@ import { useMutation } from "../../hooks/useMutation";
 import { useSelection } from "../../hooks/useSelection";
 import { each } from "../../lib/bulk";
 import { errorMessage } from "../../lib/client";
-import { useClient } from "../../shell/session";
-import type { Automation, EventDefinition } from "../../types";
-import { automationTabs } from "../tabs";
-import { EventInput } from "./Steps";
+import { learnLinks } from "../../lib/docs";
+import { useCan, useClient } from "../../shell/session";
+import type { Automation, ContactProperty, EventDefinition, Segment, Topic } from "../../types";
+import { Presets } from "./Presets";
+import { automationTrigger, triggerIssues, triggerLabels, triggerSummary, triggerWarning, type TriggerConfig } from "./graph";
+import { ReentryContext, TriggerForm, triggerLoading, triggerSources, type Reentry } from "./Trigger";
 import { StopAutomation, isEnabled } from "./Stop";
+import { Enroll, canEnroll } from "./Enroll";
 
 export const automationCsv: Array<CsvColumn<Automation>> = [
   { header: "id", value: (row) => row.id },
   { header: "name", value: (row) => row.name },
-  { header: "status", value: (row) => isEnabled(row) ? "enabled" : "disabled" },
-  { header: "trigger", value: (row) => row.trigger },
+  { header: "status", value: (row) => row.status ?? (row.enabled ? "enabled" : "disabled") },
+  { header: "trigger", value: (row) => {
+    const config = automationTrigger(row);
+    return config.type === "event" ? config.event_name : `${triggerLabels[config.type]}: ${triggerSummary(config)}`;
+  } },
   { header: "runs", value: (row) => row.run_count },
   { header: "created_at", value: (row) => row.created_at },
 ];
 
-/** `/automations`: the list, with status filter, create, duplicate, start and stop, and delete. */
+/** `/automations`: the list, with status filter and automation controls. */
 export function Automations() {
   const client = useClient();
+  const can = useCan();
   const navigate = useNavigate();
   const filters = useFilters(["status"]);
   const list = useList<Automation>("/automations", filters);
+  const topics = useList<Topic>("/topics", {}, { all: true });
+  const segments = useList<Segment>("/segments", {}, { all: true });
+  const sources = {
+    topics: !topics.loading && !topics.error ? topics.rows.map((row) => ({ value: row.id, label: row.name })) : undefined,
+    segments: !segments.loading && !segments.error ? segments.rows.map((row) => ({ value: row.id, label: row.name })) : undefined,
+    staticSegments: !segments.loading && !segments.error ? segments.rows.filter((row) => row.type !== "dynamic").map((row) => ({ value: row.id, label: row.name })) : undefined,
+  };
+  const cannotStart = (row: Automation) => {
+    const config = automationTrigger(row);
+    return Boolean(triggerWarning(config, sources))
+      || (config.type === "topic_subscribed" && !sources.topics)
+      || (config.type === "segment_added" && !sources.segments);
+  };
   const selection = useSelection(list.rows.map((row) => row.id));
   const [creating, setCreating] = useState(false);
+  const [choosing, setChoosing] = useState(false);
   const [stopping, setStopping] = useState<Automation | null>(null);
+  const [enrolling, setEnrolling] = useState<Automation | null>(null);
   const [deleting, setDeleting] = useState<Automation[] | null>(null);
   const deleteSelected = () => setDeleting(list.rows.filter((row) => selection.has(row.id)));
   useBulkKeys(selection, list.rows.length, deleteSelected);
 
   const start = useMutation((row: Automation) => client.patch<Automation>(`/automations/${row.id}`, { status: "enabled" }), {
-    success: "Automation started.",
+    onSuccess: (_result, row) => {
+      toast.success(row.status === "paused" ? "Automation resumed." : "Automation started.");
+      void list.reload();
+    },
+  });
+  const pause = useMutation((row: Automation) => client.patch<Automation>(`/automations/${row.id}`, { status: "paused" }), {
+    success: "Automation paused.",
     onSuccess: () => list.reload(),
   });
   const duplicate = useMutation((row: Automation) => client.post<Automation>(`/automations/${row.id}/duplicate`), {
@@ -59,13 +87,13 @@ export function Automations() {
   return (
     <ListPage
       title="Automations"
-      tabs={automationTabs}
+      learn={learnLinks("automations")}
       actions={
-        <button type="button" onClick={() => setCreating(true)}>
+        <button type="button" onClick={() => setChoosing(true)}>
           Create automation
         </button>
       }
-      filters={[{ param: "status", label: "Status", options: ["enabled", "disabled"], all: "All statuses" }]}
+      filters={[{ param: "status", label: "Status", options: ["enabled", "paused", "disabled"], all: "All statuses" }]}
       filterExtra={<CsvExport rows={list.rows} columns={automationCsv} name="automations" />}
       list={list}
       noun="automations"
@@ -78,7 +106,8 @@ export function Automations() {
         filters.status ? (
           <Empty title="No automations" body={`No automations are ${filters.status}.`} />
         ) : (
-          <Empty title="No automations" body="An automation runs steps when your app sends an event. Create one to get started." />
+          <Empty title="No automations" body="Start with a lifecycle stage or build your own automation."
+            action={can ? <button type="button" onClick={() => setChoosing(true)}>Choose a starting point</button> : null} />
         )
       }
       columns={[
@@ -93,8 +122,12 @@ export function Automations() {
             </span>
           ),
         },
-        { header: "Trigger", cell: (row) => <span className="mono">{row.trigger ?? ""}</span> },
-        { header: "Status", cell: (row) => <Badge value={isEnabled(row) ? "enabled" : "disabled"} /> },
+        { header: "Trigger", cell: (row) => {
+          const config = automationTrigger(row);
+          const warning = triggerWarning(config, sources);
+          return <span title={warning ?? undefined}>{config.type === "event" ? config.event_name : `${triggerLabels[config.type]}: ${triggerSummary(config, sources)}`}{warning ? <span className="fieldError"> · {warning}</span> : null}</span>;
+        } },
+        { header: "Status", cell: (row) => <Badge value={row.status ?? (row.enabled ? "enabled" : "disabled")} /> },
         { header: "Runs", cell: (row) => (row.run_count ?? 0).toLocaleString() },
         { header: "Created", cell: (row) => <Time value={row.created_at} /> },
       ]}
@@ -104,16 +137,30 @@ export function Automations() {
             { label: "Open builder", read: true, onSelect: () => navigate(`/automations/${row.id}/editor`) },
             { label: "View runs", read: true, onSelect: () => navigate(`/automations/${row.id}/editor?tab=runs`) },
             { label: "Duplicate", onSelect: () => void duplicate.mutate(row) },
-            isEnabled(row)
-              ? { label: "Stop", onSelect: () => setStopping(row) }
-              : { label: "Start", onSelect: () => void start.mutate(row) },
+            ...(can && canEnroll(row) ? [{ label: "Enroll contacts", onSelect: () => setEnrolling(row) }] : []),
+            ...(isEnabled(row)
+              ? [
+                { label: "Pause", disabled: pause.isLoading || start.isLoading, onSelect: () => void pause.mutate(row) },
+                { label: "Stop and cancel runs", onSelect: () => setStopping(row) },
+              ]
+              : row.status === "paused"
+                ? [
+                  { label: "Resume", disabled: cannotStart(row) || start.isLoading || pause.isLoading, onSelect: () => void start.mutate(row) },
+                  { label: "Stop and cancel runs", onSelect: () => setStopping(row) },
+                ]
+                : [{ label: "Start", disabled: cannotStart(row) || start.isLoading, onSelect: () => void start.mutate(row) }]),
             "divider",
             { label: "Delete", danger: true, onSelect: () => setDeleting([row]) },
           ]}
         />
       )}
     >
-      {creating ? <CreateAutomation onClose={() => setCreating(false)} /> : null}
+      <Presets onBlank={() => setCreating(true)} />
+      {choosing ? <Modal isOpen title="Choose a starting point" onClose={() => setChoosing(false)}>
+        <Presets onBlank={() => { setChoosing(false); setCreating(true); }} />
+      </Modal> : null}
+      {creating && can ? <CreateAutomation onClose={() => setCreating(false)} /> : null}
+      {enrolling ? <Enroll automation={enrolling} onClose={() => setEnrolling(null)} /> : null}
       {stopping ? <StopAutomation automation={stopping} onClose={() => setStopping(null)} onDone={() => void list.reload()} /> : null}
       {deleting ? (
         <ConfirmPhrase
@@ -147,13 +194,35 @@ function CreateAutomation({ onClose }: { onClose: () => void }) {
   const client = useClient();
   const navigate = useNavigate();
   const events = useList<EventDefinition>("/events", {}, { all: true });
+  const topics = useList<Topic>("/topics", {}, { all: true });
+  const segments = useList<Segment>("/segments", {}, { all: true });
+  const properties = useList<ContactProperty>("/contact-properties", {}, { all: true });
   const [name, setName] = useState("");
-  const [event, setEvent] = useState("");
+  const [trigger, setTrigger] = useState<TriggerConfig>({ type: "event", event_name: "" });
+  const [reentryChoice, setReentryChoice] = useState<Reentry | null>(null);
+  const reentry = reentryChoice ?? (trigger.type === "event" ? "every_time" : "once");
+  const options = {
+    templates: [],
+    events: events.rows.map((row) => row.name),
+    topics: topics.rows.map((row) => ({ value: row.id, label: row.name })),
+    segments: segments.rows.map((row) => ({ value: row.id, label: row.name })),
+    staticSegments: segments.rows.filter((row) => row.type !== "dynamic").map((row) => ({ value: row.id, label: row.name })),
+    contactProperties: properties.rows,
+    topicsReady: !topics.loading && !topics.error,
+    segmentsReady: !segments.loading && !segments.error,
+    propertiesReady: !properties.loading && !properties.error,
+    topicsError: topics.error,
+    segmentsError: segments.error,
+    propertiesError: properties.error,
+  };
+  const issues = triggerIssues(trigger, triggerSources(options));
+  const valid = name.trim() && !Object.keys(issues).length && !triggerLoading(trigger, options);
   const create = useMutation(
     () =>
       client.post<Automation>("/automations", {
         name: name.trim(),
-        steps: [{ key: "trigger", type: "trigger", config: { event_name: event.trim() } }],
+        reentry,
+        steps: [{ key: "trigger", type: "trigger", config: trigger.type === "event" ? { ...trigger, event_name: trigger.event_name.trim() } : trigger }],
         connections: [],
       }),
     {
@@ -170,20 +239,21 @@ function CreateAutomation({ onClose }: { onClose: () => void }) {
       isOpen
       title="Create automation"
       onClose={onClose}
-      onSubmit={() => void create.mutate()}
+      onSubmit={() => { if (valid) void create.mutate(); }}
       submitLabel="Create"
-      submitDisabled={!name.trim() || !event.trim()}
+      submitDisabled={!valid}
       submitting={create.isLoading}
     >
       <div className="form">
         <Field label="Name" value={name} onChange={setName} placeholder="Welcome series" required autoFocus />
-        <EventInput
-          label="Trigger event"
-          value={event}
-          onChange={setEvent}
-          events={events.rows.map((row) => row.name)}
-          hint="The automation runs each time your app sends this event."
+        <ReentryContext.Provider value={{ value: reentry, onChange: setReentryChoice }}>
+        <TriggerForm
+          config={trigger}
+          onChange={setTrigger}
+          eventLabel="Trigger event"
+          options={options}
         />
+        </ReentryContext.Provider>
         <p className="fieldHint">New automations start disabled. Add steps in the builder, then start it.</p>
       </div>
     </Modal>

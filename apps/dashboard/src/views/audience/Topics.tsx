@@ -24,7 +24,7 @@ import { PreferenceCard, previewBrand } from "../public/Preferences";
 import { audienceTabs } from "../tabs";
 import "../../styles/audience.css";
 
-const defaultLabel = (value: Topic["default_subscription"]) => (value === "opt_in" ? "Opt in" : "Opt out");
+const defaultLabel = (value: Topic["default_subscription"] | "pending") => (value === "pending" ? "Pending confirmation" : value === "opt_in" ? "Opt in" : "Opt out");
 
 /** Topics, with a live preview of the preference page beside the table. */
 export function Topics() {
@@ -46,6 +46,7 @@ export function Topics() {
     <div className="page">
       <PageHeader
         title="Audience"
+        description="Mailing lists your contacts can subscribe to and leave from the preference page."
         actions={
           can ? (
             <button type="button" onClick={() => setCreating(true)}>

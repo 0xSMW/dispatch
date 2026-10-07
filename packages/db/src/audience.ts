@@ -1,4 +1,5 @@
-import { ApiError, id } from "@dispatchmail/core";
+import { ApiError, id, isIsoDate, type PropertyType, type Rule } from "@dispatchmail/core";
+import { staticSegment } from "./segment-writes.js";
 import type { Queryable } from "./index.js";
 
 export type ContactRow = {
@@ -18,10 +19,12 @@ export const contactColumns =
   "id, email, first_name, last_name, properties, unsubscribed_at, created_at, updated_at";
 
 export function subscriptionStored(value: string) {
-  return value === "opt_out" || value === "unsubscribed" ? "unsubscribed" : "subscribed";
+  if (value === "pending") return "pending";
+  return value === "opt_in" || value === "subscribed" ? "subscribed" : "unsubscribed";
 }
 
-export function subscriptionWire(value: string): "opt_in" | "opt_out" {
+export function subscriptionWire(value: string): "opt_in" | "opt_out" | "pending" {
+  if (value === "pending") return "pending";
   return subscriptionStored(value) === "unsubscribed" ? "opt_out" : "opt_in";
 }
 
@@ -45,7 +48,7 @@ export function wrapProperties(properties: Record<string, unknown> | null | unde
   const wrapped: Record<string, { value: unknown; type: string }> = {};
   for (const [key, value] of Object.entries(properties ?? {})) {
     const declared = types.get(key);
-    const type = declared ?? (typeof value === "number" ? "number" : "string");
+    const type = declared ?? (typeof value === "number" ? "number" : typeof value === "boolean" ? "boolean" : "string");
     wrapped[key] = { value, type };
   }
   return wrapped;
@@ -58,11 +61,17 @@ export function assertPropertyValues(properties: Record<string, unknown> | undef
     if (value === null || value === undefined) continue;
     const type = types.get(key);
     if (!type) continue;
-    if (type === "number" && typeof value !== "number") {
+    if (type === "number" && (typeof value !== "number" || !Number.isFinite(value))) {
       throw new ApiError("validation_error", 400, `Property ${key} must be a number`);
     }
     if (type === "string" && typeof value !== "string") {
       throw new ApiError("validation_error", 400, `Property ${key} must be a string`);
+    }
+    if (type === "boolean" && typeof value !== "boolean") {
+      throw new ApiError("validation_error", 400, `Property ${key} must be a boolean`);
+    }
+    if (type === "date" && !isIsoDate(value)) {
+      throw new ApiError("validation_error", 400, `Property ${key} must be an ISO date`);
     }
   }
 }
@@ -107,14 +116,19 @@ export function presentTopic(row: {
 export function presentSegment(row: {
   id: string;
   name: string;
+  description?: string | null;
+  rule?: Rule | null;
   created_at: string;
   updated_at: string;
-  contacts?: number;
+  contacts?: number | null;
 }) {
   return {
     object: "segment" as const,
     id: row.id,
     name: row.name,
+    description: row.description ?? null,
+    type: row.rule == null ? "static" as const : "dynamic" as const,
+    rule: row.rule ?? null,
     ...(row.contacts === undefined ? {} : { contacts: row.contacts }),
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -170,12 +184,12 @@ export async function propertyDefinitions(db: Queryable, tenantId: string) {
   return rows.rows;
 }
 
-export async function findContact(db: Queryable, tenantId: string, ref: string) {
+export async function findContact(db: Queryable, tenantId: string, ref: string, lock = false) {
   const byEmail = ref.includes("@");
   const row = await db.query<ContactRow>(
     `select ${contactColumns} from contacts
      where tenant_id = $1 and ${byEmail ? "lower(email)" : "id"} = $2 and deleted_at is null
-     order by created_at limit 1`,
+     order by created_at limit 1${lock ? " for update" : ""}`,
     [tenantId, byEmail ? ref.toLowerCase() : ref],
   );
   if (!row.rows[0]) throw new ApiError("not_found", 404, "Contact not found");
@@ -192,6 +206,7 @@ export async function deleteContact(db: Queryable, tenantId: string, contactId: 
   if (!removed.rows[0]) return false;
   await db.query("delete from segment_contacts where tenant_id = $1 and contact_id = $2", [tenantId, contactId]);
   await db.query("delete from topic_subscriptions where tenant_id = $1 and contact_id = $2 and status = 'subscribed'", [tenantId, contactId]);
+  await db.query("delete from automation_enrollments where tenant_id = $1 and contact_id = $2", [tenantId, contactId]);
   return true;
 }
 
@@ -234,14 +249,18 @@ export async function updateContact(
 export async function createProperty(
   db: Queryable,
   tenantId: string,
-  input: { key: string; type: "string" | "number"; fallback_value?: string | number | null },
+  input: { key: string; type: PropertyType; fallback_value?: string | number | boolean | null },
 ) {
   const existing = await db.query<{ id: string; type: string; deleted_at: string | null }>(
     "select id, type, deleted_at from contact_properties where tenant_id = $1 and key = $2",
     [tenantId, input.key],
   );
-  const fallback = JSON.stringify(input.fallback_value ?? null);
   const current = existing.rows[0];
+  if ((!current || current.deleted_at) && (input.key === "topics" || input.key === "segments")) {
+    throw new ApiError("validation_error", 400, `Property key ${input.key} is reserved`);
+  }
+  assertPropertyValues({ [input.key]: input.fallback_value }, [{ key: input.key, type: input.type }]);
+  const fallback = JSON.stringify(input.fallback_value ?? null);
   if (!current) {
     const inserted = await db.query(
       `insert into contact_properties (id, tenant_id, key, type, fallback_value)
@@ -274,6 +293,12 @@ export async function createProperty(
 }
 
 export async function updateProperty(db: Queryable, tenantId: string, propertyId: string, fallback: unknown) {
+  const existing = await db.query<PropertyDefinition>(
+    "select key, type from contact_properties where tenant_id = $1 and id = $2 and deleted_at is null",
+    [tenantId, propertyId],
+  );
+  if (!existing.rows[0]) throw new ApiError("not_found", 404, "Contact property not found");
+  assertPropertyValues({ [existing.rows[0].key]: fallback }, existing.rows);
   const row = await db.query(
     `update contact_properties set fallback_value = $3, updated_at = now()
      where tenant_id = $1 and id = $2 and deleted_at is null
@@ -285,22 +310,24 @@ export async function updateProperty(db: Queryable, tenantId: string, propertyId
 }
 
 export async function addContactSegment(db: Queryable, tenantId: string, contactId: string, segmentId: string) {
-  const segment = await db.query(
-    "select id from segments where tenant_id = $1 and id = $2 and deleted_at is null",
-    [tenantId, segmentId],
-  );
-  if (!segment.rows[0]) throw new ApiError("not_found", 404, "Segment not found");
+  await staticSegment(db, tenantId, segmentId);
   const row = await db.query(
     `insert into segment_contacts (id, tenant_id, segment_id, contact_id)
      values ($1, $2, $3, $4)
-     on conflict (tenant_id, segment_id, contact_id) do update set segment_id = excluded.segment_id
+     on conflict (tenant_id, segment_id, contact_id) do nothing
      returning id, segment_id, contact_id, created_at`,
     [id("member"), tenantId, segmentId, contactId],
   );
-  return row.rows[0];
+  if (row.rows[0]) return { ...row.rows[0], added: true };
+  const existing = await db.query(
+    "select id, segment_id, contact_id, created_at from segment_contacts where tenant_id = $1 and segment_id = $2 and contact_id = $3",
+    [tenantId, segmentId, contactId]
+  );
+  return { ...existing.rows[0], added: false };
 }
 
 export async function removeContactSegment(db: Queryable, tenantId: string, contactId: string, segmentId: string) {
+  await staticSegment(db, tenantId, segmentId);
   const row = await db.query(
     `delete from segment_contacts
      where tenant_id = $1 and contact_id = $2 and segment_id = $3
@@ -317,11 +344,14 @@ export async function setContactTopics(
   contactId: string,
   topics: Array<{ id: string; subscription: string }>,
 ) {
-  const saved: Array<{ topic_id: string; status: string }> = [];
-  for (const topic of topics) {
-    const found = await db.query(
-      "select id from topics where tenant_id = $1 and id = $2 and deleted_at is null",
-      [tenantId, topic.id],
+  const saved: Array<{ topic_id: string; before: string; after: string; status: string; row: Record<string, unknown> }> = [];
+  // A request's final preference is its only transition, even with repeated topic IDs.
+  for (const topic of new Map(topics.map((topic) => [topic.id, topic])).values()) {
+    const found = await db.query<{ id: string; before: string }>(
+      `select t.id, coalesce(s.status, t.default_status) as before from topics t
+       left join topic_subscriptions s on s.tenant_id = t.tenant_id and s.topic_id = t.id and s.contact_id = $3
+       where t.tenant_id = $1 and t.id = $2 and t.deleted_at is null`,
+      [tenantId, topic.id, contactId],
     );
     if (!found.rows[0]) throw new ApiError("not_found", 404, "Topic not found");
     const status = subscriptionStored(topic.subscription);
@@ -330,10 +360,10 @@ export async function setContactTopics(
        values ($1, $2, $3, $4, $5)
        on conflict (tenant_id, topic_id, contact_id)
        do update set status = excluded.status, updated_at = now()
-       returning topic_id, status`,
+       returning id, topic_id, contact_id, status, created_at, updated_at`,
       [id("sub"), tenantId, topic.id, contactId, status],
     );
-    saved.push(row.rows[0]);
+    saved.push({ topic_id: topic.id, status, before: found.rows[0]!.before, after: status, row: row.rows[0] });
   }
   return saved;
 }

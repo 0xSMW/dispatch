@@ -40,6 +40,13 @@ describe("Broadcasts", () => {
     expect(screen.getByRole("link", { name: "September news" }).getAttribute("href")).toBe("/broadcasts/broadcast_2");
   });
 
+  it("offers a useful empty-state primary action", async () => {
+    api({ "GET /broadcasts": list([]), "GET /segments": list([segment]), "GET /topics": list([topic]) });
+    renderAt("/broadcasts", [{ path: "/broadcasts", element: h(Broadcasts) }]);
+    fireEvent.click(await screen.findByRole("button", { name: "Create your first broadcast" }));
+    expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+
   it("sends search, status, and segment from the URL to the API", async () => {
     const { fetch } = setup("/broadcasts?status=sent&segment_id=seg_1&q=news");
     await screen.findByText("September news");

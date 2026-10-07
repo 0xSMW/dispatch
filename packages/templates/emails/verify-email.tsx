@@ -55,6 +55,9 @@ VerifyEmail.PreviewProps = {
 } satisfies Props;
 VerifyEmail.Subject = "Confirm your email for {{{PRODUCT_NAME}}}";
 VerifyEmail.Category = "authentication";
+VerifyEmail.Kind = "transactional" as const;
+VerifyEmail.Stage = null;
+VerifyEmail.When = "Send when an account needs to verify an email address. Supply the verification link.";
 VerifyEmail.Track = false;
 VerifyEmail.Description = "Sent when someone needs to confirm an email address.";
 VerifyEmail.Variables = [

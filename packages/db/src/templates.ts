@@ -90,6 +90,9 @@ export async function addTemplateVersion(
   options: { reuseDraft?: boolean } = {},
 ) {
   if (input.publish) assertBlocks(input);
+  // All version writers serialize with explicit library updates on the parent.
+  // Holding only a version lock cannot prevent a concurrent new latest version.
+  await db.query("select id from templates where tenant_id = $1 and id = $2 for update", [tenantId, templateId]);
   const draft = options.reuseDraft ? await unpublishedDraft(db, tenantId, templateId) : null;
   const versionId = draft ?? id("version");
   if (draft) await overwriteVersion(db, tenantId, draft, input, Boolean(input.publish));
@@ -145,7 +148,49 @@ export type LibraryInstallEntry = {
   text?: string | null;
   track?: boolean;
   variables?: unknown[];
+  kind?: "transactional" | "marketing";
 };
+
+// The caller owns the transaction. Only the winning alias insert may publish a version.
+export async function installLibraryMissing(
+  db: Queryable,
+  tenantId: string,
+  entry: LibraryInstallEntry,
+  version = "1.0.0",
+): Promise<{ id: string; created: boolean }> {
+  const templateId = id("template");
+  const inserted = await db.query<{ id: string }>(
+    `insert into templates (id, tenant_id, name, alias, track)
+     values ($1, $2, $3, $4, $5)
+     on conflict (tenant_id, alias) where alias is not null and deleted_at is null
+     do nothing returning id`,
+    [templateId, tenantId, entry.name, entry.slug, entry.track ?? true],
+  );
+  if (!inserted.rows[0]) {
+    const existing = await db.query<{ id: string }>(
+      `select t.id from templates t
+       where t.tenant_id = $1 and t.alias = $2 and t.deleted_at is null
+         and exists (select 1 from template_versions v where v.tenant_id = $1 and v.template_id = t.id)
+       for update of t`,
+      [tenantId, entry.slug],
+    );
+    if (!existing.rows[0]) throw new ApiError("conflict", 409, `Template ${entry.slug} changed during installation`);
+    return { id: existing.rows[0].id, created: false };
+  }
+  const write: TemplateWrite = {
+    name: entry.name,
+    subject: entry.subject,
+    html: entry.html,
+    text: entry.text,
+    variables: entry.variables ?? [],
+    source: { kind: "library", slug: entry.slug, version, ...(entry.kind ? { send_kind: entry.kind } : {}) },
+  };
+  assertBlocks(write);
+  const versionId = id("version");
+  await insertVersion(db, tenantId, templateId, versionId, write, true);
+  await markPublished(db, tenantId, templateId, versionId);
+  return { id: inserted.rows[0].id, created: true };
+}
 
 export async function installLibrary(db: Queryable, tenantId: string, entries: LibraryInstallEntry[], version = "1.0.0") {
   for (const entry of entries) {
@@ -175,7 +220,7 @@ export async function installLibrary(db: Queryable, tenantId: string, entries: L
       variables: entry.variables ?? [],
       track: entry.track ?? true,
       publish: true,
-      source: { kind: "library", slug: entry.slug, version },
+      source: { kind: "library", slug: entry.slug, version, ...(entry.kind ? { send_kind: entry.kind } : {}) },
     };
     if (!row) await createTemplate(db, tenantId, write);
     else await addTemplateVersion(db, tenantId, row.id, write);
@@ -203,8 +248,8 @@ async function insertVersion(
 ) {
   await db.query(
     `insert into template_versions
-       (id, tenant_id, template_id, subject, html, text, variables, from_address, reply_to, source, published_at)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, ${publish ? "now()" : "null"})`,
+       (id, tenant_id, template_id, subject, html, text, variables, from_address, reply_to, source, published_at, created_at)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, ${publish ? "now()" : "null"}, clock_timestamp())`,
     [
       versionId,
       tenantId,

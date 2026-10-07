@@ -1,9 +1,22 @@
+export { sandboxAddress } from "./sandbox.js";
+export * from "./forms.js";
+export * from "./integrations.js";
+export * from "./goals.js";
+export * from "./theme.js";
+export * from "./brand.js";
+export { ApiError } from "./errors.js";
+export { awsCredentials } from "./aws.js";
+export { isIsoDate, propertyTypes, propertyValueMatches, type PropertyType } from "./properties.js";
+import { isIsoDate, propertyTypes, propertyValueMatches, type PropertyType } from "./properties.js";
 import { createCipheriv, createDecipheriv, createHash, createHmac, hkdfSync, randomBytes, randomUUID, scrypt, timingSafeEqual } from "node:crypto";
 import { lookup as lookupCallback, type LookupAddress } from "node:dns";
 import { lookup } from "node:dns/promises";
 import { BlockList, isIP } from "node:net";
 import { Agent, fetch as agentFetch } from "undici";
 import { z } from "zod";
+import { themeVariables } from "./theme.js";
+import { brandTextColor, themeContext, type BrandRecord } from "./brand.js";
+import { ApiError } from "./errors.js";
 
 export type Scope = "full" | "send";
 export type EmailStatus =
@@ -33,6 +46,10 @@ export type EventType =
   | "email.clicked"
   | "email.suppressed"
   | "email.received"
+  | "email.unsubscribed"
+  | "automation.run.started"
+  | "automation.run.completed"
+  | "automation.run.failed"
   | "contact.created"
   | "contact.updated"
   | "contact.deleted"
@@ -58,6 +75,10 @@ export const emailEvents: EventType[] = [
   "email.clicked",
   "email.suppressed",
   "email.received",
+  "email.unsubscribed",
+  "automation.run.started",
+  "automation.run.completed",
+  "automation.run.failed",
   "contact.created",
   "contact.updated",
   "contact.deleted",
@@ -174,14 +195,16 @@ const attachmentSchema = z
   });
 
 // SES reads X-SES-* headers on a raw message as instructions: which configuration set to use,
-// which tags to put on its events. A sender must not be able to set those.
+// which tags to put on its events. Routing headers must also come from structured fields.
 export function reservedHeader(name: string) {
-  return /^x-ses-/i.test(name.trim());
+  return /^(?:x-ses-|resent-)|^(?:from|sender|to|cc|bcc|reply-to)$/i.test(name.trim());
 }
 
 const customHeaders = z
-  .record(z.string(), z.string())
-  .refine((headers) => !Object.keys(headers).some(reservedHeader), "headers cannot start with X-SES-")
+  .record(z.string().min(1).max(78).regex(/^[!-9;-~]+$/, "header names must contain printable ASCII without spaces or colons"), z.string().refine((value) => Buffer.byteLength(value, "utf8") <= 998, "header values cannot exceed 998 bytes"))
+  .refine((headers) => !Object.keys(headers).some(reservedHeader), "headers cannot contain routing headers or start with X-SES-")
+  .refine((headers) => Object.keys(headers).length <= 100, "headers cannot contain more than 100 entries")
+  .refine((headers) => Object.entries(headers).reduce((total, [name, value]) => total + Buffer.byteLength(name) + Buffer.byteLength(value) + 4, 0) <= 16_384, "headers cannot exceed 16384 bytes in total")
   .refine((headers) => !Object.entries(headers).some(([name, value]) => /[\r\n]/.test(name) || /[\r\n]/.test(value)), "headers cannot contain line breaks");
 
 // One bucket per tenant per second, summed over every key and route, as Resend does. The API
@@ -273,11 +296,21 @@ export const batchEnvelopeSchema = z
   .union([z.array(batchItem).min(1).max(100), z.object({ emails: z.array(batchItem).min(1).max(100) })])
   .transform((value) => (Array.isArray(value) ? value : value.emails));
 
-export const domainRegions = ["us-east-1", "eu-west-1", "sa-east-1", "ap-northeast-1"] as const;
+export const domainRegions = ["us-west-2", "us-east-1", "eu-west-1", "sa-east-1", "ap-northeast-1"] as const;
 const subdomain = z.string().regex(/^[a-z]([a-z0-9-]{0,61}[a-z0-9])?$/i);
 const capability = z.enum(["enabled", "disabled"]);
 
 const hostnamePattern = /^(?=.{3,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+
+export const settingsSchema = z.object({
+  import_trigger_automations: z.boolean().default(false),
+  confirmation_daily_limit: z.number().int().min(0).max(100000).default(500),
+  sandbox_domains: z.array(
+    z.string().trim().toLowerCase().refine((value) => hostnamePattern.test(value), "Use a hostname"),
+  ).max(50).default([]),
+}).strict();
+export const settingsUpdateSchema = settingsSchema.partial();
+export type Settings = z.infer<typeof settingsSchema>;
 
 export const domainSchema = z.object({
   name: z
@@ -433,7 +466,8 @@ export const reservedVariables = [
   "FIRST_NAME", "LAST_NAME", "EMAIL", "UNSUBSCRIBE_URL",
   "RESEND_UNSUBSCRIBE_URL", "DISPATCH_UNSUBSCRIBE_URL", "contact", "this",
   "PRODUCT_NAME", "PRODUCT_URL", "LOGO_URL", "BRAND_COLOR", "BRAND_TEXT_COLOR",
-  "SUPPORT_EMAIL", "SUPPORT_URL", "PRIVACY_URL", "COMPANY_NAME", "COMPANY_ADDRESS", "CURRENT_YEAR"
+  "SUPPORT_EMAIL", "SUPPORT_URL", "PRIVACY_URL", "COMPANY_NAME", "COMPANY_ADDRESS", "CURRENT_YEAR",
+  ...themeVariables
 ];
 // Names on Object.prototype would read as built-ins if a lookup ever skipped the own-property check.
 const unsafeVariables = ["constructor", "prototype", "__proto__", "toString", "valueOf", "hasOwnProperty"];
@@ -456,7 +490,8 @@ const templateSourceSchema = z
     kind: z.string().min(1).max(40),
     path: z.string().min(1).max(300).optional(),
     slug: z.string().min(1).max(120).optional(),
-    version: z.string().min(1).max(40).optional()
+    version: z.string().min(1).max(40).optional(),
+    send_kind: z.enum(["transactional", "marketing"]).optional()
   })
   .strict();
 
@@ -509,61 +544,6 @@ export type TemplateUpdateInput = z.input<typeof templateUpdateSchema>;
 
 export const templateVersionSchema = baseTemplateSchema.omit({ name: true, alias: true, publish: true });
 
-const httpsUrl = z.string().url().refine((value) => value.startsWith("https://"), "must be an https url");
-
-export const brandSchema = z.object({
-  product_name: z.string().min(1).max(120).optional(),
-  product_url: httpsUrl.optional(),
-  logo_url: httpsUrl.nullable().optional(),
-  color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
-  support_email: z.string().email().optional(),
-  support_url: httpsUrl.nullable().optional(),
-  company_name: z.string().min(1).max(200).optional(),
-  company_address: z.string().max(500).optional(),
-  // Linked from the footer of every library email. Billing emails are expected to carry one.
-  privacy_url: httpsUrl.nullable().optional(),
-  // The heading and the line under it on the public unsubscribe page. Null goes back to the default.
-  unsubscribe_title: z.string().min(1).max(120).nullable().optional(),
-  unsubscribe_description: z.string().min(1).max(500).nullable().optional()
-}).strict();
-
-export type BrandInput = z.infer<typeof brandSchema>;
-
-export type BrandRecord = {
-  product_name?: string;
-  product_url?: string;
-  logo_url?: string | null;
-  color?: string;
-  support_email?: string;
-  support_url?: string | null;
-  company_name?: string;
-  company_address?: string;
-  privacy_url?: string | null;
-  unsubscribe_title?: string | null;
-  unsubscribe_description?: string | null;
-};
-
-function channel(hex: string) {
-  const value = Number.parseInt(hex, 16) / 255;
-  return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
-}
-
-function luminance(color: string) {
-  const hex = color.replace("#", "");
-  return 0.2126 * channel(hex.slice(0, 2)) + 0.7152 * channel(hex.slice(2, 4)) + 0.0722 * channel(hex.slice(4, 6));
-}
-
-function contrast(left: string, right: string) {
-  const lighter = Math.max(luminance(left), luminance(right));
-  const darker = Math.min(luminance(left), luminance(right));
-  return (lighter + 0.05) / (darker + 0.05);
-}
-
-// Black or white, whichever reads better. One of the two always reaches 4.5:1 on any color.
-export function brandTextColor(color: string) {
-  return contrast(color, "#ffffff") >= contrast(color, "#000000") ? "#ffffff" : "#000000";
-}
-
 export function brandContext(
   brand: BrandRecord,
   fallback: { tenantName: string; domain?: string | null; from?: string | null; year?: number }
@@ -571,6 +551,7 @@ export function brandContext(
   const color = brand.color || "#18181b";
   const productName = brand.product_name || fallback.tenantName;
   return {
+    ...themeContext(brand),
     PRODUCT_NAME: productName,
     PRODUCT_URL: brand.product_url || (fallback.domain ? `https://${fallback.domain}` : ""),
     LOGO_URL: brand.logo_url || "",
@@ -622,14 +603,17 @@ export const contactTopicsSchema = z.object({
   })).min(1)
 });
 
-export const propertySchema = z.object({
+const propertyFields = z.object({
   key: z.string().regex(/^[A-Za-z0-9_]{1,50}$/, "key must be letters, digits, or underscores, 50 characters at most"),
-  type: z.enum(["string", "number"]).default("string"),
-  fallback_value: z.union([z.string().max(500), z.number()]).nullable().optional()
+  type: z.enum(propertyTypes).default("string"),
+  fallback_value: z.union([z.string().max(500), z.number().finite(), z.boolean()]).nullable().optional()
+});
+export const propertySchema = propertyFields.refine((value) => propertyValueMatches(value.type, value.fallback_value), {
+  message: "fallback_value must match the property's type", path: ["fallback_value"]
 });
 export type PropertyInput = z.input<typeof propertySchema>;
 
-export const propertyUpdateSchema = propertySchema.pick({ fallback_value: true });
+export const propertyUpdateSchema = propertyFields.pick({ fallback_value: true });
 
 export const suppressionSchema = z.object({
   email: z.string().email(),
@@ -699,8 +683,9 @@ export const subscriptionSchema = z.object({
 
 export const segmentSchema = z.object({
   name: z.string().min(1).max(120),
-  description: z.string().max(500).optional()
-});
+  description: z.string().max(500).optional(),
+  rule: z.lazy(() => segmentRuleSchema).nullable().optional()
+}).strict();
 export type SegmentInput = z.input<typeof segmentSchema>;
 
 export const segmentUpdateSchema = segmentSchema.partial();
@@ -721,7 +706,7 @@ function jsonField(value: unknown) {
 
 const importColumn = z.object({
   column: z.string().min(1).max(200),
-  type: z.enum(["string", "number", "boolean"]).optional()
+  type: z.enum(propertyTypes).optional()
 });
 
 // A field left out is found by its usual header name. A field set to null is not imported, even
@@ -738,6 +723,7 @@ export type ImportColumnMap = z.infer<typeof importColumnMapSchema>;
 const importRef = z.union([z.string().min(1), z.object({ id: z.string().min(1) })]).transform((value) => (typeof value === "string" ? { id: value } : value));
 
 export const contactImportSchema = z.object({
+  trigger_automations: z.preprocess((value) => value === "true" ? true : value === "false" ? false : value, z.boolean().optional()),
   column_map: z.preprocess(jsonField, importColumnMapSchema.default({})),
   on_conflict: z.enum(["upsert", "skip"]).default("upsert"),
   segments: z.preprocess(jsonField, z.array(importRef).max(100).default([])),
@@ -748,7 +734,12 @@ export const contactImportSchema = z.object({
 });
 export type ContactImportInput = z.input<typeof contactImportSchema>;
 
-export const importStatuses = ["queued", "in_progress", "completed", "failed"] as const;
+export const importStatuses = ["queued", "in_progress", "completed", "failed", "cancelled"] as const;
+
+export const automationEnrollSchema = z.union([
+  z.object({ segment_id: z.string().min(1) }).strict(),
+  z.object({ all: z.literal(true) }).strict(),
+]);
 
 export const linkCheckSchema = z.object({
   urls: z.array(z.string().min(1).max(2048)).min(1).max(50)
@@ -824,16 +815,48 @@ export type CustomEventInput = z.input<typeof customEventSchema>;
 
 export const customEventUpdateSchema = customEventSchema.partial();
 
-export const operators = ["eq", "neq", "gt", "gte", "lt", "lte", "contains", "starts_with", "ends_with", "exists", "is_empty"] as const;
+export const operators = ["eq", "neq", "gt", "gte", "lt", "lte", "contains", "not_contains", "starts_with", "ends_with", "within", "not_within", "exists", "is_empty"] as const;
 export type Operator = (typeof operators)[number];
+export type RuleFieldType = PropertyType | "set";
+export function operatorsForType(type: RuleFieldType): readonly Operator[] {
+  const unary: Operator[] = ["exists", "is_empty"];
+  switch (type) {
+    case "string": return ["eq", "neq", "contains", "not_contains", "starts_with", "ends_with", ...unary];
+    case "number": return ["eq", "neq", "gt", "gte", "lt", "lte", ...unary];
+    case "boolean": return ["eq", "neq", ...unary];
+    case "date": return ["eq", "neq", "gt", "gte", "lt", "lte", "within", "not_within", ...unary];
+    case "set": return ["contains", "not_contains", ...unary];
+  }
+}
 
 export type Rule =
-  | { type: "rule"; field: string; operator: Operator; value?: unknown }
+  | { type: "rule"; field: string; operator: Operator; value?: unknown; scope?: EngagementScope; window?: string }
   | { type: "and" | "or"; rules: Rule[] };
+
+export const engagementFields = ["email.sent", "email.delivered", "email.opened", "email.clicked", "email.bounced"] as const;
+export type EngagementField = (typeof engagementFields)[number];
+export type EngagementScope = { automation_id: string; broadcast_id?: never } | { broadcast_id: string; automation_id?: never };
+export type EngagementRule = { type: "rule"; field: EngagementField; operator: "eq" | "neq"; value: boolean; scope?: EngagementScope; window?: string };
+const engagementScopeSchema = z.union([
+  z.object({ automation_id: z.string().min(1) }).strict(),
+  z.object({ broadcast_id: z.string().min(1) }).strict()
+]);
 
 const nestedRule: z.ZodType<Rule> = z.lazy(() =>
   z.union([
-    z.object({ type: z.literal("rule"), field: z.string().min(1).max(200), operator: z.enum(operators), value: z.unknown().optional() }),
+    z.object({ type: z.literal("rule"), field: z.string().min(1).max(200), operator: z.enum(operators), value: z.unknown().optional(),
+      scope: engagementScopeSchema.optional(), window: z.string().refine(validWindow, "Use a positive finite duration").optional() })
+      .refine((rule) => rule.operator !== "within" && rule.operator !== "not_within" || validWindow(rule.value), {
+        message: "Date windows need a positive duration, such as 30 days", path: ["value"]
+      })
+      .superRefine((rule, context) => {
+        if (rule.field.startsWith("email.")) {
+          if (!(engagementFields as readonly string[]).includes(rule.field) || !["eq", "neq"].includes(rule.operator) || typeof rule.value !== "boolean")
+            context.addIssue({ code: z.ZodIssueCode.custom, message: "Email engagement requires a supported fact, eq/neq and a boolean" });
+        } else if (rule.scope !== undefined || rule.window !== undefined) {
+          context.addIssue({ code: z.ZodIssueCode.custom, message: "Scope and window are only supported on email engagement" });
+        }
+      }),
     z.object({ type: z.enum(["and", "or"]), rules: z.array(nestedRule).min(1).max(50) })
   ])
 );
@@ -858,6 +881,29 @@ export const ruleSchema: z.ZodType<Rule, z.ZodTypeDef, unknown> = z
   .custom<unknown>((value) => ruleDepth(value) <= maxRuleDepth, `Rules can nest at most ${maxRuleDepth} levels`)
   .pipe(nestedRule);
 
+export function hasEngagement(rule: Rule): boolean {
+  return rule.type === "rule" ? rule.field.startsWith("email.") : rule.rules.some(hasEngagement);
+}
+
+export const automationRuleSchema = ruleSchema.refine((rule) => !hasEngagement(rule), "Email engagement is not supported in automation rules");
+
+export const segmentRuleSchema = z.custom<unknown>((value) => {
+  const pending: Array<[unknown, number]> = [[value, 1]];
+  let conditions = 0;
+  while (pending.length) {
+    const [node, depth] = pending.pop()!;
+    if (depth > 5 || !node || typeof node !== "object") return false;
+    if ((node as { type?: unknown }).type === "rule" && ++conditions > 20) return false;
+    const children = (node as { rules?: unknown }).rules;
+    if (Array.isArray(children)) {
+      if (children.length > 20) return false;
+      children.forEach((child) => pending.push([child, depth + 1]));
+    }
+  }
+  return true;
+}, "Segment rules allow at most five levels and twenty conditions").pipe(ruleSchema);
+export const segmentPreviewSchema = z.object({ rule: segmentRuleSchema }).strict();
+
 // Two numbers, or two dates, to compare. Anything else (null, an empty string, a list, a number
 // against a date) has no order, and the rule is false.
 function comparable(actual: unknown, expected: unknown): [number, number] | null {
@@ -873,9 +919,19 @@ function comparable(actual: unknown, expected: unknown): [number, number] | null
 }
 
 // Reads a dotted path such as "event.plan" or "contact.first_name" from the run context.
-export function evaluate(rule: Rule, context: Record<string, unknown>): boolean {
+function validWindow(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 60) return false;
+  try {
+    const seconds = durationSeconds(value);
+    return Number.isFinite(seconds) && seconds > 0;
+  } catch {
+    return false;
+  }
+}
+
+export function evaluate(rule: Rule, context: Record<string, unknown>, now = Date.now()): boolean {
   if (rule.type !== "rule") {
-    return rule.type === "and" ? rule.rules.every((child) => evaluate(child, context)) : rule.rules.some((child) => evaluate(child, context));
+    return rule.type === "and" ? rule.rules.every((child) => evaluate(child, context, now)) : rule.rules.some((child) => evaluate(child, context, now));
   }
   const actual = rule.field
     .split(".")
@@ -890,6 +946,14 @@ export function evaluate(rule: Rule, context: Record<string, unknown>): boolean 
     case "lt": return order !== null && order[0] < order[1];
     case "lte": return order !== null && order[0] <= order[1];
     case "contains": return Array.isArray(actual) ? actual.includes(expected) : String(actual ?? "").includes(String(expected));
+    case "not_contains": return !(Array.isArray(actual) ? actual.includes(expected) : String(actual ?? "").includes(String(expected)));
+    case "within":
+    case "not_within": {
+      if (!isIsoDate(actual) || !validWindow(expected) || !Number.isFinite(now)) return false;
+      const timestamp = Date.parse(actual);
+      const within = timestamp >= now - durationSeconds(expected) * 1_000 && timestamp <= now;
+      return rule.operator === "within" ? within : !within;
+    }
     case "starts_with": return String(actual ?? "").startsWith(String(expected));
     case "ends_with": return String(actual ?? "").endsWith(String(expected));
     case "exists": return actual !== undefined && actual !== null;
@@ -910,24 +974,74 @@ function checkDuration(value: string, ctx: z.RefinementCtx, path: string) {
   if (seconds < 1 || seconds > maxDelaySeconds) ctx.addIssue({ code: "custom", message: `${path} must be between 1 second and 30 days`, path: [path] });
 }
 
-const eventName = z.string().min(1).max(120);
+const storedEventName = z.string().min(1).max(120);
+const eventName = storedEventName.refine((name) => !name.startsWith("@"), "Event names cannot start with @");
 const stepEmail = z.string().email().optional();
 
+export const triggerTypes = ["event", "contact_created", "contact_updated", "topic_subscribed", "segment_added"] as const;
+const transitionValue = z.union([z.string(), z.number().finite(), z.boolean(), z.null()]);
+const triggerUnion = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("event"), event_name: eventName }),
+  z.object({ type: z.literal("contact_created") }),
+  z.object({
+    type: z.literal("contact_updated"),
+    field: z.string().regex(/^[A-Za-z0-9_]+$/, "Use a contact field without the contact. prefix").optional(),
+    from: transitionValue.optional(),
+    to: transitionValue.optional()
+  }),
+  z.object({ type: z.literal("topic_subscribed"), topic_id: z.string().min(1) }),
+  z.object({ type: z.literal("segment_added"), segment_id: z.string().min(1) })
+]).superRefine((config, ctx) => {
+  if (config.type === "contact_updated" && !config.field && (config.from !== undefined || config.to !== undefined)) {
+    ctx.addIssue({ code: "custom", message: "A field is required for from or to", path: ["field"] });
+  }
+});
+export const triggerSchema = z.preprocess((value) => {
+  if (value && typeof value === "object" && !("type" in value) && "event_name" in value) return { ...value, type: "event" };
+  return value;
+}, triggerUnion);
+export type TriggerConfig = z.infer<typeof triggerSchema>;
+
+export function triggerKey(config: TriggerConfig): string {
+  switch (config.type) {
+    case "event": return config.event_name;
+    case "contact_created": return "@contact.created";
+    case "contact_updated": return "@contact.updated";
+    case "topic_subscribed": return `@topic.subscribed:${config.topic_id}`;
+    case "segment_added": return `@segment.added:${config.segment_id}`;
+  }
+}
+
+export { templateKind, type SendKind } from "./email-kind.js";
+
+export { splitSchema, splitWinnerSchema, type SplitConfig, type SplitVariant, type SplitMetricsInput, type SplitMetric, type SplitReport } from "./splits.js";
+import { splitSchema } from "./splits.js";
+
 export const stepConfigs = {
-  trigger: z.object({ event_name: eventName }),
-  // `from` may be left out when the template stores a sender. `topic_id` marks the email as
-  // subscription mail: without it the step sends to everyone, like a receipt or a password reset.
+  split: splitSchema,
+  trigger: triggerSchema,
+  // Ordinary sends still use topic_id alone. Steps store intent even before a topic is chosen.
   send_email: z
     .object({
+      kind: z.enum(["transactional", "marketing"]).optional(),
       from: address.optional(),
       to: stepEmail,
       topic_id: z.string().min(1).optional(),
       subject: z.string().min(1).max(998).optional(),
       reply_to: addresses.optional(),
       template: templateRef,
-      variables: z.record(z.unknown()).optional()
+      variables: z.record(z.unknown()).optional(),
+      variable_mapping: z.record(z.string().regex(/^(event|contact)\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/, "Use an event or contact field")).optional()
     })
-    .transform(({ template, variables, ...rest }) => ({ ...rest, template: { id: template.id, variables: { ...variables, ...template.variables } } })),
+    .superRefine((value, ctx) => {
+      if (value.kind === "transactional" && value.topic_id) {
+        ctx.addIssue({ code: "custom", message: "Transactional steps cannot have a topic", path: ["topic_id"] });
+      }
+    })
+    .transform(({ template, variables, kind, ...rest }) => ({
+      ...rest, kind: kind ?? (rest.topic_id ? "marketing" : "transactional"),
+      template: { id: template.id, variables: { ...variables, ...template.variables } }
+    })),
   delay: z
     .object({ duration: z.string().min(1).max(60).optional(), seconds: z.number().int().optional() })
     .transform((value, ctx) => {
@@ -945,7 +1059,7 @@ export const stepConfigs = {
       event: eventName.optional(),
       timeout: z.string().min(1).max(60).optional(),
       timeout_seconds: z.number().int().optional(),
-      filter_rule: ruleSchema.optional()
+      filter_rule: automationRuleSchema.optional()
     })
     .transform((value, ctx) => {
       const name = value.event_name ?? value.event;
@@ -957,7 +1071,22 @@ export const stepConfigs = {
       if (timeout) checkDuration(timeout, ctx, "timeout");
       return { event_name: name, ...(timeout ? { timeout } : {}), ...(value.filter_rule ? { filter_rule: value.filter_rule } : {}) };
     }),
-  condition: ruleSchema,
+  condition: automationRuleSchema,
+  exit: z.object({}).strict(),
+  filter: z.object({ rule: automationRuleSchema, scope: z.enum(["next", "following"]) }),
+  branch: z.object({
+    paths: z.array(z.object({
+      key: z.string().regex(/^[A-Za-z0-9_-]{1,60}$/).refine((key) => key !== "otherwise", "otherwise is reserved"),
+      label: z.string().trim().min(1).max(120),
+      rule: automationRuleSchema
+    })).min(2).max(10)
+  }).superRefine(({ paths }, ctx) => {
+    const keys = new Set<string>();
+    paths.forEach((path, index) => {
+      if (keys.has(path.key)) ctx.addIssue({ code: "custom", message: "Path keys must be unique", path: ["paths", index, "key"] });
+      keys.add(path.key);
+    });
+  }),
   add_to_segment: z.object({ segment_id: z.string().min(1), email: stepEmail }),
   contact_update: z.object({
     first_name: z.string().max(200).optional(),
@@ -970,7 +1099,7 @@ export const stepConfigs = {
 };
 export type StepConfig<T extends StepType> = z.infer<(typeof stepConfigs)[T]>;
 
-export const stepTypes = ["trigger", "send_email", "delay", "wait_for_event", "condition", "add_to_segment", "contact_update", "contact_delete"] as const;
+export const stepTypes = ["trigger", "send_email", "delay", "wait_for_event", "condition", "filter", "branch", "split", "exit", "add_to_segment", "contact_update", "contact_delete"] as const;
 export type StepType = (typeof stepTypes)[number];
 
 export const stepSchema = z.object({
@@ -981,12 +1110,13 @@ export const stepSchema = z.object({
 export type Step = z.infer<typeof stepSchema>;
 export type AutomationStep = Step;
 
-export const connectionTypes = ["default", "condition_met", "condition_not_met", "timeout", "event_received"] as const;
+export const connectionTypes = ["default", "condition_met", "condition_not_met", "timeout", "event_received", "branch", "variant"] as const;
 
 export const connectionSchema = z.object({
   from: z.string().min(1),
   to: z.string().min(1),
-  type: z.enum(connectionTypes).default("default")
+  type: z.enum(connectionTypes).default("default"),
+  path: z.string().regex(/^[A-Za-z0-9_-]{1,60}$/).optional()
 });
 export type Connection = z.infer<typeof connectionSchema>;
 
@@ -998,7 +1128,7 @@ function prefixIssues(error: z.ZodError, prefix: Array<string | number>) {
 
 // Accepts the old linear form { trigger, steps: [{ type, ...fields }] } and the graph form
 // { steps: [{ key, type, config }], connections }, and returns the graph form with parsed configs.
-export function normalizeAutomation(input: { trigger?: string | null; steps: Array<Record<string, unknown>>; connections?: unknown[] | null }) {
+export function normalizeAutomation(input: { trigger?: string | null; steps: Array<Record<string, unknown>>; connections?: unknown[] | null }, stored = false) {
   const keyed = input.steps.length > 0 && input.steps.every((step) => "key" in step);
   const raw = keyed
     ? input.steps
@@ -1011,6 +1141,19 @@ export function normalizeAutomation(input: { trigger?: string | null; steps: Arr
 
   const issues: z.ZodIssue[] = [];
   const steps: Step[] = shaped.data.map((step, index) => {
+    // Existing event automations retain their namespace, including old @ names.
+    if (stored && step.type === "trigger" && (!step.config.type || step.config.type === "event")) {
+      const name = storedEventName.safeParse(step.config.event_name);
+      if (name.success) return { ...step, config: { type: "event", event_name: name.data } };
+    }
+    if (stored && step.type === "wait_for_event" && String(step.config.event_name ?? step.config.event).startsWith("@")) {
+      const name = storedEventName.safeParse(step.config.event_name ?? step.config.event);
+      const config = stepConfigs.wait_for_event.safeParse({ ...step.config, event_name: "legacy", event: undefined });
+      if (name.success && config.success) return { ...step, config: { ...config.data, event_name: name.data } };
+      if (!name.success) issues.push(...prefixIssues(name.error, ["steps", index, "config", "event_name"]));
+      if (!config.success) issues.push(...prefixIssues(config.error, ["steps", index, "config"]));
+      return step;
+    }
     const config = stepConfigs[step.type].safeParse(step.config);
     if (config.success) return { ...step, config: config.data as Record<string, unknown> };
     issues.push(...prefixIssues(config.error, ["steps", index, "config"]));
@@ -1043,6 +1186,23 @@ export function automationIssues(steps: Step[], connections: Connection[]) {
     if (!from) issues.push(`Connection starts at unknown step ${connection.from}`);
     if (!byKey.has(connection.to)) issues.push(`Connection ends at unknown step ${connection.to}`);
     if (!from || !byKey.has(connection.to)) continue;
+    if (from.type === "exit") issues.push(`Exit ${from.key} cannot have outgoing connections`);
+    if (connection.type === "variant") {
+      if (from.type !== "split") issues.push(`A variant connection must start at a split step, not ${from.key}`);
+      else if (!connection.path || !(from.config as StepConfig<"split">).variants.some((variant) => variant.key === connection.path)) {
+        issues.push(`Split ${from.key} has an unknown variant ${connection.path ?? ""}`);
+      }
+    } else if (connection.type === "branch") {
+      if (from.type !== "branch") issues.push(`A branch connection must start at a branch step, not ${from.key}`);
+      else if (!connection.path || ![...(from.config as StepConfig<"branch">).paths.map((path) => path.key), "otherwise"].includes(connection.path)) {
+        issues.push(`Branch ${from.key} has an unknown path ${connection.path ?? ""}`);
+      }
+    } else {
+      if (connection.path !== undefined) issues.push(`Only branch or variant connections can have a path`);
+      if (from.type === "branch") issues.push(`Branch ${from.key} must use branch connections`);
+    }
+    if (from.type === "split" && connection.type !== "variant") issues.push(`Split ${from.key} must use variant connections`);
+    if (from.type === "filter" && connection.type !== "default") issues.push(`Filter ${from.key} can only have a default connection`);
     if ((connection.type === "condition_met" || connection.type === "condition_not_met") && from.type !== "condition") {
       issues.push(`A ${connection.type} connection must start at a condition step, not ${from.key}`);
     }
@@ -1050,7 +1210,7 @@ export function automationIssues(steps: Step[], connections: Connection[]) {
       issues.push(`A ${connection.type} connection must start at a wait_for_event step, not ${from.key}`);
     }
     // A run follows one edge of each type out of a step. A second one would never be taken.
-    const branch = `${connection.from}:${connection.type}`;
+    const branch = `${connection.from}:${connection.type}:${connection.path ?? ""}`;
     branches.set(branch, (branches.get(branch) ?? 0) + 1);
     if (branches.get(branch) === 2) {
       issues.push(
@@ -1060,6 +1220,17 @@ export function automationIssues(steps: Step[], connections: Connection[]) {
       );
     }
     edges.set(connection.from, [...(edges.get(connection.from) ?? []), connection.to]);
+  }
+
+  for (const step of steps.filter((step) => step.type === "branch")) {
+    for (const path of [...(step.config as StepConfig<"branch">).paths.map((path) => path.key), "otherwise"]) {
+      if (branches.get(`${step.key}:branch:${path}`) !== 1) issues.push(`Branch ${step.key} needs exactly one connection for path ${path}`);
+    }
+  }
+  for (const step of steps.filter((step) => step.type === "split")) {
+    for (const variant of (step.config as StepConfig<"split">).variants) {
+      if (branches.get(`${step.key}:variant:${variant.key}`) !== 1) issues.push(`Split ${step.key} needs exactly one connection for variant ${variant.key}`);
+    }
   }
 
   const state = new Map<string, "open" | "closed">();
@@ -1084,9 +1255,11 @@ const graphFields = {
 function toGraph(input: { trigger?: string; steps: Array<Record<string, unknown>>; connections?: unknown[] }, ctx: z.RefinementCtx) {
   try {
     const graph = normalizeAutomation(input);
-    for (const message of automationIssues(graph.steps, graph.connections)) ctx.addIssue({ code: "custom", message, path: ["connections"] });
-    const trigger = graph.steps.find((step) => step.type === "trigger")?.config.event_name as string;
-    return { ...graph, trigger };
+    const issues = automationIssues(graph.steps, graph.connections);
+    for (const message of issues) ctx.addIssue({ code: "custom", message, path: ["connections"] });
+    if (issues.length) return z.NEVER;
+    const trigger_config = graph.steps.find((step) => step.type === "trigger")!.config as TriggerConfig;
+    return { ...graph, trigger: triggerKey(trigger_config), trigger_type: trigger_config.type, trigger_config };
   } catch (error) {
     if (!(error instanceof z.ZodError)) throw error;
     for (const issue of error.issues) ctx.addIssue({ code: "custom", message: issue.message, path: issue.path });
@@ -1099,25 +1272,37 @@ export const automationGraphSchema = z.object(graphFields).transform(toGraph);
 const automationStatus = z.enum(["enabled", "disabled"]);
 
 export const automationSchema = z
-  .object({ name: z.string().min(1).max(120), status: automationStatus.optional(), enabled: z.boolean().optional(), ...graphFields })
-  .transform(({ name, status, enabled, ...graph }, ctx) => ({
-    name,
-    enabled: status ? status === "enabled" : (enabled ?? false),
-    ...toGraph(graph, ctx)
-  }));
+  .object({ name: z.string().min(1).max(120), status: automationStatus.optional(), enabled: z.boolean().optional(), reentry: z.enum(["once", "every_time"]).optional(), ...graphFields })
+  .transform(({ name, status, enabled, reentry, ...graph }, ctx) => {
+    const parsed = toGraph(graph, ctx);
+    if (parsed === z.NEVER) return z.NEVER;
+    return { name, enabled: status ? status === "enabled" : (enabled ?? false), ...parsed,
+      reentry: reentry ?? (parsed.trigger_type === "event" ? "every_time" : "once") };
+  });
 export type AutomationInput = z.input<typeof automationSchema>;
+export const automationInstallSchema = z.object({
+  name: automationSchema.innerType().shape.name.optional(),
+  from: baseSendSchema.shape.from.unwrap(),
+  topic_id: z.string().min(1).optional(),
+});
 
 export const automationUpdateSchema = z
   .object({
     name: z.string().min(1).max(120).optional(),
-    status: automationStatus.optional(),
+    status: z.enum(["enabled", "paused", "disabled"]).optional(),
     enabled: z.boolean().optional(),
+    reentry: z.enum(["once", "every_time"]).optional(),
+    expected_version: z.number().int().min(0).optional(),
     trigger: graphFields.trigger,
     steps: graphFields.steps.optional(),
     connections: graphFields.connections
   })
-  .transform(({ status, enabled, ...rest }) => ({ ...rest, enabled: status ? status === "enabled" : enabled }));
+  .transform(({ status, enabled, ...rest }) => ({
+    ...rest, status: status ?? (enabled === undefined ? undefined : enabled ? "enabled" : "disabled"),
+    enabled: status ? status !== "disabled" : enabled
+  }));
 export type AutomationUpdateInput = z.input<typeof automationUpdateSchema>;
+export const automationStopSchema = z.object({ reset_reentry: z.boolean().default(false) }).strict();
 
 export const eventFieldTypes = ["string", "number", "boolean", "date"] as const;
 
@@ -1196,16 +1381,6 @@ function hasSubjectOrTemplate(value: { template?: unknown; subject?: unknown }) 
   return Boolean(value.template || value.subject);
 }
 
-export class ApiError extends Error {
-  statusCode: number;
-  name: string;
-
-  constructor(name: string, statusCode: number, message: string) {
-    super(message);
-    this.name = name;
-    this.statusCode = statusCode;
-  }
-}
 
 export function id(prefix: string) {
   return `${prefix}_${randomUUID().replaceAll("-", "")}`;
@@ -1858,12 +2033,14 @@ export interface Provider {
 export class ProviderError extends Error {
   retryable: boolean;
   reason: string;
+  rejected: boolean;
 
-  constructor(reason: string, retryable: boolean) {
+  constructor(reason: string, retryable: boolean, rejected = false) {
     super(reason);
     this.name = "ProviderError";
     this.reason = reason;
     this.retryable = retryable;
+    this.rejected = rejected;
   }
 }
 
@@ -1871,10 +2048,10 @@ const permanentSesErrors = new Set(["MessageRejected", "MailFromDomainNotVerifie
 
 export function classifySesError(error: { name?: string; message?: string; $metadata?: { httpStatusCode?: number } }) {
   const name = error.name ?? "";
-  if (permanentSesErrors.has(name)) return new ProviderError(name, false);
+  if (permanentSesErrors.has(name)) return new ProviderError(name, false, true);
   const status = error.$metadata?.httpStatusCode ?? 0;
   const retryable = name === "TooManyRequestsException" || status >= 500 || status === 0;
-  return new ProviderError(error.message || name || "SES request failed", retryable);
+  return new ProviderError(error.message || name || "SES request failed", retryable, name === "TooManyRequestsException" || (status >= 400 && status < 500));
 }
 
 const unitSeconds: Record<string, number> = { s: 1, m: 60, h: 3_600, d: 86_400, w: 604_800 };
@@ -1947,9 +2124,18 @@ export function seedPassword(env: Record<string, string | undefined> = process.e
 
 export function requireUrl(name: "PUBLIC_URL" | "APP_URL", fallback: string, env: Record<string, string | undefined> = process.env) {
   const value = env[name];
-  if (value) return value;
-  if (env.NODE_ENV === "production") throw new Error(`${name} must be set in production`);
-  return fallback;
+  if (env.NODE_ENV !== "production") return value || fallback;
+  if (!value) throw new Error(`${name} must be set in production`);
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error(`${name} must be a valid HTTPS URL in production`);
+  }
+  if (url.protocol !== "https:" || !url.hostname || url.username || url.password) {
+    throw new Error(`${name} must be an HTTPS URL with a hostname and no credentials in production`);
+  }
+  return value;
 }
 
 export function seal(payload: Record<string, unknown>, secret: string) {
@@ -1990,4 +2176,3 @@ export function formatWebhookPayload(event: {
     created_at: event.created_at ?? new Date().toISOString()
   };
 }
-

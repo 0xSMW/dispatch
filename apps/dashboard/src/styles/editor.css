@@ -215,7 +215,7 @@ button.cardLink:hover:not(:disabled) {
 }
 
 .checklist .ok svg {
-  color: var(--primary);
+  color: var(--success);
 }
 
 .checklist .warn svg {
@@ -360,6 +360,12 @@ textarea.sourceArea {
   width: 100%;
   min-height: 30px;
   font-size: 13px;
+}
+
+.requirement {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
 }
 
 .insertList {

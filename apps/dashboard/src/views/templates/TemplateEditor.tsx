@@ -1,25 +1,27 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
-import { AlertTriangle, CheckCircle2, Info } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Link, useParams } from "react-router-dom";
+import { Info } from "lucide-react";
 import { Badge } from "../../components/Badge";
+import { Checks, type CheckRow } from "../../components/Checks";
 import { Drawer } from "../../components/Drawer";
 import { Failed } from "../../components/Empty";
 import { Field } from "../../components/Field";
 import { Modal } from "../../components/Modal";
 import { Panel } from "../../components/Panel";
 import { Skeleton } from "../../components/Skeleton";
-import { Table } from "../../components/Table";
 import { toast } from "../../components/Toast";
 import { useHotkey } from "../../hooks/useHotkey";
 import { shortcuts } from "../../lib/shortcuts";
 import { useMutation } from "../../hooks/useMutation";
 import { useResource } from "../../hooks/useResource";
 import { addresses } from "../../lib/utils";
+import { templateKind, kindLabels } from "../../lib/emailKind";
 import { useCan, useClient } from "../../shell/session";
 import type { Rendered, Template } from "../../types";
-import { EditorScreen, LeaveGuard, Preview, Source, TestSend, useDraft, type Flush } from "./editor";
-import { blockProblem, builtIn, declarable, fill, normalizeVariables, sampleContact, scan, type Found, type Variable, type VariableType } from "./render";
+import { EditorScreen, LeaveGuard, Preview, Source, TestSend, useDraft, type Flush, type SourceCheck } from "./editor";
+import { blockProblem, builtIn, declarable, fill, normalizeVariables, sampleContact, scan, type Filled, type Found, type Variable, type VariableType } from "./render";
 import { samples, sourceNotice, useBrand, Versions } from "./Versions";
+import { VariableTable } from "./Variables";
 
 export type TemplateForm = {
   subject: string;
@@ -45,7 +47,7 @@ export function toForm(template: Template): TemplateForm {
  * The variables a save declares: every non-reserved key the content uses, with its settings,
  * plus unused ones the user configured. Unused keys left at the defaults drop out.
  */
-export function declare(variables: Variable[], found: Found[]): Variable[] {
+export function declare(variables: Variable[], found: Found[], configured: ReadonlySet<string> = new Set()): Variable[] {
   const out: Variable[] = [];
   for (const item of found) {
     // A name the API refuses, such as `first-name`, is not declared: the save would fail on it.
@@ -55,7 +57,7 @@ export function declare(variables: Variable[], found: Found[]): Variable[] {
   }
   for (const item of variables) {
     if (out.some((entry) => entry.key === item.key)) continue;
-    if (item.type !== "string" || item.fallback_value !== null) out.push(item);
+    if (configured.has(item.key) || item.type !== "string" || item.fallback_value !== null) out.push(item);
   }
   return out;
 }
@@ -114,7 +116,7 @@ export function testValues(variables: Variable[], sampleValues: Record<string, s
 }
 
 /** Turns changed form fields into a `PATCH /templates/:id` body. An emptied field is sent as null, which clears it. */
-export function patchBody(changed: Partial<TemplateForm>, next: TemplateForm, sent: Variable[]) {
+export function patchBody(changed: Partial<TemplateForm>, next: TemplateForm, sent: Variable[], configured?: ReadonlySet<string>) {
   const body: Record<string, unknown> = {};
   if ("subject" in changed) body.subject = next.subject.trim() ? next.subject : null;
   if ("from" in changed) body.from = next.from.trim() ? next.from.trim() : null;
@@ -124,31 +126,52 @@ export function patchBody(changed: Partial<TemplateForm>, next: TemplateForm, se
   }
   if ("html" in changed) body.html = next.html.trim() ? next.html : null;
   if ("text" in changed) body.text = next.text.trim() ? next.text : null;
-  const declared = declare(next.variables, foundIn(next)).map(typed);
+  const declared = declare(next.variables, foundIn(next), configured).map(typed);
   if (JSON.stringify(declared) !== JSON.stringify(sent)) body.variables = declared;
   return body;
 }
 
-/** Problems to show before publishing. */
-export function publishWarnings(form: TemplateForm) {
-  const warnings: string[] = [];
+/** Existing publish categories, with identities independent of their conditional wording. */
+export function publishRows(form: TemplateForm): CheckRow[] {
+  const warnings: CheckRow[] = [];
+  const warn = (category: string, text: string) => warnings.push({ id: `review.${category}`, tone: "warn", text });
   const found = foundIn(form);
   const problem = blockProblem(form.subject, form.html, form.text);
-  if (problem) warnings.push(`${problem}. The API refuses to publish until the blocks pair up.`);
+  if (problem) warn("blocks", `${problem}. The API refuses to publish until the blocks pair up.`);
   const invalid = invalidNames(found);
   if (invalid.length) {
-    warnings.push(`${invalid.join(", ")} ${invalid.length === 1 ? "is not a valid variable name" : "are not valid variable names"}. Use letters, digits, and underscores.`);
+    warn("variables", `${invalid.join(", ")} ${invalid.length === 1 ? "is not a valid variable name" : "are not valid variable names"}. Use letters, digits, and underscores.`);
   }
   const required = declare(form.variables, found).filter(
     (item) => item.fallback_value === null && !found.some((entry) => entry.key === item.key && entry.inline),
   );
   if (required.length) {
-    warnings.push(`${required.map((item) => item.key).join(", ")} ${required.length === 1 ? "has" : "have"} no fallback. Sends that leave ${required.length === 1 ? "it" : "them"} out fail.`);
+    warn("fallbacks", `${required.map((item) => item.key).join(", ")} ${required.length === 1 ? "has" : "have"} no fallback. Sends that leave ${required.length === 1 ? "it" : "them"} out fail.`);
   }
-  if (!form.subject.trim()) warnings.push("No subject. Every send must pass one.");
-  if (!form.from.trim()) warnings.push("No From address. Every send must pass one.");
-  if (!form.html.trim() && !form.text.trim()) warnings.push("No content. Add HTML or plain text.");
+  if (!form.subject.trim()) warn("subject", "No subject. Every send must pass one.");
+  if (!form.from.trim()) warn("from", "No From address. Every send must pass one.");
+  if (!form.html.trim() && !form.text.trim()) warn("content", "No content. Add HTML or plain text.");
   return warnings;
+}
+
+/** Problems to show before publishing. */
+export function publishWarnings(form: TemplateForm) {
+  return publishRows(form).map((row) => row.text);
+}
+
+/** Collect actual results only; related rules remain distinct even when their text matches. */
+export function templateChecks(preview: Filled, found: Found[], source: SourceCheck | null, review: readonly CheckRow[]): CheckRow[] {
+  const rows: CheckRow[] = source ? [source] : [];
+  if (preview.problem) rows.push({ id: "preview.blocks", tone: "warn", text: `${preview.problem}.` });
+  const invalid = invalidNames(found);
+  if (invalid.length) rows.push({
+    id: "variables.names",
+    tone: "warn",
+    text: `${invalid.join(", ")} cannot be a variable name. Use letters, digits, and underscores.`,
+  });
+  if (preview.missing.length) rows.push({ id: "preview.missing", tone: "warn", text: `No value for ${preview.missing.join(", ")}.` });
+  rows.push(...review);
+  return rows;
 }
 
 /** Template editor: code or visual editing with a live preview. */
@@ -163,13 +186,17 @@ export function TemplateEditor() {
   const [testing, setTesting] = useState(false);
   const [publishing, setPublishing] = useState(false);
   const [history, setHistory] = useState(false);
+  const [sourceCheck, setSourceCheck] = useState<SourceCheck | null>(null);
+  const onSourceCheck = useCallback((check: SourceCheck | null) => setSourceCheck(check), []);
+  const fallbacks = useRef(new Map<string, string | number>());
+  const configured = useRef(new Set<string>());
 
   // Set by `Source`: hands over a visual edit that has not been written yet. Every save runs it first.
   const flushVisual = useRef<Flush | null>(null);
   const draft = useDraft<TemplateForm>(
     async (changed, next) => {
       const sent = normalizeVariables(template.data?.variables);
-      const body = patchBody(changed, next, sent);
+      const body = patchBody(changed, next, sent, configured.current);
       if (Object.keys(body).length === 0) return;
       template.setData(await client.patch<Template>(`/templates/${id}`, body));
     },
@@ -178,11 +205,16 @@ export function TemplateEditor() {
   const { form } = draft;
 
   useEffect(() => {
-    if (template.data && !form) draft.load(toForm(template.data));
+    if (template.data && !form) {
+      const next = toForm(template.data);
+      const used = new Set(foundIn(next).map((item) => item.key));
+      configured.current = new Set(next.variables.filter((item) => !used.has(item.key)).map((item) => item.key));
+      draft.load(next);
+    }
   }, [template.data, form, draft.load]);
 
   const found = useMemo(() => (form ? foundIn(form) : []), [form]);
-  const variables = useMemo(() => (form ? declare(form.variables, found) : []), [form, found]);
+  const variables = useMemo(() => (form ? declare(form.variables, found, configured.current) : []), [form, found]);
   const values = useMemo(() => {
     const out: Record<string, unknown> = { ...brand, ...samples(variables) };
     for (const [key, value] of Object.entries(sampleValues)) {
@@ -199,6 +231,8 @@ export function TemplateEditor() {
     return out;
   }, [brand, variables, sampleValues]);
   const preview = useMemo(() => (form ? fill(form, values, variables) : null), [form, values, variables]);
+  const review = useMemo(() => (form ? publishRows(form) : []), [form]);
+  const checks = useMemo(() => preview ? templateChecks(preview, found, sourceCheck, review) : [], [preview, found, sourceCheck, review]);
 
   async function saveNow() {
     const ok = await draft.save();
@@ -222,11 +256,12 @@ export function TemplateEditor() {
   );
 
   function setVariable(key: string, change: Partial<Variable>) {
+    configured.current.add(key);
     draft.update((current) => {
-      const base = declare(current.variables, foundIn(current));
+      const base = declare(current.variables, foundIn(current), configured.current);
       const existing = base.find((item) => item.key === key) ?? { key, type: "string" as VariableType, fallback_value: null };
       const next = { ...existing, ...change };
-      return { ...current, variables: [...base.filter((item) => item.key !== key), next] };
+      return { ...current, variables: base.some((item) => item.key === key) ? base.map((item) => item.key === key ? next : item) : [...base, next] };
     });
   }
 
@@ -234,14 +269,16 @@ export function TemplateEditor() {
   const row = template.data;
   const notice = sourceNotice(row?.source);
 
+  const kind = templateKind(form ? { ...form, source: row?.source } : row ?? {});
   return (
     <EditorScreen
       crumb={{ to: row ? `/templates/${row.id}` : "/templates", label: "Templates" }}
       title={row?.name ?? "Loading"}
-      status={row ? <Badge value={row.status} /> : null}
+      status={row ? <><Badge value={row.status} /><Badge value={kind} label={kindLabels[kind]} /></> : null}
       save={can ? draft.state : undefined}
       actions={
         <>
+          <Link className="button secondary" to="/settings/brand">Edit brand</Link>
           <button
             type="button"
             className="ghost"
@@ -282,6 +319,8 @@ export function TemplateEditor() {
       ) : (
         <>
           <div className="editorHead">
+            <Field label="Template kind" value={kindLabels[kind]} onChange={() => undefined} disabled className="wide"
+              hint="Library kind and HTML or plain text determine this value. Marketing templates cannot send as Transactional." />
             <Field label="Subject" value={form.subject} onChange={(value) => draft.set("subject", value)} placeholder="Welcome to {{{PRODUCT_NAME}}}" className="wide" disabled={!can} />
             <Field label="From" value={form.from} onChange={(value) => draft.set("from", value)} placeholder="Acme <hello@acme.com>" disabled={!can} />
             <Field label="Reply-To" value={form.reply_to} onChange={(value) => draft.set("reply_to", value)} placeholder="support@acme.com" disabled={!can} />
@@ -295,6 +334,8 @@ export function TemplateEditor() {
                 onText={(value) => draft.set("text", value)}
                 disabled={!can}
                 flushRef={flushVisual}
+                onCheck={onSourceCheck}
+                placeholders={{ variables, onChange: setVariable, fallbacks }}
               />
               <Panel title="Variables">
                 <VariableTable
@@ -304,6 +345,7 @@ export function TemplateEditor() {
                   onSample={(key, value) => setSampleValues((current) => ({ ...current, [key]: value }))}
                   onChange={setVariable}
                   disabled={!can}
+                  fallbacks={fallbacks}
                 />
               </Panel>
             </div>
@@ -312,21 +354,7 @@ export function TemplateEditor() {
                 <span className="dim">Subject</span> {preview.subject || "No subject"}
               </p>
               <Preview html={preview.html} />
-              {preview.problem ? (
-                <p className="warnMark">
-                  <AlertTriangle size={13} aria-hidden /> {preview.problem}.
-                </p>
-              ) : null}
-              {invalidNames(found).length ? (
-                <p className="warnMark">
-                  <AlertTriangle size={13} aria-hidden /> {invalidNames(found).join(", ")} cannot be a variable name. Use letters, digits, and underscores.
-                </p>
-              ) : null}
-              {preview.missing.length ? (
-                <p className="warnMark">
-                  <AlertTriangle size={13} aria-hidden /> No value for {preview.missing.join(", ")}.
-                </p>
-              ) : null}
+              <Checks rows={checks} />
             </div>
           </div>
         </>
@@ -358,7 +386,7 @@ export function TemplateEditor() {
           submitting={publish.isLoading}
           submitDisabled={draft.state.saving}
         >
-          <PublishChecks warnings={publishWarnings(form)} />
+          <PublishChecks warnings={review.map((row) => row.text)} rows={review} />
           <p className="muted">Sends that use this template switch to this version right away.</p>
         </Modal>
       ) : null}
@@ -370,7 +398,11 @@ export function TemplateEditor() {
             template={row}
             onChange={(next) => {
               template.setData(next);
-              draft.load(toForm(next));
+              fallbacks.current.clear();
+              const form = toForm(next);
+              const used = new Set(foundIn(form).map((item) => item.key));
+              configured.current = new Set(form.variables.filter((item) => !used.has(item.key)).map((item) => item.key));
+              draft.load(form);
             }}
           />
         </Drawer>
@@ -379,119 +411,8 @@ export function TemplateEditor() {
   );
 }
 
-export function PublishChecks({ warnings }: { warnings: string[] }) {
-  if (warnings.length === 0) {
-    return (
-      <ul className="checklist">
-        <li className="ok">
-          <CheckCircle2 size={15} aria-hidden /> No problems found.
-        </li>
-      </ul>
-    );
-  }
-  return (
-    <ul className="checklist" aria-label="Warnings">
-      {warnings.map((warning) => (
-        <li key={warning} className="warn">
-          <AlertTriangle size={15} aria-hidden /> {warning}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function VariableTable({
-  variables,
-  found,
-  samples: sampleValues,
-  onSample,
-  onChange,
-  disabled = false,
-}: {
-  variables: Variable[];
-  found: Found[];
-  samples: Record<string, string>;
-  onSample: (key: string, value: string) => void;
-  onChange: (key: string, change: Partial<Variable>) => void;
-  disabled?: boolean;
-}) {
-  const builtins = found.filter((item) => builtIn(item.key));
-  return (
-    <div className="stack varTable">
-      <Table
-        compact
-        rows={variables}
-        rowKey={(item) => item.key}
-        empty={<p className="muted">Add a placeholder such as {"{{{FIRST_NAME}}}"} to the HTML to declare a variable.</p>}
-        columns={[
-          {
-            header: "Key",
-            cell: (item) => {
-              const use = found.find((entry) => entry.key === item.key);
-              const warn = item.fallback_value === null && !use?.inline;
-              return (
-                <span className="varRow">
-                  <span className="mono">{item.key}</span>
-                  {warn ? (
-                    <span className="warnMark" title="No fallback. Sends that leave it out fail." aria-label="No fallback">
-                      <AlertTriangle size={13} aria-hidden />
-                    </span>
-                  ) : null}
-                  {!use ? <span className="dim">not used</span> : null}
-                </span>
-              );
-            },
-          },
-          {
-            header: "Type",
-            cell: (item) => (
-              <select aria-label={`Type of ${item.key}`} value={item.type} disabled={disabled} onChange={(event) => onChange(item.key, { type: event.target.value as VariableType })}>
-                <option value="string">string</option>
-                <option value="number">number</option>
-                <option value="list">list</option>
-              </select>
-            ),
-          },
-          {
-            header: "Fallback",
-            cell: (item) => (
-              <span className="varRow">
-                <input
-                  type="checkbox"
-                  aria-label={`${item.key} has a fallback`}
-                  checked={item.fallback_value !== null}
-                  disabled={disabled || item.type === "list"}
-                  onChange={(event) => onChange(item.key, { fallback_value: event.target.checked ? "" : null })}
-                />
-                <input
-                  aria-label={`Fallback for ${item.key}`}
-                  value={item.fallback_value === null ? "" : String(item.fallback_value)}
-                  placeholder={item.fallback_value === null ? "None" : "Empty"}
-                  disabled={disabled || item.fallback_value === null}
-                  onChange={(event) => onChange(item.key, { fallback_value: event.target.value })}
-                />
-              </span>
-            ),
-          },
-          {
-            header: "Sample",
-            cell: (item) => (
-              <input
-                aria-label={`Sample value for ${item.key}`}
-                className={item.type === "list" ? "mono" : undefined}
-                value={sampleValues[item.key] ?? ""}
-                placeholder={item.type === "list" ? '[{"description": "…"}]' : "Preview value"}
-                onChange={(event) => onSample(item.key, event.target.value)}
-              />
-            ),
-          },
-        ]}
-      />
-      {builtins.length ? (
-        <p className="dim">
-          Provided by Dispatch: <span className="mono">{builtins.map((item) => item.key).join(", ")}</span>
-        </p>
-      ) : null}
-    </div>
-  );
+export function PublishChecks({ warnings, rows }: { warnings: string[]; rows?: readonly CheckRow[] }) {
+  return <Checks rows={warnings.length
+    ? rows ?? warnings.map((text, index) => ({ id: `review.warning.${index}`, tone: "warn" as const, text }))
+    : [{ id: "review.clear", tone: "ok", text: "No problems found." }]} />;
 }

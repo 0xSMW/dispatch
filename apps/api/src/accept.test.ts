@@ -1,0 +1,7831 @@
+import { acceptTargets } from "./accept-targets.js";
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
+import {
+  afterAll,
+  afterEach,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  it,
+} from "vitest";
+import type { Provider, ProviderEmail, Rule } from "@dispatchmail/core";
+import type { ContactRow, Db } from "@dispatchmail/db";
+import type { Storage } from "@dispatchmail/storage";
+import { Readable } from "node:stream";
+import { createHmac } from "node:crypto";
+import { fileURLToPath } from "node:url";
+import type { Job } from "../../worker/src/deliver.js";
+import type { FastifyInstance } from "fastify";
+
+// Capture explicit targets before .env loading. Validate before hooks or client creation:
+// only the disposable loopback database/Redis are allowed, never inherited targets.
+const supplied = {
+  TEST_DATABASE_URL: process.env.TEST_DATABASE_URL,
+  TEST_REDIS_URL: process.env.TEST_REDIS_URL,
+  TEST_ADMIN_DATABASE_URL: process.env.TEST_ADMIN_DATABASE_URL,
+  REQUIRE_INTEGRATION_TESTS: process.env.REQUIRE_INTEGRATION_TESTS,
+};
+await import("@dispatchmail/core/env");
+const targets = acceptTargets(process.env, supplied);
+const live = targets !== undefined;
+const databaseUrl = targets?.databaseUrl ?? "";
+const adminUrl = targets?.adminUrl ?? "";
+const databaseName = live ? "dispatch_test" : "";
+if (targets) {
+  process.env.DATABASE_URL = targets.databaseUrl;
+  process.env.REDIS_URL = targets.redisUrl;
+}
+
+// Runtime fixture helpers load only after approval, so their dependencies cannot
+// load ambient targets or initialize a client before the guard.
+const { id, keyHash, makeKey, ProviderError, renderTemplate, sign, verify } = await import("@dispatchmail/core");
+const { appendEvent, claimAutomationRuns, connect, contactColumns, dispatchContactWrite, emit, executeAutomationRun, fireEvent, migrate, reconcileBroadcastSent, retryTx, tx, unsubscribeToken, updateContact } = await import("@dispatchmail/db");
+const { contactContext } = await import("../../../packages/db/src/automations.js");
+const { createImport, claimImports, importBatch } = await import("../../../packages/db/src/imports.js");
+const { runImport } = await import("../../worker/src/imports.js");
+const { deliverJob } = await import("../../worker/src/deliver.js");
+const { applySesEvent } = await import("../../worker/src/events.js");
+
+let db: Db;
+let app: FastifyInstance;
+let tick: () => Promise<{ jobs: number; runs: number; attempts: number }>;
+let closeApi: () => Promise<void>;
+let flushApiTelemetry: () => Promise<void>;
+let closeWorker: () => Promise<void>;
+let fullKey = "";
+let turn = Promise.resolve();
+let releaseTurn = () => {};
+
+function takeTurn() {
+  let release = () => {};
+  const previous = turn;
+  turn = new Promise<void>((resolve) => {
+    release = () => resolve();
+  });
+  return previous.then(() => {
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      release();
+    };
+  });
+}
+
+beforeAll(async () => {
+  if (!live) return;
+  process.env.RATE_LIMIT_PER_SECOND = "1000";
+  // The per-address limit on sign-in would refuse a burst before the per-email lockout sees it.
+  process.env.AUTH_RATE_LIMIT_PER_SECOND = "1000";
+  process.env.TELEMETRY_FLUSH_MS = "600000";
+  process.env.FAKE_PROVIDER_TERMINAL_DELAY_MS = "0";
+  process.env.FAKE_PROVIDER_DELAYED_DELAY_MS = "0";
+  await ensureDatabase();
+  db = connect(databaseUrl);
+  await migrate(db);
+  const api = await import("./server.js");
+  const worker = await import("../../worker/src/worker.js");
+  app = api.app;
+  closeApi = api.close;
+  flushApiTelemetry = api.flushTelemetry;
+  tick = worker.tick;
+  closeWorker = worker.close;
+});
+
+beforeEach(async () => {
+  const release = await takeTurn();
+  releaseTurn = release;
+  try {
+    await truncate();
+    fullKey = await seedTenant();
+  } catch (error) {
+    release();
+    throw error;
+  }
+});
+
+afterEach(() => {
+  releaseTurn();
+});
+
+afterAll(async () => {
+  if (closeApi) await closeApi();
+  if (closeWorker) await closeWorker();
+  if (db) await db.end();
+});
+
+describe.skipIf(!live)("accept", () => {
+  it("review regression: mixed-scheme real confirmation URLs remain full-role visible and concealed in viewer emails and logs", async () => {
+    const origin = "https://signup.example";
+    const topic = await post(fullKey, "/topics", { name: "Scheme confirmation", default_subscription: "opt_in" });
+    expect(topic.status).toBe(200);
+    const form = await post(fullKey, "/forms", {
+      name: "Scheme confirmation", topic_ids: [topic.json.id], properties: [], from_email: "hello@dispatch-fixture.net",
+      allowed_origins: [origin], double_opt_in: true,
+    });
+    expect(form.status).toBe(200);
+    const viewer = await teammate("Viewer");
+    const read = await signInAs(viewer.email, viewer.password);
+    expect(read.status).toBe(200);
+    expect((await app.inject({ method: "POST", url: `/forms/${form.json.key}`,
+      headers: { origin, "content-type": "application/json" }, payload: { email: "mixed-confirm@fixture.net" },
+    })).statusCode).toBe(200);
+    const stored = (await db.query(`select id,html,text,subject from emails
+      where id in (select email_id from email_recipients where email='mixed-confirm@fixture.net')
+      order by created_at desc limit 1`)).rows[0];
+    expect(stored).toBeDefined();
+    const emailId = stored.id as string;
+    const token = stored.text.match(/\/confirm\/([A-Za-z0-9_.-]+)/)?.[1];
+    expect(token).toBeTruthy();
+    const url = stored.text.match(/https?:\/\/[^\s"'<>]+\/confirm\/[A-Za-z0-9_.-]+/)?.[0];
+    expect(url).toBeTruthy();
+    for (const scheme of ["HtTpS", "HTTPS", "HtTp", "HTTP"]) {
+      const mixed = url!.replace(/^https?/i, scheme);
+      const html = stored.html.replaceAll(url, mixed), text = stored.text.replaceAll(url, mixed);
+      await db.query("update emails set html=$2,text=$3 where id=$1", [emailId, html, text]);
+      const requestId = id("req");
+      const full = await app.inject({ method: "GET", url: `/emails/${emailId}`, headers: {
+        authorization: `Bearer ${fullKey}`, "x-request-id": requestId, "user-agent": "review-concealment",
+      } });
+      expect(full.statusCode).toBe(200);
+      expect(full.json()).toMatchObject({ html, text, subject: stored.subject });
+      expect(JSON.stringify(full.json())).toContain(token);
+      const hidden = await call(read.token, "GET", `/emails/${emailId}`);
+      expect(hidden.status).toBe(200);
+      expect(hidden.json).toMatchObject({
+        html: html.replaceAll(mixed, "#link-hidden"), text: text.replaceAll(mixed, "#link-hidden"), subject: stored.subject,
+      });
+      expect(JSON.stringify(hidden.json)).not.toContain(token);
+      expect((await call(fullKey, "GET", `/logs?q=${requestId}`)).status).toBe(200);
+      const log = (await db.query("select id from logs where request_id=$1", [requestId])).rows[0];
+      expect(log).toBeDefined();
+      const fullLog = await call(fullKey, "GET", `/logs/${log.id}`);
+      const readLog = await call(read.token, "GET", `/logs/${log.id}`);
+      expect(fullLog.status).toBe(200); expect(readLog.status).toBe(200);
+      expect(fullLog.json.response_body).toMatchObject({ html, text, subject: stored.subject });
+      expect(JSON.stringify(fullLog.json)).toContain(token);
+      expect(readLog.json.response_body).toMatchObject({
+        html: html.replaceAll(mixed, "#link-hidden"), text: text.replaceAll(mixed, "#link-hidden"), subject: stored.subject,
+      });
+      expect(JSON.stringify(readLog.json)).not.toContain(token);
+    }
+  });
+
+  // Wave10 actual SDK/stdio + PostgreSQL fixtures. Authored only; run at8.
+  describe("agent stdio MCP", () => {
+    it("initializes the genuine stdio SDK, sends and installs through the real API, and refuses hidden read-only writes", async () => {
+      const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+      const { StdioClientTransport } = await import("@modelcontextprotocol/sdk/client/stdio.js");
+      const bridge = createServer(async (request, response) => {
+        try {
+          const chunks: Buffer[] = [];
+          for await (const chunk of request) chunks.push(Buffer.from(chunk));
+          const result = await app.inject({
+            method: request.method as "GET" | "POST" | "PATCH" | "DELETE",
+            url: request.url ?? "/", headers: request.headers,
+            ...(chunks.length ? { payload: Buffer.concat(chunks) } : {}),
+          });
+          response.writeHead(result.statusCode, { "content-type": "application/json" });
+          response.end(result.body);
+        } catch {
+          response.writeHead(500);
+          response.end('{"name":"fixture_error","statusCode":500,"message":"Fixture request failed"}');
+        }
+      });
+      await new Promise<void>((resolve, reject) => { bridge.once("error", reject); bridge.listen(0, "127.0.0.1", resolve); });
+      const address = bridge.address();
+      if (!address || typeof address === "string") throw new Error("MCP fixture bridge did not bind");
+      async function session(readOnly: boolean, run: (client: InstanceType<typeof Client>) => Promise<void>) {
+        const transport = new StdioClientTransport({
+          command: process.execPath,
+          args: ["--import", "tsx", fileURLToPath(new URL("../../../packages/mcp/src/index.ts", import.meta.url)), ...(readOnly ? ["--read-only"] : [])],
+          cwd: fileURLToPath(new URL("../../../", import.meta.url)),
+          env: { PATH: process.env.PATH ?? "", NODE_ENV: "test", DISPATCH_API_URL: `http://127.0.0.1:${(address as { port: number }).port}`, DISPATCH_API_KEY: fullKey },
+          stderr: "pipe",
+        });
+        const client = new Client({ name: "dispatch-isolated-accept", version: "1.0.0" });
+        try { await client.connect(transport); await run(client); } finally { await client.close(); await transport.close(); }
+      }
+      const content = (result: unknown) => {
+        const value = result as { content: Array<{ type: string; text?: string }> };
+        expect(value.content[0]?.type).toBe("text");
+        const text = value.content[0]!.text!;
+        expect(text).not.toContain(fullKey);
+        expect(text).not.toMatch(/lifecycle-plan|dry-refactor|loops-analysis|security_best_practices_report/);
+        return JSON.parse(text);
+      };
+      try {
+        let emailId = "";
+        await session(false, async (client) => {
+          expect(client.getServerVersion()?.name).toBe("@dispatchmail/mcp");
+          expect((await client.listTools()).tools).toHaveLength(10);
+          const input = { from: "hello@dispatch-fixture.net", to: "agent@example.test", subject: "Agent fixture", html: "<p>Hello</p>", idempotencyKey: "agent-stdio-send" };
+          emailId = content(await client.callTool({ name: "send_email", arguments: input })).id;
+          expect(content(await client.callTool({ name: "send_email", arguments: input })).id).toBe(emailId);
+          expect((await db.query("select id,sandbox from emails where id=$1", [emailId])).rows).toEqual([{ id: emailId, sandbox: true }]);
+          const installed = content(await client.callTool({ name: "install_preset", arguments: { slug: "onboarding-drip", from: "hello@dispatch-fixture.net", name: "MCP installed" } }));
+          expect(installed.automation.status).toBe("disabled");
+          expect(installed.templates.created.length).toBeGreaterThan(0);
+          expect(installed.templates.created.some((template: { slug: string }) => template.slug === "welcome")).toBe(true);
+          expect((await db.query("select enabled from automations where id=$1", [installed.automation.id])).rows).toEqual([{ enabled: false }]);
+        });
+        const before = (await db.query("select (select count(*) from emails) as emails, (select count(*) from automations) as automations, (select count(*) from contacts) as contacts, (select count(*) from custom_events) as events")).rows;
+        await session(true, async (client) => {
+          expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(["get_email", "list_emails", "list_automations", "get_metrics", "list_templates", "render_template"]);
+          for (const name of ["send_email", "send_event", "upsert_contact", "install_preset"]) {
+            const result = await client.callTool({ name, arguments: { readOnly: false } });
+            expect(result.isError).toBe(true);
+            expect(content(result).name).toBe("read_only");
+          }
+          expect(content(await client.callTool({ name: "get_email", arguments: { id: emailId } })).id).toBe(emailId);
+          const rendered = await client.callTool({ name: "render_template", arguments: {
+            idOrAlias: "welcome",
+            variables: { RECIPIENT_NAME: "Ada", ACTION_URL: "https://app.example.test/start", ACTION_LABEL: "Get started", HELP_URL: "https://app.example.test/help" },
+          } });
+          expect(rendered.isError).not.toBe(true);
+          expect(content(rendered).rendered.html).toBeTruthy();
+          const missing = await client.callTool({ name: "get_email", arguments: { id: "missing" } });
+          expect(missing.isError).toBe(true);
+          expect(content(missing).name).toBe("not_found");
+        });
+        expect((await db.query("select (select count(*) from emails) as emails, (select count(*) from automations) as automations, (select count(*) from contacts) as contacts, (select count(*) from custom_events) as events")).rows).toEqual(before);
+      } finally {
+        await new Promise<void>((resolve, reject) => bridge.close((error) => error ? reject(error) : resolve()));
+      }
+    }, 60000);
+  });
+
+  describe("weighted split assignment and winner", () => {
+    async function fixture(count: number) {
+      const tenantId = (await call(fullKey, "GET", "/me")).json.tenant_id as string;
+      const graph = {
+        steps: [{ key: "t", type: "trigger", config: { event_name: "split-start" } },
+          { key: "s", type: "split", config: { variants: [{ key: "a", label: "A", weight: 50 }, { key: "b", label: "B", weight: 50 }] } },
+          { key: "wa", type: "delay", config: { duration: "1 day" } }, { key: "wb", type: "delay", config: { duration: "1 day" } },
+          { key: "xa", type: "exit", config: {} }, { key: "xb", type: "exit", config: {} }],
+        connections: [{ from: "t", to: "s" }, { from: "s", to: "wa", type: "variant", path: "a" },
+          { from: "s", to: "wb", type: "variant", path: "b" }, { from: "wa", to: "xa" }, { from: "wb", to: "xb" }],
+      };
+      const made = await post(fullKey, "/automations", { name: "Split fixture", status: "enabled", ...graph });
+      expect(made.status, JSON.stringify(made.json)).toBe(200);
+      const automationId = made.json.id as string;
+      await db.query(`insert into custom_events(id,tenant_id,request_id,name,email,data)
+        select 'ce_split_'||n,$1,'req_split','split-start','split@example.test','{}'::jsonb from generate_series(1,$2::integer) n`, [tenantId, count]);
+      await db.query(`insert into automation_runs(id,tenant_id,automation_id,event_id,state,next_step_index)
+        select 'run_split_'||n,$1,$2,'ce_split_'||n,'ready',0 from generate_series(1,$3::integer) n`, [tenantId, automationId, count]);
+      for (let n = 1; n <= count; n++) await executeAutomationRun(db, tenantId, `run_split_${n}`);
+      return { tenantId, automationId, graph };
+    }
+    it("routes1000 actual runs50/50 within45–55%, retries preserve decisions, and winner keeps all waits/keys/assignments", async () => {
+      const { tenantId, automationId, graph } = await fixture(1000);
+      const saved = (await db.query("select run_id,data from automation_steps where tenant_id=$1 and type='split' order by run_id", [tenantId])).rows;
+      expect(saved).toHaveLength(1000);
+      const a = saved.filter((row) => row.data.variant === "a").length;
+      expect(a).toBeGreaterThanOrEqual(450); expect(a).toBeLessThanOrEqual(550);
+      const waits = (await db.query("select id,state,next_step_key,resume_at from automation_runs where tenant_id=$1 order by id", [tenantId])).rows;
+      expect(waits.every((row) => row.state === "waiting")).toBe(true);
+      const pause = await call(fullKey, "PATCH", `/automations/${automationId}`, { status: "paused", expected_version: 0 });
+      expect(pause.status).toBe(200);
+      const picked = await post(fullKey, `/automations/${automationId}/steps/s/winner`, { variant: "b", version: pause.json.version });
+      expect(picked.status, JSON.stringify(picked.json)).toBe(200);
+      expect(picked.json.connections).toEqual(graph.connections.map((edge) => ({ ...edge, type: edge.type ?? "default" })));
+      expect(picked.json.steps.find((step: any) => step.key === "s").config.variants.map((variant: any) => variant.weight)).toEqual([0, 100]);
+      const comparison = await call(fullKey, "GET", `/automations/${automationId}/steps/s/metrics`);
+      expect(comparison.status).toBe(200);
+      expect(comparison.json.data.map((row: any) => [row.key, row.weight, row.runs])).toEqual([["a", 0, a], ["b", 100, 1000 - a]]);
+      expect((await db.query("select run_id,data from automation_steps where tenant_id=$1 and type='split' order by run_id", [tenantId])).rows).toEqual(saved);
+      expect((await db.query("select id,state,next_step_key,resume_at from automation_runs where tenant_id=$1 order by id", [tenantId])).rows).toEqual(waits);
+      expect((await post(fullKey, `/automations/${automationId}/steps/s/winner`, { variant: "a", version: 0 })).status).toBe(409);
+      expect((await call(fullKey, "GET", `/automations/${automationId}`)).json.status).toBe("paused");
+      // A reclaimed recorded split uses its old decision even under the new weights.
+      const retry = saved.find((row) => row.data.variant === "a")!.run_id;
+      await db.query("update automation_runs set state='ready',next_step_key='s',resume_at=null where id=$1", [retry]);
+      expect((await call(fullKey, "PATCH", `/automations/${automationId}`, { status: "enabled", expected_version: picked.json.version })).status).toBe(200);
+      await executeAutomationRun(db, tenantId, retry);
+      expect((await db.query("select next_step_key,state from automation_runs where id=$1", [retry])).rows[0]).toMatchObject({ next_step_key: "wa", state: "waiting" });
+      const fired = await fireEvent(db, tenantId, "req_after_winner", { name: "split-start", email: "new@example.test", data: {} });
+      for (const runId of fired.runs) await executeAutomationRun(db, tenantId, runId);
+      const after = (await db.query("select data from automation_steps where run_id=$1 and type='split'", [fired.runs[0]!])).rows;
+      expect(after[0].data.variant).toBe("b");
+    }, 180000);
+
+    it("measures stored same-run variants with half-open event dates, real historical attribution, zero keys and role guards", async () => {
+      const { tenantId, automationId } = await fixture(4);
+      const assignment = (await db.query("select run_id,data from automation_steps where tenant_id=$1 and type='split' order by run_id limit 1", [tenantId])).rows[0]!;
+      await db.query("update automation_steps set created_at='2026-09-01T00:00:00Z' where tenant_id=$1 and type='split'", [tenantId]);
+      // Retained assignments from a previously removed variant still form a report row.
+      assignment.data.variant = "retired";
+      await db.query("update automation_steps set data=$2::jsonb where run_id=$1 and type='split'", [assignment.run_id, JSON.stringify(assignment.data)]);
+      const send = async (name: string, runId: string | null, sandbox: boolean, created = "2026-09-02T00:00:00Z") => {
+        await db.query(`insert into emails(id,tenant_id,request_id,from_email,subject,automation_id,automation_run_id,sandbox,created_at)
+          values($1,$2,'req_split','hello@dispatch-fixture.net','Split',$3,$4,$5,$6)`, [name, tenantId, automationId, runId, sandbox, created]);
+        for (const [index, type] of ["email.sent", "email.delivered", "email.opened", "email.opened", "email.clicked"].entries()) {
+          await db.query(`insert into email_events(id,tenant_id,email_id,type,data,created_at) values($1,$2,$3,$4,$5,'2026-09-03T00:00:00Z')`,
+            [`${name}_${index}`, tenantId, name, type, JSON.stringify({ sandbox: name === "historical" ? false : sandbox })]);
+        }
+      };
+      await send("real", assignment.run_id, false);
+      await send("historical", assignment.run_id, true);
+      await send("sandbox", assignment.run_id, true);
+      await send("unattributed", null, false);
+      await send("before_split", assignment.run_id, false, "2026-08-31T00:00:00Z");
+      await db.query("insert into email_events(id,tenant_id,email_id,type,data,created_at) values('end_excluded',$1,'real','email.clicked','{\"sandbox\":false}','2026-09-04T00:00:00Z')", [tenantId]);
+      const url = `/automations/${automationId}/steps/s/metrics?start_date=2026-09-03T00:00:00Z&end_date=2026-09-04T00:00:00Z`;
+      const report = await call(fullKey, "GET", url);
+      expect(report.status, JSON.stringify(report.json)).toBe(200);
+      expect(report.json.data.find((row: any) => row.key === assignment.data.variant)).toMatchObject({ runs: 0, sent: 2, delivered: 2, opened: 4, unique_opened: 2, clicked: 2, open_rate: 100, click_rate: 100 });
+      expect(report.json.data.find((row: any) => row.key === "retired")).toMatchObject({ label: "retired", weight: null });
+      expect(report.json.data.filter((row: any) => row.key !== "retired").every((row: any) => row.sent === 0)).toBe(true);
+      const viewer = await teammate("Viewer"), session = await signInAs(viewer.email, viewer.password);
+      expect((await call(session.token, "GET", url)).status).toBe(200);
+      expect((await post(session.token, `/automations/${automationId}/steps/s/winner`, { variant: "a", version: 0 })).status).toBe(403);
+      const foreign = await seedTenant();
+      expect((await call(foreign, "GET", url)).status).toBe(404);
+      expect((await call(fullKey, "GET", `/automations/${automationId}/steps/s/metrics?start_date=bad`)).status).toBe(422);
+    });
+  });
+
+  // Wave9 hand-counted actual SQL fixtures. Authored now, execution deferred to8.
+  describe("retroactive goal conversions", () => {
+    it("review regression: custom created_at history cannot fabricate builtin conversion while genuine custom transitions convert", async () => {
+      expect((await post(fullKey, "/contact-properties", { key: "activated", type: "boolean" })).status).toBe(200);
+      const person = await post(fullKey, "/contacts", {
+        email: "goal-history@dispatch-fixture.net", properties: { created_at: null, activated: false },
+      });
+      expect(person.status).toBe(200);
+      const tenant = (await call(fullKey, "GET", "/me")).json.tenant_id as string;
+      const original = (await db.query("select created_at from contacts where id=$1", [person.json.id])).rows[0].created_at;
+      const broadcast = await queuedBroadcast("goal-history@dispatch-fixture.net");
+      expect((await tick()).jobs).toBeGreaterThan(0);
+      expect((await db.query(`select e.contact_id,e.broadcast_id,e.sandbox,ev.type
+        from emails e join email_events ev on ev.email_id=e.id
+        where e.id=$1 and ev.type='email.sent'`, [broadcast.emailId])).rows)
+        .toEqual([{ contact_id: person.json.id, broadcast_id: broadcast.id, sandbox: false, type: "email.sent" }]);
+      const value = new Date().toISOString();
+      expect((await call(fullKey, "PATCH", `/contacts/${person.json.id}`, {
+        properties: { created_at: value, activated: true },
+      })).status).toBe(200);
+      expect((await db.query("select created_at,properties from contacts where id=$1", [person.json.id])).rows[0])
+        .toEqual({ created_at: original, properties: { created_at: value, activated: true } });
+      expect((await db.query(`select field,from_value,to_value from contact_changes
+        where tenant_id=$1 and contact_id=$2 and field='created_at' order by created_at desc limit 1`,
+      [tenant, person.json.id])).rows).toEqual([{ field: "created_at", from_value: null, to_value: value }]);
+      const builtin = await post(fullKey, "/goals", { name: "Immutable creation", target: {
+        rule: { type: "rule", field: "contact.created_at", operator: "exists" },
+      } });
+      const custom = await post(fullKey, "/goals", { name: "Genuine activation", target: {
+        rule: { type: "rule", field: "contact.activated", operator: "eq", value: true },
+      } });
+      expect(builtin.status).toBe(200); expect(custom.status).toBe(200);
+      const query = new URLSearchParams({
+        broadcast_id: broadcast.id,
+        start_date: new Date(Date.now() - 3600000).toISOString(),
+        end_date: new Date(Date.now() + 1000).toISOString(),
+      });
+      const builtinMetrics = await call(fullKey, "GET", `/goals/${builtin.json.id}/metrics?${query}`);
+      const customMetrics = await call(fullKey, "GET", `/goals/${custom.json.id}/metrics?${query}`);
+      expect(builtinMetrics.status).toBe(200); expect(customMetrics.status).toBe(200);
+      expect(builtinMetrics.json).toMatchObject({ contacts_reached: 1, converted: 0, rate: 0 });
+      expect(customMetrics.json).toMatchObject({ contacts_reached: 1, converted: 1, rate: 1 });
+    });
+    async function fixture() {
+      const tenant = (await call(fullKey, "GET", "/me")).json.tenant_id as string;
+      for (const [key, type] of [["score", "number"], ["active", "boolean"], ["eligible", "boolean"]]) {
+        expect((await post(fullKey, "/contact-properties", { key, type })).status).toBe(200);
+      }
+      const contacts: Record<string, string> = {};
+      const states: Record<string, object> = {
+        a: { score: 0, active: false, eligible: true },
+        b: { score: 0, active: true, eligible: true },
+        c: { score: 0, active: false, eligible: true },
+        d: { score: 10, active: true, eligible: true },
+        g: { score: 10, active: true, eligible: false },
+        sandbox: { score: 10, active: true, eligible: true },
+      };
+      for (const [name, properties] of Object.entries(states)) {
+        const contact = await post(fullKey, "/contacts", { email: `${name}@goals-fixture.net`, properties });
+        expect(contact.status).toBe(200);
+        contacts[name] = contact.json.id;
+        await db.query("update contacts set created_at='2026-08-01T00:00:00Z' where tenant_id=$1 and id=$2", [tenant, contact.json.id]);
+        // Replace today's synthetic creation receipts with the explicit history below.
+        await db.query("delete from contact_changes where tenant_id=$1 and contact_id=$2", [tenant, contact.json.id]);
+      }
+      const automation = id("automation"), broadcast = id("broadcast");
+      await db.query("insert into automations(id,tenant_id,name,trigger,steps) values($1,$2,'Goals fixture','goal-start','[]')", [automation, tenant]);
+      await db.query("insert into broadcasts(id,tenant_id,name,from_email,subject) values($1,$2,'Goals fixture','sender@goals-fixture.net','Goal')", [broadcast, tenant]);
+      async function send(name: string | null, date: string, options: { sandbox?: boolean; historicalReal?: boolean; step?: string } = {}) {
+        const emailId = id("email"), recipient = id("recipient");
+        await db.query(`insert into emails(id,tenant_id,request_id,from_email,subject,contact_id,automation_id,broadcast_id,automation_step,sandbox,created_at)
+          values($1,$2,'goal-fixture','sender@goals-fixture.net','Goal',$3,$4,$5,$6,$7,$8)`,
+        [emailId, tenant, name ? contacts[name] : null, automation, broadcast, options.step ?? "first", Boolean(options.sandbox || options.historicalReal), date]);
+        await db.query("insert into email_recipients(id,tenant_id,email_id,email,kind,sandbox) values($1,$2,$3,$4,'to',$5)",
+          [recipient, tenant, emailId, `${name ?? "legacy"}@goals-fixture.net`, Boolean(options.sandbox || options.historicalReal)]);
+        await db.query("insert into email_events(id,tenant_id,email_id,recipient_id,type,data,created_at) values($1,$2,$3,$4,'email.sent',$5::jsonb,$6)",
+          [id("event"), tenant, emailId, recipient, JSON.stringify({ sandbox: Boolean(options.sandbox) }), date]);
+      }
+      await send("a", "2026-09-01T10:00:00Z");
+      await send("a", "2026-09-02T09:00:00Z");
+      await send("a", "2026-09-02T12:00:00Z", { step: "followup" });
+      await send("b", "2026-09-01T11:00:00Z");
+      await send("c", "2026-08-31T10:00:00Z");
+      await send("c", "2026-09-02T10:00:00Z");
+      await send("d", "2026-09-02T12:00:00Z", { historicalReal: true });
+      await send("g", "2026-09-01T12:00:00Z");
+      await send("sandbox", "2026-09-02T15:00:00Z", { sandbox: true });
+      await send(null, "2026-09-02T16:00:00Z");
+      async function event(name: string, date: string, key = fullKey) {
+        const eventTenant = key === fullKey ? tenant : (await call(key, "GET", "/me")).json.tenant_id;
+        await db.query("insert into custom_events(id,tenant_id,request_id,name,email,data,created_at) values($1,$2,'goal-fixture','upgraded',$3,'{}',$4)",
+          [id("ce"), eventTenant, `${name.toUpperCase()}@GOALS-FIXTURE.NET`, date]);
+      }
+      await event("a", "2026-09-01T09:59:59Z"); // Before send does not convert.
+      await event("a", "2026-09-02T10:00:00Z"); // Inclusive first-send window end.
+      await event("a", "2026-09-02T20:00:00Z"); // Follow-up step window, no duplicate.
+      await event("b", "2026-09-02T11:00:01Z"); // One second too late.
+      await event("d", "2026-09-03T12:00:00Z"); // After cohort end, within conversion window.
+      await event("g", "2026-09-01T15:00:00Z");
+      await event("sandbox", "2026-09-02T16:00:00Z");
+      await event("legacy", "2026-09-02T17:00:00Z");
+      await event("b", "2026-09-01T12:00:00Z", await seedTenant()); // Foreign target does not convert.
+      async function changes(name: string, date: string, values: Array<[string, unknown, unknown]>) {
+        const request = id("receipt");
+        for (const [field, before, after] of values) await db.query(`insert into contact_changes(id,tenant_id,contact_id,field,from_value,to_value,request_id,created_at)
+          values($1,$2,$3,$4,$5::jsonb,$6::jsonb,$7,$8)`,
+          [id("change"), tenant, contacts[name], field, JSON.stringify(before), JSON.stringify(after), request, date]);
+      }
+      await changes("a", "2026-09-01T12:00:00Z", [["score", 0, 10], ["active", false, true]]);
+      await changes("a", "2026-09-01T15:00:00Z", [["score", 10, 0], ["active", true, false]]);
+      await changes("b", "2026-09-01T12:00:00Z", [["score", 0, 10]]);
+      await changes("b", "2026-09-01T13:00:00Z", [["score", 10, 0], ["active", false, true]]);
+      await changes("d", "2026-09-01T10:00:00Z", [["score", 0, 10], ["active", false, true]]); // Already matched at send.
+      await changes("g", "2026-09-02T12:00:00Z", [["score", 0, 10], ["active", false, true]]);
+      return { tenant, contacts, automation, broadcast };
+    }
+    const range = "start_date=2026-09-01T00:00:00Z&end_date=2026-09-03T00:00:00Z";
+    async function report(goal: string, scope: string) {
+      const response = await call(fullKey, "GET", `/goals/${goal}/metrics?${range}&${scope}`);
+      expect(response.status, JSON.stringify(response.json)).toBe(200);
+      return response.json;
+    }
+    it("hand-counts historical broadcast/automation/step events, first-send days, windows and real sandbox attribution", async () => {
+      const { automation, broadcast } = await fixture();
+      const created = await post(fullKey, "/goals", { name: "Created today", target: { event: "upgraded" }, window_days: 1 });
+      expect(created.status).toBe(200);
+      expect(Date.parse(created.json.created_at)).toBeGreaterThan(Date.parse("2026-09-03T00:00:00Z"));
+      for (const scope of [`broadcast_id=${broadcast}`, `automation_id=${automation}`, ""]) {
+        const data = await report(created.json.id, scope);
+        expect(data).toMatchObject({ contacts_reached: 4, converted: 3, rate: 0.75 });
+        expect(data.data).toEqual([
+          { date: "2026-09-01", contacts_reached: 3, converted: 2, rate: 2 / 3 },
+          { date: "2026-09-02", contacts_reached: 1, converted: 1, rate: 1 },
+        ]);
+      }
+      expect(await report(created.json.id, `automation_id=${automation}&step_key=followup`))
+        .toMatchObject({ contacts_reached: 1, converted: 1, rate: 1 });
+      // No dependency on today's edited graph: historical removed steps still report.
+      expect(await report(created.json.id, `automation_id=${automation}&step_key=removed`))
+        .toMatchObject({ contacts_reached: 0, converted: 0, rate: 0 });
+      await call(fullKey, "PATCH", `/goals/${created.json.id}`, {
+        eligibility: { type: "rule", field: "contact.eligible", operator: "eq", value: true },
+      });
+      expect(await report(created.json.id, `broadcast_id=${broadcast}`))
+        .toMatchObject({ contacts_reached: 3, converted: 2, rate: 2 / 3 });
+    });
+    it("counts coherent whole-rule state entry rather than current match or independent changed leaves", async () => {
+      const { broadcast } = await fixture();
+      const created = await post(fullKey, "/goals", { name: "Activated", window_days: 1, target: { rule: {
+        type: "and", rules: [
+          { type: "rule", field: "contact.score", operator: "gte", value: 10 },
+          { type: "rule", field: "contact.active", operator: "eq", value: true },
+        ],
+      } } });
+      expect(created.status).toBe(200);
+      const metrics = await report(created.json.id, `broadcast_id=${broadcast}`);
+      expect(metrics).toMatchObject({ contacts_reached: 4, converted: 2, rate: 0.5 });
+      expect(metrics.data).toEqual([
+        { date: "2026-09-01", contacts_reached: 3, converted: 2, rate: 2 / 3 },
+        { date: "2026-09-02", contacts_reached: 1, converted: 0, rate: 0 },
+      ]);
+      expect(metrics.history.available_from).toBe("2026-09-01T10:00:00.000Z");
+      expect(metrics.history.limitation).toMatch(/recorded contact changes/);
+    });
+    it("enforces goal CRUD validation, read/full/send-key and tenant boundaries", async () => {
+      const { broadcast } = await fixture();
+      const created = await post(fullKey, "/goals", { name: "Permissions", target: { event: "upgraded" } });
+      const goal = created.json.id;
+      const viewer = await teammate("Viewer"), session = await signInAs(viewer.email, viewer.password);
+      for (const path of ["/goals", `/goals/${goal}`, `/goals/${goal}/metrics?${range}&broadcast_id=${broadcast}`])
+        expect((await call(session.token, "GET", path)).status).toBe(200);
+      for (const [method, path, body] of [
+        ["POST", "/goals", { name: "Denied", target: { event: "upgraded" } }],
+        ["PATCH", `/goals/${goal}`, { name: "Denied" }], ["DELETE", `/goals/${goal}`, undefined],
+      ] as const) expect((await call(session.token, method, path, body)).status).toBe(403);
+      const other = await seedTenant();
+      expect((await call(other, "GET", `/goals/${goal}`)).status).toBe(404);
+      const sending = await post(fullKey, "/api-keys", { name: "Send only", scope: "send" });
+      expect((await call(sending.json.token, "GET", "/goals")).status).toBe(401);
+      for (const input of [{ window_days: 0 }, { target: { event: "@reserved" } }, { target: { event: "x", rule: {} } }])
+        expect((await call(fullKey, "PATCH", `/goals/${goal}`, input)).status).toBe(400);
+      expect((await call(fullKey, "GET", `/goals/${goal}/metrics?automation_id=x&broadcast_id=y`)).status).toBe(400);
+      expect((await call(fullKey, "DELETE", `/goals/${goal}`)).json).toMatchObject({ deleted: true });
+      expect((await call(fullKey, "GET", `/goals/${goal}`)).status).toBe(404);
+    });
+  });
+  describe("theme library updates", () => {
+    it("validates nondefault tokens and safely updates only latest unedited library copies", async () => {
+      const { themeVariables } = await import("@dispatchmail/core");
+      const original = await post(fullKey, "/template-library/welcome/install", {});
+      const edited = await post(fullKey, "/template-library/feature-tips/install", {});
+      expect(original.status).toBe(200);
+      expect(edited.status).toBe(200);
+      const originalId = original.json.id, editedId = edited.json.id;
+      // Both normal patch and alternate version creation remove library provenance.
+      expect((await call(fullKey, "PATCH", `/templates/${editedId}`, { html: "<p>Tenant-owned exact HTML</p>" })).status).toBe(200);
+      const tenant = (await call(fullKey, "GET", "/me")).json.tenant_id;
+      const { addTemplateVersion } = await import("@dispatchmail/db");
+      const installed = await call(fullKey, "GET", `/templates/${originalId}`);
+      await tx(db, (client) => addTemplateVersion(client, tenant, originalId, {
+        name: installed.json.name, subject: installed.json.subject, html: installed.json.html, text: installed.json.text,
+        from: "Custom <hello@dispatch-fixture.net>", reply_to: ["support@dispatch-fixture.net"],
+        variables: [...installed.json.variables, { key: "TENANT_CUSTOM", type: "string", fallback_value: "keep" }],
+        publish: true, source: installed.json.source,
+      }));
+      const before = (await db.query("select id,html,variables,from_address,reply_to from template_versions where template_id=$1 order by created_at desc,id desc limit 1", [originalId])).rows[0];
+      const tokens = { text_color: "#172b3a", background_color: "#f0f4f8", surface_color: "#ffffff",
+        border_color: "#456789", color: "#123456", font_family: "Georgia, 'Times New Roman', serif",
+        font_size: 18, radius: 3, button_style: "outline" };
+      expect((await call(fullKey, "PATCH", "/brand", tokens)).status).toBe(200);
+      expect((await db.query("select html from template_versions where id=$1", [before.id])).rows[0].html).toBe(before.html);
+      const saved = await call(fullKey, "GET", "/brand");
+      expect(saved.json).toMatchObject({ ...tokens, button_text_color: "#ffffff" });
+      expect(saved.json.variables).toMatchObject({ THEME_TEXT_COLOR: "#172b3a", THEME_FONT_SIZE: "18px", THEME_RADIUS: "3px", BRAND_TEXT_COLOR: "#ffffff" });
+      const preview = await call(fullKey, "GET", "/template-library/welcome");
+      const html = preview.json.rendered.html as string;
+      for (const token of ["#172b3a", "#f0f4f8", "#456789", "18px", "3px"]) expect(html).toContain(token);
+      expect(html).not.toMatch(/\{\{\{THEME_/);
+      for (const invalid of [{ text_color: "#f0f4f8" }, { font_size: 13 }, { radius: 17 }, { font_family: "unsafe" }, { color: "#ffffff" }])
+        expect((await call(fullKey, "PATCH", "/brand", invalid)).status).toBe(invalid.font_size || invalid.radius || invalid.font_family ? 400 : 422);
+      for (const name of themeVariables) expect((await post(fullKey, "/templates", { name: "Reserved", variables: [name] })).status).toBe(400);
+      const action = await call(fullKey, "POST", "/brand/update-library");
+      expect(action.status).toBe(200);
+      expect(action.json.updated).toContainEqual({ id: originalId, name: installed.json.name, slug: "welcome" });
+      expect(action.json.skipped).toContainEqual(expect.objectContaining({ id: editedId, slug: "feature-tips" }));
+      const after = (await db.query("select id,html,variables,from_address,reply_to,source from template_versions where template_id=$1 order by created_at desc,id desc limit 1", [originalId])).rows[0];
+      expect(after.id).not.toBe(before.id);
+      expect(after.html).toContain("THEME_");
+      expect(after).toMatchObject({ from_address: before.from_address, reply_to: before.reply_to });
+      expect(after.variables).toContainEqual({ key: "TENANT_CUSTOM", type: "string", fallback_value: "keep" });
+      expect(after.source.kind).toBe("library");
+      expect((await call(fullKey, "GET", `/templates/${editedId}`)).json.html).toBe("<p>Tenant-owned exact HTML</p>");
+      const viewer = await teammate("Viewer"), session = await signInAs(viewer.email, viewer.password);
+      expect((await call(session.token, "GET", "/brand")).status).toBe(200);
+      expect((await call(session.token, "POST", "/brand/update-library")).status).toBe(403);
+      expect((await call(session.token, "PATCH", "/brand", { radius: 4 })).status).toBe(403);
+    });
+  });
+  // Authored during wave8 engineering. Execute only in the final guarded local block.
+  describe("signed inbound receivers", () => {
+    const signingSecret = "synthetic-inbound-signing-secret";
+    const standardSecret = `whsec_${Buffer.from("synthetic-standard-key").toString("base64")}`;
+    let previousPublicLimit: string | undefined;
+    beforeEach(() => {
+      previousPublicLimit = process.env.PUBLIC_RATE_LIMIT_PER_SECOND;
+      process.env.PUBLIC_RATE_LIMIT_PER_SECOND = "1000";
+    });
+    afterEach(() => {
+      if (previousPublicLimit === undefined) delete process.env.PUBLIC_RATE_LIMIT_PER_SECOND;
+      else process.env.PUBLIC_RATE_LIMIT_PER_SECOND = previousPublicLimit;
+    });
+    async function integration(provider = "webhook", settings = {}, slug?: string) {
+      const response = await post(fullKey, "/integrations", {
+        provider, name: `Inbound ${provider}`, secret: provider === "clerk" || provider === "webhook" ? standardSecret : signingSecret,
+        settings, ...(slug ? { slug } : {}),
+      });
+      expect(response.status, JSON.stringify(response.json)).toBe(200);
+      return response.json;
+    }
+    function signed(provider: string, body: string, identity: string, time = Math.floor(Date.now() / 1000)) {
+      if (provider === "stripe") return { "stripe-signature": `t=${time},v1=${createHmac("sha256", signingSecret).update(`${time}.`).update(body).digest("hex")}` };
+      if (provider === "supabase") return { "x-webhook-secret": signingSecret };
+      const family = provider === "clerk" ? "svix" : "webhook";
+      return { [`${family}-id`]: identity, [`${family}-timestamp`]: String(time),
+        [`${family}-signature`]: `v1,${createHmac("sha256", Buffer.from(standardSecret.slice(6), "base64")).update(`${identity}.${time}.`).update(body).digest("base64")}` };
+    }
+    async function receive(row: any, payload: unknown, identity = id("provider"), options: { raw?: string; time?: number; headers?: Record<string, string>; receiver?: FastifyInstance } = {}) {
+      const body = options.raw ?? JSON.stringify(payload);
+      const response = await (options.receiver ?? app).inject({ method: "POST", url: `/inbound/${row.token}`,
+        headers: { "content-type": "application/json", "user-agent": "dispatch-inbound-fixture",
+          ...signed(row.provider, body, identity, options.time), ...options.headers }, payload: body });
+      return { status: response.statusCode, json: response.json(), body: response.body };
+    }
+    function payload(provider: string, identity: string, email = "signed@example.com") {
+      if (provider === "stripe") return { id: identity, type: "customer.created", data: { object: { id: "cus_fixture", email } } };
+      if (provider === "clerk") return { type: "user.created", data: { id: "user_fixture", primary_email_address_id: "primary",
+        email_addresses: [{ id: "primary", email_address: email }], first_name: "Ada" } };
+      if (provider === "supabase") return { type: "INSERT", schema: "auth", table: "users", commit_timestamp: "2026-10-05T00:00:00Z",
+        record: { id: "supabase_fixture", email, raw_user_meta_data: { first_name: "Ada" }, encrypted_password: "must-not-persist" } };
+      return { event: "signed", email, data: { value: 1 }, contact: { first_name: "Ada", properties: { source: "receiver" } } };
+    }
+    it("protects full/viewer/send-key/tenant management, encrypts credentials and rotates URL tokens once", async () => {
+      const row = await integration("stripe", { stripe_restricted_key: "rk_test_fixture" });
+      const stored = (await db.query("select * from integrations where id=$1", [row.id])).rows[0];
+      expect(stored.secret).not.toContain(signingSecret);
+      expect(stored.settings.stripe_restricted_key).not.toContain("rk_test_fixture");
+      expect(stored.token_hash).not.toBe(row.token);
+      const viewer = await teammate("Viewer");
+      const session = await signInAs(viewer.email, viewer.password);
+      for (const path of ["/integrations", `/integrations/${row.id}`, `/integrations/${row.id}/deliveries`]) {
+        const response = await call(session.token, "GET", path);
+        expect(response.status).toBe(200);
+        expect(JSON.stringify(response.json)).not.toMatch(/stripe_restricted_key|token_hash|"secret"|"token"|"url"/);
+      }
+      for (const [method, path, body] of [
+        ["POST", "/integrations", { provider: "webhook", name: "Forbidden", secret: standardSecret }],
+        ["PATCH", `/integrations/${row.id}`, { name: "Forbidden" }],
+        ["DELETE", `/integrations/${row.id}`, undefined],
+        ["POST", `/integrations/${row.id}/rotate`, {}],
+      ] as const) expect((await call(session.token, method, path, body)).status).toBe(403);
+      const foreign = await seedTenant();
+      for (const path of [`/integrations/${row.id}`, `/integrations/${row.id}/deliveries`])
+        expect((await call(foreign, "GET", path)).status).toBe(404);
+      expect((await post(foreign, `/integrations/${row.id}/rotate`, {})).status).toBe(404);
+      const sendKey = await post(fullKey, "/api-keys", { name: "Sending only", permission: "sending_access" });
+      expect(sendKey.status).toBe(200);
+      expect((await call(sendKey.json.token, "GET", "/integrations")).status).toBe(401);
+      const rotated = await post(fullKey, `/integrations/${row.id}/rotate`, {});
+      expect(rotated.status).toBe(200);
+      expect(rotated.json.token).not.toBe(row.token);
+      expect((await receive(row, payload("stripe", "evt_old"))).status).toBe(404);
+      expect((await receive(rotated.json, payload("stripe", "evt_new"))).status).toBe(200);
+      expect((await call(fullKey, "DELETE", `/integrations/${row.id}`)).status).toBe(200);
+      expect((await receive(rotated.json, payload("stripe", "evt_deleted"))).status).toBe(404);
+    });
+    it.each(["stripe", "clerk", "supabase", "webhook"])("authenticates actual %s raw bytes and concurrent replays commit one contact/event/delivery", async provider => {
+      const row = await integration(provider);
+      const identity = id("provider");
+      const data = payload(provider, identity);
+      const raw = ` ${JSON.stringify(data)}\n`;
+      const results = await Promise.all(Array.from({ length: 8 }, () => receive(row, data, identity, { raw })));
+      expect(results.map(result => result.status)).toEqual(Array(8).fill(200));
+      expect(results.filter(result => !result.json.duplicate)).toHaveLength(1);
+      expect((await db.query("select id from contacts where email='signed@example.com'")).rows).toHaveLength(1);
+      const events = (await db.query("select name, data from custom_events where name not like '@%'")).rows;
+      expect(events).toHaveLength(1);
+      expect(events[0].name).toBe(provider === "stripe" ? "stripe.customer.created" : provider === "webhook" ? "webhook.signed" : `${provider}.user.created`);
+      expect(JSON.stringify(events)).not.toContain("must-not-persist");
+      const history = await call(fullKey, "GET", `/integrations/${row.id}/deliveries`);
+      expect(history.json.data).toHaveLength(1);
+      expect(history.json.data[0]).toMatchObject({ status: "processed", event_name: events[0].name, contact_id: expect.any(String), error: null });
+      expect(Object.keys(history.json.data[0]).sort()).toEqual(["contact_id", "created_at", "error", "event_name", "id", "integration_id", "provider_event_id", "status"]);
+    });
+    it.each(["stripe", "clerk", "webhook"])("rejects %s invalid/stale/future signatures without consuming the canonical identity", async provider => {
+      const row = await integration(provider);
+      const identity = id("provider");
+      const data = payload(provider, identity);
+      expect((await receive(row, data, identity, { headers: provider === "stripe" ? { "stripe-signature": "invalid" }
+        : { [`${provider === "clerk" ? "svix" : "webhook"}-signature`]: "invalid" } })).status).toBe(400);
+      for (const offset of [-301, 301]) expect((await receive(row, data, identity, { time: Math.floor(Date.now() / 1000) + offset })).status).toBe(400);
+      expect((await db.query("select id from contacts")).rows).toHaveLength(0);
+      expect((await receive(row, data, identity)).status).toBe(200);
+      const history = (await call(fullKey, "GET", `/integrations/${row.id}/deliveries`)).json.data;
+      expect(history.filter((item: any) => item.status === "failed")).toHaveLength(3);
+      expect(history.filter((item: any) => item.status === "processed")).toHaveLength(1);
+      expect(history.filter((item: any) => item.status === "failed").every((item: any) =>
+        item.provider_event_id.startsWith("attempt:") && item.error === "invalid_signature")).toBe(true);
+    });
+    it("enforces Supabase configured shared secret, unknown tokens, public 1MB cap and per-route/IP limit", async () => {
+      const row = await integration("supabase", { secret_header: "x-fixture-secret" });
+      const data = payload("supabase", "unused");
+      expect((await receive(row, data)).status).toBe(400);
+      expect((await receive(row, data, "unused", { headers: { "x-fixture-secret": signingSecret } })).status).toBe(200);
+      expect((await receive({ ...row, token: "unknown-token" }, data)).status).toBe(404);
+      const oversized = await app.inject({ method: "POST", url: `/inbound/${row.token}`, headers: { "content-type": "application/json" },
+        payload: "x".repeat(1024 * 1024 + 1) });
+      expect(oversized.statusCode).toBe(413);
+      const previous = process.env.PUBLIC_RATE_LIMIT_PER_SECOND;
+      process.env.PUBLIC_RATE_LIMIT_PER_SECOND = "1";
+      try {
+        const requests = await Promise.all(Array.from({ length: 3 }, () => app.inject({ method: "POST", url: `/inbound/${row.token}`,
+          remoteAddress: "192.0.2.88", headers: { "content-type": "application/json", "x-fixture-secret": signingSecret }, payload: JSON.stringify(data) })));
+        expect(requests.some(response => response.statusCode === 429)).toBe(true);
+      } finally {
+        if (previous === undefined) delete process.env.PUBLIC_RATE_LIMIT_PER_SECOND;
+        else process.env.PUBLIC_RATE_LIMIT_PER_SECOND = previous;
+      }
+    });
+    it("rolls back contact/history/triggers/event and canonical key on a mid-transaction failure, then retry commits once", async () => {
+      const row = await integration();
+      const automationId = await contactFlow({ type: "contact_created" }, [{ key: "exit", type: "exit", config: {} }]);
+      const identity = "rollback_fixture";
+      const data = { event: "rollback", email: "rollback@example.com", data: { source: "fixture" } };
+      await db.query(`create function inbound_test_failure() returns trigger language plpgsql as $$
+        begin if NEW.name = 'webhook.rollback' then raise exception 'synthetic failure'; end if; return NEW; end $$;
+        create trigger inbound_test_failure before insert on custom_events for each row execute function inbound_test_failure()`);
+      try {
+        expect((await receive(row, data, identity)).status).toBe(503);
+        for (const table of ["contacts", "contact_changes", "custom_events", "automation_runs", "automation_enrollments"])
+          expect((await db.query(`select count(*)::int count from ${table}`)).rows[0].count).toBe(0);
+        expect((await db.query("select id from inbound_deliveries where provider_event_id=$1", [identity])).rows).toHaveLength(0);
+        expect((await call(fullKey, "GET", `/integrations/${row.id}/deliveries`)).json.data[0]).toMatchObject({ status: "failed", error: "processing_failed" });
+      } finally { await db.query("drop trigger inbound_test_failure on custom_events; drop function inbound_test_failure()"); }
+      expect((await receive(row, data, identity)).status).toBe(200);
+      expect((await receive(row, data, identity)).json.duplicate).toBe(true);
+      expect(await flowRuns(automationId)).toHaveLength(1);
+      expect((await db.query("select id from contacts")).rows).toHaveLength(1);
+      expect((await db.query("select id from custom_events where name='webhook.rollback'")).rows).toHaveLength(1);
+      const history = (await call(fullKey, "GET", `/integrations/${row.id}/deliveries`)).json.data;
+      expect(history.map((item: any) => item.status).sort()).toEqual(["failed", "processed"]);
+    });
+    it.each(["rotation", "deletion"])("rechecks authenticated integration after a real %s lock race, without partial effects", async mode => {
+      const row = await integration();
+      const blocker = await db.connect();
+      let pending: ReturnType<typeof receive> | undefined;
+      try {
+        await blocker.query("begin");
+        const pid = (await blocker.query("select pg_backend_pid() pid")).rows[0].pid;
+        await blocker.query("select id from integrations where id=$1 for update", [row.id]);
+        pending = receive(row, { event: "race", email: "race@example.com", data: {} }, "race");
+        let waiting = false;
+        for (let attempt = 0; attempt < 100; attempt += 1) {
+          waiting = (await db.query(`select 1 from pg_stat_activity
+            where datname=current_database() and wait_event_type='Lock'
+              and $1::int=any(pg_blocking_pids(pid)) and query like '%from integrations%for update%'`, [pid])).rows.length > 0;
+          if (waiting) break;
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        expect(waiting, "Receiver must reach the actual integration row lock").toBe(true);
+        if (mode === "rotation") {
+          const { inboundTokenHash } = await import("@dispatchmail/db");
+          await blocker.query("update integrations set token_hash=$2 where id=$1", [row.id, inboundTokenHash("synthetic-replacement-token")]);
+        } else await blocker.query("update integrations set deleted_at=now() where id=$1", [row.id]);
+        await blocker.query("commit");
+        expect((await pending).status).toBe(404);
+        expect((await db.query("select id from contacts where email='race@example.com'")).rows).toHaveLength(0);
+        expect((await db.query("select id from inbound_deliveries where integration_id=$1", [row.id])).rows).toHaveLength(0);
+      } finally {
+        await blocker.query("rollback");
+        blocker.release();
+        if (pending) await pending;
+      }
+    });
+    it("preserves opt-outs/preferences/properties, ignores tombstones and ambiguous provider IDs, and never upserts deletion", async () => {
+      const row = await integration("clerk");
+      const topic = await post(fullKey, "/topics", { name: "Keep preference", default_subscription: "opt_out" });
+      const person = await post(fullKey, "/contacts", { email: "signed@example.com", unsubscribed: true, properties: { keep: "value" } });
+      expect((await call(fullKey, "PATCH", `/contacts/${person.json.id}/topics`, { topics: [{ id: topic.json.id, subscription: "opt_out" }] })).status).toBe(200);
+      const topicBefore = (await db.query("select * from topic_subscriptions")).rows;
+      expect((await receive(row, payload("clerk", "create"), "create")).status).toBe(200);
+      const preserved = (await call(fullKey, "GET", `/contacts/${person.json.id}`)).json;
+      expect(preserved.unsubscribed).toBe(true);
+      expect(preserved.properties).toEqual({
+        keep: { value: "value", type: "string" },
+        clerk_user_id: { value: "user_fixture", type: "string" },
+      });
+      expect((await db.query("select * from topic_subscriptions")).rows).toEqual(topicBefore);
+      expect((await receive(row, { type: "user.deleted", data: { id: "user_fixture" } }, "retain")).json.status).toBe("processed");
+      expect((await call(fullKey, "GET", `/contacts/${person.json.id}`)).status).toBe(200);
+      await call(fullKey, "PATCH", `/integrations/${row.id}`, { settings: { delete_contact: true } });
+      expect((await receive(row, { type: "user.deleted", data: { id: "user_fixture" } }, "delete")).json.status).toBe("processed");
+      expect((await call(fullKey, "GET", `/contacts/${person.json.id}`)).status).toBe(404);
+      expect((await receive(row, payload("clerk", "update"), "tombstone")).json).toMatchObject({ status: "ignored", error: "no_contact" });
+      expect((await receive(row, { type: "user.deleted", data: { id: "unresolved" } }, "no_create")).json.status).toBe("ignored");
+      const other = await post(fullKey, "/contacts", { email: "other@example.com", properties: { clerk_user_id: "duplicate" } });
+      await post(fullKey, "/contacts", { email: "third@example.com", properties: { clerk_user_id: "duplicate" } });
+      expect((await receive(row, { type: "user.deleted", data: { id: "duplicate" } }, "ambiguous")).json.error).toBe("ambiguous_contact");
+      expect((await call(fullKey, "GET", `/contacts/${other.json.id}`)).status).toBe(200);
+      expect((await db.query("select id from contact_changes where contact_id=$1", [person.json.id])).rows.length).toBeGreaterThan(0);
+    });
+    it.each(["stripe", "clerk", "supabase", "webhook"])("preserves actual form-pending consent through a signed %s contact write", async provider => {
+      const topic = await post(fullKey, "/topics", { name: "Pending receiver", default_subscription: "opt_in" });
+      expect(topic.status).toBe(200);
+      const subscribedFlow = await contactFlow({ type: "topic_subscribed", topic_id: topic.json.id });
+      const form = await post(fullKey, "/forms", { name: "Pending receiver", topic_ids: [topic.json.id],
+        from_email: "hello@dispatch-fixture.net", allowed_origins: ["https://signup.example"], double_opt_in: true });
+      expect(form.status).toBe(200);
+      const submitted = await app.inject({ method: "POST", url: `/forms/${form.json.key}`,
+        headers: { origin: "https://signup.example" }, payload: { email: "pending-receiver@example.com" } });
+      expect(submitted.statusCode).toBe(200);
+      const person = (await db.query("select id,tenant_id from contacts where email='pending-receiver@example.com'")).rows[0];
+      const subscriptions = (await db.query("select * from topic_subscriptions where contact_id=$1 order by id", [person.id])).rows;
+      expect(subscriptions).toHaveLength(1);
+      expect(subscriptions[0].status).toBe("pending");
+      const confirmations = (await db.query("select * from confirmations where contact_id=$1 order by id", [person.id])).rows;
+      expect(confirmations).toHaveLength(1);
+      const topicHistory = async () => (await db.query(
+        "select * from contact_changes where contact_id=$1 and field=$2 order by created_at,id", [person.id, `topics.${topic.json.id}`],
+      )).rows;
+      const beforeHistory = await topicHistory();
+      const row = await integration(provider);
+      expect((await receive(row, payload(provider, "evt_pending", "pending-receiver@example.com"), "pending")).json)
+        .toMatchObject({ status: "processed", contact_id: person.id });
+      expect((await db.query("select * from topic_subscriptions where contact_id=$1 order by id", [person.id])).rows).toEqual(subscriptions);
+      expect((await db.query("select * from confirmations where contact_id=$1 order by id", [person.id])).rows).toEqual(confirmations);
+      expect(await topicHistory()).toEqual(beforeHistory);
+      expect((await contactContext(db, person.tenant_id, "pending-receiver@example.com"))!.topics).not.toContain(topic.json.id);
+      expect(await flowRuns(subscribedFlow)).toHaveLength(0);
+      if (provider === "clerk") {
+        const changes = (await db.query("select * from contact_changes where contact_id=$1 order by created_at,id", [person.id])).rows;
+        expect((await receive(row, { type: "user.deleted", data: { id: "user_fixture" } }, "pending-retain")).json.status).toBe("processed");
+        expect((await db.query("select * from contact_changes where contact_id=$1 order by created_at,id", [person.id])).rows).toEqual(changes);
+        expect((await db.query("select * from topic_subscriptions where contact_id=$1 order by id", [person.id])).rows).toEqual(subscriptions);
+        expect((await call(fullKey, "GET", `/contacts/${person.id}`)).status).toBe(200);
+      }
+    });
+    it("review regression: committed Stripe replay bypasses failing customer transport after a retryable initial failure", async () => {
+      // This receiver uses the production handler and real DB, but injected synthetic
+      // customer responses. No external Stripe request belongs in this fixture.
+      const { default: Fastify } = await import("fastify");
+      const { registerReceiver } = await import("./receiver.js");
+      const { requireSecret } = await import("@dispatchmail/core");
+      const receiver = Fastify();
+      const requests: Array<{ url: string; init: RequestInit }> = [];
+      let failLookup = false;
+      receiver.addHook("onRequest", async request => { request.request_id = id("request"); });
+      receiver.setErrorHandler((error: Error & { statusCode?: number }, _request, reply) =>
+        reply.code(error.statusCode ?? 500).send({ message: error.message }));
+      registerReceiver(receiver, { db, secret: requireSecret("APP_SECRET"), customerTransport: async (url, init) => {
+        requests.push({ url, init });
+        if (failLookup) return new Response("synthetic response must not escape", { status: 403 });
+        return new Response(JSON.stringify({ id: url.split("/").at(-1), email: "lookup@example.com" }));
+      } });
+      try {
+        const row = await integration("stripe", { stripe_restricted_key: "rk_test_lookup" });
+        const person = await post(fullKey, "/contacts", { email: "lookup@example.com", properties: { keep: "value" } });
+        expect(person.status).toBe(200);
+        const foreign = await seedTenant();
+        const other = await post(foreign, "/contacts", { email: "lookup@example.com", properties: { keep: "foreign" } });
+        expect(other.status).toBe(200);
+        const event = { id: "evt_lookup", type: "customer.subscription.updated", data: { object: {
+          id: "sub_lookup", customer: "cus_lookup", status: "active", items: { data: [{ price: { lookup_key: "pro" } }] },
+        } } };
+        failLookup = true;
+        const failure = await receive(row, event, "unused", { receiver });
+        expect(failure.status).toBe(503);
+        expect(failure.body).not.toContain("synthetic response");
+        expect((await db.query("select id from inbound_deliveries where provider_event_id='evt_lookup'")).rows).toHaveLength(0);
+        expect((await db.query("select id from custom_events where name='stripe.customer.subscription.updated'")).rows).toHaveLength(0);
+        expect((await db.query("select properties from contacts where id=$1", [person.json.id])).rows[0].properties).toEqual({ keep: "value" });
+        failLookup = false;
+        expect((await receive(row, event, "unused", { receiver })).json).toMatchObject({ status: "processed", contact_id: person.json.id });
+        expect(requests).toHaveLength(2);
+        expect(requests[1]).toMatchObject({ url: "https://api.stripe.com/v1/customers/cus_lookup",
+          init: { method: "GET", redirect: "error", headers: { Authorization: "Bearer rk_test_lookup" } } });
+        expect((await db.query("select properties from contacts where id=$1", [person.json.id])).rows[0].properties)
+          .toEqual({ keep: "value", stripe_customer_id: "cus_lookup" });
+        expect((await db.query("select properties from contacts where id=$1", [other.json.id])).rows[0].properties).toEqual({ keep: "foreign" });
+        expect((await db.query("select data from custom_events where name='stripe.customer.subscription.updated'")).rows[0].data)
+          .toMatchObject({ customer_id: "cus_lookup", subscription_id: "sub_lookup", PLAN: "pro" });
+        const committed = (await db.query("select * from inbound_deliveries where integration_id=$1 order by id", [row.id])).rows;
+        failLookup = true;
+        const replay = await receive(row, event, "unused", { receiver });
+        expect(replay.status).toBe(200);
+        expect(replay.json).toMatchObject({ status: "processed", contact_id: person.json.id, duplicate: true });
+        expect(requests).toHaveLength(2);
+        expect((await db.query("select * from inbound_deliveries where integration_id=$1 order by id", [row.id])).rows).toEqual(committed);
+        expect((await db.query("select id from custom_events where name='stripe.customer.subscription.updated'")).rows).toHaveLength(1);
+        const deliveries = (await call(fullKey, "GET", `/integrations/${row.id}/deliveries`)).json.data;
+        expect(deliveries.map((item: any) => item.status).sort()).toEqual(["failed", "processed"]);
+        expect(JSON.stringify(deliveries)).not.toMatch(/rk_test_lookup|synthetic response/);
+        failLookup = false;
+        expect((await call(fullKey, "DELETE", `/contacts/${person.json.id}`)).status).toBe(200);
+        expect((await receive(row, { ...event, id: "evt_lookup_deleted" }, "unused", { receiver })).json)
+          .toMatchObject({ status: "ignored", error: "no_contact" });
+        expect((await call(fullKey, "GET", `/contacts/${person.json.id}`)).status).toBe(404);
+        expect((await post(fullKey, `/integrations/${row.id}/rotate`, {})).status).toBe(200);
+        failLookup = true;
+        const beforeRevoked = requests.length;
+        expect((await receive(row, event, "unused", { receiver })).status).toBe(404);
+        expect(requests).toHaveLength(beforeRevoked);
+      } finally { await receiver.close(); }
+    });
+    it("supports default/custom tenant-unique webhook namespaces, ignores unsupported events and prunes only bounded aged history", async () => {
+      const row = await integration();
+      expect(row.slug).toBe("webhook");
+      const custom = await integration("webhook", {}, "billing");
+      expect((await receive(custom, { event: "invoice.paid", email: "billing@example.com", data: {} }, "billing")).json.event_name).toBe("billing.invoice.paid");
+      expect((await receive(row, { event: "@contact_created", email: "unsafe@example.com", data: {} }, "reserved")).json.status).toBe("ignored");
+      expect((await post(fullKey, "/integrations", { provider: "webhook", name: "Duplicate", slug: "billing", secret: standardSecret })).status).toBe(409);
+      for (const slug of ["stripe", "clerk", "supabase", "under_score"])
+        expect((await post(fullKey, "/integrations", { provider: "webhook", name: "Invalid", slug, secret: standardSecret })).status).toBe(400);
+      const stripe = await integration("stripe");
+      expect((await receive(stripe, { id: "unsupported", type: "unknown" })).json).toMatchObject({ status: "ignored", error: "unsupported_event" });
+      await db.query("update inbound_deliveries set created_at=now()-interval '40 days' where integration_id=$1", [custom.id]);
+      const { pruneInboundDeliveries } = await import("@dispatchmail/db");
+      expect(await pruneInboundDeliveries(db, 30, 1, 1)).toBe(1);
+      expect((await call(fullKey, "GET", `/integrations/${custom.id}/deliveries`)).json.data).toHaveLength(0);
+      expect((await receive(custom, { event: "invoice.paid", email: "billing@example.com", data: {} }, "billing")).json.duplicate).toBeUndefined();
+      expect((await db.query("select id from custom_events where name='billing.invoice.paid'")).rows).toHaveLength(2);
+    });
+    it("runs the installed Failed payment preset with actual receiver amount/pay link and paid-event wait recovery, without replay reminders", async () => {
+      const installed = await post(fullKey, "/template-library/automations/failed-payment/install", { from: "hello@dispatch-fixture.net" });
+      expect(installed.status).toBe(200);
+      const automationId = installed.json.automation.id;
+      expect((await call(fullKey, "PATCH", `/automations/${automationId}`, { status: "enabled" })).status).toBe(200);
+      const row = await integration("stripe", { map_plan: true });
+      const known = await post(fullKey, "/contacts", { email: "invoice@example.com", properties: { stripe_customer_id: "cus_receiver" } });
+      expect(known.status).toBe(200);
+      const invoice = { id: "in_receiver", customer: "cus_receiver",
+        amount_due: 7342, currency: "usd", hosted_invoice_url: "https://invoice.example/in_receiver", number: "INV-RECEIVER-73",
+        lines: { data: [{ price: { lookup_key: "pro" } }] } };
+      const failed = { id: "evt_failure", type: "invoice.payment_failed", data: { object: invoice } };
+      expect((await receive(row, failed)).json).toMatchObject({ status: "processed", contact_id: known.json.id });
+      expect((await db.query("select data from custom_events where name='stripe.invoice.payment_failed'")).rows[0].data)
+        .toMatchObject({ AMOUNT: "$73.42", UPDATE_PAYMENT_URL: "https://invoice.example/in_receiver",
+          INVOICE_NUMBER: "INV-RECEIVER-73", invoice_id: "in_receiver", PLAN: "pro" });
+      const [run] = await flowRuns(automationId);
+      expect(run).toBeDefined();
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      const emails = (await db.query("select html from emails where automation_id=$1", [automationId])).rows;
+      expect(emails).toHaveLength(1);
+      expect(emails[0].html).toContain("$73.42");
+      expect(emails[0].html).toContain("https://invoice.example/in_receiver");
+      expect((await db.query("select state, wait_event from automation_runs where id=$1", [run.id])).rows[0])
+        .toEqual({ state: "waiting", wait_event: "stripe.invoice.paid" });
+      expect((await receive(row, failed)).json.duplicate).toBe(true);
+      expect(await flowRuns(automationId)).toHaveLength(1);
+      expect((await db.query("select id from emails where automation_id=$1", [automationId])).rows).toHaveLength(1);
+      expect((await receive(row, { id: "evt_recovery", type: "invoice.paid", data: { object: { ...invoice, customer_email: undefined } } })).status).toBe(200);
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect((await db.query("select state, exit_reason from automation_runs where id=$1", [run.id])).rows[0]).toEqual({ state: "done", exit_reason: "exit" });
+      expect((await db.query("select id from emails where automation_id=$1", [automationId])).rows).toHaveLength(1);
+      expect((await db.query("select properties from contacts where email='invoice@example.com'")).rows[0].properties).toMatchObject({ stripe_customer_id: "cus_receiver", plan: "pro" });
+    });
+    it("records signed provider updates while paused, preserves a paid wait decision and resumes without missed-trigger replay", async () => {
+      const installed = await post(fullKey, "/template-library/automations/failed-payment/install", { from: "hello@dispatch-fixture.net" });
+      expect(installed.status).toBe(200);
+      const automationId = installed.json.automation.id;
+      expect((await call(fullKey, "PATCH", `/automations/${automationId}`, { status: "enabled" })).status).toBe(200);
+      const row = await integration("stripe", { map_plan: true });
+      const invoice = { id: "in_paused", customer: "cus_paused", customer_email: "paused-receiver@example.com",
+        amount_due: 7342, currency: "usd", hosted_invoice_url: "https://invoice.example/in_paused", number: "INV-PAUSED-73",
+        lines: { data: [{ price: { lookup_key: "pro" } }] } };
+      expect((await receive(row, { id: "evt_before_pause", type: "invoice.payment_failed", data: { object: invoice } })).status).toBe(200);
+      const [run] = await flowRuns(automationId);
+      expect(run).toBeDefined();
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect((await db.query("select state,wait_event from automation_runs where id=$1", [run.id])).rows[0])
+        .toEqual({ state: "waiting", wait_event: "stripe.invoice.paid" });
+      expect((await call(fullKey, "PATCH", `/automations/${automationId}`, { status: "paused" })).status).toBe(200);
+      expect((await receive(row, { id: "evt_missed_pause", type: "invoice.payment_failed", data: { object: {
+        ...invoice, id: "in_missed", customer: "cus_missed", customer_email: "missed-receiver@example.com",
+      } } })).status).toBe(200);
+      const paid = { id: "evt_paid_pause", type: "invoice.paid", data: { object: {
+        ...invoice, customer_email: undefined, lines: { data: [{ price: { lookup_key: "paid" } }] },
+      } } };
+      expect((await receive(row, paid)).status).toBe(200);
+      expect((await receive(row, paid)).json.duplicate).toBe(true);
+      const decided = (await db.query("select state,wait_event,resume_data from automation_runs where id=$1", [run.id])).rows[0];
+      expect(decided).toMatchObject({ state: "ready", wait_event: null });
+      expect(decided.resume_data).toBeTruthy();
+      expect((await db.query("select properties from contacts where email='paused-receiver@example.com'")).rows[0].properties.plan).toBe("paid");
+      expect((await db.query("select id from custom_events where name='stripe.invoice.payment_failed'")).rows).toHaveLength(2);
+      expect((await db.query("select id from custom_events where name='stripe.invoice.paid'")).rows).toHaveLength(1);
+      expect(await flowRuns(automationId)).toHaveLength(1);
+      expect(await claimAutomationRuns(db, 20)).toEqual([]);
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect((await db.query("select state,wait_event,resume_data from automation_runs where id=$1", [run.id])).rows[0]).toEqual(decided);
+      expect((await call(fullKey, "PATCH", `/automations/${automationId}`, { status: "enabled" })).status).toBe(200);
+      expect(await flowRuns(automationId)).toHaveLength(1);
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect((await db.query("select state,exit_reason from automation_runs where id=$1", [run.id])).rows[0])
+        .toEqual({ state: "done", exit_reason: "exit" });
+      expect((await db.query("select id from emails where automation_id=$1", [automationId])).rows).toHaveLength(1);
+      expect(await flowRuns(automationId)).toHaveLength(1);
+    });
+  });
+  describe("signup forms confirmation", () => {
+    const origin = "https://signup.example";
+    async function fixture(double_opt_in = true) {
+      const topic = await post(fullKey, "/topics", { name: "Form news", default_subscription: "opt_in" });
+      expect(topic.status).toBe(200);
+      expect((await post(fullKey, "/contact-properties", { key: "active", type: "boolean" })).status).toBe(200);
+      const form = await post(fullKey, "/forms", { name: "Newsletter", topic_ids: [topic.json.id], properties: ["active"],
+        from_email: "hello@dispatch-fixture.net", allowed_origins: [origin], double_opt_in, redirect_url: "https://signup.example/thanks" });
+      expect(form.status, JSON.stringify(form.json)).toBe(200);
+      return { form: form.json, topicId: topic.json.id as string };
+    }
+    async function submit(key: string, email: string, extra = {}) {
+      const response = await app.inject({ method: "POST", url: `/forms/${key}`, headers: {
+        origin, "content-type": "application/json", "user-agent": "dispatch-form-fixture",
+      }, payload: { email, ...extra } });
+      return { status: response.statusCode, json: response.json() };
+    }
+    async function tokenFor(email: string) {
+      const emailRow = (await db.query<{ text: string; tenant_id: string; id: string }>(
+        "select id, text, tenant_id from emails where id in (select email_id from email_recipients where lower(email) = $1) order by created_at desc limit 1", [email.toLowerCase()],
+      )).rows[0];
+      expect(emailRow).toBeDefined();
+      const token = emailRow.text.match(/\/confirm\/([A-Za-z0-9_.-]+)/)?.[1];
+      expect(token).toBeTruthy();
+      return { ...emailRow, token: token! };
+    }
+    async function publicConfirm(token: string, method: "GET" | "POST", extra = {}) {
+      const response = await app.inject({ method, url: `/confirm/${token}`, ...(method === "POST" ? { payload: extra } : {}) });
+      return { status: response.statusCode, json: response.json() };
+    }
+    const harmless = { object: "form_submission", message: "Thank you. Check your email if confirmation is needed." };
+    it("flushes dashboard preflight and authenticated email-detail logs without starving telemetry", async () => {
+      const { form } = await fixture();
+      const admin = await teammate("Admin");
+      const full = await signInAs(admin.email, admin.password);
+      const viewer = await teammate("Viewer");
+      const read = await signInAs(viewer.email, viewer.password);
+      expect(full.status).toBe(200);
+      expect(read.status).toBe(200);
+      expect((await submit(form.key, "telemetry-confirm@fixture.net")).status).toBe(200);
+      const { token, tenant_id, id: emailId } = await tokenFor("telemetry-confirm@fixture.net");
+      const dashboard = (process.env.CORS_ORIGINS ?? "http://localhost:5173,http://127.0.0.1:5173")
+        .split(",").map(value => value.trim()).filter(Boolean)[0]!;
+      const preflightId = id("req");
+      const detailId = id("req");
+      const preflight = await app.inject({
+        method: "OPTIONS", url: `/forms/${form.id}`, headers: {
+          origin: dashboard, "access-control-request-method": "GET",
+          "access-control-request-headers": "authorization", "x-request-id": preflightId,
+        },
+      });
+      expect(preflight.statusCode).toBe(204);
+      expect(preflight.headers["access-control-allow-origin"]).toBe(dashboard);
+      expect(preflight.headers["x-request-id"]).toBe(preflightId);
+      expect(preflight.headers["x-content-type-options"]).toBe("nosniff");
+      const detail = await app.inject({
+        method: "GET", url: `/emails/${emailId}`, headers: {
+          authorization: `Bearer ${full.token}`, origin: dashboard, "x-request-id": detailId,
+          "user-agent": "dispatch-telemetry-accept",
+        },
+      });
+      expect(detail.statusCode).toBe(200);
+      expect(detail.headers["x-request-id"]).toBe(detailId);
+      const email = detail.json();
+      expect(email.html.length).toBeGreaterThan(0);
+      expect(email.html).toContain(`/confirm/${token}`);
+      expect((await call(full.token, "GET", `/logs?q=${detailId}`)).status).toBe(200);
+      const persisted = (await db.query<{
+        id: string; request_id: string; tenant_id: string | null; api_key_id: string | null;
+        method: string; path: string; status: number; latency_ms: number;
+        response_body: { html: string; text: string; subject: string } | null;
+      }>("select id,request_id,tenant_id,api_key_id,method,path,status,latency_ms,response_body from logs where request_id=any($1::text[])",
+        [[preflightId, detailId]])).rows;
+      expect(persisted).toHaveLength(2);
+      for (const log of persisted) {
+        expect(Number.isFinite(log.latency_ms)).toBe(true);
+        expect(Number.isInteger(log.latency_ms)).toBe(true);
+        expect(log.latency_ms).toBeGreaterThanOrEqual(0);
+      }
+      expect(persisted.find(log => log.request_id === preflightId)).toMatchObject({
+        tenant_id: null, api_key_id: null, method: "OPTIONS", path: `/forms/${form.id}`, status: 204,
+      });
+      const stored = persisted.find(log => log.request_id === detailId)!;
+      expect(stored).toMatchObject({
+        tenant_id, method: "GET", path: `/emails/${emailId}`, status: 200,
+        response_body: { html: email.html, text: email.text, subject: email.subject },
+      });
+      expect(stored.api_key_id).toBeTruthy();
+      expect(Number((await db.query("select value from usage_counters where tenant_id=$1 and name='api_requests'",
+        [tenant_id])).rows[0]?.value)).toBeGreaterThan(0);
+      expect(Number((await db.query("select count(*) as count from audit_logs where tenant_id=$1",
+        [tenant_id])).rows[0].count)).toBeGreaterThan(0);
+      for (const session of [full.token, read.token]) {
+        const page = await call(session, "GET", `/logs?q=${detailId}&user_agent=dispatch-telemetry-accept`);
+        expect(page.status).toBe(200);
+        expect(page.json.data).toEqual([expect.objectContaining({ id: stored.id, endpoint: `/emails/${emailId}` })]);
+      }
+      const fullLog = await call(full.token, "GET", `/logs/${stored.id}`);
+      const viewerLog = await call(read.token, "GET", `/logs/${stored.id}`);
+      expect(fullLog.status).toBe(200);
+      expect(viewerLog.status).toBe(200);
+      expect(fullLog.json.response_body.html).toBe(email.html);
+      expect(fullLog.json.response_body.text).toBe(email.text);
+      expect(JSON.stringify(fullLog.json)).toContain(token);
+      expect(JSON.stringify(viewerLog.json)).not.toContain(token);
+      expect(JSON.stringify(viewerLog.json)).not.toContain("/confirm/");
+      const confirmationUrl = email.html.match(/https?:\/\/[^\s"'<>]+\/confirm\/[A-Za-z0-9_.-]+/)?.[0];
+      expect(confirmationUrl).toBeTruthy();
+      expect(viewerLog.json.response_body).toMatchObject({
+        id: emailId, subject: email.subject,
+        html: email.html.replaceAll(confirmationUrl, "#link-hidden"),
+        text: email.text.replaceAll(confirmationUrl, "#link-hidden"),
+      });
+      expect(viewerLog.json.response_body.html).toContain("#link-hidden");
+    });
+    it("preflights minted management IDs without credentials or existence lookup while preserving full/viewer/unauthenticated/foreign CRUD guards", async () => {
+      const { form } = await fixture();
+      const dashboard = (process.env.CORS_ORIGINS ?? "http://localhost:5173,http://127.0.0.1:5173")
+        .split(",").map((value) => value.trim()).filter(Boolean)[0]!;
+      expect(form.id).toMatch(/^form_[0-9a-f]{32}$/);
+      expect(form.allowed_origins).not.toContain(dashboard);
+      const preflight = (formId: string, method: string, suppliedOrigin = dashboard) => app.inject({
+        method: "OPTIONS", url: `/forms/${formId}`, headers: {
+          origin: suppliedOrigin, "access-control-request-method": method,
+          "access-control-request-headers": "authorization,content-type",
+        },
+      });
+      for (const formId of [form.id, id("form")]) {
+        for (const method of ["GET", "PATCH", "DELETE"]) {
+          const response = await preflight(formId, method);
+          expect(response.statusCode).toBe(204);
+          expect(response.headers["access-control-allow-origin"]).toBe(dashboard);
+          expect(String(response.headers["access-control-allow-methods"]).split(",").map((value) => value.trim())).toContain(method);
+          expect(response.headers["access-control-allow-headers"]).toContain("authorization");
+          expect(response.headers["access-control-allow-headers"]).toContain("content-type");
+        }
+      }
+      const refused = await preflight(form.id, "PATCH", "https://dashboard.evil");
+      expect(refused.headers["access-control-allow-origin"]).toBeUndefined();
+      expect(refused.headers["access-control-allow-methods"]).toBeUndefined();
+      const foreign = await seedTenant();
+      for (const method of ["GET", "PATCH", "DELETE"] as const) {
+        const payload = method === "PATCH" ? { name: "Forbidden change" } : undefined;
+        expect((await app.inject({ method, url: `/forms/${form.id}`, payload })).statusCode).toBe(401);
+        expect((await call(foreign, method, `/forms/${form.id}`, payload)).status).toBe(404);
+      }
+      const viewer = await teammate("Viewer");
+      const read = await signInAs(viewer.email, viewer.password);
+      expect((await call(read.token, "GET", "/forms")).status).toBe(200);
+      expect((await call(read.token, "GET", `/forms/${form.id}`)).json.id).toBe(form.id);
+      expect((await post(read.token, "/forms", {})).status).toBe(403);
+      expect((await call(read.token, "PATCH", `/forms/${form.id}`, { name: "Forbidden change" })).status).toBe(403);
+      expect((await call(read.token, "DELETE", `/forms/${form.id}`)).status).toBe(403);
+      const admin = await teammate("Admin");
+      const full = await signInAs(admin.email, admin.password);
+      const created = await post(full.token, "/forms", { name: "Dashboard form", topic_ids: form.topic_ids,
+        from_email: form.from_email, allowed_origins: [origin] });
+      expect(created.status).toBe(200);
+      expect((await call(full.token, "GET", "/forms")).json.data.some((row: { id: string }) => row.id === created.json.id)).toBe(true);
+      expect((await call(full.token, "GET", `/forms/${created.json.id}`)).json.name).toBe("Dashboard form");
+      expect((await call(full.token, "PATCH", `/forms/${created.json.id}`, { name: "Edited form" })).json.name).toBe("Edited form");
+      expect((await call(full.token, "GET", `/forms/${created.json.id}`)).json.name).toBe("Edited form");
+      expect((await call(full.token, "DELETE", `/forms/${created.json.id}`)).status).toBe(200);
+      expect((await call(full.token, "GET", `/forms/${created.json.id}`)).status).toBe(404);
+      expect((await preflight(created.json.id, "PATCH")).statusCode).toBe(204);
+    });
+    it("keeps public-key preflights exact-origin and POST/content-type-only even for dashboard origins and rejects unknown/deleted keys", async () => {
+      const { form } = await fixture();
+      const dashboard = (process.env.CORS_ORIGINS ?? "http://localhost:5173,http://127.0.0.1:5173")
+        .split(",").map((value) => value.trim()).filter(Boolean)[0]!;
+      expect(form.key).toMatch(/^[A-Za-z0-9_-]{43}$/);
+      const preflight = (key: string, suppliedOrigin: string | undefined, method = "POST", headers = "content-type") => app.inject({
+        method: "OPTIONS", url: `/forms/${key}`, headers: {
+          ...(suppliedOrigin === undefined ? {} : { origin: suppliedOrigin }),
+          "access-control-request-method": method, "access-control-request-headers": headers,
+        },
+      });
+      const notStored = await preflight(form.key, dashboard);
+      expect(notStored.statusCode).toBe(403);
+      expect(notStored.headers["access-control-allow-origin"]).toBeUndefined();
+      const notStoredPost = await app.inject({ method: "POST", url: `/forms/${form.key}`, headers: { origin: dashboard },
+        payload: { email: "not-stored-origin@fixture.net", website: "bot" } });
+      expect(notStoredPost.statusCode).toBe(403);
+      expect(notStoredPost.headers["access-control-allow-origin"]).toBeUndefined();
+      expect((await call(fullKey, "PATCH", `/forms/${form.id}`, { allowed_origins: [origin, dashboard] })).status).toBe(200);
+      for (const allowed of [origin, dashboard]) {
+        const response = await preflight(form.key, allowed);
+        expect(response.statusCode).toBe(204);
+        expect(response.headers["access-control-allow-origin"]).toBe(allowed);
+        expect(response.headers["access-control-allow-methods"]).toBe("POST");
+        expect(response.headers["access-control-allow-headers"]).toBe("content-type");
+        expect(response.headers["access-control-allow-credentials"]).toBeUndefined();
+      }
+      for (const suppliedOrigin of [undefined, "null", `${origin}.evil`, "https://disallowed.example"]) {
+        const response = await preflight(form.key, suppliedOrigin);
+        expect(response.statusCode).toBe(403);
+        expect(response.headers["access-control-allow-origin"]).toBeUndefined();
+      }
+      for (const method of ["GET", "PATCH", "DELETE"]) {
+        const response = await preflight(form.key, dashboard, method);
+        expect(response.statusCode).toBe(403);
+        expect(response.headers["access-control-allow-origin"]).toBeUndefined();
+        expect(response.headers["access-control-allow-methods"]).toBeUndefined();
+      }
+      for (const headers of ["authorization", "content-type,authorization", "content-type,x-request-id", "content-type,x-extra"]) {
+        const response = await preflight(form.key, dashboard, "POST", headers);
+        expect(response.statusCode).toBe(403);
+        expect(response.headers["access-control-allow-origin"]).toBeUndefined();
+      }
+      const unknown = "A".repeat(43);
+      expect((await preflight(unknown, dashboard)).statusCode).toBe(404);
+      expect((await submit(unknown, "unknown-key@fixture.net")).status).toBe(404);
+      expect((await call(fullKey, "DELETE", `/forms/${form.id}`)).status).toBe(200);
+      const deleted = await preflight(form.key, dashboard);
+      expect(deleted.statusCode).toBe(404);
+      expect(deleted.headers["access-control-allow-origin"]).toBeUndefined();
+      expect((await submit(form.key, "deleted-key@fixture.net")).status).toBe(404);
+    });
+    it("guards management, exact origin/preflight, encodings, allowlists, 16KB and honeypot with uniform address responses", async () => {
+      const { form } = await fixture();
+      expect((await app.inject({ method: "GET", url: `/forms/${form.key}` })).statusCode).toBe(401);
+      expect((await app.inject({ method: "POST", url: "/forms", payload: {} })).statusCode).toBe(401);
+      const foreign = await seedTenant();
+      expect((await call(foreign, "GET", `/forms/${form.id}`)).status).toBe(404);
+      for (const supplied of [undefined, "https://signup.example.evil", "null"]) {
+        const response = await app.inject({ method: "POST", url: `/forms/${form.key}`, headers: supplied ? { origin: supplied } : {}, payload: { email: "origin@fixture.net" } });
+        expect(response.statusCode).toBe(403);
+      }
+      const preflight = await app.inject({ method: "OPTIONS", url: `/forms/${form.key}`, headers: {
+        origin, "access-control-request-method": "POST", "access-control-request-headers": "content-type",
+      } });
+      expect(preflight.statusCode).toBe(204);
+      expect(preflight.headers["access-control-allow-origin"]).toBe(origin);
+      expect(preflight.headers["access-control-allow-credentials"]).toBeUndefined();
+      expect((await app.inject({ method: "OPTIONS", url: `/forms/${form.key}`, headers: {
+        origin, "access-control-request-method": "POST", "access-control-request-headers": "authorization",
+      } })).statusCode).toBe(403);
+      const fake = await submit(form.key, "honeypot@fixture.net", { website: "bot", properties: { forbidden: true } });
+      expect(fake).toMatchObject({ status: 200, json: harmless });
+      expect((await db.query("select id from contacts where email='honeypot@fixture.net'")).rows).toEqual([]);
+      expect((await submit(form.key, "wrong@fixture.net", { properties: { undeclared: 1 } })).status).toBe(400);
+      expect((await submit(form.key, "oversize@fixture.net", { first_name: "x".repeat(17000) })).status).toBe(413);
+      const encoded = await app.inject({ method: "POST", url: `/forms/${form.key}`, headers: { origin, "content-type": "application/x-www-form-urlencoded" },
+        payload: "email=encoded%40fixture.net&properties.active=false&website=" });
+      expect(encoded.statusCode).toBe(200);
+      expect((await db.query("select properties from contacts where email='encoded@fixture.net'")).rows[0].properties).toEqual({ active: false });
+      for (const email of ["new@fixture.net", "existing@fixture.net", "out@fixture.net"]) {
+        if (email !== "new@fixture.net") await post(fullKey, "/contacts", { email, unsubscribed: email.startsWith("out") });
+        const response = await submit(form.key, email);
+        expect(response).toMatchObject({ status: 200, json: harmless });
+      }
+      expect((await submit(form.key, "new@fixture.net")).json).toMatchObject(harmless);
+      for (const patch of [{ from_email: "hello@unverified.net" }, { topic_ids: ["foreign"] }, { properties: ["undeclared"] }, { redirect_url: "http://signup.example" }])
+        expect((await call(fullKey, "PATCH", `/forms/${form.id}`, patch)).status).toBe(400);
+      const viewer = await teammate("Viewer");
+      const session = await signInAs(viewer.email, viewer.password);
+      expect((await call(session.token, "GET", "/forms")).status).toBe(200);
+      for (const method of ["PATCH", "DELETE"] as const) expect((await call(session.token, method, `/forms/${form.id}`, method === "PATCH" ? { name: "No" } : undefined)).status).toBe(403);
+    });
+    it("serializes rolling address/form cooldown and configurable UTC tenant caps across concurrent forms", async () => {
+      const { form } = await fixture();
+      const duplicate = await Promise.all(Array.from({ length: 6 }, () => submit(form.key, "Concurrent@fixture.net")));
+      expect(duplicate.every((response) => response.status === 200)).toBe(true);
+      expect((await db.query("select count(*)::int as count from emails")).rows[0].count).toBe(1);
+      const current = await tokenFor("concurrent@fixture.net");
+      const fresh = (await post(fullKey, "/forms", { name: "Other form", topic_ids: form.topic_ids, from_email: form.from_email,
+        allowed_origins: [origin] })).json;
+      expect((await call(fullKey, "PATCH", "/settings", { confirmation_daily_limit: 3 })).status).toBe(200);
+      const burst = await Promise.all(Array.from({ length: 10 }, (_, index) => submit(index % 2 ? form.key : fresh.key, `cap-${index}@fixture.net`)));
+      expect(burst.every((response) => response.status === 200)).toBe(true);
+      expect((await db.query("select count(*)::int as count from emails")).rows[0].count).toBe(3);
+      expect((await db.query("select sends from confirmation_days where tenant_id=$1", [current.tenant_id])).rows[0].sends).toBe(3);
+      await db.query("update confirmation_sends set sent_at=clock_timestamp()-interval '24 hours 1 second' where tenant_id=$1", [current.tenant_id]);
+      await call(fullKey, "PATCH", "/settings", { confirmation_daily_limit: 4 });
+      expect((await submit(form.key, "concurrent@fixture.net")).status).toBe(200);
+      expect((await db.query("select count(*)::int as count from emails")).rows[0].count).toBe(4);
+    });
+    it.each(["POST", "OPTIONS"] as const)("applies a route-wide per-IP public limit to %s rather than a different bucket for each public key", async (method) => {
+      const { form } = await fixture();
+      const other = await post(fullKey, "/forms", { name: "Other rate-limited form", topic_ids: form.topic_ids,
+        from_email: form.from_email, allowed_origins: [origin] });
+      expect(other.status).toBe(200);
+      const previous = process.env.PUBLIC_RATE_LIMIT_PER_SECOND;
+      process.env.PUBLIC_RATE_LIMIT_PER_SECOND = "1";
+      try {
+        const responses = await Promise.all(Array.from({ length: 5 }, (_, index) => app.inject({
+          method, url: `/forms/${index % 2 ? other.json.key : form.key}`, remoteAddress: "192.0.2.144",
+          headers: { origin, ...(method === "OPTIONS" ? {
+            "access-control-request-method": "POST", "access-control-request-headers": "content-type",
+          } : {}) },
+          ...(method === "POST" ? { payload: { email: "ip-limit@fixture.net", website: "bot" } } : {}),
+        })));
+        expect(responses.some((response) => response.statusCode === 429)).toBe(true);
+        expect((await db.query("select count(*)::int as count from contacts")).rows[0].count).toBe(0);
+      } finally {
+        if (previous === undefined) delete process.env.PUBLIC_RATE_LIMIT_PER_SECOND;
+        else process.env.PUBLIC_RATE_LIMIT_PER_SECOND = previous;
+      }
+    });
+    it("rolls contact/pending/token/reservations back on actual send-job enqueue failure and permits a retry", async () => {
+      const { form } = await fixture();
+      const functionName = "fixture_refuse_confirmation_send";
+      await db.query(`create or replace function ${functionName}() returns trigger language plpgsql as $$
+        begin raise exception 'synthetic enqueue refusal'; end $$`);
+      await db.query(`create trigger fixture_refuse_send before insert on send_jobs for each row execute function ${functionName}()`);
+      try {
+        expect((await submit(form.key, "rollback@fixture.net")).status).toBe(500);
+        for (const table of ["contacts", "confirmations", "confirmation_sends", "confirmation_days", "emails", "topic_subscriptions"])
+          expect((await db.query(`select count(*)::int as count from ${table}`)).rows[0].count).toBe(0);
+      } finally {
+        await db.query("drop trigger fixture_refuse_send on send_jobs");
+        await db.query(`drop function ${functionName}()`);
+      }
+      expect((await submit(form.key, "rollback@fixture.net")).status).toBe(200);
+      expect((await db.query("select count(*)::int as count from send_jobs")).rows[0].count).toBe(1);
+    });
+    it("excludes pending from ingest, topic membership counts, broadcast review and immutable snapshots", async () => {
+      const { form, topicId } = await fixture();
+      await submit(form.key, "pending@fixture.net");
+      const contact = (await call(fullKey, "GET", "/contacts")).json.data[0];
+      expect((await call(fullKey, "GET", `/contacts/${contact.id}/topics`)).json.data[0].subscription).toBe("pending");
+      const marketing = await post(fullKey, "/emails", letter({ to: contact.email, topic_id: topicId }));
+      expect(marketing.status).toBe(200);
+      expect((await call(fullKey, "GET", `/emails/${marketing.json.id}`)).json.recipients[0].status).toBe("failed");
+      const segment = await post(fullKey, "/segments", { name: "Confirmed only", rule: { type: "rule", field: "contact.topics", operator: "contains", value: topicId } });
+      expect((await call(fullKey, "GET", `/segments/${segment.json.id}`)).json.contacts).toBe(0);
+      const staticSegment = await post(fullKey, "/segments", { name: "Pending members" });
+      expect((await post(fullKey, `/segments/${staticSegment.json.id}/contacts`, { email: contact.email })).status).toBe(200);
+      const broadcast = await post(fullKey, "/broadcasts", { name: "Pending excludes", from: form.from_email,
+        segment_id: staticSegment.json.id, subject: "News", text: "News", topic_id: topicId });
+      expect((await call(fullKey, "GET", `/broadcasts/${broadcast.json.id}/audience`)).json.recipients).toBe(0);
+      expect((await post(fullKey, `/broadcasts/${broadcast.json.id}/send`, {})).status).toBe(200);
+      const { snapshotBroadcast } = await import("@dispatchmail/db");
+      const { tenant_id } = (await db.query("select tenant_id from contacts where id=$1", [contact.id])).rows[0];
+      await tx(db, (client) => snapshotBroadcast(client, tenant_id, broadcast.json.id));
+      expect((await db.query("select count(*)::int as count from broadcast_recipients where broadcast_id=$1", [broadcast.json.id])).rows[0].count).toBe(0);
+    });
+    it("GET is nonmutating, POST concurrently subscribes and fires once, and repeats after optout are no-ops", async () => {
+      const { form, topicId } = await fixture();
+      const flowId = await contactFlow({ type: "topic_subscribed", topic_id: topicId });
+      await submit(form.key, "confirm@fixture.net");
+      const { token } = await tokenFor("confirm@fixture.net");
+      const before = (await db.query("select row_to_json(c) as data from contacts c")).rows;
+      const subscriptions = (await db.query("select row_to_json(s) as data from topic_subscriptions s")).rows;
+      expect((await publicConfirm(token, "GET")).json).toMatchObject({ form_name: "Newsletter", confirmed: false });
+      expect((await db.query("select row_to_json(c) as data from contacts c")).rows).toEqual(before);
+      expect((await db.query("select row_to_json(s) as data from topic_subscriptions s")).rows).toEqual(subscriptions);
+      expect(await flowRuns(flowId)).toHaveLength(0);
+      const outcomes = await Promise.all(Array.from({ length: 5 }, () => publicConfirm(token, "POST", { redirect_url: "https://evil.example" })));
+      expect(outcomes.every((response) => response.status === 200 && response.json.redirect_url === form.redirect_url)).toBe(true);
+      expect(await flowRuns(flowId)).toHaveLength(1);
+      expect((await db.query("select count(*)::int as count from contact_changes where field=$1 and to_value='true'::jsonb", [`topics.${topicId}`])).rows[0].count).toBe(1);
+      await call(fullKey, "PATCH", `/contacts/${before[0].data.id}`, { unsubscribed: true });
+      const afterOptout = (await db.query("select row_to_json(c) as data from contacts c")).rows;
+      await publicConfirm(token, "POST");
+      expect((await db.query("select row_to_json(c) as data from contacts c")).rows).toEqual(afterOptout);
+      expect(await flowRuns(flowId)).toHaveLength(1);
+    });
+    it("keeps global opt-outs and tombstones with consent off until deliberate confirmation", async () => {
+      const { form } = await fixture(false);
+      for (const deleted of [false, true]) {
+        const email = deleted ? "deleted-form@fixture.net" : "global-form@fixture.net";
+        const created = await post(fullKey, "/contacts", { email, unsubscribed: true });
+        if (deleted) await call(fullKey, "DELETE", `/contacts/${created.json.id}`);
+        await submit(form.key, email);
+        const stored = (await db.query("select deleted_at, unsubscribed_at from contacts where id=$1", [created.json.id])).rows[0];
+        expect(Boolean(stored.deleted_at)).toBe(deleted);
+        expect(stored.unsubscribed_at).not.toBeNull();
+        const { token } = await tokenFor(email);
+        expect((await publicConfirm(token, "GET")).status).toBe(200);
+        expect((await publicConfirm(token, "POST")).status).toBe(200);
+        expect((await db.query("select deleted_at, unsubscribed_at from contacts where id=$1", [created.json.id])).rows[0])
+          .toEqual({ deleted_at: null, unsubscribed_at: null });
+      }
+      await submit(form.key, "single@fixture.net");
+      expect((await db.query("select status from topic_subscriptions where contact_id=(select id from contacts where email='single@fixture.net')")).rows[0].status).toBe("subscribed");
+      expect((await db.query("select email from email_recipients where email='single@fixture.net'")).rows).toEqual([]);
+    });
+    it("refuses wrong-purpose/scope/expired tokens and hides real confirmation URLs from a viewer", async () => {
+      const { form } = await fixture();
+      await submit(form.key, "token@fixture.net");
+      const { token, tenant_id, id: emailId } = await tokenFor("token@fixture.net");
+      const { seal, requireSecret } = await import("@dispatchmail/core");
+      const { readConfirmationToken: read } = await import("@dispatchmail/db");
+      // A signed token of another purpose or scope is still not a confirmation credential.
+      const secret = requireSecret("APP_SECRET");
+      const payload = read(token, secret)!;
+      for (const patch of [{ use: "unsub" }, { tenant_id: "foreign" }, { form_id: "foreign" }, { contact_id: "foreign" },
+        { topic_hash: "0".repeat(64) }, { exp: Math.floor(Date.now() / 1000) - 1 }])
+        expect((await publicConfirm(seal({ ...payload, ...patch }, secret), "POST")).status).toBe(404);
+      const viewer = await teammate("Viewer");
+      const session = await signInAs(viewer.email, viewer.password);
+      const detail = await call(session.token, "GET", `/emails/${emailId}`);
+      expect(detail.status).toBe(200);
+      expect(JSON.stringify(detail.json)).not.toContain(token);
+      expect(JSON.stringify(detail.json)).toContain("#link-hidden");
+      await db.query("update confirmations set expires_at=clock_timestamp()-interval '1 second' where tenant_id=$1", [tenant_id]);
+      expect((await publicConfirm(token, "GET")).status).toBe(404);
+      expect((await publicConfirm(token, "POST")).status).toBe(404);
+    });
+  });
+  describe("dynamic segment SQL", () => {
+    const leaf = (field: string, operator: Extract<Rule, { type: "rule" }>["operator"], value?: unknown): Rule => ({ type: "rule", field, operator, ...(value === undefined ? {} : { value }) });
+    async function fixture() {
+      for (const [key, type] of [["plan", "string"], ["score", "number"], ["active", "boolean"], ["last_seen", "date"]] as const)
+        expect((await post(fullKey, "/contact-properties", { key, type })).status).toBe(200);
+      const contacts: string[] = [];
+      for (const letter of ["a", "b", "c", "d", "e", "f"]) {
+        const response = await post(fullKey, "/contacts", { email: `segment-${letter}@fixture.net` });
+        expect(response.status).toBe(200);
+        contacts.push(response.json.id);
+      }
+      const tenant = (await db.query("select tenant_id from contacts where id=$1", [contacts[0]])).rows[0].tenant_id as string;
+      const values = [
+        { plan: "alpha", score: 2, active: true, last_seen: "2026-09-30T00:00:00Z" },
+        { plan: "beta", score: 5, active: false, last_seen: "2026-10-01T00:00:00Z" },
+        { plan: "", score: null, active: "true", last_seen: "2026-02-30" },
+        { plan: {}, score: "not a number", active: {}, last_seen: [] },
+        {},
+        { plan: null, score: [], active: null, last_seen: null },
+      ];
+      for (let index = 0; index < contacts.length; index++)
+        await db.query("update contacts set properties=$3::jsonb where tenant_id=$1 and id=$2", [tenant, contacts[index], JSON.stringify(values[index])]);
+      return { tenant, contacts };
+    }
+    async function selected(tenant: string, rule: Rule, prefix = "") {
+      const { segmentPredicate } = await import("@dispatchmail/db");
+      const params: unknown[] = [tenant];
+      const predicate = segmentPredicate(rule, (value) => { params.push(value); return `$${params.length}`; }, [
+        { key: "plan", type: "string" }, { key: "score", type: "number" }, { key: "active", type: "boolean" }, { key: "last_seen", type: "date" },
+      ]);
+      return (await db.query<{ id: string }>(`${prefix} select c.id from contacts c where c.tenant_id=$1 and c.deleted_at is null and (${predicate}) order by c.email`, params)).rows.map((row) => row.id);
+    }
+
+    it("selects fixed expected IDs for every supported scalar operator and malformed legacy shape", async () => {
+      const { tenant, contacts } = await fixture();
+      const [a, b, c, d, e, f] = contacts;
+      const cases: Array<[Rule, Array<string | undefined>]> = [
+        [leaf("contact.plan", "eq", "alpha"), [a]], [leaf("contact.plan", "neq", "alpha"), [b,c,d,e,f]],
+        [leaf("contact.plan", "contains", "a"), [a,b]], [leaf("contact.plan", "not_contains", "a"), [c,d,e,f]],
+        [leaf("contact.plan", "starts_with", "al"), [a]], [leaf("contact.plan", "ends_with", "ta"), [b]],
+        [leaf("contact.plan", "exists"), [a,b,c,d]], [leaf("contact.plan", "is_empty"), [c,e,f]],
+        [leaf("contact.score", "eq", 2), [a]], [leaf("contact.score", "neq", 2), [b,c,d,e,f]],
+        [leaf("contact.score", "gt", 2), [b]], [leaf("contact.score", "gte", 2), [a,b]],
+        [leaf("contact.score", "lt", 5), [a]], [leaf("contact.score", "lte", 5), [a,b]],
+        [leaf("contact.score", "exists"), [a,b,d,f]], [leaf("contact.score", "is_empty"), [c,e,f]],
+        [leaf("contact.active", "eq", true), [a]], [leaf("contact.active", "neq", true), [b,c,d,e,f]],
+        [leaf("contact.active", "eq", false), [b]], [leaf("contact.active", "neq", false), [a,c,d,e,f]],
+        [leaf("contact.active", "exists"), [a,b,c,d]], [leaf("contact.active", "is_empty"), [e,f]],
+        [leaf("contact.last_seen", "eq", "2026-09-30T00:00:00Z"), [a]],
+        [leaf("contact.last_seen", "neq", "2026-09-30T00:00:00Z"), [b,c,d,e,f]],
+        [leaf("contact.last_seen", "gt", "2026-09-30"), [b]], [leaf("contact.last_seen", "gte", "2026-09-30"), [a,b]],
+        [leaf("contact.last_seen", "lt", "2026-10-01"), [a]], [leaf("contact.last_seen", "lte", "2026-10-01"), [a,b]],
+        [leaf("contact.last_seen", "exists"), [a,b,c,d]], [leaf("contact.last_seen", "is_empty"), [d,e,f]],
+        [leaf("contact.email", "starts_with", "segment-a"), [a]], [leaf("contact.unsubscribed", "eq", false), contacts],
+        [leaf("contact.created_at", "exists"), contacts],
+      ];
+      for (const [rule, ids] of cases) expect(await selected(tenant, rule), JSON.stringify(rule)).toEqual(ids);
+      await db.query("update contacts set properties=jsonb_set(properties,'{plan}',to_jsonb($3::text)) where tenant_id=$1 and id=$2", [tenant,d,"50%_sale"]);
+      expect(await selected(tenant,leaf("contact.plan","contains","%_"))).toEqual([d]);
+      expect(await selected(tenant,leaf("contact.plan","starts_with","50%_"))).toEqual([d]);
+      for (const [index,value] of [0.1,1e20,1e-10,-3].entries()) {
+        await db.query("update contacts set properties=jsonb_set(properties,'{score}',$3::jsonb) where tenant_id=$1 and id=$2", [tenant,contacts[index],JSON.stringify(value)]);
+        expect(await selected(tenant,leaf("contact.score","eq",value))).toEqual([contacts[index]]);
+      }
+      expect(await selected(tenant,leaf("contact.last_seen","gte","2026-09-29T23:00:00-01:00"))).toEqual([a,b]);
+      // Each projected value is anchored to the very statement that executes the
+      // production predicate, making both inclusive window boundaries deterministic.
+      const boundaryPrefix = `with contacts as (select source.id, source.tenant_id, source.email,
+        source.first_name, source.last_name, source.unsubscribed_at, source.deleted_at, source.created_at, source.updated_at,
+        jsonb_set(source.properties, '{last_seen}', to_jsonb(to_char(
+          (date_trunc('milliseconds', statement_timestamp()) + case source.email
+            when 'segment-a@fixture.net' then interval '-1 day'
+            when 'segment-b@fixture.net' then interval '0'
+            when 'segment-c@fixture.net' then interval '1 second'
+            else interval '-1 day -1 second' end) at time zone 'UTC',
+          'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))) as properties
+        from public.contacts source)`;
+      // Run a statement-time leaf directly too; malformed calendar/text shapes must
+      // never make a PostgreSQL cast fail even when no other predicate excludes them.
+      expect(await selected(tenant, leaf("contact.last_seen", "within", "1 day"), boundaryPrefix)).toEqual([a,b]);
+      expect(await selected(tenant, leaf("contact.last_seen", "not_within", "1 day"), boundaryPrefix)).toEqual([c,d,e,f]);
+    });
+
+    it("review regression: deleting a declared property invalidates the whole saved filter without breaking ordinary audience reads", async () => {
+      const property = await post(fullKey, "/contact-properties", { key: "removed_field", type: "string" });
+      expect(property.status).toBe(200);
+      const person = await post(fullKey, "/contacts", { email: "removed-property@fixture.net", properties: { removed_field: "yes" } });
+      expect(person.status).toBe(200);
+      const tenant = (await call(fullKey, "GET", "/me")).json.tenant_id as string;
+      const rule: Rule = { type: "or", rules: [
+        leaf("contact.email", "exists"),
+        { type: "and", rules: [leaf("contact.removed_field", "eq", "yes"), leaf("contact.unsubscribed", "eq", false)] },
+      ] };
+      const damaged = await post(fullKey, "/segments", { name: "Deleted definition", rule });
+      const valid = await post(fullKey, "/segments", { name: "Valid builtin", rule: leaf("contact.email", "exists") });
+      expect(damaged.status).toBe(200); expect(valid.status).toBe(200);
+      // Resolve the pre-delete count directly, without priming the approved
+      // 30-second detail cache with a deliberately stale value.
+      const { segmentCount } = await import("@dispatchmail/db");
+      expect(await segmentCount(db, tenant, damaged.json.id)).toBe(1);
+      expect((await call(fullKey, "DELETE", `/contact-properties/${property.json.id}`)).status).toBe(200);
+      expect((await db.query("select properties from contacts where id=$1", [person.json.id])).rows)
+        .toEqual([{ properties: { removed_field: "yes" } }]);
+      const ordinary = await call(fullKey, "GET", "/contacts");
+      expect(ordinary.status).toBe(200);
+      expect(ordinary.json.data.map((row: { id: string }) => row.id)).toEqual([person.json.id]);
+      expect((await call(fullKey, "GET", `/contacts/${person.json.id}`)).status).toBe(200);
+      const memberships = await call(fullKey, "GET", `/contacts/${person.json.id}/segments`);
+      expect(memberships.status).toBe(200);
+      expect(memberships.json.data.map((row: { id: string }) => row.id)).toEqual([valid.json.id]);
+      expect((await contactContext(db, tenant, "removed-property@fixture.net"))!.segments).toEqual([valid.json.id]);
+      for (const path of [`/contacts?segment_id=${damaged.json.id}`, `/segments/${damaged.json.id}/contacts`]) {
+        const result = await call(fullKey, "GET", path);
+        expect(result.status).toBe(200); expect(result.json.data).toEqual([]);
+      }
+      expect(await segmentCount(db, tenant, damaged.json.id)).toBe(0);
+      expect((await call(fullKey, "GET", `/segments/${damaged.json.id}`)).json.contacts).toBe(0);
+      expect((await call(fullKey, "GET", `/segments/${valid.json.id}`)).json.contacts).toBe(1);
+      expect((await post(fullKey, "/segments", { name: "Invalid new", rule })).status).toBe(400);
+      expect((await call(fullKey, "PATCH", `/segments/${valid.json.id}`, { rule })).status).toBe(400);
+      expect((await post(fullKey, "/segments/preview", { rule })).status).toBe(400);
+      const { broadcastAudience, snapshotBroadcast } = await import("@dispatchmail/db");
+      expect((await broadcastAudience(db, tenant, { segmentId: damaged.json.id, topicId: null })).recipients).toBe(0);
+      const broadcast = id("broadcast");
+      await db.query(`insert into broadcasts(id,tenant_id,name,from_email,subject,html,segment_id)
+        values($1,$2,'Invalid saved filter','sender@fixture.net','Fixture','<p>Fixture</p>',$3)`, [broadcast, tenant, damaged.json.id]);
+      expect(await tx(db, client => snapshotBroadcast(client, tenant, broadcast))).toBe(0);
+      expect((await db.query("select id from broadcast_recipients where broadcast_id=$1", [broadcast])).rows).toEqual([]);
+    });
+
+    it("uses dynamic lists context preview and atomic snapshots with current receiving preferences", async () => {
+      const { tenant, contacts } = await fixture();
+      const [a,b] = contacts;
+      const topic = await post(fullKey, "/topics", { name: "Segment fixture", default_subscription: "opt_in" });
+      const staticList = await post(fullKey, "/segments", { name: "Static fixture" });
+      expect((await post(fullKey, `/contacts/${a}/segments/${staticList.json.id}`, {})).status).toBe(200);
+      const rule: Rule = { type: "and", rules: [
+        leaf("contact.score", "gte", 2), leaf("contact.topics", "contains", topic.json.id),
+        leaf("contact.segments", "not_contains", staticList.json.id),
+      ] };
+      const dynamic = await post(fullKey, "/segments", { name: "Current eligible", rule });
+      expect(dynamic.status).toBe(200);
+      expect(dynamic.json).toMatchObject({ type: "dynamic", rule });
+      const filtered = await call(fullKey, "GET", `/contacts?segment_id=${dynamic.json.id}`);
+      expect(filtered.json.data.map((row: { id: string }) => row.id)).toEqual([b]);
+      const members = await call(fullKey, "GET", `/segments/${dynamic.json.id}/contacts?limit=1`);
+      expect(members.json.data).toMatchObject([{ id: b, contact_id: b }]);
+      expect(members.json.has_more).toBe(false);
+      const preview = await post(fullKey, "/segments/preview", { rule });
+      expect(preview.json).toMatchObject({ count: 1, sample: [{ id: b, properties: { score: { value: 5, type: "number" } } }] });
+      const context = await contactContext(db, tenant, "segment-b@fixture.net");
+      expect(context!.segments).toContain(dynamic.json.id);
+      const segments = await call(fullKey, "GET", `/contacts/${b}/segments`);
+      expect(segments.json.data.map((row: { id: string }) => row.id)).toContain(dynamic.json.id);
+      const listed = await call(fullKey, "GET", "/segments");
+      expect(listed.json.data.find((row: { id: string }) => row.id === dynamic.json.id).contacts).toBeNull();
+      expect((await call(fullKey, "GET", `/segments/${dynamic.json.id}`)).json.contacts).toBe(1);
+      const { broadcastAudience, snapshotBroadcast } = await import("@dispatchmail/db");
+      expect((await broadcastAudience(db, tenant, { segmentId: dynamic.json.id, topicId: topic.json.id })).recipients).toBe(1);
+      const broadcastId = id("broadcast");
+      await db.query("insert into broadcasts (id, tenant_id, name, from_email, subject, html, segment_id, topic_id) values ($1,$2,'Dynamic fixture','sender@fixture.net','Fixture','<p>Fixture</p>',$3,$4)", [broadcastId, tenant, dynamic.json.id, topic.json.id]);
+      expect(await tx(db, (client) => snapshotBroadcast(client, tenant, broadcastId))).toBe(1);
+      expect((await db.query("select contact_id from broadcast_recipients where tenant_id=$1 and broadcast_id=$2", [tenant,broadcastId])).rows).toEqual([{ contact_id: b }]);
+      expect((await call(fullKey, "PATCH", `/contacts/${b}/topics`, { topics: [{ id: topic.json.id, subscription: "opt_out" }] })).status).toBe(200);
+      expect((await post(fullKey, "/segments/preview", { rule })).json.count).toBe(0);
+      expect((await contactContext(db, tenant, "segment-b@fixture.net"))!.segments).not.toContain(dynamic.json.id);
+      expect((await db.query("select contact_id from broadcast_recipients where tenant_id=$1 and broadcast_id=$2", [tenant,broadcastId])).rows).toEqual([{ contact_id: b }]);
+      for (const operator of ["contains", "not_contains", "exists", "is_empty"] as const) {
+        const value = operator.includes("contains") ? staticList.json.id : undefined;
+        const expected = operator === "exists" ? contacts : operator === "contains" ? [a] : contacts.slice(1);
+        expect(await selected(tenant, leaf("contact.segments", operator, value))).toEqual(expected);
+        const topicValue = operator.includes("contains") ? topic.json.id : undefined;
+        const topicExpected = operator === "exists" ? contacts : operator === "contains" ? contacts.filter((contact) => contact !== b) : [b];
+        expect(await selected(tenant, leaf("contact.topics", operator, topicValue))).toEqual(topicExpected);
+      }
+      expect((await call(fullKey, "PATCH", `/segments/${dynamic.json.id}`, { name: "Refreshed eligible" })).status).toBe(200);
+      expect((await call(fullKey, "GET", `/segments/${dynamic.json.id}`)).json).toMatchObject({ type: "dynamic", contacts: 0, rule });
+      expect((await post(fullKey, `/contacts/${a}/segments/${dynamic.json.id}`, {})).status).toBe(409);
+      expect((await post(fullKey, `/segments/${dynamic.json.id}/contacts`, { email: "must-not-create@fixture.net" })).status).toBe(409);
+      expect((await db.query("select id from contacts where tenant_id=$1 and email='must-not-create@fixture.net'", [tenant])).rows).toEqual([]);
+      expect((await call(fullKey, "DELETE", `/segments/${dynamic.json.id}/contacts/${a}`)).status).toBe(409);
+      expect((await call(fullKey, "PATCH", `/segments/${staticList.json.id}`, { rule: leaf("contact.email", "exists") })).status).toBe(409);
+      expect((await call(fullKey, "DELETE", `/contacts/${a}/segments/${staticList.json.id}`)).status).toBe(200);
+      // Removing members does not permit invalidating a saved filter dependency.
+      expect((await call(fullKey, "PATCH", `/segments/${staticList.json.id}`, { rule: leaf("contact.email", "exists") })).status).toBe(409);
+      // Old manually stored membership must not survive dynamic-to-static conversion.
+      await db.query("insert into segment_contacts (id,tenant_id,segment_id,contact_id) values ($1,$2,$3,$4)",
+        [id("member"),tenant,dynamic.json.id,a]);
+      expect((await call(fullKey, "PATCH", `/segments/${dynamic.json.id}`, { rule: null })).status).toBe(200);
+      expect((await call(fullKey, "GET", `/segments/${dynamic.json.id}/contacts`)).json.data).toEqual([]);
+      const otherKey = await seedTenant();
+      expect((await call(otherKey, "GET", `/contacts?segment_id=${dynamic.json.id}`)).status).toBe(404);
+    });
+
+    it("refuses every dynamic composite write, import, saved step and trigger without side effects", async () => {
+      const { tenant, contacts } = await fixture();
+      const topic = await post(fullKey, "/topics", { name: "Rollback topic", default_subscription: "opt_out" });
+      const dynamic = await post(fullKey, "/segments", { name: "Refusal filter", rule: leaf("contact.email", "exists") });
+      const staticList = await post(fullKey, "/segments", { name: "Rollback list" });
+      expect((await call(fullKey, "DELETE", `/contacts/${contacts[2]}`)).status).toBe(200);
+      const createdFlow = await contactFlow({ type: "contact_created" });
+      const snapshot = async () => (await db.query(`select
+        (select jsonb_agg(to_jsonb(c) order by id) from contacts c where tenant_id=$1) as contacts,
+        (select jsonb_agg(to_jsonb(s) order by id) from segment_contacts s where tenant_id=$1) as members,
+        (select jsonb_agg(to_jsonb(s) order by id) from topic_subscriptions s where tenant_id=$1) as topics,
+        (select count(*) from contact_changes where tenant_id=$1) as history,
+        (select count(*) from custom_events where tenant_id=$1) as events,
+        (select count(*) from automation_runs where tenant_id=$1) as runs,
+        (select count(*) from automation_enrollments where tenant_id=$1) as enrollments,
+        (select count(*) from contact_imports where tenant_id=$1) as imports,
+        (select count(*) from automations where tenant_id=$1) as automations`, [tenant])).rows[0];
+      const before = await snapshot();
+      for (const email of ["new-refusal@fixture.net", "segment-a@fixture.net", "segment-c@fixture.net"]) {
+        const result = await post(fullKey, "/contacts", {
+          email, first_name: "Must roll back", properties: { score: 100 },
+          segments: [{ id: staticList.json.id }, { id: dynamic.json.id }],
+          topics: [{ id: topic.json.id, subscription: "opt_in" }],
+        });
+        expect(result.status).toBe(409);
+        expect(await snapshot()).toEqual(before);
+        expect((await post(fullKey, `/segments/${dynamic.json.id}/contacts`, { email })).status).toBe(409);
+        expect(await snapshot()).toEqual(before);
+      }
+      for (const method of ["POST", "DELETE"] as const) {
+        expect((await call(fullKey, method, `/contacts/${contacts[0]}/segments/${dynamic.json.id}`, {})).status).toBe(409);
+        expect(await snapshot()).toEqual(before);
+      }
+      expect((await call(fullKey, "DELETE", `/segments/${dynamic.json.id}/contacts/${contacts[0]}`)).status).toBe(409);
+      const boundary = "segment-refusal";
+      const upload = await app.inject({
+        method: "POST", url: "/contacts/imports", headers: {
+          authorization: `Bearer ${fullKey}`, "content-type": `multipart/form-data; boundary=${boundary}`,
+        },
+        payload: `--${boundary}\r\nContent-Disposition: form-data; name="segments"\r\n\r\n${JSON.stringify([{ id: dynamic.json.id }])}\r\n`
+          + `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="refusal.csv"\r\nContent-Type: text/csv\r\n\r\nemail\nnew-import@fixture.net\n\r\n--${boundary}--\r\n`,
+      });
+      expect(upload.statusCode).toBe(409);
+      await expect(createImport(db, {
+        id: id("import"), tenantId: tenant, storageKey: "unused-refusal", columnMap: {},
+        onConflict: "upsert", segments: [{ id: dynamic.json.id }], topics: [], triggerAutomations: true,
+      })).rejects.toMatchObject({ statusCode: 409 });
+      const steps = [{ key: "start", type: "trigger", config: { type: "contact_created" } },
+        { key: "join", type: "add_to_segment", config: { segment_id: dynamic.json.id } }];
+      const graph = { steps, connections: [{ from: "start", to: "join", type: "default" }] };
+      expect((await post(fullKey, "/automations", { name: "Refused add", ...graph })).status).toBe(409);
+      expect((await call(fullKey, "PATCH", `/automations/${createdFlow}`, graph)).status).toBe(409);
+      expect((await post(fullKey, "/automations", {
+        name: "Refused trigger", steps: [{ key: "start", type: "trigger", config: { type: "segment_added", segment_id: dynamic.json.id } }],
+        connections: [],
+      })).status).toBe(422);
+      expect(await snapshot()).toEqual(before);
+    });
+
+    it("fails a queued import after target conversion before writing contacts or history", async () => {
+      const { tenant, contacts } = await fixture();
+      const segment = await post(fullKey, "/segments", { name: "Queued import target" });
+      const queued = await createImport(db, {
+        id: id("import"), tenantId: tenant, storageKey: "unused-queued-import", columnMap: {},
+        onConflict: "upsert", segments: [{ id: segment.json.id }], topics: [], triggerAutomations: true,
+      });
+      const job = (await claimImports(db, 1))[0]!;
+      expect(job.id).toBe(queued!.id);
+      expect((await call(fullKey, "PATCH", `/segments/${segment.json.id}`, { rule: leaf("contact.email", "exists") })).status).toBe(200);
+      const before = (await db.query("select first_name,properties,updated_at from contacts where id=$1", [contacts[0]])).rows[0];
+      await runImport(db, { stream: async () => Readable.from(["email,first_name\nsegment-a@fixture.net,Must not update\nnew-queued-import@fixture.net,Must not create\n"]) }, job, { batchSize: 2 });
+      expect((await call(fullKey, "GET", `/contacts/imports/${job.id}`)).json)
+        .toMatchObject({ status: "failed", error: "Dynamic segments do not accept membership writes", counts: { created: 0, updated: 0 } });
+      expect((await db.query("select first_name,properties,updated_at from contacts where id=$1", [contacts[0]])).rows[0]).toEqual(before);
+      expect((await db.query("select id from contacts where tenant_id=$1 and email='new-queued-import@fixture.net'", [tenant])).rows).toEqual([]);
+      expect((await db.query("select id from contact_changes where request_id=$1", [job.id])).rows).toEqual([]);
+      expect((await db.query("select id from custom_events where request_id=$1", [job.id])).rows).toEqual([]);
+    });
+
+    it("rechecks converted targets on automation enable and execution without reviving deleted contacts", async () => {
+      const { tenant, contacts } = await fixture();
+      const list = await post(fullKey, "/segments", { name: "Converted automation target" });
+      const step = { key: "join", type: "add_to_segment", config: { segment_id: list.json.id } };
+      const executable = await contactFlow({ type: "contact_created" }, [step]);
+      const saved = await post(fullKey, "/automations", {
+        name: "Disabled saved join", steps: [
+          { key: "start", type: "trigger", config: { type: "contact_created" } }, step,
+        ], connections: [{ from: "start", to: "join", type: "default" }],
+      });
+      const triggered = await contactFlow({ type: "segment_added", segment_id: list.json.id });
+      expect((await call(fullKey, "PATCH", `/segments/${list.json.id}`, { rule: leaf("contact.email", "exists") })).status).toBe(200);
+      expect((await call(fullKey, "PATCH", `/automations/${saved.json.id}`, { status: "enabled" })).status).toBe(409);
+      const { fireContactTrigger } = await import("@dispatchmail/db");
+      const contact = (await db.query<ContactRow>(`select ${contactColumns} from contacts where tenant_id=$1 and id=$2`, [tenant, contacts[0]])).rows[0]!;
+      expect(await tx(db, (client) => fireContactTrigger(client, tenant, "refused-trigger", {
+        triggerType: "segment_added", key: `@segment.added:${list.json.id}`, contact,
+      }))).toEqual({ event: null, runs: [] });
+      expect((await call(fullKey, "PATCH", `/automations/${triggered}`, { status: "paused" })).status).toBe(200);
+      expect((await call(fullKey, "PATCH", `/automations/${triggered}`, { status: "enabled" })).status).toBe(422);
+      const added = await post(fullKey, "/contacts", { email: "converted-step@fixture.net" });
+      const run = (await flowRuns(executable))[0]!;
+      expect(run).toBeDefined();
+      await call(fullKey, "DELETE", `/contacts/${added.json.id}`);
+      const before = (await db.query("select first_name,properties,deleted_at from contacts where id=$1", [added.json.id])).rows[0];
+      await executeAutomationRun(db, tenant, run.id);
+      expect((await db.query("select state,error from automation_runs where id=$1", [run.id])).rows[0])
+        .toEqual({ state: "failed", error: "Dynamic segments do not accept membership writes" });
+      expect((await db.query("select first_name,properties,deleted_at from contacts where id=$1", [added.json.id])).rows[0]).toEqual(before);
+      expect((await db.query("select id from segment_contacts where tenant_id=$1 and segment_id=$2", [tenant, list.json.id])).rows).toEqual([]);
+      expect((await db.query("select id from contact_changes where tenant_id=$1 and field=$2", [tenant, `segments.${list.json.id}`])).rows).toEqual([]);
+    });
+
+    it("allows stored viewers to preview and page dynamic contacts while counts expire and conversions stay read-only", async () => {
+      const { tenant } = await fixture();
+      const viewer = await teammate("Viewer");
+      const session = await signInAs(viewer.email, viewer.password);
+      expect(session.status).toBe(200);
+      const rule = leaf("contact.email", "starts_with", "paged-");
+      for (let index = 0; index < 13; index++)
+        expect((await post(fullKey, "/contacts", { email: `paged-${index}@fixture.net` })).status).toBe(200);
+      const segment = await post(fullKey, "/segments", { name: "Viewer paging", rule });
+      const preview = await post(session.token, "/segments/preview", { rule });
+      expect(preview.status).toBe(200);
+      expect(preview.json.count).toBe(13);
+      expect(preview.json.sample).toHaveLength(10);
+      const expected = (await db.query("select id,created_at from contacts where tenant_id=$1 and email like 'paged-%' order by created_at desc,id desc", [tenant])).rows;
+      for (const token of [fullKey, session.token]) {
+        let after = "", more = true;
+        const seen: string[] = [];
+        while (more) {
+          const page = await call(token, "GET", `/segments/${segment.json.id}/contacts?limit=4${after ? `&after=${after}` : ""}`);
+          expect(page.status).toBe(200);
+          expect(page.json.data.length).toBeGreaterThan(0);
+          for (const row of page.json.data) {
+            expect(row.id).toBe(row.contact_id);
+            expect(row.created_at).toBe(new Date(expected.find((contact) => contact.id === row.id)!.created_at).toISOString());
+            seen.push(row.id);
+          }
+          after = page.json.data.at(-1).id;
+          more = page.json.has_more;
+          expect(seen.length).toBeLessThanOrEqual(13);
+        }
+        expect(seen).toEqual(expected.map((row) => row.id));
+      }
+      expect((await call(session.token, "GET", `/segments/${segment.json.id}`)).json.contacts).toBe(13);
+      expect((await post(fullKey, "/contacts", { email: "paged-new@fixture.net" })).status).toBe(200);
+      expect((await call(session.token, "GET", `/segments/${segment.json.id}`)).json.contacts).toBe(13);
+      expect((await post(session.token, "/segments/preview", { rule })).json.count).toBe(14);
+      await new Promise((resolve) => setTimeout(resolve, 30_050));
+      expect((await call(session.token, "GET", `/segments/${segment.json.id}`)).json.contacts).toBe(14);
+      for (const [method, path, body] of [
+        ["POST", "/segments", { name: "Viewer cannot create" }],
+        ["PATCH", `/segments/${segment.json.id}`, { rule: null }],
+        ["DELETE", `/segments/${segment.json.id}`, undefined],
+        ["POST", `/segments/${segment.json.id}/contacts`, { email: "viewer@fixture.net" }],
+      ] as const) expect((await call(session.token, method, path, body)).status).toBe(403);
+      expect((await call(fullKey, "GET", `/segments/${segment.json.id}`)).json.type).toBe("dynamic");
+    }, 45_000);
+
+    it.each(["membership", "conversion"] as const)("serializes %s-first membership/conversion conflicts without partial writes", async (first) => {
+      const { tenant, contacts } = await fixture();
+      const segment = await post(fullKey, "/segments", { name: "Lock fixture" });
+      expect(segment.status).toBe(200);
+      const { addContactSegment, staticSegment, updateSegment } = await import("@dispatchmail/db");
+      let ready!: () => void, release!: () => void, started!: () => void;
+      const locked = new Promise<void>((resolve) => { ready = resolve; });
+      const resume = new Promise<void>((resolve) => { release = resolve; });
+      const competing = new Promise<void>((resolve) => { started = resolve; });
+      const rule = leaf("contact.email", "exists");
+      const owner = tx(db, async (client) => {
+        await staticSegment(client, tenant, segment.json.id);
+        ready();
+        await resume;
+        if (first === "membership") await addContactSegment(client, tenant, contacts[0]!, segment.json.id);
+        else await updateSegment(client, tenant, segment.json.id, { rule });
+      });
+      await locked;
+      const challenger = tx(db, async (client) => {
+        started();
+        if (first === "membership") return updateSegment(client, tenant, segment.json.id, { rule });
+        return addContactSegment(client, tenant, contacts[0]!, segment.json.id);
+      }).then(() => null, (error: unknown) => error);
+      await competing;
+      release();
+      await owner;
+      expect(await challenger).toMatchObject({ name: "conflict", statusCode: 409 });
+      const detail = await call(fullKey, "GET", `/segments/${segment.json.id}`);
+      expect(detail.json).toMatchObject({ type: first === "membership" ? "static" : "dynamic" });
+      expect((await db.query("select contact_id from segment_contacts where tenant_id=$1 and segment_id=$2", [tenant,segment.json.id])).rows)
+        .toEqual(first === "membership" ? [{ contact_id: contacts[0] }] : []);
+    });
+
+    it("review regression: caller-owned import transactions retain the static lock through outer commit and roll back with the caller", async () => {
+      const tenant = (await call(fullKey, "GET", "/me")).json.tenant_id as string;
+      const segment = await post(fullKey, "/segments", { name: "Caller transaction" });
+      expect(segment.status).toBe(200);
+      const input = (importId: string) => ({
+        id: importId, tenantId: tenant, storageKey: "unused-caller-transaction", columnMap: {},
+        onConflict: "upsert" as const, segments: [{ id: segment.json.id }], topics: [], triggerAutomations: false,
+      });
+      let ready!: () => void, release!: () => void;
+      const locked = new Promise<void>(resolve => { ready = resolve; });
+      const resume = new Promise<void>(resolve => { release = resolve; });
+      let ownerPid = 0, challengerPid = 0;
+      const importId = id("import");
+      const outer = tx(db, async client => {
+        ownerPid = (await client.query("select pg_backend_pid() as pid")).rows[0].pid;
+        expect(await createImport(client, input(importId))).toMatchObject({ id: importId, status: "queued" });
+        expect((await client.query("select id from contact_imports where id=$1", [importId])).rows).toEqual([{ id: importId }]);
+        ready(); await resume;
+        expect((await client.query("select pg_backend_pid() as pid")).rows[0].pid).toBe(ownerPid);
+      });
+      void outer.catch(() => ready());
+      await locked;
+      const challenger = tx(db, async client => {
+        challengerPid = (await client.query("select pg_backend_pid() as pid")).rows[0].pid;
+        await client.query("select id from segments where tenant_id=$1 and id=$2 for update", [tenant, segment.json.id]);
+      });
+      void challenger.catch(() => undefined);
+      try {
+        expect((await db.query("select id from contact_imports where id=$1", [importId])).rows).toEqual([]);
+        let blocked = false;
+        for (let attempt = 0; attempt < 100 && !blocked; attempt++) {
+          if (challengerPid) blocked = (await db.query("select $1::int=any(pg_blocking_pids($2::int)) as blocked",
+            [ownerPid, challengerPid])).rows[0].blocked;
+          if (!blocked) await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        expect(blocked).toBe(true);
+      } finally { release(); await Promise.allSettled([outer, challenger]); }
+      await outer; await challenger;
+      expect((await db.query("select id from contact_imports where id=$1", [importId])).rows).toEqual([{ id: importId }]);
+      const rolledBack = id("import"), failure = new Error("caller rollback");
+      await expect(tx(db, async client => {
+        expect(await createImport(client, input(rolledBack))).toMatchObject({ id: rolledBack });
+        throw failure;
+      })).rejects.toBe(failure);
+      expect((await db.query("select id from contact_imports where id=$1", [rolledBack])).rows).toEqual([]);
+    });
+
+    it("keeps import creation's static-target lock until the queued row commits", async () => {
+      const { tenant } = await fixture();
+      const segment = await post(fullKey, "/segments", { name: "Creation lock fixture" });
+      const { updateSegment } = await import("@dispatchmail/db");
+      let ready!: () => void, release!: () => void;
+      const locked = new Promise<void>((resolve) => { ready = resolve; });
+      const resume = new Promise<void>((resolve) => { release = resolve; });
+      let creatorPid = 0, conversionPid = 0;
+      const pool = { connect: async () => {
+        const client = await db.connect();
+        creatorPid = (await client.query("select pg_backend_pid() as pid")).rows[0].pid;
+        return {
+          query: async (sql: string, params?: unknown[]) => {
+            const result = await client.query(sql, params);
+            if (sql.startsWith("select id, rule from segments")) { ready(); await resume; }
+            return result;
+          },
+          release: () => client.release(),
+        };
+      } } as unknown as Db;
+      const importId = id("import");
+      const creation = createImport(pool, {
+        id: importId, tenantId: tenant, storageKey: "unused-creation-lock", columnMap: {},
+        onConflict: "upsert", segments: [{ id: segment.json.id }], topics: [], triggerAutomations: false,
+      });
+      void creation.catch(() => ready());
+      await locked;
+      const conversion = tx(db, async (client) => {
+        conversionPid = (await client.query("select pg_backend_pid() as pid")).rows[0].pid;
+        return updateSegment(client, tenant, segment.json.id, { rule: leaf("contact.email", "exists") });
+      });
+      void conversion.catch(() => undefined);
+      try {
+        let blocked = false;
+        for (let attempt = 0; attempt < 100 && !blocked; attempt++) {
+          if (conversionPid) blocked = (await db.query("select $1::int = any(pg_blocking_pids($2::int)) as blocked", [creatorPid, conversionPid])).rows[0].blocked;
+          if (!blocked) await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect(blocked).toBe(true);
+      } finally { release(); await Promise.allSettled([creation, conversion]); }
+      const queued = await creation;
+      await conversion;
+      expect(queued).toMatchObject({ id: importId, status: "queued" });
+      expect((await db.query("select segments from contact_imports where tenant_id=$1 and id=$2", [tenant, importId])).rows)
+        .toEqual([{ segments: [{ id: segment.json.id }] }]);
+      const claimed = await claimImports(db, 1);
+      expect(claimed).toHaveLength(1);
+      const job = claimed[0]!;
+      expect(job).toMatchObject({ id: queued!.id, tenant_id: tenant, status: "in_progress", segments: [{ id: segment.json.id }] });
+      // Conversion after a valid queue commit is allowed; its worker must refuse
+      // the now-dynamic target rather than using the original validated type.
+      await expect(tx(db, (client) => importBatch(client, job, [
+        { email: "creation-lock@fixture.net", first_name: null, last_name: null, properties: {}, unsubscribed: false },
+      ]))).rejects.toMatchObject({ statusCode: 409 });
+      expect((await db.query("select id from contacts where tenant_id=$1 and email='creation-lock@fixture.net'", [tenant])).rows).toEqual([]);
+      expect((await db.query("select id from contact_changes where tenant_id=$1 and request_id=$2", [tenant, job.id])).rows).toEqual([]);
+      expect((await db.query("select id from custom_events where tenant_id=$1 and request_id=$2", [tenant, job.id])).rows).toEqual([]);
+    });
+
+    it.each(["import", "conversion"] as const)("serializes %s-first import/conversion and rolls back refused batch changes", async (first) => {
+      const { tenant } = await fixture();
+      const segment = await post(fullKey, "/segments", { name: "Import lock fixture" });
+      const importId = id("import");
+      const queued = await createImport(db, {
+        id: importId, tenantId: tenant, storageKey: "unused-lock", columnMap: {}, onConflict: "upsert",
+        segments: [{ id: segment.json.id }], topics: [], triggerAutomations: true,
+      });
+      expect(queued).toMatchObject({ id: importId, status: "queued" });
+      const claimed = await claimImports(db, 1);
+      expect(claimed).toHaveLength(1);
+      const job = claimed[0]!;
+      expect(job).toMatchObject({ id: queued!.id, tenant_id: tenant, status: "in_progress", segments: [{ id: segment.json.id }] });
+      const { staticSegment, updateSegment } = await import("@dispatchmail/db");
+      const rows = [{ email: "import-lock@fixture.net", first_name: "Imported", last_name: null, properties: {}, unsubscribed: false }];
+      let ready!: () => void, release!: () => void;
+      const locked = new Promise<void>((resolve) => { ready = resolve; });
+      const resume = new Promise<void>((resolve) => { release = resolve; });
+      let ownerPid = 0, challengerPid = 0;
+      const owner = tx(db, async (client) => {
+        ownerPid = (await client.query("select pg_backend_pid() as pid")).rows[0].pid;
+        await staticSegment(client, tenant, segment.json.id);
+        ready();
+        await resume;
+        if (first === "import") return importBatch(client, job, rows);
+        return updateSegment(client, tenant, segment.json.id, { rule: leaf("contact.email", "exists") });
+      });
+      void owner.catch(() => ready());
+      await locked;
+      const challenger = tx(db, async (client) => {
+        challengerPid = (await client.query("select pg_backend_pid() as pid")).rows[0].pid;
+        if (first === "import") return updateSegment(client, tenant, segment.json.id, { rule: leaf("contact.email", "exists") });
+        return importBatch(client, job, rows);
+      }).then(() => null, (error: unknown) => error);
+      try {
+        let blocked = false;
+        for (let attempt = 0; attempt < 100 && !blocked; attempt++) {
+          if (challengerPid) blocked = (await db.query("select $1::int = any(pg_blocking_pids($2::int)) as blocked", [ownerPid, challengerPid])).rows[0].blocked;
+          if (!blocked) await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect(blocked).toBe(true);
+      } finally { release(); await Promise.allSettled([owner, challenger]); }
+      await owner;
+      expect(await challenger).toMatchObject({ statusCode: 409 });
+      expect((await call(fullKey, "GET", `/segments/${segment.json.id}`)).json.type).toBe(first === "import" ? "static" : "dynamic");
+      expect((await db.query("select email from contacts where tenant_id=$1 and email=$2", [tenant, rows[0]!.email])).rows)
+        .toEqual(first === "import" ? [{ email: rows[0]!.email }] : []);
+      if (first === "conversion") {
+        expect((await db.query("select id from contact_changes where request_id=$1", [job.id])).rows).toEqual([]);
+        expect((await db.query("select id from custom_events where request_id=$1", [job.id])).rows).toEqual([]);
+      }
+    });
+
+    it("attributes all email facts by contact or legacy recipient without cross-recipient sandbox leakage", async () => {
+      const { tenant, contacts } = await fixture();
+      const [a,b,c,d] = contacts;
+      const automationId = id("automation"), broadcastId = id("broadcast");
+      await db.query("insert into automations (id,tenant_id,name,trigger,steps) values ($1,$2,'Engagement scope','fixture','[]')", [automationId,tenant]);
+      await db.query("insert into broadcasts (id,tenant_id,name,from_email,subject) values ($1,$2,'Engagement scope','sender@fixture.net','Fixture')", [broadcastId,tenant]);
+      async function email(contactId: string | null, recipients: Array<[string, boolean]>, scope: "automation" | "broadcast", sandbox = false) {
+        const emailId = id("email");
+        await db.query(`insert into emails (id,tenant_id,request_id,from_email,subject,contact_id,automation_id,broadcast_id,sandbox,provider_message_id)
+          values ($1,$2,'fixture','sender@fixture.net','Fixture',$3,$4,$5,$6,$7)`,
+          [emailId,tenant,contactId,scope === "automation" ? automationId : null,scope === "broadcast" ? broadcastId : null,sandbox,`provider-${emailId}`]);
+        const ids: string[] = [];
+        for (const [address,simulated] of recipients) {
+          const recipientId = id("recipient");
+          await db.query("insert into email_recipients (id,tenant_id,email_id,email,kind,sandbox) values ($1,$2,$3,$4,'to',$5)", [recipientId,tenant,emailId,address,simulated]);
+          ids.push(recipientId);
+        }
+        return { emailId,ids };
+      }
+      const primary = await email(a!, [["segment-a@fixture.net",false]], "automation");
+      const fallback = await email(null, [["SEGMENT-B@fixture.net",false]], "broadcast");
+      const wrongPrimary = await email(a!, [["segment-c@fixture.net",false]], "automation");
+      const simulated = await email(d!, [["segment-d@fixture.net",true]], "broadcast", true);
+      const mixed = await email(null, [["segment-c@fixture.net",false],["segment-d@fixture.net",true]], "broadcast");
+      const otherKey = await seedTenant();
+      const foreign = await post(otherKey,"/contacts",{email:"segment-e@fixture.net"});
+      const populatedForeign = await email(foreign.json.id, [["segment-e@fixture.net",false]], "broadcast");
+      await db.query("insert into email_events (id,tenant_id,email_id,type,data) values ($1,$2,$3,'email.clicked','{\"sandbox\":false}')",
+        [id("event"),tenant,populatedForeign.emailId]);
+      const foreignTenant = (await db.query("select tenant_id from contacts where id=$1",[foreign.json.id])).rows[0].tenant_id;
+      await db.query("insert into email_events (id,tenant_id,email_id,type,data) values ($1,$2,$3,'email.clicked','{\"sandbox\":false}')",
+        [id("event"),foreignTenant,mixed.emailId]);
+      for (const fact of ["sent","delivered","opened","clicked","bounced"]) {
+        for (const record of [primary,fallback,wrongPrimary,simulated]) {
+          // Duplicate events remain one existence fact; tracking recipient identity
+          // and historical provider address data are both represented.
+          for (let duplicate = 0; duplicate < 2; duplicate++)
+            await db.query("insert into email_events (id,tenant_id,email_id,recipient_id,type,data) values ($1,$2,$3,$4,$5,$6::jsonb)",
+              [id("event"),tenant,record.emailId,record.ids[0],`email.${fact}`,JSON.stringify({ sandbox: record === simulated })]);
+        }
+      }
+      for (const fact of ["sent","clicked"])
+        await db.query("insert into email_events (id,tenant_id,email_id,recipient_id,type,data) values ($1,$2,$3,$4,$5,$6::jsonb)",
+          [id("event"),tenant,mixed.emailId,fact === "clicked" ? mixed.ids[0] : null,`email.${fact}`,JSON.stringify({ sandbox:false,recipients:["segment-c@fixture.net"] })]);
+      for (const [fact,data] of [
+        ["email.delivered",{sandbox:true,recipients:["segment-d@fixture.net"]}],
+        ["email.bounced",{sandbox:true,email:"segment-d@fixture.net"}],
+      ] as const)
+        await db.query("insert into email_events (id,tenant_id,email_id,type,data) values ($1,$2,$3,$4,$5::jsonb)",
+          [id("event"),tenant,mixed.emailId,fact,JSON.stringify(data)]);
+      await db.query("insert into email_events (id,tenant_id,email_id,recipient_id,type,data) values ($1,$2,$3,$4,'email.opened','{\"sandbox\":false}')",
+        [id("event"),tenant,mixed.emailId,primary.ids[0]]);
+      await db.query("insert into email_events (id,tenant_id,email_id,recipient_id,type,data) values ($1,$2,$3,$4,'email.opened',$5::jsonb)",
+        [id("event"),tenant,mixed.emailId,mixed.ids[1],JSON.stringify({ sandbox:true })]);
+      for (const fact of ["sent","delivered","opened","clicked","bounced"]) {
+        const expected = fact === "sent" || fact === "clicked" ? [a,b,c] : [a,b];
+        expect(await selected(tenant,leaf(`email.${fact}`,"eq",true))).toEqual(expected);
+        expect(await selected(tenant,leaf(`email.${fact}`,"neq",false))).toEqual(expected);
+        expect(await selected(tenant,leaf(`email.${fact}`,"eq",false))).toEqual(contacts.filter((contact) => !expected.includes(contact)));
+        expect(await selected(tenant,leaf(`email.${fact}`,"neq",true))).toEqual(contacts.filter((contact) => !expected.includes(contact)));
+      }
+      const scoped: Rule = { ...leaf("email.opened","eq",true) as Extract<Rule,{type:"rule"}>, scope:{ automation_id:automationId }, window:"30 days" };
+      expect(await selected(tenant,scoped)).toEqual([a]);
+      expect(await selected(tenant,{ ...scoped,scope:{broadcast_id:broadcastId} })).toEqual([b]);
+      // Historical real attribution survives a later routing change when the event
+      // identifies its original real recipient.
+      await db.query("update emails set sandbox=true where id=$1", [primary.emailId]);
+      await db.query("update email_recipients set sandbox=true where email_id=$1", [primary.emailId]);
+      expect(await selected(tenant,scoped)).toEqual([a]);
+      // Events at either boundary count; future and just-older records do not.
+      const bounds = `with email_events as (
+        select ev.id,ev.tenant_id,ev.email_id,ev.recipient_id,ev.type,ev.provider_event_id,ev.data,
+          statement_timestamp() + case when e.automation_id is not null then interval '-30 days'
+            else interval '0' end as created_at
+        from public.email_events ev join emails e on e.tenant_id=ev.tenant_id and e.id=ev.email_id
+      )`;
+      expect(await selected(tenant,{ ...scoped,scope:{broadcast_id:broadcastId} },bounds)).toEqual([b]);
+      expect(await selected(tenant,scoped,bounds)).toEqual([a]);
+      const outside = bounds.replace("interval '-30 days'", "interval '-30 days -1 second'").replace("interval '0'", "interval '1 second'");
+      expect(await selected(tenant,scoped,outside)).toEqual([]);
+      expect(await selected(tenant,{ ...scoped,scope:{broadcast_id:broadcastId} },outside)).toEqual([]);
+      await db.query("update automations set deleted_at=now() where id=$1", [automationId]);
+      expect(await selected(tenant,scoped)).toEqual([]);
+      const { segmentFilter } = await import("@dispatchmail/db");
+      const params: unknown[] = [tenant];
+      const segment = await post(fullKey,"/segments",{name:"Engagement plan",rule:leaf("email.clicked","eq",true)});
+      expect(segment.status).toBe(200);
+      const predicate = await segmentFilter(db,tenant,segment.json.id,(value) => {params.push(value);return `$${params.length}`;});
+      const plan = await db.query(`explain (analyze,buffers) select count(*) from contacts c where c.tenant_id=$1 and c.deleted_at is null and (${predicate})`,params);
+      console.info("dynamic segment engagement plan",plan.rows);
+    });
+
+    it("counts the original fixed three-condition 50000-contact rule and records EXPLAIN", async () => {
+      const seed = await post(fullKey, "/contacts", { email: "performance-seed@fixture.net" });
+      const tenant = (await db.query("select tenant_id from contacts where id=$1", [seed.json.id])).rows[0].tenant_id;
+      await db.query("delete from contacts where tenant_id=$1 and id=$2", [tenant, seed.json.id]);
+      for (const [key,type] of [["plan","string"],["score","number"],["active","boolean"]] as const)
+        expect((await post(fullKey, "/contact-properties", { key,type })).status).toBe(200);
+      await db.query(`insert into contacts (id,tenant_id,email,properties)
+        select 'contact_perf_' || n, $1, 'perf-' || n || '@fixture.net',
+          jsonb_build_object('score',n,'active',n%2=0,'plan','pro') from generate_series(1,50000) n`, [tenant]);
+      const rule: Rule = { type: "and", rules: [leaf("contact.score","gte",25000),leaf("contact.active","eq",true),leaf("contact.plan","eq","pro")] };
+      const segment = await post(fullKey, "/segments", { name: "Fixed performance", rule });
+      expect(segment.status).toBe(200);
+      const preview = await post(fullKey, "/segments/preview", { rule });
+      expect(preview.json.count).toBe(12501);
+      expect(preview.json.sample.map((contact: { id: string }) => contact.id)).toEqual(
+        Array.from({ length: 10 }, (_, index) => `contact_perf_${25000 + index * 2}`),
+      );
+      const { segmentCount, segmentFilter } = await import("@dispatchmail/db");
+      const indexes = (await db.query("select indexname,indexdef from pg_indexes where schemaname='public' and indexname=any($1::text[])",
+        [["emails_tenant_contact_created_idx", "email_recipients_tenant_address_idx"]])).rows;
+      expect(indexes).toHaveLength(2);
+      expect(indexes.find((index) => index.indexname === "emails_tenant_contact_created_idx")!.indexdef).toContain("(tenant_id, contact_id, created_at)");
+      expect(indexes.find((index) => index.indexname === "email_recipients_tenant_address_idx")!.indexdef).toContain("(tenant_id, lower(email))");
+      await db.query("analyze contacts");
+      const started = performance.now();
+      expect(await segmentCount(db, tenant, segment.json.id)).toBe(12501);
+      const elapsed = performance.now()-started;
+      const params: unknown[] = [tenant];
+      const predicate = await segmentFilter(db, tenant, segment.json.id, (value) => { params.push(value); return `$${params.length}`; });
+      const plan = await db.query(`explain (analyze, buffers) select count(*) from contacts c where c.tenant_id=$1 and c.deleted_at is null and (${predicate})`, params);
+      console.info("dynamic segment fixed performance", { contacts: 50000, expectedCount: 12501, rule, indexes, elapsed, plan: plan.rows });
+      expect(elapsed).toBeLessThan(500);
+    });
+  });
+
+  it("lists all lifecycle preset definitions through stored full and viewer authentication without installing resources", async () => {
+    const { loadLibrary } = await import("./library.js");
+    const library = await loadLibrary();
+    const viewer = await teammate("Viewer");
+    const session = await signInAs(viewer.email, viewer.password);
+    expect(session.status).toBe(200);
+    const secondKey = await seedTenant();
+    const sendKey = await post(fullKey, "/api-keys", { name: "preset send-only", scope: "send" });
+    expect(sendKey.status).toBe(200);
+    await migrate(db);
+    await migrate(db);
+    const snapshot = async () => (await db.query(`select
+      (select count(*) from templates) as templates,
+      (select count(*) from template_versions) as versions,
+      (select count(*) from automations) as automations,
+      (select count(*) from automation_runs) as runs,
+      (select count(*) from contacts) as contacts,
+      (select count(*) from contact_properties) as properties,
+      (select count(*) from custom_events) as events,
+      (select count(*) from topics) as topics`)).rows[0];
+    const before = await snapshot();
+    for (const token of [fullKey, session.token, secondKey]) {
+      const listed = await call(token, "GET", "/template-library/automations");
+      expect(listed.status).toBe(200);
+      expect(listed.json).toEqual({
+        object: "list", has_more: false, data: library.automations, request_id: expect.any(String),
+      });
+      expect(listed.json.data).toHaveLength(6);
+      for (const preset of library.automations) {
+        const detail = await call(token, "GET", `/template-library/automations/${preset.slug}`);
+        expect(detail.status).toBe(200);
+        expect(detail.json).toEqual({
+          object: "automation_preset", ...preset, request_id: expect.any(String),
+        });
+      }
+      const templates = await call(token, "GET", "/template-library");
+      expect(templates.status).toBe(200);
+      expect(templates.json.data).toHaveLength(25);
+      for (const template of templates.json.data) {
+        expect(template).toMatchObject({
+          stage: library.templates.find((entry) => entry.slug === template.slug)!.stage,
+          when: expect.any(String),
+          kind: expect.stringMatching(/^(transactional|marketing)$/),
+        });
+        expect(template).not.toHaveProperty("html");
+        expect(template).not.toHaveProperty("text");
+      }
+    }
+    const missing = await call(fullKey, "GET", "/template-library/automations/not-a-preset");
+    expect(missing.status).toBe(404);
+    expect(missing.json).toMatchObject({ name: "not_found" });
+    for (const path of ["/template-library/automations", "/template-library/automations/failed-payment"]) {
+      expect((await app.inject({ method: "GET", url: path })).statusCode).toBe(401);
+      expect((await call(sendKey.json.token, "GET", path)).status).toBe(401);
+    }
+    const installPath = "/template-library/automations/onboarding-drip/install";
+    // Reads and rejected installation attempts do not create resources.
+    expect((await call(session.token, "POST", installPath, {})).status).toBe(403);
+    expect((await call(fullKey, "POST", installPath, {})).status).toBe(422);
+    expect(await snapshot()).toEqual(before);
+  });
+
+  describe("preset installation", () => {
+    const sender = "Lifecycle <hello@dispatch-fixture.net>";
+    const runOptions = { publicUrl: "https://dispatch.example", appUrl: "https://app.dispatch.example", secret: "synthetic-preset-secret" };
+    const path = (slug: string) => `/template-library/automations/${slug}/install`;
+    const snapshot = async () => (await db.query(`select
+      (select count(*) from templates)::integer as templates,
+      (select count(*) from template_versions)::integer as versions,
+      (select count(*) from automations)::integer as automations,
+      (select count(*) from contact_properties)::integer as properties,
+      (select count(*) from event_schemas)::integer as definitions`)).rows[0];
+    const templateSnapshot = async () => (await db.query(
+      "select row_to_json(t) as template, (select json_agg(v order by v.id) from template_versions v where v.template_id=t.id) as versions from templates t order by t.id",
+    )).rows;
+    async function install(slug: string, options: Record<string, unknown> = {}) {
+      const response = await post(fullKey, path(slug), { from: sender, ...options });
+      expect(response.status, JSON.stringify(response.json)).toBe(200);
+      expect(response.json).toMatchObject({ automation: { status: "disabled", version: 0 }, events: expect.any(Array),
+        properties: expect.any(Array), templates: { created: expect.any(Array), reused: expect.any(Array) }, next_steps: expect.any(Array) });
+      return response.json;
+    }
+    async function topic() {
+      expect((await call(fullKey, "PATCH", "/brand", { company_address: "123 Fixture Street" })).status).toBe(200);
+      const response = await post(fullKey, "/topics", { name: "Lifecycle", default_subscription: "opt_out" });
+      expect(response.status).toBe(200);
+      return response.json.id as string;
+    }
+    async function enable(id: string) {
+      const response = await call(fullKey, "PATCH", `/automations/${id}`, { status: "enabled" });
+      expect(response.status, JSON.stringify(response.json)).toBe(200);
+    }
+    async function contact(email: string, properties: Record<string, unknown> = {}, topicId?: string) {
+      const response = await post(fullKey, "/contacts", { email, first_name: "Ada", properties,
+        ...(topicId ? { topics: [{ id: topicId, subscription: "opt_in" }] } : {}) });
+      expect(response.status, JSON.stringify(response.json)).toBe(200);
+      return response.json;
+    }
+    async function execute(run: { id: string; tenant_id: string }) {
+      await executeAutomationRun(db, run.tenant_id, run.id, runOptions);
+    }
+    async function advance(run: { id: string; tenant_id: string }) {
+      // Only advance the due timestamp. The installed durations, edges and stored wait config stay intact.
+      await db.query("update automation_runs set resume_at=now()-interval '1 second' where id=$1 and state='waiting'", [run.id]);
+      const claimed = await claimAutomationRuns(db, 100);
+      expect(claimed.map((row) => row.id)).toContain(run.id);
+      for (const row of claimed) await execute(row);
+    }
+    const state = async (runId: string) => (await db.query("select state,error,exit_reason,next_step_key,wait_event from automation_runs where id=$1", [runId])).rows[0];
+    const emails = async (automationId: string, contactId?: string) => (await db.query(
+      `select subject,html,text,from_email,from_name,topic_id,headers,automation_step as automation_step_key,contact_id
+       from emails where automation_id=$1 and ($2::text is null or contact_id=$2) order by created_at,id`,
+      [automationId, contactId ?? null],
+    )).rows;
+    async function sendEvent(name: string, email: string, payload: Record<string, unknown> = {}) {
+      const result = await post(fullKey, "/events/send", { event: name, email, payload });
+      expect(result.status, JSON.stringify(result.json)).toBe(202);
+      return result.json.id as string;
+    }
+
+    it("authenticates writes and rejects missing sender/topic, unknown slug, malformed fields and foreign/deleted topics with no writes", async () => {
+      const viewer = await teammate("Viewer");
+      const session = await signInAs(viewer.email, viewer.password);
+      const sendKey = await post(fullKey, "/api-keys", { name: "Preset send", scope: "send" });
+      const foreignKey = await seedTenant();
+      const foreignTopic = await post(foreignKey, "/topics", { name: "Foreign" });
+      const deleted = await topic();
+      expect((await call(fullKey, "DELETE", `/topics/${deleted}`)).status).toBe(200);
+      const before = await snapshot();
+      expect((await app.inject({ method: "POST", url: path("onboarding-drip"), payload: { from: sender } })).statusCode).toBe(401);
+      expect((await post(sendKey.json.token, path("onboarding-drip"), { from: sender })).status).toBe(401);
+      expect((await post(session.token, path("onboarding-drip"), { from: sender })).status).toBe(403);
+      for (const [slug, input, status, message] of [
+        ["onboarding-drip", {}, 422, "Choose a sender"],
+        ["newsletter-welcome", { from: sender }, 422, "Choose a topic"],
+        ["missing", { from: sender }, 404, "Automation preset not found"],
+        ["onboarding-drip", { from: "not email" }, 400, null],
+        ["onboarding-drip", { from: sender, name: "" }, 400, null],
+        ["onboarding-drip", { from: sender, topic_id: 3 }, 400, null],
+        ["newsletter-welcome", { from: sender, topic_id: foreignTopic.json.id }, 422, "Choose an existing topic"],
+        ["newsletter-welcome", { from: sender, topic_id: deleted }, 422, "Choose an existing topic"],
+      ] as const) {
+        const result = await post(fullKey, path(slug), input);
+        expect(result.status, JSON.stringify(result.json)).toBe(status);
+        expect(result.json.name).toBe(status === 404 ? "not_found" : "validation_error");
+        if (message) expect(result.json.message).toBe(message);
+        expect(await snapshot()).toEqual(before);
+      }
+    });
+
+    it.each(["pending", "disabled", "deleted", "foreign"])("rejects a %s sender domain before writes", async (mode) => {
+      if (mode === "pending") await db.query("update domains set status='pending' where name='dispatch-fixture.net'");
+      if (mode === "disabled") await db.query("update domains set sending='disabled' where name='dispatch-fixture.net'");
+      if (mode === "deleted") await db.query("update domains set deleted_at=now() where name='dispatch-fixture.net'");
+      const before = await snapshot();
+      const response = await post(fullKey, path("onboarding-drip"), { from: mode === "foreign" ? "you@foreign.net" : sender });
+      expect(response.status).toBe(403);
+      expect(response.json.name).toBe("validation_error");
+      expect(await snapshot()).toEqual(before);
+    });
+
+    it("binds normalized graph IDs/from/kind/topics, blocks topicless activation and then enables after valid configuration", async () => {
+      const installed = await install("onboarding-drip");
+      expect(installed.next_steps).toEqual(["Choose a topic for marketing steps", "Review the automation and its emails", "Enable the automation"]);
+      const sends = installed.automation.steps.filter((step: any) => step.type === "send_email");
+      for (const step of sends) {
+        expect(step.config.from).toBe(sender);
+        expect(step.config.template).toMatchObject({ id: expect.stringMatching(/^template_/), variables: {} });
+        expect(step.config.topic_id).toBeUndefined();
+      }
+      expect((await call(fullKey, "PATCH", `/automations/${installed.automation.id}`, { status: "enabled" })).status).toBe(422);
+      const topicId = await topic();
+      const configured = await call(fullKey, "PATCH", `/automations/${installed.automation.id}`, {
+        steps: installed.automation.steps.map((step: any) => step.type === "send_email" && step.config.kind === "marketing"
+          ? { ...step, config: { ...step.config, topic_id: topicId } } : step), connections: installed.automation.connections,
+      });
+      expect(configured.status, JSON.stringify(configured.json)).toBe(200);
+      await enable(installed.automation.id);
+      const payment = await install("failed-payment");
+      expect(payment.next_steps).toEqual(["Review the automation and its emails", "Enable the automation"]);
+      await enable(payment.automation.id);
+      expect(payment.automation.steps.filter((step: any) => step.type === "send_email").every((step: any) =>
+        step.config.kind === "transactional" && step.config.topic_id === undefined)).toBe(true);
+    });
+
+    it("preserves edited draft and unedited library copies exactly, including ordinary install contention", async () => {
+      const draft = await post(fullKey, "/templates", { name: "Tenant welcome", alias: "welcome", subject: "My draft", html: "<p>My content</p>", from: "author@dispatch-fixture.net", track: false });
+      expect(draft.status).toBe(200);
+      expect((await post(fullKey, "/template-library/setup-reminder/install", {})).status).toBe(200);
+      const before = await templateSnapshot();
+      const [result, ordinary] = await Promise.all([
+        post(fullKey, path("onboarding-drip"), { from: sender }),
+        post(fullKey, "/template-library/welcome/install", {}),
+      ]);
+      expect(result.status, JSON.stringify(result.json)).toBe(200);
+      expect(ordinary.status).toBe(409);
+      expect(result.json.templates.reused.map((row: any) => row.slug)).toEqual(["welcome", "setup-reminder"]);
+      expect(result.json.templates.created.map((row: any) => row.slug)).toEqual(["feature-tips"]);
+      const after = await templateSnapshot();
+      for (const row of before) expect(after).toContainEqual(row);
+      expect((await call(fullKey, "GET", `/templates/${draft.json.id}`)).json.status).toBe("draft");
+      const repeatBefore = await templateSnapshot();
+      const second = await install("onboarding-drip", { name: "Second onboarding" });
+      expect(second.templates.created).toEqual([]);
+      expect(second.templates.reused).toHaveLength(3);
+      expect(second.properties).toEqual([]);
+      expect(await templateSnapshot()).toEqual(repeatBefore);
+    });
+
+    it("rolls back all dependencies after a late failure and live name conflict", async () => {
+      await install("failed-payment", { name: "Taken" });
+      const before = await snapshot();
+      expect((await post(fullKey, path("onboarding-drip"), { from: sender, name: "Taken" })).status).toBe(409);
+      expect(await snapshot()).toEqual(before);
+      await db.query(`create function preset_test_failure() returns trigger language plpgsql as $$
+        begin raise exception 'synthetic late installation failure'; end $$;
+        create trigger preset_test_failure before insert on automations for each row execute function preset_test_failure()`);
+      try {
+        expect((await post(fullKey, path("onboarding-drip"), { from: sender })).status).toBe(500);
+        expect(await snapshot()).toEqual(before);
+      } finally {
+        await db.query("drop trigger preset_test_failure on automations; drop function preset_test_failure()");
+      }
+    });
+
+    it("has one concurrent name winner and creates shared aliases/dependencies only once", async () => {
+      const results = await Promise.all(Array.from({ length: 2 }, () => post(fullKey, path("onboarding-drip"), { from: sender })));
+      expect(results.map((result) => result.status).sort()).toEqual([200, 409]);
+      expect(await snapshot()).toMatchObject({ templates: 3, versions: 3, automations: 1, properties: 1, definitions: 0 });
+      const before = await templateSnapshot();
+      const shared = await Promise.all(["Second", "Third"].map((name) => post(fullKey, path("onboarding-drip"), { from: sender, name })));
+      expect(shared.map((result) => result.status)).toEqual([200, 200]);
+      expect(shared.every((result) => result.json.templates.created.length === 0 && result.json.properties.length === 0)).toBe(true);
+      expect(await templateSnapshot()).toEqual(before);
+      const payments = await Promise.all(["Invoice one", "Invoice two"].map((name) => post(fullKey, path("failed-payment"), { from: sender, name })));
+      expect(payments.map((result) => result.status)).toEqual([200, 200]);
+      expect(payments.reduce((count, result) => count + result.json.events.length, 0)).toBe(2);
+      expect(payments.reduce((count, result) => count + result.json.templates.created.length, 0)).toBe(3);
+    });
+
+    it.each(["property-type", "property-tombstone", "event-type", "event-tombstone"])("conflicts on %s without rewriting or reviving dependencies", async (mode) => {
+      const event = mode.startsWith("event");
+      const response = event
+        ? await post(fullKey, "/events", { name: "stripe.invoice.payment_failed", schema: { AMOUNT: "number" } })
+        : await post(fullKey, "/contact-properties", { key: "activated", type: "string" });
+      expect(response.status).toBe(200);
+      if (mode.endsWith("tombstone")) expect((await call(fullKey, "DELETE", `${event ? "/events" : "/contact-properties"}/${response.json.id}`)).status).toBe(200);
+      const before = await snapshot();
+      expect((await post(fullKey, path(event ? "failed-payment" : "onboarding-drip"), { from: sender })).status).toBe(409);
+      expect(await snapshot()).toEqual(before);
+    });
+
+    it("reuses compatible event supersets unchanged and counts only live tenant firings", async () => {
+      const definition = await post(fullKey, "/events", { name: "usage.limit_reached", schema: { extra: "boolean" } });
+      const installed = await install("invite-to-upgrade");
+      expect(installed.events).toEqual([]);
+      expect((await call(fullKey, "GET", `/events/${definition.json.id}`)).json.schema).toEqual({ extra: "boolean" });
+      const other = await seedTenant();
+      await post(other, "/events/send", { event: "usage.limit_reached", email: "foreign@dispatch-fixture.net" });
+      const first = await sendEvent("usage.limit_reached", "counts@dispatch-fixture.net");
+      const second = await sendEvent("usage.limit_reached", "counts@dispatch-fixture.net");
+      await db.query("update custom_events set deleted_at=now() where id=$1", [first]);
+      const rows = (await call(fullKey, "GET", "/events")).json.data;
+      const row = rows.find((row: any) => row.id === definition.json.id);
+      expect(row.fired_count).toBe(1);
+      const timestamp = (await db.query("select created_at from custom_events where id=$1", [second])).rows[0].created_at;
+      expect(new Date(row.last_fired_at).toISOString()).toBe(timestamp.toISOString());
+      await post(fullKey, "/events", { name: "never.fired" });
+      expect((await call(fullKey, "GET", "/events")).json.data.find((row: any) => row.name === "never.fired")).toMatchObject({ fired_count: 0, last_fired_at: null });
+    });
+
+    it("runs installed onboarding with contact rendering and a fresh activated following guard", async () => {
+      const topicId = await topic();
+      const installed = await install("onboarding-drip", { topic_id: topicId });
+      await enable(installed.automation.id);
+      const person = await contact("onboarding@example.com", { activated: false }, topicId);
+      const [run] = await flowRuns(installed.automation.id);
+      await execute(run);
+      const [welcome] = await emails(installed.automation.id);
+      expect(welcome).toMatchObject({ contact_id: person.id, from_email: "hello@dispatch-fixture.net", from_name: "Lifecycle", topic_id: null, automation_step_key: "welcome" });
+      expect(welcome.html).toContain("Ada");
+      expect(await state(run.id)).toMatchObject({ state: "waiting", next_step_key: "setup_wait" });
+      await advance(run);
+      expect((await emails(installed.automation.id)).map((row) => row.automation_step_key)).toEqual(["welcome", "setup"]);
+      expect((await call(fullKey, "PATCH", `/contacts/${person.id}`, { properties: { activated: true } })).status).toBe(200);
+      await advance(run);
+      expect(await state(run.id)).toMatchObject({ state: "done", exit_reason: "filter" });
+      expect(await emails(installed.automation.id)).toHaveLength(2);
+    });
+
+    it.each([true, false])("runs installed newsletter Condition outcome activated=%s with topic and unsubscribe headers", async (activated) => {
+      const topicId = await topic();
+      const installed = await install("newsletter-welcome", { topic_id: topicId });
+      expect(installed.automation.trigger_config).toEqual({ type: "topic_subscribed", topic_id: topicId });
+      expect(installed.automation.steps.find((step: any) => step.key === "activation").type).toBe("condition");
+      await enable(installed.automation.id);
+      const person = await contact(`newsletter-${activated}@example.com`, { activated }, topicId);
+      const [run] = await flowRuns(installed.automation.id);
+      await execute(run);
+      await advance(run);
+      const stored = await emails(installed.automation.id);
+      expect(stored.map((row) => row.automation_step_key)).toEqual(["welcome", activated ? "tips" : "setup"]);
+      expect(stored.every((row) => row.topic_id === topicId && row.contact_id === person.id && row.from_email === "hello@dispatch-fixture.net")).toBe(true);
+      expect(stored[0].headers).toHaveProperty("List-Unsubscribe");
+      expect(await state(run.id)).toMatchObject({ state: "done", exit_reason: "exit" });
+    });
+
+    it.each(["free", "pro"])("runs installed upgrade recheck for %s and preserves second subject", async (plan) => {
+      const topicId = await topic();
+      const installed = await install("invite-to-upgrade", { topic_id: topicId });
+      await enable(installed.automation.id);
+      const person = await contact(`upgrade-${plan}@example.com`, { plan: "free" }, topicId);
+      await sendEvent("usage.limit_reached", person.email);
+      const [run] = await flowRuns(installed.automation.id);
+      await execute(run);
+      if (plan === "pro") await call(fullKey, "PATCH", `/contacts/${person.id}`, { properties: { plan } });
+      await advance(run);
+      const stored = await emails(installed.automation.id);
+      expect(stored).toHaveLength(plan === "free" ? 2 : 1);
+      if (plan === "free") expect(stored[1].subject).toContain("Still need more room in");
+      expect(await state(run.id)).toMatchObject({ state: "done", exit_reason: plan === "free" ? "exit" : "filter" });
+    });
+
+    it.each(["old", "recent", "absent"])("runs installed win-back date requirements for %s activity", async (activity) => {
+      const topicId = await topic();
+      const installed = await install("win-back", { topic_id: topicId });
+      await enable(installed.automation.id);
+      const person = await contact(`winback-${activity}@example.com`, activity === "absent" ? {} : {
+        last_active_at: new Date(Date.now() - (activity === "old" ? 20 : 1) * 86400000).toISOString(),
+      }, topicId);
+      await sendEvent("user.inactive", person.email);
+      const [run] = await flowRuns(installed.automation.id);
+      await execute(run);
+      await advance(run);
+      expect(await emails(installed.automation.id)).toHaveLength(activity === "old" ? 2 : 1);
+      expect(await state(run.id)).toMatchObject({ state: "done", exit_reason: activity === "old" ? "exit" : "filter" });
+    });
+
+    it.each(["first-paid", "second-paid", "timeouts", "missing-data"])("runs installed failed-payment %s with actual billing data", async (mode) => {
+      const installed = await install("failed-payment");
+      await enable(installed.automation.id);
+      const person = await contact(`invoice-${mode}@example.com`);
+      const payload = mode === "missing-data" ? {} : { AMOUNT: "$73.42", UPDATE_PAYMENT_URL: "https://billing.example/in_actual", INVOICE_NUMBER: "INV-ACTUAL-73", invoice_id: "in_actual" };
+      await sendEvent("stripe.invoice.payment_failed", person.email, payload);
+      const [run] = await flowRuns(installed.automation.id);
+      await execute(run);
+      if (mode === "missing-data") {
+        expect(await state(run.id)).toMatchObject({ state: "failed", error: expect.stringContaining("Missing template variable") });
+        expect(await emails(installed.automation.id)).toHaveLength(0);
+        return;
+      }
+      let stored = await emails(installed.automation.id);
+      expect(stored[0].html).toContain("$73.42");
+      expect(stored[0].html).toContain("https://billing.example/in_actual");
+      expect((await db.query("select data from custom_events where id=(select event_id from automation_runs where id=$1)", [run.id])).rows[0].data)
+        .toMatchObject({ INVOICE_NUMBER: "INV-ACTUAL-73", invoice_id: "in_actual" });
+      expect(stored[0].topic_id).toBeNull();
+      if (mode !== "first-paid") await advance(run);
+      if (mode === "timeouts") await advance(run);
+      else {
+        // Existing waits are contact/event-name based, deliberately not invoice-specific.
+        await sendEvent("stripe.invoice.paid", person.email, { invoice_id: "different_invoice" });
+        await execute(run);
+      }
+      stored = await emails(installed.automation.id);
+      if (mode !== "first-paid") expect(stored[1].html).toContain("INV-ACTUAL-73");
+      expect(stored.map((row) => row.automation_step_key)).toEqual(mode === "first-paid" ? ["failed"] :
+        mode === "second-paid" ? ["failed", "reminder"] : ["failed", "reminder", "canceled"]);
+      expect(await state(run.id)).toMatchObject({ state: "done", exit_reason: "exit" });
+    });
+
+    it.each(["canceled", "pro"])("runs installed come-back against current %s plan after its original delay", async (plan) => {
+      const topicId = await topic();
+      const installed = await install("come-back", { topic_id: topicId });
+      await enable(installed.automation.id);
+      const person = await contact(`return-${plan}@example.com`, { plan: "free" }, topicId);
+      await call(fullKey, "PATCH", `/contacts/${person.id}`, { properties: { plan: "canceled" } });
+      const [run] = await flowRuns(installed.automation.id);
+      await execute(run);
+      if (plan === "pro") await call(fullKey, "PATCH", `/contacts/${person.id}`, { properties: { plan } });
+      await advance(run);
+      expect(await emails(installed.automation.id)).toHaveLength(plan === "canceled" ? 1 : 0);
+      expect(await state(run.id)).toMatchObject({ state: "done", exit_reason: plan === "canceled" ? "exit" : "filter" });
+    });
+
+    it("holds an installed flow paused then rejects stale original event state without rewriting freshness", async () => {
+      const topicId = await topic();
+      const installed = await install("invite-to-upgrade", { topic_id: topicId });
+      await enable(installed.automation.id);
+      const person = await contact("stale@example.com", { plan: "free" }, topicId);
+      await sendEvent("usage.limit_reached", person.email);
+      const [run] = await flowRuns(installed.automation.id);
+      await execute(run);
+      await call(fullKey, "PATCH", `/automations/${installed.automation.id}`, { status: "paused" });
+      await db.query("update automation_runs set resume_at=now()-interval '1 second' where id=$1", [run.id]);
+      await db.query("update custom_events set created_at=now()-interval '11 days' where id=(select event_id from automation_runs where id=$1)", [run.id]);
+      expect(await claimAutomationRuns(db, 100)).toEqual([]);
+      await execute(run);
+      expect(await state(run.id)).toMatchObject({ state: "waiting" });
+      await enable(installed.automation.id);
+      await advance(run);
+      expect(await emails(installed.automation.id)).toHaveLength(1);
+      expect(await state(run.id)).toMatchObject({ state: "done", exit_reason: "filter" });
+      const stored = (await call(fullKey, "GET", `/automations/${installed.automation.id}`)).json;
+      expect(stored.steps.find((step: any) => step.key === "freshness").config.rule.value).toBe("10 days");
+    });
+  });
+
+  describe("trigger depth and contention repair", () => {
+    const runRow = async (runId: string) => (await db.query(
+      "select state,error,depth,guards,next_step_key from automation_runs where id=$1", [runId],
+    )).rows[0];
+    const history = async (contactId: string) => (await db.query(
+      "select field,from_value,to_value from contact_changes where contact_id=$1 and field in ('first_name','last_name') order by created_at,id",
+      [contactId],
+    )).rows;
+    async function webhook() {
+      const response = await post(fullKey, "/webhooks", {
+        url: "http://127.0.0.1:9/repair",
+        events: ["automation.run.started", "automation.run.completed", "automation.run.failed", "contact.updated"],
+      });
+      expect(response.status).toBe(200);
+      return response.json.id as string;
+    }
+    async function assertFanout(webhookId: string) {
+      const events = (await db.query(`select e.id,count(w.id)::integer as attempts
+        from email_events e left join webhook_attempts w on w.event_id=e.id and w.webhook_id=$1
+        where e.type in ('automation.run.started','automation.run.completed','automation.run.failed','contact.updated')
+        group by e.id`, [webhookId])).rows;
+      expect(events.length).toBeGreaterThan(0);
+      expect(events.every((event) => event.attempts === 1)).toBe(true);
+    }
+    async function editTrigger(automationId: string, config: Record<string, unknown>) {
+      expect((await call(fullKey, "PATCH", `/automations/${automationId}`, { status: "paused" })).status).toBe(200);
+      const flow = (await call(fullKey, "GET", `/automations/${automationId}`)).json;
+      const saved = await call(fullKey, "PATCH", `/automations/${automationId}`, {
+        steps: flow.steps.map((step: Record<string, unknown>) => step.type === "trigger" ? { ...step, config } : step),
+        connections: flow.connections,
+      });
+      expect(saved.status, JSON.stringify(saved.json)).toBe(200);
+      expect(saved.json).toMatchObject({ status: "paused", version: 1 });
+      expect((await call(fullKey, "PATCH", `/automations/${automationId}`, { status: "enabled" })).status).toBe(200);
+    }
+    async function waitFor<T>(read: () => Promise<T | undefined>, label: string): Promise<T> {
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline) {
+        const value = await read();
+        if (value !== undefined) return value;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      throw new Error(`Timed out waiting for ${label}`);
+    }
+
+    it("keeps an event root at zero after a paused contact-trigger edit and ignores forged payload depth", async () => {
+      const contact = await post(fullKey, "/contacts", { email: "forward@dispatch-fixture.net", first_name: "Original" });
+      const child = await contactFlow({ type: "contact_updated", field: "first_name", to: "Step" });
+      const parent = await contactFlow({ event_name: "repair.forward" }, [
+        { key: "update", type: "contact_update", config: { first_name: "Step" } },
+      ]);
+      expect((await post(fullKey, "/events/send", {
+        event: "repair.forward", email: contact.json.email, payload: { depth: 100, origin_run_id: "forged" },
+      })).status).toBe(202);
+      const root = (await flowRuns(parent))[0]!;
+      expect(await runRow(root.id)).toMatchObject({ depth: 0, state: "ready" });
+      await editTrigger(parent, { type: "contact_updated", field: "first_name" });
+      await executeAutomationRun(db, root.tenant_id, root.id);
+      await executeAutomationRun(db, root.tenant_id, root.id);
+      expect(await runRow(root.id)).toMatchObject({ depth: 0, state: "done", error: null });
+      expect(await flowRuns(parent)).toHaveLength(1); // Its new contact trigger still excludes itself.
+      const children = await flowRuns(child);
+      expect(children).toHaveLength(1);
+      expect(await runRow(children[0]!.id)).toMatchObject({ depth: 1, state: "ready" });
+      expect((await db.query("select data from custom_events where name='@contact.updated'")).rows).toEqual([{
+        data: expect.objectContaining({ depth: 1, origin_run_id: root.id, changes: [{ field: "first_name", from: "Original", to: "Step" }] }),
+      }]);
+      expect((await history(contact.json.id)).filter((change) => change.from_value !== null)).toEqual([
+        { field: "first_name", from_value: "Original", to_value: "Step" },
+      ]);
+      expect((await db.query("select state from automation_steps where run_id=$1", [root.id])).rows).toEqual([{ state: "done" }]);
+    });
+
+    it("keeps a nonzero contact enrollment after a paused event-trigger edit and increments its child", async () => {
+      const contact = await post(fullKey, "/contacts", { email: "inverse@dispatch-fixture.net", first_name: "Original" });
+      const child = await contactFlow({ type: "contact_updated", field: "last_name", to: "Child" });
+      const middle = await contactFlow({ type: "contact_updated", field: "first_name", to: "Middle" }, [
+        { key: "update", type: "contact_update", config: { last_name: "Child" } },
+      ]);
+      const source = await contactFlow({ event_name: "repair.inverse" }, [
+        { key: "update", type: "contact_update", config: { first_name: "Middle" } },
+      ]);
+      expect((await post(fullKey, "/events/send", { event: "repair.inverse", email: contact.json.email })).status).toBe(202);
+      const root = (await flowRuns(source))[0]!;
+      await executeAutomationRun(db, root.tenant_id, root.id);
+      const parent = (await flowRuns(middle))[0]!;
+      expect(await runRow(parent.id)).toMatchObject({ depth: 1 });
+      // Neither the edited trigger kind nor mutable historical event data is provenance.
+      await db.query("update custom_events set data=jsonb_set(data,'{depth}','100') where id=(select event_id from automation_runs where id=$1)", [parent.id]);
+      await editTrigger(middle, { event_name: "repair.edited" });
+      await executeAutomationRun(db, parent.tenant_id, parent.id);
+      expect(await runRow(parent.id)).toMatchObject({ depth: 1, state: "done", error: null });
+      const children = await flowRuns(child);
+      expect(children).toHaveLength(1);
+      expect(await runRow(children[0]!.id)).toMatchObject({ depth: 2 });
+      expect((await db.query("select data from custom_events where data->>'origin_run_id'=$1", [parent.id])).rows).toEqual([{
+        data: expect.objectContaining({ depth: 2, changes: [{ field: "last_name", from: null, to: "Child" }] }),
+      }]);
+      expect((await history(contact.json.id)).filter((change) => change.to_value === "Middle" || change.to_value === "Child")).toEqual([
+        { field: "first_name", from_value: "Original", to_value: "Middle" },
+        { field: "last_name", from_value: null, to_value: "Child" },
+      ]);
+    });
+
+    it("migrates twice without guessing mixed-era depth and roots new real legacy @ events at zero", async () => {
+      const flow = await contactFlow({ event_name: "repair.legacy" });
+      const tenantId = (await db.query("select tenant_id from automations where id=$1", [flow])).rows[0].tenant_id as string;
+      expect((await post(fullKey, "/events/send", { event: "repair.legacy", email: "legacy@dispatch-fixture.net", payload: { depth: 4 } })).status).toBe(202);
+      const old = (await flowRuns(flow))[0]!;
+      // A mixed-era schema with trigger_type already present cannot recover depth.
+      await db.query("alter table automation_runs drop column depth");
+      await migrate(db);
+      await migrate(db);
+      expect(await runRow(old.id)).toMatchObject({ depth: null });
+      await db.query("update automations set trigger='@contact.updated',steps=$2 where id=$1", [
+        flow, JSON.stringify([{ key: "trigger", type: "trigger", config: { event_name: "@contact.updated" } }]),
+      ]);
+      const subscriber = await contactFlow({ type: "contact_updated", field: "first_name" });
+      expect((await call(fullKey, "PATCH", `/contacts/${(await db.query("select id from contacts where email='legacy@dispatch-fixture.net'")).rows[0].id}`, { first_name: "External" })).status).toBe(200);
+      expect(await flowRuns(flow)).toHaveLength(1); // Internal dispatch cannot enter a real event flow.
+      expect(await flowRuns(subscriber)).toHaveLength(1);
+      const fired = await fireEvent(db, tenantId, "legacy-real-at-event", {
+        name: "@contact.updated", email: "legacy@dispatch-fixture.net", data: { depth: 100, origin_run_id: old.id },
+      });
+      expect(fired.runs).toHaveLength(1);
+      expect(await runRow(fired.runs[0]!)).toMatchObject({ depth: 0 });
+      const ordinary = await contactFlow({ event_name: "repair.forged" });
+      const forged = await fireEvent(db, tenantId, "ordinary-forged-depth", {
+        name: "repair.forged", email: "legacy@dispatch-fixture.net", data: { depth: 4, origin_run_id: old.id },
+      });
+      expect(forged.runs).toHaveLength(1);
+      expect((await flowRuns(ordinary)).map((run) => run.id)).toEqual(forged.runs);
+      expect(await runRow(forged.runs[0]!)).toMatchObject({ depth: 0 });
+      await migrate(db);
+      await migrate(db);
+      expect(await runRow(old.id)).toMatchObject({ depth: null });
+      expect(await runRow(fired.runs[0]!)).toMatchObject({ depth: 0 });
+      const contact = (await db.query<ContactRow>(`select ${contactColumns} from contacts where email='legacy@dispatch-fixture.net'`)).rows[0]!;
+      const snapshot = async () => (await db.query(`select
+        (select count(*) from custom_events) as events,
+        (select count(*) from automation_runs) as runs,
+        (select count(*) from automation_enrollments) as enrollments,
+        (select count(*) from contact_changes) as history,
+        (select count(*) from webhook_attempts) as attempts,
+        (select count(*) from email_events) as fanout`)).rows[0];
+      const before = await snapshot();
+      await expect(retryTx(db, async (client) => {
+        const updated = await updateContact(client, tenantId, contact.id, { first_name: "Untrusted" });
+        await dispatchContactWrite(client, tenantId, "unknown-origin", contact, updated, { originRunId: old.id });
+      })).rejects.toMatchObject({ statusCode: 409, message: expect.stringContaining("depth is unavailable") });
+      expect(await snapshot()).toEqual(before);
+      expect((await db.query("select first_name from contacts where id=$1", [contact.id])).rows[0].first_name).toBe("External");
+    });
+
+    it("continues unknown-depth contact and segment mutations when no eligible internal candidate matches", async () => {
+      const contact = await post(fullKey, "/contacts", { email: "unknown-no-match@dispatch-fixture.net", first_name: "Original" });
+      const segment = await post(fullKey, "/segments", { name: "Unknown origin membership" });
+      const ignored = await contactFlow({ type: "contact_updated", field: "first_name", to: "Does not match" });
+      const parent = await contactFlow({ event_name: "repair.no-match" }, [
+        { key: "update", type: "contact_update", config: { first_name: "Kept" } },
+        { key: "segment", type: "add_to_segment", config: { segment_id: segment.json.id } },
+        { key: "after", type: "contact_update", config: { last_name: "Continued" } },
+      ]);
+      expect((await post(fullKey, "/events/send", { event: "repair.no-match", email: contact.json.email })).status).toBe(202);
+      const root = (await flowRuns(parent))[0]!;
+      await db.query("update automation_runs set depth=null where id=$1", [root.id]);
+      // A matching self-trigger is excluded by identity even with unknown depth.
+      await editTrigger(parent, { type: "contact_updated", field: "first_name", to: "Kept" });
+      await executeAutomationRun(db, root.tenant_id, root.id);
+      expect(await runRow(root.id)).toMatchObject({ state: "done", depth: null, error: null });
+      expect((await db.query("select first_name,last_name from contacts where id=$1", [contact.json.id])).rows[0])
+        .toEqual({ first_name: "Kept", last_name: "Continued" });
+      expect((await history(contact.json.id)).filter((change) => change.from_value !== null || change.field === "last_name")).toEqual([
+        { field: "first_name", from_value: "Original", to_value: "Kept" },
+        { field: "last_name", from_value: null, to_value: "Continued" },
+      ]);
+      expect((await db.query("select field,from_value,to_value from contact_changes where contact_id=$1 and field=$2",
+        [contact.json.id, `segments.${segment.json.id}`])).rows).toEqual([
+        { field: `segments.${segment.json.id}`, from_value: false, to_value: true },
+      ]);
+      expect((await db.query("select step_key,state from automation_steps where run_id=$1 order by step_index", [root.id])).rows)
+        .toEqual([{ step_key: "update", state: "done" }, { step_key: "segment", state: "done" }, { step_key: "after", state: "done" }]);
+      expect(await flowRuns(parent)).toHaveLength(1);
+      expect(await flowRuns(ignored)).toHaveLength(0);
+      expect((await db.query("select id from custom_events where name like '@%'")).rows).toHaveLength(0);
+    });
+
+    it("rolls back and retries complete dispatcher transactions after an actual SQL deadlock", async () => {
+      const endpoint = await webhook();
+      const flow = await contactFlow({ type: "contact_updated", field: "first_name" });
+      expect((await call(fullKey, "PATCH", `/automations/${flow}`, { reentry: "once" })).status).toBe(200);
+      const every = await contactFlow({ type: "contact_updated", field: "first_name" });
+      const contacts = await Promise.all(["left", "right"].map((name) => post(fullKey, "/contacts", {
+        email: `${name}@dispatch-fixture.net`, first_name: "Original",
+      })));
+      expect(contacts.map((contact) => contact.status)).toEqual([200, 200]);
+      const tenantId = (await db.query("select tenant_id from automations where id=$1", [flow])).rows[0].tenant_id as string;
+      const attempts = [0, 0];
+      let arrived = 0;
+      let release = () => {};
+      const barrier = new Promise<void>((resolve) => { release = resolve; });
+      const work = (index: number) => retryTx(db, async (client) => {
+        attempts[index]! += 1;
+        const contactId = contacts[index]!.json.id;
+        const before = (await client.query<ContactRow>(`select ${contactColumns} from contacts where id=$1 for update`, [contactId])).rows[0]!;
+        const after = await updateContact(client, tenantId, contactId, { first_name: index === 0 ? "Left" : "Right" });
+        await dispatchContactWrite(client, tenantId, `repair-${index}`, before, after);
+        await emit(client, { tenantId, requestId: `repair-${index}`, type: "contact.updated", resourceId: contactId, data: { id: contactId } });
+        // Only the first attempt participates. A victim replays all writes, not this barrier.
+        if (attempts[index] === 1) {
+          arrived += 1;
+          if (arrived === 2) release();
+          await barrier;
+        }
+        await client.query("select id from contacts where id=$1 for update", [contacts[1 - index]!.json.id]);
+      });
+      const pending = [work(0), work(1)].map((operation) => operation.catch((error) => {
+        release();
+        throw error;
+      }));
+      const settled = await Promise.allSettled(pending);
+      for (const result of settled) if (result.status === "rejected") throw result.reason;
+      expect(attempts.slice().sort()).toEqual([1, 2]);
+      expect((await db.query("select first_name from contacts order by email")).rows).toEqual([{ first_name: "Left" }, { first_name: "Right" }]);
+      for (const [index, contact] of contacts.entries()) {
+        expect((await history(contact.json.id)).filter((change) => change.from_value !== null)).toEqual([
+          { field: "first_name", from_value: "Original", to_value: index === 0 ? "Left" : "Right" },
+        ]);
+      }
+      expect((await db.query("select data from custom_events where name='@contact.updated'")).rows).toHaveLength(2);
+      expect(await flowRuns(flow)).toHaveLength(2);
+      expect(await flowRuns(every)).toHaveLength(2);
+      expect((await db.query("select contact_id from automation_enrollments where automation_id=$1 order by contact_id", [flow])).rows)
+        .toEqual(contacts.map((contact) => ({ contact_id: contact.json.id })).sort((a, b) => a.contact_id.localeCompare(b.contact_id)));
+      expect((await db.query("select state,error,depth from automation_runs")).rows).toEqual(Array.from({ length: 4 }, () => ({ state: "ready", error: null, depth: 0 })));
+      expect((await db.query("select id from email_events where type='automation.run.started'")).rows).toHaveLength(4);
+      expect((await db.query("select id from email_events where type='contact.updated'")).rows).toHaveLength(2);
+      expect((await db.query("select id from webhook_attempts where webhook_id=$1", [endpoint])).rows).toHaveLength(6);
+      await assertFanout(endpoint);
+    }, 30_000);
+
+    it.each([2, 4])("keeps executor guards attempt-local with %i PostgreSQL-aborted step attempts", async (failures) => {
+      const endpoint = await webhook();
+      const contact = await post(fullKey, "/contacts", { email: "guards@dispatch-fixture.net", first_name: "Original" });
+      const rule = { type: "rule", field: "contact.first_name", operator: "eq", value: "Original" };
+      const flow = await contactFlow({ event_name: "repair.guards" }, [
+        { key: "filter", type: "filter", config: { rule, scope: "following" } },
+        { key: "update", type: "contact_update", config: { first_name: "Step" } },
+      ]);
+      expect((await post(fullKey, "/events/send", { event: "repair.guards", email: contact.json.email })).status).toBe(202);
+      const run = (await flowRuns(flow))[0]!;
+      // A real PostgreSQL abort after guard persistence also rolls back the step and fanout.
+      // The sequence intentionally survives rollback so subsequent attempts can recover.
+      await db.query(`create sequence repair_step_attempts;
+        create function abort_repair_step() returns trigger language plpgsql as $$
+          begin
+            if new.step_key='filter' then
+              if nextval('repair_step_attempts') <= ${failures} then
+                raise exception 'synthetic PostgreSQL transaction abort' using errcode='40P01';
+              end if;
+            end if;
+            return new;
+          end $$;
+        create trigger abort_repair_step before insert on automation_steps for each row execute function abort_repair_step()`);
+      try {
+        await executeAutomationRun(db, run.tenant_id, run.id);
+        expect(Number((await db.query("select last_value from repair_step_attempts")).rows[0].last_value)).toBe(failures === 2 ? 3 : 4);
+        if (failures === 4) {
+          expect(await runRow(run.id)).toMatchObject({ state: "ready", error: null, guards: [], next_step_key: null });
+          expect((await db.query("select id from automation_steps where run_id=$1", [run.id])).rows).toHaveLength(0);
+          expect((await db.query("select first_name from contacts where id=$1", [contact.json.id])).rows[0].first_name).toBe("Original");
+          expect((await db.query("select id from email_events where type in ('automation.run.completed','automation.run.failed','contact.updated')")).rows).toHaveLength(0);
+        }
+      } finally {
+        await db.query("drop trigger abort_repair_step on automation_steps; drop function abort_repair_step(); drop sequence repair_step_attempts");
+      }
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect(await runRow(run.id)).toMatchObject({ state: "done", error: null, guards: [{ filter: "filter", rule }] });
+      expect((await db.query("select step_key,state from automation_steps where run_id=$1 order by step_index", [run.id])).rows)
+        .toEqual([{ step_key: "filter", state: "done" }, { step_key: "update", state: "done" }]);
+      expect((await history(contact.json.id)).filter((change) => change.from_value !== null)).toEqual([
+        { field: "first_name", from_value: "Original", to_value: "Step" },
+      ]);
+      expect((await db.query("select id from email_events where type='automation.run.completed'")).rows).toHaveLength(1);
+      expect((await db.query("select id from email_events where type='automation.run.failed'")).rows).toHaveLength(0);
+      expect((await db.query("select id from email_events where type='contact.updated'")).rows).toHaveLength(1);
+      expect((await db.query("select id from webhook_attempts where webhook_id=$1", [endpoint])).rows).toHaveLength(3);
+      await assertFanout(endpoint);
+    });
+
+    it("recovers the actual PATCH, executor and Stop lock cycle regardless of the PostgreSQL victim", async () => {
+      const endpoint = await webhook();
+      const contact = await post(fullKey, "/contacts", { email: "barrier@dispatch-fixture.net", first_name: "Initial" });
+      const observer = await contactFlow({ type: "contact_updated", field: "first_name" });
+      const flow = await contactFlow({ type: "contact_updated", field: "first_name" }, [
+        { key: "update", type: "contact_update", config: { first_name: "Step" } },
+        { key: "after", type: "contact_update", config: { last_name: "Must not run" } },
+      ]);
+      expect((await call(fullKey, "PATCH", `/automations/${flow}`, { reentry: "once" })).status).toBe(200);
+      expect((await call(fullKey, "PATCH", `/contacts/${contact.json.id}`, { first_name: "Root" })).status).toBe(200);
+      const run = (await flowRuns(flow))[0]!;
+      const deadlocks = async () => Number((await db.query("select deadlocks from pg_stat_database where datname=current_database()")).rows[0].deadlocks);
+      const beforeDeadlocks = await deadlocks();
+      const locker = await db.connect();
+      const lockKey = 847_231;
+      const lockerPid = Number((await locker.query("select pg_backend_pid() as pid")).rows[0].pid);
+      const executorPids = new Set<number>();
+      const wrapped = {
+        query: db.query.bind(db),
+        connect: async () => {
+          const client = await db.connect();
+          executorPids.add(Number((await client.query("select pg_backend_pid() as pid")).rows[0].pid));
+          return client;
+        },
+      } as unknown as Db;
+      let external: ReturnType<typeof call> | undefined;
+      let executor: Promise<void> | undefined;
+      let stop: ReturnType<typeof post> | undefined;
+      let holdAfterStep = () => {};
+      const afterStep = new Promise<void>((resolve) => { holdAfterStep = resolve; });
+      let stopFinished = false;
+      // Keep a successfully committed step from advancing before the real Stop commits.
+      const guarded = {
+        query: wrapped.query,
+        connect: async () => {
+          const client = await wrapped.connect();
+          return {
+            release: () => client.release(),
+            query: async (sql: string, params?: unknown[]) => {
+              const result = await client.query(sql, params);
+              if (sql === "commit" && !stopFinished && (await db.query(
+                "select id from automation_steps where run_id=$1 and step_key='update'", [run.id],
+              )).rows.length) await afterStep;
+              return result;
+            },
+          };
+        },
+      } as unknown as Db;
+      try {
+        await locker.query("select pg_advisory_lock($1)", [lockKey]);
+        await db.query(`create sequence repair_external_attempts;
+          create function hold_repair_external() returns trigger language plpgsql as $$
+            begin
+              if new.field='first_name' and new.to_value='"External"'::jsonb then
+                if nextval('repair_external_attempts')=1 then
+                  perform pg_advisory_xact_lock(${lockKey});
+                end if;
+              end if;
+              return new;
+            end $$;
+          create trigger hold_repair_external before insert on contact_changes for each row execute function hold_repair_external()`);
+        external = call(fullKey, "PATCH", `/contacts/${contact.json.id}`, { first_name: "External" });
+        const externalPid = await waitFor(async () => {
+          const rows = (await db.query(`select pid from pg_stat_activity where datname=current_database()
+            and wait_event_type='Lock' and $1::integer=any(pg_blocking_pids(pid)) and query like '%insert into contact_changes%'`, [lockerPid])).rows;
+          return rows[0] ? Number(rows[0].pid) : undefined;
+        }, "PATCH holding the contact at the first-attempt barrier");
+        executor = executeAutomationRun(guarded, run.tenant_id, run.id);
+        const executorPid = await waitFor(async () => {
+          const rows = (await db.query(`select pid from pg_stat_activity where datname=current_database()
+            and wait_event_type='Lock' and $1::integer=any(pg_blocking_pids(pid))`, [externalPid])).rows;
+          return rows.map((row) => Number(row.pid)).find((pid) => executorPids.has(pid));
+        }, "executor holding the run while PATCH holds the contact");
+        stop = post(fullKey, `/automations/${flow}/stop`, {}).finally(() => {
+          stopFinished = true;
+          holdAfterStep();
+        });
+        await waitFor(async () => {
+          const rows = (await db.query(`select pid from pg_stat_activity where datname=current_database()
+            and wait_event_type='Lock' and $1::integer=any(pg_blocking_pids(pid))
+            and query like '%update automation_runs%'`, [executorPid])).rows;
+          return rows[0] ? Number(rows[0].pid) : undefined;
+        }, "Stop holding the automation while the executor holds the run");
+        // PATCH now dispatches, waiting for Stop's automation lock: a real three-way cycle.
+        await locker.query("select pg_advisory_unlock($1)", [lockKey]);
+        expect((await external).status).toBe(200);
+        expect((await stop).json).toMatchObject({ status: "disabled" });
+        await executor;
+        await waitFor(async () => await deadlocks() > beforeDeadlocks ? true : undefined, "PostgreSQL's deadlock detection");
+        expect(await runRow(run.id)).toMatchObject({ state: "stopped", error: null, depth: 0 });
+        expect(await flowRuns(flow)).toHaveLength(1);
+        expect((await db.query("select contact_id from automation_enrollments where automation_id=$1", [flow])).rows)
+          .toEqual([{ contact_id: contact.json.id }]);
+        const steps = (await db.query("select step_key,state,error from automation_steps where run_id=$1", [run.id])).rows;
+        expect(steps).toEqual(steps.length ? [{ step_key: "update", state: "done", error: null }] : []);
+        const changes = (await history(contact.json.id)).filter((change) => change.from_value !== null);
+        expect(changes[0]).toEqual({ field: "first_name", from_value: "Initial", to_value: "Root" });
+        const transitions = changes.slice(1);
+        expect(transitions.filter((change) => change.to_value === "External")).toHaveLength(1);
+        expect(transitions.filter((change) => change.to_value === "Step")).toHaveLength(steps.length);
+        expect(transitions.map((change) => change.field)).toEqual(Array(1 + steps.length).fill("first_name"));
+        let previous = "Root";
+        for (const change of transitions) {
+          expect(change.from_value).toBe(previous);
+          previous = change.to_value;
+        }
+        expect((await db.query("select first_name,last_name from contacts where id=$1", [contact.json.id])).rows)
+          .toEqual([{ first_name: previous, last_name: null }]);
+        expect(await flowRuns(observer)).toHaveLength(2 + steps.length);
+        const internal = (await db.query("select data from custom_events where name='@contact.updated' order by created_at,id")).rows;
+        expect(internal).toHaveLength(2 + steps.length);
+        expect(internal.flatMap((event) => event.data.changes)).toEqual(changes.map((change) => ({
+          field: change.field, from: change.from_value, to: change.to_value,
+        })));
+        expect(internal.filter((event) => event.data.origin_run_id === run.id).map((event) => event.data.depth)).toEqual(Array(steps.length).fill(1));
+        expect((await db.query("select id from automation_runs where state='failed'")).rows).toHaveLength(0);
+        expect((await db.query("select id from automation_steps where state='failed'")).rows).toHaveLength(0);
+        expect((await db.query("select id from email_events where type='automation.run.failed'")).rows).toHaveLength(0);
+        expect((await db.query("select id from email_events where type='automation.run.completed' and data->>'run_id'=$1", [run.id])).rows).toHaveLength(1);
+        expect((await db.query("select id from email_events where type='automation.run.started'")).rows).toHaveLength(3 + steps.length);
+        expect((await db.query("select id from email_events where type='contact.updated'")).rows).toHaveLength(2 + steps.length);
+        expect((await db.query("select id from webhook_attempts where webhook_id=$1", [endpoint])).rows).toHaveLength(6 + 2 * steps.length);
+        await assertFanout(endpoint);
+        await executeAutomationRun(db, run.tenant_id, run.id);
+        expect(await runRow(run.id)).toMatchObject({ state: "stopped", error: null });
+      } finally {
+        holdAfterStep();
+        await locker.query("select pg_advisory_unlock($1)", [lockKey]);
+        locker.release();
+        await Promise.allSettled([external, executor, stop].filter((pending) => pending !== undefined));
+        await db.query("drop trigger if exists hold_repair_external on contact_changes; drop function if exists hold_repair_external(); drop sequence if exists repair_external_attempts");
+      }
+    }, 45_000);
+  });
+  describe("send kinds", () => {
+    const start = { key: "start", type: "trigger", config: { event_name: "kind.start" } };
+    const connections = [{ from: "start", to: "send" }];
+    async function fixture(kind = "transactional", topic_id?: string) {
+      const template = await post(fullKey, "/templates", { name: "Kind", subject: "Kind", text: "Hello", publish: true });
+      const send = { key: "send", type: "send_email", config: {
+        kind, from: "hello@dispatch-fixture.net", template: template.json.id, ...(topic_id ? { topic_id } : {}),
+      } };
+      const steps: [typeof start, typeof send] = [start, send];
+      return { template: template.json, steps, connections };
+    }
+    async function run(flow: any, email = "kind@dispatch-fixture.net") {
+      expect((await post(fullKey, "/events/send", { event: "kind.start", email })).status).toBe(202);
+      const row = (await db.query(`select r.id,r.tenant_id from automation_runs r join custom_events e on e.id=r.event_id
+        where r.automation_id=$1 and e.email=$2 order by r.created_at desc,r.id desc limit 1`, [flow.id, email])).rows[0];
+      await executeAutomationRun(db, row.tenant_id, row.id, { publicUrl: "https://dispatch.example", appUrl: "https://app.dispatch.example", secret: "synthetic-kind-secret" });
+      return (await db.query("select state,error from automation_runs where id=$1", [row.id])).rows[0];
+    }
+    it("stores Marketing drafts without a topic, rejects activation/resume, and prevents runtime fallback", async () => {
+      const graph = await fixture("marketing");
+      const draft = await post(fullKey, "/automations", { name: "Kind draft", ...graph });
+      expect(draft.status).toBe(200);
+      expect(draft.json.steps[1].config.kind).toBe("marketing");
+      expect((await post(fullKey, "/automations", { name: "Kind enabled", enabled: true, ...graph })).status).toBe(422);
+      expect((await call(fullKey, "PATCH", `/automations/${draft.json.id}`, { status: "enabled" })).status).toBe(422);
+      await db.query("update automations set enabled=true,paused_at=now() where id=$1", [draft.json.id]);
+      expect((await call(fullKey, "PATCH", `/automations/${draft.json.id}`, { steps: draft.json.steps, connections: draft.json.connections })).status).toBe(200);
+      expect((await call(fullKey, "PATCH", `/automations/${draft.json.id}`, { status: "enabled" })).status).toBe(422);
+      await db.query("update automations set paused_at=null where id=$1", [draft.json.id]);
+      expect(await run(draft.json)).toMatchObject({ state: "failed", error: expect.stringContaining("needs a topic") });
+      expect((await db.query("select id from emails")).rows).toHaveLength(0);
+      expect((await db.query("select id from send_jobs")).rows).toHaveLength(0);
+    });
+    it("refuses a Marketing library template or unsubscribe content as Transactional, including later publishing", async () => {
+      const installed = await post(fullKey, "/template-library/newsletter/install", {});
+      expect(installed.status).toBe(200);
+      const template = await call(fullKey, "GET", `/templates/${installed.json.id}`);
+      expect(template.json).toMatchObject({ kind: "marketing", source: { kind: "library", send_kind: "marketing" } });
+      const edited = await call(fullKey, "PATCH", `/templates/${installed.json.id}`, { html: "<p>Edited news</p>", text: "Edited news" });
+      expect(edited.json).toMatchObject({ kind: "marketing", source: { kind: "custom", send_kind: "marketing" } });
+      expect((await post(fullKey, `/templates/${installed.json.id}/publish`, {})).json.kind).toBe("marketing");
+      const graph = await fixture();
+      graph.steps[1].config.template = installed.json.id;
+      expect((await post(fullKey, "/automations", { name: "Wrong kind", ...graph })).status).toBe(422);
+      graph.steps[1].config.template = graph.template.id;
+      const flow = await post(fullKey, "/automations", { name: "Kind publish", enabled: true, ...graph });
+      expect(flow.status).toBe(200);
+      expect((await call(fullKey, "PATCH", `/templates/${graph.template.id}`, { text: "Leave: {{{UNSUBSCRIBE_URL}}}" })).status).toBe(200);
+      expect((await post(fullKey, `/templates/${graph.template.id}/publish`, {})).status).toBe(200);
+      expect(await run(flow.json)).toMatchObject({ state: "failed", error: expect.stringContaining("must be Marketing") });
+      expect((await db.query("select id from emails")).rows).toHaveLength(0);
+    });
+    it("requires tenant-owned live topics on activation and execution", async () => {
+      const topic = await post(fullKey, "/topics", { name: "Kind topic" });
+      const graph = await fixture("marketing", topic.json.id);
+      const foreign = await seedTenant();
+      expect((await post(foreign, "/automations", { name: "Foreign topic", enabled: true, ...graph })).status).toBe(422);
+      const flow = await post(fullKey, "/automations", { name: "Deleted topic", enabled: true, ...graph });
+      expect(flow.status).toBe(200);
+      expect((await call(fullKey, "DELETE", `/topics/${topic.json.id}`)).status).toBe(200);
+      expect(await run(flow.json)).toMatchObject({ state: "failed", error: expect.stringContaining("existing topic") });
+      expect((await db.query("select id from emails")).rows).toHaveLength(0);
+    });
+    it("keeps Transactional sends to opted-out contacts and enforces viewers without requiring lifecycle setup", async () => {
+      const graph = await fixture();
+      await post(fullKey, "/contacts", { email: "kind@dispatch-fixture.net", unsubscribed: true });
+      const flow = await post(fullKey, "/automations", { name: "Receipt", enabled: true, ...graph });
+      expect(flow.status).toBe(200);
+      expect(await run(flow.json)).toMatchObject({ state: "done", error: null });
+      const email = (await db.query("select topic_id,headers from emails")).rows[0];
+      expect(email.topic_id).toBeNull();
+      expect(email.headers).not.toHaveProperty("List-Unsubscribe");
+      const viewer = await teammate("Viewer");
+      const session = await signInAs(viewer.email, viewer.password);
+      expect((await call(session.token, "PATCH", `/automations/${flow.json.id}`, { status: "paused" })).status).toBe(403);
+      expect((await call(session.token, "GET", `/automations/${flow.json.id}`)).json.steps[1].config.kind).toBe("transactional");
+      expect((await post(fullKey, "/emails", { from: "hello@dispatch-fixture.net", to: "ordinary@dispatch-fixture.net", subject: "Plain", text: "Receipt" })).status).toBe(200);
+    });
+    it("preserves Marketing topic opt-outs, recipient links and headers", async () => {
+      const topic = await post(fullKey, "/topics", { name: "News", default_subscription: "opt_in" });
+      const graph = await fixture("marketing", topic.json.id);
+      await call(fullKey, "PATCH", `/templates/${graph.template.id}`, { text: "Hello {{{UNSUBSCRIBE_URL}}}" });
+      await post(fullKey, `/templates/${graph.template.id}/publish`, {});
+      const flow = await post(fullKey, "/automations", { name: "News", enabled: true, ...graph });
+      expect(flow.status).toBe(200);
+      expect(await run(flow.json)).toMatchObject({ state: "done", error: null });
+      const email = (await db.query("select topic_id,headers,text from emails")).rows[0];
+      expect(email.topic_id).toBe(topic.json.id);
+      expect(email.headers["List-Unsubscribe"]).toContain("unsubscribe");
+      expect(email.headers["List-Unsubscribe-Post"]).toBe("List-Unsubscribe=One-Click");
+      expect(email.text).toContain("https://app.dispatch.example/unsubscribe?token=");
+      const contact = await post(fullKey, "/contacts", { email: "out@dispatch-fixture.net", unsubscribed: true });
+      expect(contact.status).toBe(200);
+      await run(flow.json, "out@dispatch-fixture.net");
+      expect((await db.query("select id from emails")).rows).toHaveLength(1);
+    });
+    it("backfills flat and keyed legacy send kinds twice without changing explicit Marketing intent", async () => {
+      const graph = await fixture();
+      const flow = await post(fullKey, "/automations", { name: "Legacy kind", ...graph });
+      const linear = [{ type: "send_email", template: graph.template.id }, { type: "send_email", template: graph.template.id, topic_id: "news" }, { type: "send_email", template: graph.template.id, kind: "marketing" }];
+      await db.query("update automations set steps=$2,connections='[]' where id=$1", [flow.json.id, JSON.stringify(linear)]);
+      await migrate(db);
+      await migrate(db);
+      const stored = (await db.query("select steps from automations where id=$1", [flow.json.id])).rows[0].steps;
+      expect(stored.map((step: any) => step.kind)).toEqual(["transactional", "marketing", "marketing"]);
+      // Use new keys because permanent type reservations apply to the old flat keys.
+      await db.query("update automations set steps=$2 where id=$1", [flow.json.id, JSON.stringify([
+        { key: "new_trigger", type: "trigger", config: { event_name: "kind.start" } },
+        { key: "new_send", type: "send_email", config: { template: graph.template.id, topic_id: "news" } },
+      ])]);
+      await migrate(db);
+      await migrate(db);
+      expect((await db.query("select steps from automations where id=$1", [flow.json.id])).rows[0].steps[1].config.kind).toBe("marketing");
+    });
+  });
+  describe("flow control", () => {
+    const start = { key: "start", type: "trigger", config: { event_name: "flow.start" } };
+    const activated = { type: "rule", field: "contact.activated", operator: "eq", value: false };
+    const exit = { key: "end", type: "exit", config: {} };
+    async function fixture(scope = "following", rule: unknown = activated) {
+      await post(fullKey, "/contact-properties", { key: "activated", type: "boolean" });
+      const contact = await post(fullKey, "/contacts", { email: "flow@dispatch-fixture.net", properties: { activated: false } });
+      const template = await post(fullKey, "/templates", { name: "Flow", subject: "Flow", text: "Fresh", publish: true });
+      const flow = await post(fullKey, "/automations", { name: "Flow", enabled: true, steps: [
+        start, { key: "eligible", type: "filter", config: { rule, scope } },
+        { key: "wait", type: "delay", config: { duration: "1 hour" } },
+        { key: "send", type: "send_email", config: { from: "hello@dispatch-fixture.net", template: template.json.id } },
+      ], connections: [{ from: "start", to: "eligible" }, { from: "eligible", to: "wait" }, { from: "wait", to: "send" }] });
+      expect(flow.status, JSON.stringify(flow.json)).toBe(200);
+      await post(fullKey, "/events/send", { event: "flow.start", email: "flow@dispatch-fixture.net", payload: { received_at: "2099-01-01" } });
+      const run = (await db.query<{ id: string; tenant_id: string }>("select id,tenant_id from automation_runs")).rows[0]!;
+      return { flow: flow.json, contact: contact.json, run };
+    }
+    const row = async (runId: string) => (await db.query("select state,exit_reason,guards from automation_runs where id=$1", [runId])).rows[0];
+    it("persists following guards, checks PATCH activation before the next send and emits one atomic filter completion", async () => {
+      const { flow, run, contact } = await fixture();
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect(await row(run.id)).toMatchObject({ state: "waiting", exit_reason: null, guards: [{ filter: "eligible", rule: activated }] });
+      expect((await call(fullKey, "PATCH", `/contacts/${contact.id}`, { properties: { activated: true } })).status).toBe(200);
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect(await row(run.id)).toMatchObject({ state: "done", exit_reason: "filter" });
+      expect((await db.query("select id from emails")).rows).toHaveLength(0);
+      expect((await db.query("select id from send_jobs")).rows).toHaveLength(0);
+      const detail = (await call(fullKey, "GET", `/automations/${flow.id}/runs/${run.id}`)).json;
+      expect(detail).toMatchObject({ exit_reason: "filter", guards: [{ filter: "eligible", rule: activated }] });
+      expect(detail.steps.at(-1)).toMatchObject({ key: "send", output: { exited: "filter", filter: "eligible" } });
+      const events = (await db.query("select type,data from email_events where data->>'run_id'=$1 order by created_at", [run.id])).rows;
+      expect(events).toEqual([
+        { type: "automation.run.started", data: expect.objectContaining({ exit_reason: null }) },
+        { type: "automation.run.completed", data: expect.objectContaining({ exit_reason: "filter", state: "done" }) },
+      ]);
+    });
+    it("keeps saved freshness guards across paused edits and refuses stale sends after resume", async () => {
+      const freshRule = { type: "rule", field: "event.received_at", operator: "within", value: "1 day" };
+      const { flow, run } = await fixture("following", freshRule);
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      await call(fullKey, "PATCH", `/automations/${flow.id}`, { status: "paused" });
+      await db.query("update custom_events set created_at=now()-interval '2 days' where id=(select event_id from automation_runs where id=$1)", [run.id]);
+      // Changing the graph's filter cannot loosen a guard the run already passed.
+      flow.steps.find((step: any) => step.key === "eligible").config.rule.value = "30 days";
+      expect((await call(fullKey, "PATCH", `/automations/${flow.id}`, { steps: flow.steps, connections: flow.connections })).status).toBe(200);
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect((await row(run.id)).state).toBe("waiting");
+      await call(fullKey, "PATCH", `/automations/${flow.id}`, { status: "enabled" });
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect(await row(run.id)).toMatchObject({ state: "done", exit_reason: "filter", guards: [{ filter: "eligible", rule: freshRule }] });
+      expect((await db.query("select id from emails")).rows).toHaveLength(0);
+    });
+    it("tests next filters only once, never persists them, and completes a real queued send", async () => {
+      const { run, contact } = await fixture("next");
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      await call(fullKey, "PATCH", `/contacts/${contact.id}`, { properties: { activated: true } });
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect(await row(run.id)).toEqual({ state: "done", exit_reason: "completed", guards: [] });
+      expect((await db.query("select id from emails")).rows).toHaveLength(1);
+      expect((await db.query("select id from send_jobs")).rows).toHaveLength(1);
+    });
+    it.each(["next", "following"])("failed %s filters never follow a default edge", async (scope) => {
+      const { run, contact } = await fixture(scope);
+      await call(fullKey, "PATCH", `/contacts/${contact.id}`, { properties: { activated: true } });
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect(await row(run.id)).toEqual({ state: "done", exit_reason: "filter", guards: [] });
+      expect((await db.query("select step_key,data from automation_steps")).rows).toEqual([{ step_key: "eligible", data: { result: false, exited: "filter", filter: "eligible" } }]);
+      expect((await db.query("select id from emails")).rows).toHaveLength(0);
+    });
+    it.each(["first", "second", "otherwise"])("takes ordered branch path %s through an explicit Exit and rejects incomplete graphs", async (expected) => {
+      const choose = { key: "choose", type: "branch", config: { paths: [
+        { key: "first", label: "First", rule: { type: "rule", field: "event.first", operator: "eq", value: true } },
+        { key: "second", label: "Second", rule: { type: "rule", field: "event.second", operator: "eq", value: true } },
+      ] } };
+      const connections = [{ from: "start", to: "choose", type: "default" },
+        ...["first", "second", "otherwise"].map((path) => ({ from: "choose", to: "end", type: "branch", path }))];
+      const body = { name: "Branch", enabled: true, steps: [start, choose, exit], connections };
+      for (const edges of [connections.slice(0, -1), [...connections, connections[1]], [...connections, { from: "end", to: "choose", type: "default" }]]) {
+        expect((await post(fullKey, "/automations", { ...body, connections: edges })).status).toBe(400);
+      }
+      const flow = await post(fullKey, "/automations", body);
+      expect(flow.status, JSON.stringify(flow.json)).toBe(200);
+      expect(flow.json.connections).toEqual(connections);
+      await post(fullKey, "/events/send", { event: "flow.start", email: "flow@dispatch-fixture.net", payload: { first: expected === "first", second: expected !== "otherwise" } });
+      const run = (await db.query("select id,tenant_id from automation_runs")).rows[0];
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect(await row(run.id)).toMatchObject({ state: "done", exit_reason: "exit" });
+      expect((await db.query("select step_key,data from automation_steps order by started_at")).rows).toEqual([
+        { step_key: "choose", data: { path: expected } }, { step_key: "end", data: { exited: "exit" } },
+      ]);
+      const viewer = await teammate("Viewer");
+      const session = await signInAs(viewer.email, viewer.password);
+      expect((await call(session.token, "GET", `/automations/${flow.json.id}/runs/${run.id}`)).json.exit_reason).toBe("exit");
+      expect((await call(session.token, "PATCH", `/automations/${flow.json.id}`, { status: "paused" })).status).toBe(403);
+      const foreign = await seedTenant();
+      expect((await call(foreign, "GET", `/automations/${flow.json.id}/runs/${run.id}`)).status).toBe(404);
+    });
+    it("backfills legacy terminal reasons twice without changing explicit reasons or guards", async () => {
+      const { flow, run } = await fixture();
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      await call(fullKey, "PATCH", `/automations/${flow.id}`, { status: "paused" });
+      await call(fullKey, "PATCH", `/automations/${flow.id}`, { steps: [start, exit], connections: [{ from: "start", to: "end" }] });
+      expect((await row(run.id)).exit_reason).toBe("stranded");
+      await db.query("update automation_runs set exit_reason=null where id=$1", [run.id]);
+      await migrate(db);
+      await migrate(db);
+      expect(await row(run.id)).toMatchObject({ state: "stopped", exit_reason: "stranded", guards: [{ filter: "eligible", rule: activated }] });
+      await db.query("update automation_runs set state='done',error=null,exit_reason=null where id=$1", [run.id]);
+      await migrate(db);
+      expect((await row(run.id)).exit_reason).toBe("completed");
+      await db.query("update automation_runs set state='stopped',exit_reason=null where id=$1", [run.id]);
+      await migrate(db);
+      expect((await row(run.id)).exit_reason).toBe("stopped");
+    });
+  });
+  describe("paused editing", () => {
+    const wait = { key: "wait", type: "wait_for_event", config: {
+      event_name: "edit.wake", timeout: "1 day",
+      filter_rule: { type: "rule", field: "event.plan", operator: "eq", value: "pro" },
+    } };
+    const start = { key: "start", type: "trigger", config: { event_name: "edit.start" } };
+    const after = { key: "after", type: "contact_update", config: { last_name: "Kept" } };
+    const connections = [{ from: "start", to: "wait" }, { from: "wait", to: "after", type: "event_received" }];
+    async function fixture(step: unknown = wait, edges: unknown[] = connections) {
+      const flow = await post(fullKey, "/automations", { name: "Editing", enabled: true, steps: [start, step, after], connections: edges });
+      expect(flow.status, JSON.stringify(flow.json)).toBe(200);
+      await post(fullKey, "/events/send", { event: "edit.start", email: "edit@dispatch-fixture.net" });
+      const run = (await db.query<{ id: string; tenant_id: string }>("select id,tenant_id from automation_runs")).rows[0]!;
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect((await call(fullKey, "PATCH", `/automations/${flow.json.id}`, { status: "paused" })).status).toBe(200);
+      return { flow: flow.json, run };
+    }
+    const patch = (flowId: string, body: unknown, preview = false) =>
+      call(fullKey, "PATCH", `/automations/${flowId}${preview ? "?dry_run=true" : ""}`, body);
+    const removed = { steps: [start, after], connections: [{ from: "start", to: "after" }] };
+
+    it("previews exact stranded counts without changing graph, runs, waits, keys or fanout, and enforces roles and tenants", async () => {
+      const { flow, run } = await fixture();
+      const snapshot = async () => (await db.query(`select
+        (select to_jsonb(a) from automations a where id=$1) as graph,
+        (select to_jsonb(r) from automation_runs r where id=$2) as run,
+        (select jsonb_agg(to_jsonb(s)) from automation_steps s where run_id=$2) as steps,
+        (select count(*) from email_events) as events`, [flow.id, run.id])).rows[0];
+      const before = await snapshot();
+      expect((await patch(flow.id, { ...removed, name: "Preview only", status: "enabled" }, true)).json)
+        .toMatchObject({ stranded_runs: 1, by_step: { wait: 1 } });
+      expect(await snapshot()).toEqual(before);
+      expect((await patch(flow.id, { steps: [start, wait, after], connections }, true)).json).toMatchObject({ stranded_runs: 0, by_step: {} });
+      const viewer = await teammate("Viewer");
+      const session = await signInAs(viewer.email, viewer.password);
+      expect((await call(session.token, "PATCH", `/automations/${flow.id}?dry_run=true`, removed)).status).toBe(403);
+      const foreign = await seedTenant();
+      expect((await call(foreign, "PATCH", `/automations/${flow.id}?dry_run=true`, removed)).status).toBe(404);
+      expect((await call(fullKey, "PATCH", `/automations/${flow.id}?dry_run=yes`, removed)).status).toBe(422);
+    });
+
+    it("atomically strands removed keys, closes waits, emits once and shows the exact visible reason", async () => {
+      const { flow, run } = await fixture();
+      const saved = await patch(flow.id, removed);
+      expect(saved.json).toMatchObject({ status: "paused", version: 1 });
+      const error = "Its next step was removed or changed while the automation was paused";
+      expect((await db.query("select state,error,resume_at,wait_event from automation_runs where id=$1", [run.id])).rows[0])
+        .toEqual({ state: "stopped", error, resume_at: null, wait_event: null });
+      expect((await db.query("select state,error,completed_at from automation_steps where run_id=$1", [run.id])).rows[0])
+        .toMatchObject({ state: "failed", error: "cancelled", completed_at: expect.any(Date) });
+      expect((await call(fullKey, "GET", `/automations/${flow.id}/runs/${run.id}`)).json)
+        .toMatchObject({ status: "cancelled", error });
+      await patch(flow.id, removed);
+      expect((await db.query("select id from email_events where data->>'run_id'=$1 and type='automation.run.completed'", [run.id])).rows).toHaveLength(1);
+    });
+
+    it("preserves stored event rules, names and deadlines, then lets new arrivals use changed config", async () => {
+      const { flow, run } = await fixture();
+      const original = (await db.query("select resume_at,wait_event from automation_runs where id=$1", [run.id])).rows[0];
+      const edited = { ...wait, config: { event_name: "new.wake", timeout: "1 hour",
+        filter_rule: { type: "rule", field: "event.plan", operator: "eq", value: "free" } } };
+      expect((await patch(flow.id, { steps: [start, edited, { ...after, config: { last_name: "New config" } }], connections })).status).toBe(200);
+      expect((await db.query("select resume_at,wait_event from automation_runs where id=$1", [run.id])).rows[0]).toEqual(original);
+      await post(fullKey, "/events/send", { event: "edit.wake", email: "edit@dispatch-fixture.net", payload: { plan: "free" } });
+      expect((await db.query("select state from automation_runs where id=$1", [run.id])).rows[0].state).toBe("waiting");
+      await post(fullKey, "/events/send", { event: "edit.wake", email: "edit@dispatch-fixture.net", payload: { plan: "pro" } });
+      expect((await db.query("select state from automation_runs where id=$1", [run.id])).rows[0].state).toBe("ready");
+      await patch(flow.id, { status: "enabled" });
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect((await db.query("select state from automation_runs where id=$1", [run.id])).rows[0].state).toBe("done");
+      expect((await db.query("select last_name from contacts where email='edit@dispatch-fixture.net'")).rows[0].last_name).toBe("New config");
+      await post(fullKey, "/events/send", { event: "edit.start", email: "new@dispatch-fixture.net" });
+      const next = (await db.query("select id from automation_runs where id<>$1", [run.id])).rows[0].id;
+      await executeAutomationRun(db, run.tenant_id, next);
+      expect((await db.query("select wait_event,resume_at from automation_runs where id=$1", [next])).rows[0])
+        .toMatchObject({ wait_event: "new.wake", resume_at: expect.any(Date) });
+      await post(fullKey, "/events/send", { event: "new.wake", email: "new@dispatch-fixture.net", payload: { plan: "free" } });
+      expect((await db.query("select state from automation_runs where id=$1", [next])).rows[0].state).toBe("ready");
+    });
+
+    it("keeps a changed delay's original due time and follows the reordered kept key", async () => {
+      const { flow, run } = await fixture({ key: "wait", type: "delay", config: { duration: "1 hour" } },
+        [{ from: "start", to: "wait" }, { from: "wait", to: "after" }]);
+      const before = (await db.query("select resume_at from automation_runs where id=$1", [run.id])).rows[0].resume_at;
+      const edited = { steps: [start, after, { key: "wait", type: "delay", config: { duration: "2 days" } }],
+        connections: [{ from: "start", to: "wait" }, { from: "wait", to: "after" }] };
+      expect((await patch(flow.id, edited)).status).toBe(200);
+      expect((await db.query("select resume_at from automation_runs where id=$1", [run.id])).rows[0].resume_at).toEqual(before);
+      await db.query("update automation_runs set resume_at=now()-interval '1 second' where id=$1", [run.id]);
+      await patch(flow.id, { status: "enabled" });
+      const { claimAutomationRuns } = await import("../../../packages/db/src/claims.js");
+      expect((await claimAutomationRuns(db, 20)).map((r) => r.id)).toEqual([run.id]);
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect((await db.query("select state from automation_runs where id=$1", [run.id])).rows[0].state).toBe("done");
+    });
+
+    it("permanently reserves key types after removal, across API and direct installer writes and repeated migrations", async () => {
+      const { flow } = await fixture();
+      const changed = { steps: [start, { key: "wait", type: "contact_delete", config: {} }, after],
+        connections: [{ from: "start", to: "wait" }, { from: "wait", to: "after" }] };
+      for (const preview of [true, false]) expect((await patch(flow.id, changed, preview)).status).toBe(409);
+      await patch(flow.id, removed);
+      await migrate(db);
+      await migrate(db);
+      expect((await patch(flow.id, changed)).json.message).toContain("Step key wait was already used for wait_for_event");
+      await expect(db.query("update automations set steps=$2,used_keys='{}' where id=$1", [flow.id, JSON.stringify(changed.steps)]))
+        .rejects.toMatchObject({ code: "23514" });
+      expect((await db.query("select used_keys from automations where id=$1", [flow.id])).rows[0].used_keys.wait).toBe("wait_for_event");
+      expect((await patch(flow.id, { ...changed, steps: [start, { ...changed.steps[1], key: "new_delete" }, after],
+        connections: [{ from: "start", to: "new_delete" }] })).status).toBe(200);
+    });
+
+    it("maps legacy waiting and nonwaiting indices against the old graph before reordering", async () => {
+      const created = await post(fullKey, "/automations", { name: "Legacy editing", enabled: true, trigger: "edit.start",
+        steps: [{ type: "delay", seconds: 60 }, { type: "contact_update", last_name: "Legacy kept" }] });
+      const flow = created.json;
+      // Simulate an installation predating explicit keys; reserve canonical legacy keys.
+      await db.query("update automations set steps=$2,connections='[]' where id=$1",
+        [flow.id, JSON.stringify([{ type: "delay", seconds: 60 }, { type: "contact_update", last_name: "Legacy kept" }])]);
+      for (const email of ["wait@dispatch-fixture.net", "ready@dispatch-fixture.net"])
+        await post(fullKey, "/events/send", { event: "edit.start", email });
+      const runs = (await db.query("select id,tenant_id from automation_runs order by id")).rows;
+      await db.query("update automation_runs set state='waiting',next_step_index=1,next_step_key=null,resume_at=now()-interval '1 hour' where id=$1", [runs[0].id]);
+      await db.query("insert into automation_steps(id,tenant_id,run_id,step_index,type,state,data) values($1,$2,$3,0,'delay','waiting','{}')",
+        [id("step"), runs[0].tenant_id, runs[0].id]);
+      await db.query("update automation_runs set next_step_index=1,next_step_key=null where id=$1", [runs[1].id]);
+      await patch(flow.id, { status: "paused" });
+      const steps = flow.steps.slice().reverse();
+      expect((await patch(flow.id, { steps, connections: flow.connections }, true)).json.stranded_runs).toBe(0);
+      expect((await db.query("select step_key from automation_steps where run_id=$1", [runs[0].id])).rows[0].step_key).toBeNull();
+      expect((await patch(flow.id, { steps, connections: flow.connections })).status).toBe(200);
+      expect((await db.query("select next_step_key from automation_runs where id=$1", [runs[0].id])).rows[0].next_step_key).toBe("step_1");
+      expect((await db.query("select next_step_key from automation_runs where id=$1", [runs[1].id])).rows[0].next_step_key).toBe("step_2");
+      expect((await db.query("select step_key from automation_steps where run_id=$1", [runs[0].id])).rows[0].step_key).toBe("step_1");
+      await patch(flow.id, { status: "enabled" });
+      const { claimAutomationRuns } = await import("../../../packages/db/src/claims.js");
+      await claimAutomationRuns(db, 20);
+      for (const run of runs) await executeAutomationRun(db, run.tenant_id, run.id);
+      expect((await db.query("select state from automation_runs")).rows).toEqual([{ state: "done" }, { state: "done" }]);
+    });
+
+    it("rolls back graph, version, legacy mapping, cancellations and events when a later graph write fails", async () => {
+      const { flow, run } = await fixture();
+      expect((await post(fullKey, "/automations", { name: "Name conflict",
+        steps: [{ key: "start", type: "trigger", config: { event_name: "other" } }], connections: [] })).status).toBe(200);
+      const before = (await db.query("select version,steps,used_keys from automations where id=$1", [flow.id])).rows[0];
+      expect((await patch(flow.id, { ...removed, name: "Name conflict" })).status).toBe(409);
+      expect((await db.query("select version,steps,used_keys from automations where id=$1", [flow.id])).rows[0]).toEqual(before);
+      expect((await db.query("select state,error from automation_runs where id=$1", [run.id])).rows[0]).toEqual({ state: "waiting", error: null });
+      expect((await db.query("select state from automation_steps where run_id=$1", [run.id])).rows[0].state).toBe("waiting");
+      expect((await db.query("select id from email_events where data->>'run_id'=$1 and type='automation.run.completed'", [run.id])).rows).toHaveLength(0);
+    });
+
+    it("locks active runs before saving and does not miss a wake event arriving during the save", async () => {
+      const { flow, run } = await fixture();
+      const locker = await db.connect();
+      let pending: ReturnType<typeof post> | undefined;
+      try {
+        await locker.query("begin");
+        await locker.query("select id from automations where id=$1 for update", [flow.id]);
+        await locker.query("select id from automation_runs where id=$1 for update", [run.id]);
+        pending = post(fullKey, "/events/send", { event: "edit.wake", email: "edit@dispatch-fixture.net", payload: { plan: "pro" } });
+        let waiting = false;
+        for (let n = 0; n < 100 && !waiting; n++) {
+          waiting = (await db.query("select 1 from pg_stat_activity where wait_event_type='Lock' and query like '%as wait_config%'")).rows.length > 0;
+          if (!waiting) await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect(waiting).toBe(true);
+        await locker.query("commit");
+        expect((await pending).status).toBe(202);
+        expect((await db.query("select state from automation_runs where id=$1", [run.id])).rows[0].state).toBe("ready");
+        expect((await patch(flow.id, { steps: [start, wait, after], connections })).json.version).toBe(1);
+      } finally {
+        await locker.query("rollback");
+        locker.release();
+        await pending;
+      }
+    });
+    it("cannot expose a new graph or version until it obtains every active run lock", async () => {
+      const { flow, run } = await fixture();
+      const locker = await db.connect();
+      let pending: ReturnType<typeof patch> | undefined;
+      try {
+        await locker.query("begin");
+        await locker.query("select id from automation_runs where id=$1 for update", [run.id]);
+        pending = patch(flow.id, removed);
+        let waiting = false;
+        for (let n = 0; n < 100 && !waiting; n++) {
+          waiting = (await db.query(`select 1 from pg_stat_activity where wait_event_type='Lock'
+            and query like 'select id, next_step_key, next_step_index%'`)).rows.length > 0;
+          if (!waiting) await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect(waiting).toBe(true);
+        expect((await db.query("select version from automations where id=$1", [flow.id])).rows[0].version).toBe(0);
+        expect((await db.query("select state from automation_runs where id=$1", [run.id])).rows[0].state).toBe("waiting");
+        await locker.query("commit");
+        expect((await pending).json.version).toBe(1);
+        expect((await db.query("select state from automation_runs where id=$1", [run.id])).rows[0].state).toBe("stopped");
+      } finally {
+        await locker.query("rollback");
+        locker.release();
+        await pending;
+      }
+    });
+    it("cancels every active run when disabling and saving a graph together", async () => {
+      const flow = await post(fullKey, "/automations", { name: "No work yet", enabled: true, steps: [start], connections: [] });
+      await post(fullKey, "/events/send", { event: "edit.start", email: "empty@dispatch-fixture.net" });
+      const run = (await db.query("select id from automation_runs")).rows[0];
+      expect((await patch(flow.json.id, { status: "disabled", connections: [] })).status).toBe(200);
+      expect((await db.query("select state,error from automation_runs where id=$1", [run.id])).rows[0])
+        .toEqual({ state: "stopped", error: null });
+    });
+    it("backfills an already keyed legacy wait's stored rule once across repeated migrations", async () => {
+      const legacySteps = [{ type: "wait", event: "edit.wake", timeout_seconds: 3600, filter_rule: wait.config.filter_rule }];
+      const flow = await post(fullKey, "/automations", { name: "Old wait", enabled: true, trigger: "edit.start", steps: legacySteps });
+      expect(flow.status).toBe(200);
+      await db.query("update automations set steps=$2,connections='[]' where id=$1", [flow.json.id, JSON.stringify(legacySteps)]);
+      await post(fullKey, "/events/send", { event: "edit.start", email: "legacy-wait@dispatch-fixture.net" });
+      const run = (await db.query("select id,tenant_id from automation_runs")).rows[0];
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      await db.query("update automation_steps set data=data-'wait_config' where run_id=$1", [run.id]);
+      await migrate(db);
+      await migrate(db);
+      expect((await db.query("select data->'wait_config' as config from automation_steps where run_id=$1", [run.id])).rows[0].config)
+        .toMatchObject({ filter_rule: wait.config.filter_rule });
+      await patch(flow.json.id, { status: "paused" });
+      const graph = flow.json.steps;
+      graph[1].config.filter_rule.value = "free";
+      expect((await patch(flow.json.id, { steps: graph, connections: flow.json.connections })).status).toBe(200);
+      await post(fullKey, "/events/send", { event: "edit.wake", email: "legacy-wait@dispatch-fixture.net", payload: { plan: "free" } });
+      expect((await db.query("select state from automation_runs where id=$1", [run.id])).rows[0].state).toBe("waiting");
+      await post(fullKey, "/events/send", { event: "edit.wake", email: "legacy-wait@dispatch-fixture.net", payload: { plan: "pro" } });
+      expect((await db.query("select state from automation_runs where id=$1", [run.id])).rows[0].state).toBe("ready");
+    });
+  });
+  describe("pause execution", () => {
+    async function flow(steps: unknown[] = [], connections: unknown[] = [], config: unknown = { event_name: "pause.start" }) {
+      const response = await post(fullKey, "/automations", {
+        name: "Pause fixture", status: "enabled", reentry: "every_time",
+        steps: [{ key: "start", type: "trigger", config }, ...steps], connections,
+      });
+      expect(response.status, JSON.stringify(response.json)).toBe(200);
+      return response.json;
+    }
+    async function patch(flowId: string, body: unknown) {
+      return call(fullKey, "PATCH", `/automations/${flowId}`, body);
+    }
+    async function started() {
+      expect((await post(fullKey, "/events/send", { event: "pause.start", email: "pause@dispatch-fixture.net" })).status).toBe(202);
+      return (await db.query<{ id: string; tenant_id: string }>("select id,tenant_id from automation_runs")).rows[0]!;
+    }
+    async function claims() {
+      const { claimAutomationRuns } = await import("../../../packages/db/src/claims.js");
+      return claimAutomationRuns(db, 20);
+    }
+    it("maps status transitions, legacy booleans, versions, filters and duplicates with role and tenant protection", async () => {
+      const item = await flow();
+      expect(item).toMatchObject({ status: "enabled", version: 0 });
+      const run = await started();
+      expect((await patch(item.id, { status: "paused" })).json.status).toBe("paused");
+      const pausedAt = (await db.query("select paused_at from automations where id=$1", [item.id])).rows[0].paused_at;
+      await patch(item.id, { status: "paused" });
+      expect((await db.query("select paused_at from automations where id=$1", [item.id])).rows[0].paused_at).toEqual(pausedAt);
+      expect((await call(fullKey, "GET", "/automations?status=paused")).json.data.map((row: any) => row.id)).toEqual([item.id]);
+      expect((await call(fullKey, "GET", "/automations?status=enabled")).json.data).toEqual([]);
+      const copy = await post(fullKey, `/automations/${item.id}/duplicate`, {});
+      expect(copy.json).toMatchObject({ status: "disabled", version: 0, reentry: "every_time", trigger_config: item.trigger_config });
+      expect((await patch(copy.json.id, { status: "paused" })).status).toBe(409);
+      const viewer = await teammate("Viewer");
+      const session = await signInAs(viewer.email, viewer.password);
+      expect((await call(session.token, "PATCH", `/automations/${item.id}`, { status: "enabled" })).status).toBe(403);
+      const foreign = await seedTenant();
+      expect((await call(foreign, "PATCH", `/automations/${item.id}`, { status: "paused" })).status).toBe(404);
+      expect((await patch(item.id, { enabled: true })).json.status).toBe("enabled");
+      expect((await patch(item.id, { enabled: false })).json.status).toBe("disabled");
+      expect((await db.query("select state from automation_runs where id=$1", [run.id])).rows[0].state).toBe("stopped");
+      expect((await patch(item.id, { status: "paused" })).status).toBe(409);
+      const saved = await patch(item.id, { connections: [] });
+      expect(saved.json.version).toBe(1);
+      expect((await patch(item.id, { name: "Renamed pause" })).json.version).toBe(1);
+      await migrate(db);
+      await migrate(db);
+      expect((await call(fullKey, "GET", `/automations/${item.id}`)).json).toMatchObject({ status: "disabled", version: 1 });
+      await patch(item.id, { status: "enabled" });
+      await patch(item.id, { status: "paused" });
+      expect((await post(fullKey, `/automations/${item.id}/stop`, {})).json.status).toBe("disabled");
+      expect((await db.query("select paused_at from automations where id=$1", [item.id])).rows[0].paused_at).toBeNull();
+    });
+
+    it("records paused events and current contact writes without enrolling or replaying missed triggers", async () => {
+      expect((await post(fullKey, "/contact-properties", { key: "plan", type: "string" })).status).toBe(200);
+      const item = await flow([], [], { type: "contact_updated", field: "plan" });
+      const contact = await post(fullKey, "/contacts", { email: "pause@dispatch-fixture.net", properties: { plan: "free" } });
+      await patch(item.id, { status: "paused" });
+      expect((await call(fullKey, "PATCH", `/contacts/${contact.json.id}`, { properties: { plan: "pro" } })).status).toBe(200);
+      expect((await post(fullKey, "/events/send", { event: "pause.start", email: "pause@dispatch-fixture.net" })).status).toBe(202);
+      expect((await db.query("select properties from contacts where id=$1", [contact.json.id])).rows[0].properties).toEqual({ plan: "pro" });
+      expect((await db.query("select to_value from contact_changes where contact_id=$1 and field='plan' order by created_at", [contact.json.id])).rows.map((r) => r.to_value)).toEqual(["free", "pro"]);
+      expect((await db.query("select id from custom_events where name='pause.start'")).rows).toHaveLength(1);
+      expect((await db.query("select id from automation_runs")).rows).toHaveLength(0);
+      await patch(item.id, { status: "enabled" });
+      expect(await claims()).toEqual([]);
+      expect((await db.query("select id from automation_runs")).rows).toHaveLength(0);
+      await call(fullKey, "PATCH", `/contacts/${contact.json.id}`, { properties: { plan: "paid" } });
+      expect((await db.query("select id from automation_runs")).rows).toHaveLength(1);
+    });
+    it("can pause a flow after its trigger resource is deleted but refuses to resume it", async () => {
+      const topic = await post(fullKey, "/topics", { name: "Pause resource" });
+      const item = await flow([], [], { type: "topic_subscribed", topic_id: topic.json.id });
+      expect((await call(fullKey, "DELETE", `/topics/${topic.json.id}`)).status).toBe(200);
+      expect((await patch(item.id, { status: "paused" })).json.status).toBe("paused");
+      expect((await patch(item.id, { status: "enabled" })).status).toBe(422);
+      expect((await call(fullKey, "GET", `/automations/${item.id}`)).json.status).toBe("paused");
+    });
+    it("serializes a concurrent event with pause without queueing a missed trigger", async () => {
+      const item = await flow();
+      const locker = await db.connect();
+      let pending: ReturnType<typeof post> | undefined;
+      try {
+        await locker.query("begin");
+        await locker.query("update automations set paused_at=now() where id=$1", [item.id]);
+        pending = post(fullKey, "/events/send", { event: "pause.start", email: "race@dispatch-fixture.net" });
+        let waiting = false;
+        for (let n = 0; n < 100 && !waiting; n++) {
+          waiting = (await db.query(`select 1 from pg_stat_activity where wait_event_type='Lock'
+            and query like '%trigger_type = $2%' and query like '%for share%'`)).rows.length > 0;
+          if (!waiting) await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect(waiting).toBe(true);
+        await locker.query("commit");
+        expect((await pending).status).toBe(202);
+        expect((await db.query("select id from automation_runs")).rows).toHaveLength(0);
+        expect((await db.query("select id from custom_events where name='pause.start'")).rows).toHaveLength(1);
+        await patch(item.id, { status: "enabled" });
+        expect(await claims()).toEqual([]);
+      } finally {
+        await locker.query("rollback");
+        locker.release();
+        await pending;
+      }
+    });
+    it("holds an existing enrollment job and lets other jobs progress until resume", async () => {
+      const item = await flow([], [], { type: "contact_updated", field: "first_name" });
+      await post(fullKey, "/contacts", { email: "enroll@dispatch-fixture.net", first_name: "Current" });
+      const job = await post(fullKey, `/automations/${item.id}/enroll`, { all: true });
+      expect(job.status).toBe(202);
+      await patch(item.id, { status: "paused" });
+      const { processEnrollmentBatch, processEnrollmentJobs } = await import("../../../packages/db/src/enrollment-jobs.js");
+      const tenant = (await db.query("select tenant_id from automations where id=$1", [item.id])).rows[0].tenant_id;
+      expect((await processEnrollmentBatch(db, tenant, item.id, job.json.id))?.status).toBe("queued");
+      expect(await processEnrollmentJobs(db)).toBe(0);
+      expect((await db.query("select id from automation_runs")).rows).toHaveLength(0);
+      await patch(item.id, { status: "enabled" });
+      expect((await processEnrollmentBatch(db, tenant, item.id, job.json.id))?.counts).toMatchObject({ enrolled: 1 });
+      expect((await db.query("select id from automation_runs")).rows).toHaveLength(1);
+    });
+
+    it.each(["delay", "event", "timeout"])("holds %s waits, preserves due times, and resumes once", async (mode) => {
+      const item = await flow([
+        { key: "wait", type: mode === "delay" ? "delay" : "wait_for_event",
+          config: mode === "delay" ? { duration: "1 hour" } : { event_name: "pause.wake", timeout: "1 hour" } },
+        { key: "after", type: "contact_update", config: { last_name: "Resumed" } },
+      ], [{ from: "start", to: "wait" }, { from: "wait", to: "after", type: mode === "event" ? "event_received" : mode === "timeout" ? "timeout" : "default" }]);
+      const run = await started();
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      await patch(item.id, { status: "paused" });
+      if (mode !== "event") await db.query("update automation_runs set resume_at=now()-interval '1 hour' where id=$1", [run.id]);
+      const before = (await db.query("select state,resume_at,wait_event,next_step_key from automation_runs where id=$1", [run.id])).rows[0];
+      expect(await claims()).toEqual([]);
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect((await db.query("select state,resume_at,wait_event,next_step_key from automation_runs where id=$1", [run.id])).rows[0]).toEqual(before);
+      if (mode === "event") {
+        await post(fullKey, "/events/send", { event: "pause.wake", email: "PAUSE@dispatch-fixture.net" });
+        expect((await db.query("select state,resume_data from automation_runs where id=$1", [run.id])).rows[0]).toMatchObject({ state: "ready", resume_data: { event_id: expect.any(String) } });
+        await executeAutomationRun(db, run.tenant_id, run.id);
+        expect((await db.query("select state from automation_runs where id=$1", [run.id])).rows[0].state).toBe("ready");
+      }
+      await patch(item.id, { status: "enabled" });
+      expect((await claims()).map((r) => r.id)).toEqual([run.id]);
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect((await db.query("select state from automation_runs where id=$1", [run.id])).rows[0].state).toBe("done");
+      expect((await db.query("select state from automation_steps where run_id=$1", [run.id])).rows).toEqual([{ state: "done" }, { state: "done" }]);
+    });
+
+    it("excludes ready, due waiting and stuck running paused runs while claiming ordinary flows", async () => {
+      const item = await flow();
+      const run = await started();
+      await patch(item.id, { status: "paused" });
+      for (const state of ["ready", "waiting", "running"]) {
+        await db.query("update automation_runs set state=$2,resume_at=now()-interval '1 day',updated_at=now()-interval '1 day' where id=$1", [run.id, state]);
+        expect(await claims()).toEqual([]);
+        expect((await db.query("select state from automation_runs where id=$1", [run.id])).rows[0].state).toBe(state);
+      }
+      await post(fullKey, "/automations", { name: "Ordinary", enabled: true, trigger: "ordinary", steps: [{ type: "delay", seconds: 60 }] });
+      await post(fullKey, "/events/send", { event: "ordinary", email: "normal@dispatch-fixture.net" });
+      expect(await claims()).toHaveLength(1);
+    });
+    it("reads a fresh version after waiting for a graph save's run lock", async () => {
+      const item = await flow([{ key: "edit", type: "contact_update", config: { last_name: "Guarded" } }], [{ from: "start", to: "edit" }]);
+      const run = await started();
+      const locker = await db.connect();
+      let contended = false;
+      const wrapped = {
+        query: db.query.bind(db),
+        connect: async () => {
+          const client = await db.connect();
+          return {
+            release: () => client.release(),
+            query: async (sql: string, params?: unknown[]) => {
+              if (!contended && sql.startsWith("select r.id, r.automation_id")) {
+                contended = true;
+                await locker.query("begin");
+                await locker.query("select id from automations where id=$1 for update", [item.id]);
+                await locker.query("select id from automation_runs where id=$1 for update", [run.id]);
+                const pending = client.query(sql, params);
+                let waiting = false;
+                for (let n = 0; n < 100 && !waiting; n++) {
+                  waiting = (await db.query(`select 1 from pg_stat_activity where wait_event_type='Lock'
+                    and query like 'select r.id, r.automation_id%'`)).rows.length > 0;
+                  if (!waiting) await new Promise((resolve) => setTimeout(resolve, 10));
+                }
+                await locker.query("update automations set version=version+1 where id=$1", [item.id]);
+                await locker.query("commit");
+                const result = await pending;
+                expect(waiting).toBe(true);
+                return result;
+              }
+              return client.query(sql, params);
+            },
+          };
+        },
+      } as unknown as Db;
+      try {
+        await executeAutomationRun(wrapped, run.tenant_id, run.id);
+        expect(contended).toBe(true);
+        expect((await db.query("select state from automation_runs where id=$1", [run.id])).rows[0].state).toBe("ready");
+        expect((await db.query("select id from automation_steps where run_id=$1", [run.id])).rows).toHaveLength(0);
+        await executeAutomationRun(db, run.tenant_id, run.id);
+        expect((await db.query("select state from automation_runs where id=$1", [run.id])).rows[0].state).toBe("done");
+      } finally {
+        await locker.query("rollback");
+        locker.release();
+      }
+    });
+
+    it.each(["pause", "version"])("holds before the next non-wait step after a committed %s, then loads fresh graph and contact state", async (change) => {
+      const item = await flow([
+        { key: "first", type: "contact_update", config: { first_name: "First" } },
+        { key: "check", type: "condition", config: { type: "rule", field: "contact.plan", operator: "eq", value: "pro" } },
+        { key: "last", type: "contact_update", config: { last_name: "Original" } },
+      ], [{ from: "start", to: "first" }, { from: "first", to: "check" }, { from: "check", to: "last", type: "condition_met" }]);
+      const run = await started();
+      let interrupted = false;
+      const wrapped = {
+        query: db.query.bind(db),
+        connect: async () => {
+          const client = await db.connect();
+          return {
+            release: () => client.release(),
+            query: async (sql: string, params?: unknown[]) => {
+              const result = await client.query(sql, params);
+              if (sql === "commit" && !interrupted && (await db.query("select id from automation_steps where run_id=$1 and step_key='first'", [run.id])).rows.length) {
+                interrupted = true;
+                if (change === "pause") await patch(item.id, { status: "paused" });
+                else await db.query("update automations set version=version+1 where id=$1", [item.id]);
+              }
+              return result;
+            },
+          };
+        },
+      } as unknown as Db;
+      await executeAutomationRun(wrapped, run.tenant_id, run.id);
+      expect(interrupted).toBe(true);
+      expect((await db.query("select state,next_step_key from automation_runs where id=$1", [run.id])).rows[0]).toEqual({ state: "ready", next_step_key: "check" });
+      expect((await db.query("select step_key from automation_steps where run_id=$1", [run.id])).rows).toEqual([{ step_key: "first" }]);
+      // Fixture-only graph mutation exercises reload; safe paused editing belongs to the next leaf.
+      const graph = structuredClone(item.steps);
+      graph.find((s: any) => s.key === "last").config.last_name = "New graph";
+      await db.query("update automations set steps=$2::jsonb,version=version+1 where id=$1", [item.id, JSON.stringify(graph)]);
+      const contact = (await db.query("select id from contacts where email='pause@dispatch-fixture.net'")).rows[0];
+      await call(fullKey, "PATCH", `/contacts/${contact.id}`, { properties: { plan: "pro" } });
+      await patch(item.id, { status: "enabled" });
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect((await db.query("select state from automation_runs where id=$1", [run.id])).rows[0].state).toBe("done");
+      expect((await db.query("select last_name from contacts where id=$1", [contact.id])).rows[0].last_name).toBe("New graph");
+      expect((await db.query("select data from automation_steps where run_id=$1 and step_key='check'", [run.id])).rows[0].data).toEqual({ result: true });
+    });
+  });
+  describe("bulk enrollment", () => {
+    // These modules are loaded only inside live tests, so the acceptance fixtures can land
+    // independently of the worker implementation.
+    async function enrollmentProcessor() {
+      const module = "../../../packages/db/src/enrollment-jobs.js";
+      return (await import(module)).processEnrollmentBatch as (
+        db: Db, tenantId: string, automationId: string, jobId: string,
+      ) => Promise<any>;
+    }
+
+    async function runClaimer() {
+      const module = "../../../packages/db/src/claims.js";
+      return (await import(module)).claimAutomationRuns as (
+        db: Db, limit: number, state?: { normal: string; bulk: string },
+      ) => Promise<Array<{ id: string; tenant_id: string; automation_id: string; priority: string; wait_event: string | null }>>;
+    }
+
+    async function tenantFor(automationId: string) {
+      return (await db.query<{ tenant_id: string }>(
+        "select tenant_id from automations where id=$1", [automationId],
+      )).rows[0]!.tenant_id;
+    }
+
+    async function contactsFor(tenantId: string, count: number) {
+      const prefix = id("contact");
+      return (await db.query<{ id: string; email: string }>(
+        `insert into contacts (id,tenant_id,email,first_name,properties,created_at)
+         select $1 || lpad(n::text,6,'0'),$2,$1 || n || '@example.com','Unchanged',
+                '{"plan":"free"}'::jsonb,now()-interval '1 day'
+         from generate_series(1,$3::int) n returning id,email`, [prefix, tenantId, count],
+      )).rows;
+    }
+
+    async function queueEnrollment(automationId: string, body: unknown = { all: true }) {
+      const response = await post(fullKey, `/automations/${automationId}/enroll`, body);
+      expect(response.status, JSON.stringify(response.json)).toBe(202);
+      expect(response.json).toMatchObject({
+        status: "queued", counts: { processed: 0, enrolled: 0, skipped: 0, failed: 0 },
+      });
+      return response.json;
+    }
+
+    async function enrollmentJob(automationId: string, jobId: string) {
+      const response = await call(fullKey, "GET", `/automations/${automationId}/enroll-jobs/${jobId}`);
+      expect(response.status).toBe(200);
+      return response.json;
+    }
+
+    async function backlog(automationId: string, count: number, priority: "normal" | "bulk" = "bulk") {
+      const tenant = await tenantFor(automationId);
+      const event = id("event");
+      await db.query(
+        "insert into custom_events (id,tenant_id,request_id,name) values ($1,$2,$3,'fixture.backlog')",
+        [event, tenant, id("request")],
+      );
+      const prefix = id("run");
+      return (await db.query<{ id: string }>(
+        `insert into automation_runs (id,tenant_id,automation_id,event_id,priority,created_at)
+         select $1 || lpad(n::text,6,'0'),$2,$3,$4,$5,now()-interval '1 day'
+         from generate_series(1,$6::int) n returning id`,
+        [prefix, tenant, automationId, event, priority, count],
+      )).rows;
+    }
+
+    it("enrollment pages a current tenant snapshot in batches of 500 without changing contacts or applying from and to", async () => {
+      await post(fullKey, "/contact-properties", { key: "plan", type: "string" });
+      const flow = await contactFlow({ type: "contact_updated", field: "plan", from: "paid", to: "cancelled" });
+      const tenant = await tenantFor(flow);
+      const contacts = await contactsFor(tenant, 1002);
+      await call(fullKey, "DELETE", `/contacts/${contacts[0]!.id}`);
+      const otherKey = await seedTenant();
+      const foreign = await post(otherKey, "/contacts", { email: "foreign-enrollment@example.com" });
+      const before = (await db.query(
+        "select id,email,first_name,last_name,properties,unsubscribed_at,updated_at,deleted_at from contacts where tenant_id=$1 order by id", [tenant],
+      )).rows;
+      const job = await queueEnrollment(flow);
+      // Even an ID beyond the page cursor must not admit a contact created after the job.
+      const future = await post(fullKey, "/contacts", { email: "future-enrollment@example.com" });
+      await db.query("update contacts set created_at=now()+interval '1 day' where id=$1", [future.json.id]);
+      const history = (await db.query("select count(*)::int as count from contact_changes")).rows[0].count;
+      const process = await enrollmentProcessor();
+      await process(db, tenant, flow, job.id);
+      expect(await enrollmentJob(flow, job.id)).toMatchObject({
+        status: "in_progress", counts: { total: 1001, processed: 500, enrolled: 500, skipped: 0, failed: 0 },
+      });
+      // Competing retries serialize on the job; neither can replay its preceding page.
+      await Promise.all([process(db, tenant, flow, job.id), process(db, tenant, flow, job.id)]);
+      await process(db, tenant, flow, job.id);
+      const finished = await enrollmentJob(flow, job.id);
+      expect(finished).toMatchObject({
+        status: "completed", counts: { total: 1001, processed: 1001, enrolled: 1001, skipped: 0, failed: 0 },
+      });
+      await process(db, tenant, flow, job.id);
+      const repeated = await enrollmentJob(flow, job.id);
+      delete repeated.request_id;
+      delete finished.request_id;
+      expect(repeated).toEqual(finished);
+      expect((await db.query(
+        `select count(*)::int as runs,count(distinct contact_id)::int as contacts,
+                bool_and(priority='bulk') as bulk from automation_runs where automation_id=$1`, [flow],
+      )).rows[0]).toEqual({ runs: 1001, contacts: 1001, bulk: true });
+      expect((await db.query(
+        "select id from automation_runs where contact_id=any($1::text[])",
+        [[contacts[0]!.id, foreign.json.id, future.json.id]],
+      )).rows).toHaveLength(0);
+      expect((await db.query(
+        "select id,email,first_name,last_name,properties,unsubscribed_at,updated_at,deleted_at from contacts where tenant_id=$1 and id<>$2 order by id",
+        [tenant, future.json.id],
+      )).rows).toEqual(before);
+      expect((await db.query("select count(*)::int as count from contact_changes")).rows[0].count).toBe(history);
+    }, 30_000);
+
+    it("enrollment rolls back a failed page atomically and retries without duplicate events runs or counts", async () => {
+      const flow = await contactFlow({ type: "contact_updated", field: "first_name" });
+      expect((await call(fullKey, "PATCH", `/automations/${flow}`, { reentry: "once" })).status).toBe(200);
+      const tenant = await tenantFor(flow);
+      await contactsFor(tenant, 501);
+      const job = await queueEnrollment(flow);
+      const process = await enrollmentProcessor();
+      const events = (await db.query("select count(*)::int as count from custom_events")).rows[0].count;
+      // Fail midway through a real SQL page, not before any work has been attempted.
+      await db.query(`create or replace function reject_enrollment_run() returns trigger language plpgsql as $$
+        begin
+          if (select count(*) from automation_runs where automation_id=new.automation_id) >= 10
+          then raise exception 'synthetic enrollment failure'; end if;
+          return new;
+        end $$;
+        create trigger reject_enrollment_run before insert on automation_runs
+        for each row execute function reject_enrollment_run()`);
+      try {
+        let failure: unknown;
+        try { await process(db, tenant, flow, job.id); } catch (error) { failure = error; }
+        const failed = await enrollmentJob(flow, job.id);
+        expect(Boolean(failure) || failed.status === "failed").toBe(true);
+        expect(failed.counts).toMatchObject({ processed: 0, enrolled: 0, skipped: 0 });
+        expect(await flowRuns(flow)).toHaveLength(0);
+        expect((await db.query("select count(*)::int as count from custom_events")).rows[0].count).toBe(events);
+        expect((await db.query("select contact_id from automation_enrollments where automation_id=$1", [flow])).rows).toHaveLength(0);
+      } finally {
+        await db.query("drop trigger reject_enrollment_run on automation_runs; drop function reject_enrollment_run()");
+      }
+      // Model a worker retry after the fault is repaired, retaining the original job identity.
+      await db.query("update automation_enrollment_jobs set status='queued' where id=$1", [job.id]);
+      await process(db, tenant, flow, job.id);
+      await process(db, tenant, flow, job.id);
+      await process(db, tenant, flow, job.id);
+      expect(await enrollmentJob(flow, job.id)).toMatchObject({
+        status: "completed", counts: { total: 501, processed: 501, enrolled: 501, skipped: 0, failed: 0 },
+      });
+      expect((await db.query(
+        "select count(*)::int as runs,count(distinct contact_id)::int as contacts from automation_runs where automation_id=$1", [flow],
+      )).rows[0]).toEqual({ runs: 501, contacts: 501 });
+    }, 30_000);
+
+    it("enrollment cancellation stops future pages and preserves already queued runs", async () => {
+      const flow = await contactFlow({ type: "contact_updated", field: "first_name" });
+      const tenant = await tenantFor(flow);
+      await contactsFor(tenant, 501);
+      const process = await enrollmentProcessor();
+      const job = await queueEnrollment(flow);
+      await process(db, tenant, flow, job.id);
+      const before = (await db.query(
+        "select id,state,updated_at from automation_runs where automation_id=$1 order by id", [flow],
+      )).rows;
+      expect(before).toHaveLength(500);
+      const viewer = await teammate("Viewer");
+      const session = await signInAs(viewer.email, viewer.password);
+      expect((await call(session.token, "DELETE", `/automations/${flow}/enroll-jobs/${job.id}`)).status).toBe(403);
+      expect((await call(session.token, "GET", `/automations/${flow}/enroll-jobs/${job.id}`)).status).toBe(200);
+      expect((await call(fullKey, "DELETE", `/automations/${flow}/enroll-jobs/${job.id}`)).status).toBe(200);
+      await Promise.all([process(db, tenant, flow, job.id), process(db, tenant, flow, job.id)]);
+      expect(await enrollmentJob(flow, job.id)).toMatchObject({
+        status: "cancelled", counts: { total: 501, processed: 500, enrolled: 500, skipped: 0, failed: 0 },
+      });
+      expect((await db.query(
+        "select id,state,updated_at from automation_runs where automation_id=$1 order by id", [flow],
+      )).rows).toEqual(before);
+      const untouched = await queueEnrollment(flow);
+      await call(fullKey, "DELETE", `/automations/${flow}/enroll-jobs/${untouched.id}`);
+      await process(db, tenant, flow, untouched.id);
+      expect((await enrollmentJob(flow, untouched.id)).counts.processed).toBe(0);
+      expect(await flowRuns(flow)).toHaveLength(500);
+      await migrate(db);
+      await migrate(db);
+      expect((await enrollmentJob(flow, job.id)).status).toBe("cancelled");
+    }, 30_000);
+
+    it("enrollment worker retries transient transaction failures and exposes permanent failures without partial work", async () => {
+      const flow = await contactFlow({ type: "contact_updated", field: "first_name" });
+      const tenant = await tenantFor(flow);
+      await contactsFor(tenant, 11);
+      const job = await queueEnrollment(flow);
+      const { processEnrollmentJobs } = await import("../../../packages/db/src/enrollment-jobs.js");
+      const { nextWorkAt } = await import("../../worker/src/runtime.js");
+      expect(await nextWorkAt(db)).not.toBeNull();
+      await db.query(`create or replace function transient_enrollment_failure() returns trigger language plpgsql as $$
+        begin raise exception 'retry page' using errcode='40001'; end $$;
+        create trigger transient_enrollment_failure before insert on automation_runs
+        for each row execute function transient_enrollment_failure()`);
+      try {
+        await processEnrollmentJobs(db);
+        expect((await enrollmentJob(flow, job.id)).status).toBe("queued");
+        expect(await flowRuns(flow)).toHaveLength(0);
+        await db.query(`create or replace function transient_enrollment_failure() returns trigger language plpgsql as $$
+          begin raise exception 'permanent page failure'; end $$`);
+        await processEnrollmentJobs(db);
+        expect(await enrollmentJob(flow, job.id)).toMatchObject({
+          status: "failed", error: "permanent page failure", counts: { processed: 0, enrolled: 0 },
+        });
+        expect(await flowRuns(flow)).toHaveLength(0);
+      } finally {
+        await db.query("drop trigger transient_enrollment_failure on automation_runs; drop function transient_enrollment_failure()");
+      }
+    });
+
+    it("enrollment respects static segments global once and once per job for every-time flows", async () => {
+      const once = await post(fullKey, "/automations", { name: "Once enrollment", enabled: true, reentry: "once", steps: [
+        { key: "start", type: "trigger", config: { type: "contact_updated", field: "first_name" } },
+      ] });
+      expect(once.status).toBe(200);
+      const tenant = await tenantFor(once.json.id);
+      const contacts = await contactsFor(tenant, 4);
+      const segment = await post(fullKey, "/segments", { name: "Enrollment subset" });
+      for (const contact of contacts.slice(0, 3)) {
+        expect((await post(fullKey, `/contacts/${contact.id}/segments/${segment.json.id}`, {})).status).toBe(200);
+      }
+      await call(fullKey, "PATCH", `/contacts/${contacts[0]!.id}`, { first_name: "Already entered" });
+      const every = await contactFlow({ type: "contact_updated", field: "first_name" });
+      const process = await enrollmentProcessor();
+      const onceJob = await queueEnrollment(once.json.id, { segment_id: segment.json.id });
+      await Promise.all([process(db, tenant, once.json.id, onceJob.id), process(db, tenant, once.json.id, onceJob.id)]);
+      expect(await enrollmentJob(once.json.id, onceJob.id)).toMatchObject({
+        status: "completed", counts: { total: 3, processed: 3, enrolled: 2, skipped: 1, failed: 0 },
+      });
+      const again = await queueEnrollment(once.json.id, { segment_id: segment.json.id });
+      await process(db, tenant, once.json.id, again.id);
+      expect((await enrollmentJob(once.json.id, again.id)).counts).toMatchObject({ enrolled: 0, skipped: 3 });
+      expect(await flowRuns(once.json.id)).toHaveLength(3);
+      for (let pass = 0; pass < 2; pass++) {
+        const job = await queueEnrollment(every, { segment_id: segment.json.id });
+        await Promise.all([process(db, tenant, every, job.id), process(db, tenant, every, job.id)]);
+        expect((await enrollmentJob(every, job.id)).counts).toMatchObject({ total: 3, processed: 3, enrolled: 3, skipped: 0 });
+        expect(await flowRuns(every)).toHaveLength((pass + 1) * 3);
+      }
+      expect((await db.query("select id from automation_runs where contact_id=$1", [contacts[3]!.id])).rows).toHaveLength(0);
+    });
+
+    it("enrollment validates bodies permissions tenant ownership and scoped idempotency keys", async () => {
+      const flow = await contactFlow({ type: "contact_updated", field: "first_name" });
+      const second = await contactFlow({ type: "contact_updated", field: "last_name" });
+      const segment = await post(fullKey, "/segments", { name: "Idempotent enrollment" });
+      const body = { all: true };
+      const headers = { "idempotency-key": id("request") };
+      const first = await post(fullKey, `/automations/${flow}/enroll`, body, headers);
+      expect(first.status).toBe(202);
+      const retry = await post(fullKey, `/automations/${flow}/enroll`, body, headers);
+      expect(retry.status).toBe(202);
+      expect(retry.json.id).toBe(first.json.id);
+      expect((await post(fullKey, `/automations/${flow}/enroll`, { segment_id: segment.json.id }, headers)).status).toBe(409);
+      const next = await post(fullKey, `/automations/${second}/enroll`, body, headers);
+      expect(next.status).toBe(202);
+      expect(next.json.id).not.toBe(first.json.id);
+      const concurrentHeaders = { "idempotency-key": id("request") };
+      const races = await Promise.all([1, 2].map(() => post(fullKey, `/automations/${flow}/enroll`, body, concurrentHeaders)));
+      expect(races.map((row) => row.status)).toEqual([202, 202]);
+      expect(races[0]!.json.id).toBe(races[1]!.json.id);
+      for (const invalid of [{}, { all: false }, { all: "true" }, { segment_id: "" }, { all: true, segment_id: segment.json.id }, { all: true, unknown: true }]) {
+        expect((await post(fullKey, `/automations/${flow}/enroll`, invalid)).status).toBe(400);
+      }
+      const viewer = await teammate("Viewer");
+      const session = await signInAs(viewer.email, viewer.password);
+      expect((await post(session.token, `/automations/${flow}/enroll`, body)).status).toBe(403);
+      const otherKey = await seedTenant();
+      expect((await post(otherKey, `/automations/${flow}/enroll`, body, headers)).status).toBe(404);
+      expect((await call(otherKey, "GET", `/automations/${flow}/enroll-jobs/${first.json.id}`)).status).toBe(404);
+      expect((await call(otherKey, "DELETE", `/automations/${flow}/enroll-jobs/${first.json.id}`)).status).toBe(404);
+      expect((await call(fullKey, "GET", `/automations/${second}/enroll-jobs/${first.json.id}`)).status).toBe(404);
+      expect((await call(fullKey, "DELETE", `/automations/${second}/enroll-jobs/${first.json.id}`)).status).toBe(404);
+      const foreignSegment = await post(otherKey, "/segments", { name: "Foreign enrollment" });
+      expect((await post(fullKey, `/automations/${flow}/enroll`, { segment_id: foreignSegment.json.id })).status).toBe(404);
+      await call(fullKey, "DELETE", `/segments/${segment.json.id}`);
+      expect((await post(fullKey, `/automations/${flow}/enroll`, { segment_id: segment.json.id })).status).toBe(404);
+      const event = await post(fullKey, "/automations", { name: "Event enrollment refused", enabled: true, trigger: "enrollment.event", steps: [{ type: "delay", seconds: 1 }] });
+      expect((await post(fullKey, `/automations/${event.json.id}/enroll`, body)).status).toBe(409);
+      await call(fullKey, "PATCH", `/automations/${second}`, { enabled: false });
+      expect((await post(fullKey, `/automations/${second}/enroll`, body)).status).toBe(409);
+      // Temporary disposable-database columns exercise forward-compatible guards before L3/L6.
+      const pause = (await db.query("select to_jsonb(a) ? 'paused_at' as supported from automations a where id=$1", [flow])).rows[0].supported;
+      if (!pause) await db.query("alter table automations add column paused_at timestamptz");
+      try {
+        await db.query("update automations set paused_at=now() where id=$1", [flow]);
+        expect((await post(fullKey, `/automations/${flow}/enroll`, body)).status).toBe(409);
+      } finally {
+        await db.query("update automations set paused_at=null where id=$1", [flow]);
+        if (!pause) await db.query("alter table automations drop column paused_at");
+      }
+      const staticSegment = await post(fullKey, "/segments", { name: "Static only" });
+      const dynamic = (await db.query("select to_jsonb(s) ? 'rule' as supported from segments s where id=$1", [staticSegment.json.id])).rows[0].supported;
+      if (!dynamic) await db.query("alter table segments add column rule jsonb");
+      try {
+        await db.query("update segments set rule=$2::jsonb where id=$1", [staticSegment.json.id, JSON.stringify({ field: "contact.first_name", operator: "eq", value: "Ada" })]);
+        expect((await post(fullKey, `/automations/${flow}/enroll`, { segment_id: staticSegment.json.id })).status).toBe(404);
+      } finally {
+        await db.query("update segments set rule=null where id=$1", [staticSegment.json.id]);
+        if (!dynamic) await db.query("alter table segments drop column rule");
+      }
+      // The same key in another tenant creates that tenant's own job.
+      const foreignFlow = await post(otherKey, "/automations", { name: "Foreign flow", enabled: true, steps: [
+        { key: "start", type: "trigger", config: { type: "contact_updated", field: "first_name" } },
+      ] });
+      const foreignJob = await post(otherKey, `/automations/${foreignFlow.json.id}/enroll`, body, headers);
+      expect(foreignJob.status).toBe(202);
+      expect(foreignJob.json.id).not.toBe(first.json.id);
+    });
+
+    it("fair claiming executes an ordinary event within one tick behind ten thousand older bulk runs", async () => {
+      const bulk = await contactFlow({ type: "contact_updated", field: "first_name" });
+      await backlog(bulk, 10_000);
+      const normal = await post(fullKey, "/automations", { name: "Priority event", enabled: true, trigger: "priority.event", steps: [{ type: "delay", seconds: 3600 }] });
+      expect(normal.status).toBe(200);
+      expect((await post(fullKey, "/events/send", { event: "priority.event" })).status).toBe(202);
+      const run = (await flowRuns(normal.json.id))[0]!;
+      expect((await db.query("select priority,state from automation_runs where id=$1", [run.id])).rows[0]).toEqual({ priority: "normal", state: "ready" });
+      await tick();
+      expect((await db.query("select state from automation_runs where id=$1", [run.id])).rows[0].state).toBe("waiting");
+      expect((await db.query(
+        "select count(*)::int as processed from automation_runs where automation_id=$1 and state<>'ready'", [bulk],
+      )).rows[0].processed).toBe(2);
+    });
+
+    it("fair claiming rotates automations across ticks and caps each automation at two runs", async () => {
+      const claim = await runClaimer();
+      const flows = [];
+      for (let index = 0; index < 5; index++) {
+        const flow = await contactFlow({ type: "contact_updated", field: "first_name" });
+        flows.push(flow);
+        await backlog(flow, 30, "normal");
+        await backlog(flow, 30, "bulk");
+      }
+      const state = { normal: "", bulk: "" };
+      for (const priority of ["normal", "bulk"]) {
+        if (priority === "bulk") await db.query("update automation_runs set state='done' where priority='normal'");
+        const seen = new Set<string>();
+        for (let pass = 0; pass < 5; pass++) {
+          const rows = await claim(db, 3, state);
+          expect(rows).toHaveLength(3);
+          expect(rows.every((row) => row.priority === priority)).toBe(true);
+          for (const flow of flows) expect(rows.filter((row) => row.automation_id === flow).length).toBeLessThanOrEqual(2);
+          rows.forEach((row) => seen.add(row.automation_id));
+          expect((await db.query("select distinct state from automation_runs where id=any($1::text[])", [rows.map((row) => row.id)])).rows).toEqual([{ state: "running" }]);
+        }
+        expect([...seen].sort()).toEqual([...flows].sort());
+      }
+    });
+
+    it("fair claiming skips held run rows stays unique concurrently and does not lock automations", async () => {
+      const claim = await runClaimer();
+      const flow = await contactFlow({ type: "contact_updated", field: "first_name" });
+      const runs = await backlog(flow, 12, "normal");
+      let release = () => {};
+      let locked = () => {};
+      const held = new Promise<void>((resolve) => { locked = resolve; });
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const holder = tx(db, async (client) => {
+        await client.query("select id from automation_runs where id=$1 for update", [runs[0]!.id]);
+        await client.query("select id from automations where id=$1 for update", [flow]);
+        locked();
+        await gate;
+      });
+      await held;
+      const pending = Promise.all([claim(db, 2), claim(db, 2)]);
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const results = await Promise.race([
+          pending,
+          new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error("Claims blocked on held automation")), 2000); }),
+        ]);
+        expect(results.map((rows) => rows.length)).toEqual([2, 2]);
+        const ids = results.flat().map((row) => row.id);
+        expect(new Set(ids).size).toBe(4);
+        expect(ids).not.toContain(runs[0]!.id);
+        expect((await db.query("select state from automation_runs where id=$1", [runs[0]!.id])).rows[0].state).toBe("ready");
+      } finally {
+        if (timeout) clearTimeout(timeout);
+        release();
+        await holder;
+        await pending;
+      }
+    });
+
+    it("contact history keeps 400 days and prunes only bounded batches from real rows", async () => {
+      const module = "../../worker/src/logs.js";
+      const { pruneContactChanges, contactChangesRetentionDays } = await import(module);
+      const saved = process.env.CONTACT_CHANGES_RETENTION_DAYS;
+      try {
+        delete process.env.CONTACT_CHANGES_RETENTION_DAYS;
+        expect(contactChangesRetentionDays()).toBe(400);
+        for (const invalid of [0, -1, NaN, Infinity]) expect(contactChangesRetentionDays(invalid)).toBe(400);
+        process.env.CONTACT_CHANGES_RETENTION_DAYS = "450";
+        expect(contactChangesRetentionDays()).toBe(450);
+        const contact = await post(fullKey, "/contacts", { email: "retained-history@example.com", first_name: "Before" });
+        await call(fullKey, "PATCH", `/contacts/${contact.json.id}`, { first_name: "After" });
+        const currentHistory = (await db.query("select count(*)::int as count from contact_changes where contact_id=$1", [contact.json.id])).rows[0].count;
+        const tenant = (await db.query("select tenant_id from contacts where id=$1", [contact.json.id])).rows[0].tenant_id;
+        const prefix = id("change");
+        await db.query(
+          `insert into contact_changes (id,tenant_id,contact_id,field,from_value,to_value,request_id,created_at)
+           select $1 || n,$2,$3,'first_name','"Before"'::jsonb,'"After"'::jsonb,$1,
+                  now()-(case when n<=5 then 401 else 399 end)*interval '1 day'
+           from generate_series(1,6) n`, [prefix, tenant, contact.json.id],
+        );
+        expect(await pruneContactChanges(db, 400, 2, 2)).toBe(4);
+        expect((await db.query("select count(*)::int as count from contact_changes where created_at<now()-interval '400 days'")).rows[0].count).toBe(1);
+        expect(await pruneContactChanges(db, 400, 2, 2)).toBe(1);
+        expect(await pruneContactChanges(db, 400, 2, 2)).toBe(0);
+        expect((await db.query("select id from contact_changes where id=$1", [`${prefix}6`])).rows).toHaveLength(1);
+        expect((await db.query("select id from contact_changes where contact_id=$1", [contact.json.id])).rows).toHaveLength(currentHistory + 1);
+      } finally {
+        if (saved === undefined) delete process.env.CONTACT_CHANGES_RETENTION_DAYS;
+        else process.env.CONTACT_CHANGES_RETENTION_DAYS = saved;
+      }
+    });
+
+    it("fair claiming finds unlocked normal work beyond a hundred contended automations before bulk", async () => {
+      const claim = await runClaimer();
+      const flow = await contactFlow({ type: "contact_updated", field: "first_name" });
+      const tenant = await tenantFor(flow);
+      const prefix = id("automation");
+      const autos = (await db.query<{ id: string }>(
+        `insert into automations (id,tenant_id,name,trigger,trigger_type,reentry,steps,connections,enabled)
+         select $1||lpad(n::text,3,'0'),$2,$1||n,'@contact.updated','contact_updated','every_time',$3::jsonb,'[]',true
+         from generate_series(1,101) n returning id`,
+        [prefix, tenant, JSON.stringify([{ key: "start", type: "trigger", config: { type: "contact_updated", field: "first_name" } }])],
+      )).rows;
+      for (const auto of autos) await backlog(auto.id, 1, "normal");
+      await backlog(flow, 2, "bulk");
+      const holder = await db.connect();
+      await holder.query("begin");
+      try {
+        await holder.query("select id from automation_runs where automation_id=any($1::text[]) for update", [autos.slice(0, 100).map((auto) => auto.id)]);
+        const claimed = await claim(db, 3);
+        expect(claimed.map((row) => row.priority)).toEqual(["normal", "bulk", "bulk"]);
+        expect(claimed[0]!.automation_id).toBe(autos[100]!.id);
+      } finally {
+        await holder.query("rollback");
+        holder.release();
+      }
+    });
+
+    it("import retries keep bulk runs unique and cancellation prevents future CSV batches", async () => {
+      const flow = await contactFlow({ type: "contact_created" });
+      const tenant = await tenantFor(flow);
+      const importId = id("import");
+      await createImport(db, { id: importId, tenantId: tenant, storageKey: id("file"), columnMap: {}, onConflict: "upsert", segments: [], topics: [], triggerAutomations: true });
+      const csv = `email\n${Array.from({ length: 1001 }, (_, index) => `cancel-import-${index}@example.com`).join("\n")}\n`;
+      const storage = { stream: async () => Readable.from([csv]) };
+      const first = (await claimImports(db, 1))[0]!;
+      await runImport(db, storage, first, { batchSize: 500, maxRows: 500 });
+      expect(await flowRuns(flow)).toHaveLength(500);
+      const retry = (await claimImports(db, 1))[0]!;
+      expect(retry.row_offset).toBe(500);
+      await runImport(db, storage, retry, { batchSize: 500, maxRows: 500 });
+      expect(await flowRuns(flow)).toHaveLength(1000);
+      await runImport(db, storage, first, { batchSize: 500, maxRows: 500 });
+      expect(await flowRuns(flow)).toHaveLength(1000);
+      const pending = (await claimImports(db, 1))[0]!;
+      expect(pending.row_offset).toBe(1000);
+      const viewer = await teammate("Viewer");
+      const session = await signInAs(viewer.email, viewer.password);
+      expect((await call(session.token, "DELETE", `/contacts/imports/${importId}`)).status).toBe(403);
+      const otherKey = await seedTenant();
+      expect((await call(otherKey, "DELETE", `/contacts/imports/${importId}`)).status).toBe(404);
+      const before = (await call(fullKey, "GET", `/contacts/imports/${importId}`)).json;
+      expect((await call(fullKey, "DELETE", `/contacts/imports/${importId}`)).status).toBe(200);
+      // A worker can still hold the row it claimed before the cancellation request.
+      await runImport(db, storage, pending, { batchSize: 500 });
+      await runImport(db, storage, pending, { batchSize: 500 });
+      const cancelled = (await call(fullKey, "GET", `/contacts/imports/${importId}`)).json;
+      expect(cancelled.status).toBe("cancelled");
+      expect(cancelled.counts).toEqual(before.counts);
+      expect((await db.query("select id from contacts where email='cancel-import-1000@example.com'")).rows).toHaveLength(0);
+      expect((await db.query(
+        "select count(*)::int as runs,count(distinct contact_id)::int as contacts,bool_and(priority='bulk') as bulk from automation_runs where automation_id=$1", [flow],
+      )).rows[0]).toEqual({ runs: 1000, contacts: 1000, bulk: true });
+      expect(await claimImports(db, 1)).toHaveLength(0);
+    }, 30_000);
+  });
+
+  it("reentry serializes once and every-time entries, retains defaults across trigger edits, and allows contactless events", async () => {
+    await post(fullKey, "/contact-properties", { key: "plan", type: "string" });
+    const contact = await post(fullKey, "/contacts", { email: "entry@example.com", properties: { plan: "free" } });
+    const create = (name: string, reentry?: string) => post(fullKey, "/automations", { name, enabled: true, reentry, steps: [
+      { key: "start", type: "trigger", config: { type: "contact_updated", field: "plan" } }
+    ] });
+    const once = await create("Once");
+    const every = await create("Every", "every_time");
+    expect(once.json.reentry).toBe("once");
+    const races = await Promise.all(["pro", "business"].map((plan) => call(fullKey, "PATCH", `/contacts/${contact.json.id}`, { properties: { plan } })));
+    expect(races.map((row) => row.status)).toEqual([200, 200]);
+    expect(await flowRuns(once.json.id)).toHaveLength(1);
+    expect(await flowRuns(every.json.id)).toHaveLength(2);
+    await post(fullKey, `/automations/${once.json.id}/stop`, {});
+    expect((await call(fullKey, "PATCH", `/automations/${once.json.id}`, { steps: [
+      { key: "start", type: "trigger", config: { type: "event", event_name: "entry.ping" } }
+    ] })).json.reentry).toBe("once");
+    await call(fullKey, "PATCH", `/automations/${once.json.id}`, { enabled: true });
+    const event = await post(fullKey, "/automations", { name: "Event default", enabled: true, trigger: "entry.ping", steps: [{ type: "delay", seconds: 1 }] });
+    expect(event.json.reentry).toBe("every_time");
+    const sent = await Promise.all([1, 2].map(() => post(fullKey, "/events/send", { event: "entry.ping" })));
+    expect(sent.map((row) => row.status)).toEqual([202, 202]);
+    expect(await flowRuns(once.json.id)).toHaveLength(3);
+    expect((await db.query("select distinct priority from automation_runs")).rows).toEqual([{ priority: "normal" }]);
+  });
+
+  it("reentry reset removes only cancelled contacts, preserves completed entries, and refuses viewer resets", async () => {
+    const once = await post(fullKey, "/automations", { name: "Reset", enabled: true, steps: [
+      { key: "start", type: "trigger", config: { type: "contact_created" } }
+    ] });
+    const finished = await post(fullKey, "/contacts", { email: "done-entry@example.com" });
+    const active = await post(fullKey, "/contacts", { email: "cancel-entry@example.com" });
+    const runs = await db.query<{ id: string; email: string }>("select r.id,e.email from automation_runs r join custom_events e on e.id=r.event_id where r.automation_id=$1", [once.json.id]);
+    const done = runs.rows.find((row) => row.email === "done-entry@example.com")!;
+    await executeAutomationRun(db, (await flowRuns(once.json.id))[0]!.tenant_id, done.id);
+    expect((await db.query("select state from automation_runs where id=$1", [done.id])).rows[0].state).toBe("done");
+    await call(fullKey, "PATCH", `/contacts/${active.json.id}`, { email: "renamed-entry@example.com" });
+    const viewer = await teammate("Viewer");
+    const session = await signInAs(viewer.email, viewer.password);
+    expect((await post(session.token, `/automations/${once.json.id}/stop`, { reset_reentry: true })).status).toBe(403);
+    expect((await post(fullKey, `/automations/${once.json.id}/stop`, { reset_reentry: "true" })).status).toBe(400);
+    expect((await post(fullKey, `/automations/${once.json.id}/stop`, { reset_reentry: true })).status).toBe(200);
+    expect((await db.query("select contact_id from automation_enrollments where automation_id=$1", [once.json.id])).rows).toEqual([{ contact_id: finished.json.id }]);
+    const cancelled = runs.rows.find((row) => row.email === "cancel-entry@example.com")!;
+    expect((await db.query("select state from automation_runs where id=$1", [cancelled.id])).rows[0].state).toBe("stopped");
+    // Repeated reset has no cancelled active runs and cannot erase a completed enrollment.
+    await post(fullKey, `/automations/${once.json.id}/stop`, { reset_reentry: true });
+    expect((await db.query("select contact_id from automation_enrollments where automation_id=$1", [once.json.id])).rows).toEqual([{ contact_id: finished.json.id }]);
+    await call(fullKey, "PATCH", `/automations/${once.json.id}`, { enabled: true, steps: [
+      { key: "start", type: "trigger", config: { type: "contact_updated", field: "first_name" } }
+    ] });
+    for (const contact of [finished, active]) await call(fullKey, "PATCH", `/contacts/${contact.json.id}`, { first_name: "Changed" });
+    expect(await flowRuns(once.json.id)).toHaveLength(3);
+  });
+
+  it("import triggers resolve tenant defaults and explicit overrides once, and persist them through migrations", async () => {
+    const tenant = (await db.query<{ id: string }>("select id from tenants limit 1")).rows[0]!.id;
+    const queue = (triggerAutomations?: boolean) => createImport(db, { id: id("import"), tenantId: tenant, storageKey: id("file"), columnMap: {}, onConflict: "upsert", segments: [], topics: [], triggerAutomations });
+    const off = await queue();
+    expect(off!.trigger_automations).toBe(false);
+    await call(fullKey, "PATCH", "/settings", { import_trigger_automations: true });
+    const on = await queue();
+    const override = await queue(false);
+    await call(fullKey, "PATCH", "/settings", { import_trigger_automations: false });
+    const explicit = await queue(true);
+    const jobs = await claimImports(db, 10);
+    expect(jobs.map((row) => [row.id, row.trigger_automations])).toEqual([
+      [off!.id, false], [on!.id, true], [override!.id, false], [explicit!.id, true]
+    ]);
+    await migrate(db);
+    await migrate(db);
+    expect((await call(fullKey, "GET", `/contacts/imports/${on!.id}`)).json.trigger_automations).toBe(true);
+    const other = await seedTenant();
+    expect((await call(other, "GET", `/contacts/imports/${on!.id}`)).status).toBe(404);
+  });
+
+  it("import triggers return actual insert revival topic and segment changes, preserve optouts, and use bulk priority", async () => {
+    const topic = await post(fullKey, "/topics", { name: "Import opt-in", key: "import", default_subscription: "opt_out" });
+    const defaultOn = await post(fullKey, "/topics", { name: "Default receiving", key: "default_on", default_subscription: "opt_in" });
+    const segment = await post(fullKey, "/segments", { name: "Import segment" });
+    const create = await contactFlow({ type: "contact_created" });
+    const update = await contactFlow({ type: "contact_updated" });
+    const subscribed = await contactFlow({ type: "topic_subscribed", topic_id: topic.json.id });
+    const defaults = await contactFlow({ type: "topic_subscribed", topic_id: defaultOn.json.id });
+    const added = await contactFlow({ type: "segment_added", segment_id: segment.json.id });
+    const old = await post(fullKey, "/contacts", { email: "existing-import@example.com", first_name: "Before", topics: [{ id: topic.json.id, subscription: "opt_out" }] });
+    const global = await post(fullKey, "/contacts", { email: "global-import@example.com", unsubscribed: true });
+    const revive = await post(fullKey, "/contacts", { email: "revived-import@example.com", properties: { old: "discard" } });
+    await call(fullKey, "DELETE", `/contacts/${revive.json.id}`);
+    const tenant = (await db.query<{ tenant_id: string }>("select tenant_id from contacts limit 1")).rows[0]!.tenant_id;
+    const job = { id: id("import"), tenant_id: tenant, on_conflict: "upsert" as const, trigger_automations: true,
+      segments: [{ id: segment.json.id }, { id: segment.json.id }],
+      topics: [{ id: topic.json.id, subscription: "opt_in" }, { id: defaultOn.json.id, subscription: "opt_in" }] };
+    const rows = ["new-import@example.com", old.json.email, global.json.email, revive.json.email].map((email) => ({
+      email, first_name: "After", last_name: null, properties: { fresh: true }, unsubscribed: false
+    }));
+    const result = await tx(db, (client) => importBatch(client, job, rows));
+    expect(result).toMatchObject({ created: 2, updated: 2, skipped: 0 });
+    const newRow = result.rows.find((row) => row.contact.email === "new-import@example.com")!;
+    expect(newRow).toMatchObject({ created: true, segments_added: [segment.json.id], topics_subscribed: [topic.json.id] });
+    expect(result.rows.find((row) => row.id === revive.json.id)).toMatchObject({ created: true, contact: { properties: { fresh: true } } });
+    expect(result.rows.find((row) => row.id === old.json.id)!.topics_subscribed).toEqual([]);
+    expect(result.rows.find((row) => row.id === global.json.id)!.topics_subscribed).toEqual([]);
+    expect(await flowRuns(create)).toHaveLength(5); // three route creates plus insert and revival.
+    expect(await flowRuns(update)).toHaveLength(0);
+    expect(await flowRuns(subscribed)).toHaveLength(2);
+    expect(await flowRuns(defaults)).toHaveLength(0);
+    expect(await flowRuns(added)).toHaveLength(4);
+    expect((await db.query("select distinct priority from automation_runs r join custom_events e on e.id=r.event_id where e.request_id=$1", [job.id])).rows).toEqual([{ priority: "bulk" }]);
+    const repeat = await tx(db, (client) => importBatch(client, job, rows));
+    expect(repeat).toMatchObject({ created: 0, updated: 4 });
+    expect(repeat.rows.every((row) => !row.created && !row.segments_added.length && !row.topics_subscribed.length)).toBe(true);
+    expect(await flowRuns(added)).toHaveLength(4);
+    await tx(db, (client) => importBatch(client, { ...job, trigger_automations: false }, [{ ...rows[0], email: "off-import@example.com" }]));
+    expect(await flowRuns(create)).toHaveLength(5);
+  });
+
+  it.each([
+    { trigger: false, matching: false },
+    { trigger: true, matching: false },
+    { trigger: false, matching: true },
+    { trigger: true, matching: true },
+  ])("import topic history records one optout with stored trigger=$trigger and matching flows=$matching", async ({ trigger, matching }) => {
+    const topic = await post(fullKey, "/topics", { name: "Import history", key: "import_history", default_subscription: "opt_in" });
+    const contact = await post(fullKey, "/contacts", { email: "import-history@example.com" });
+    const tenant = (await db.query("select tenant_id from contacts where id=$1", [contact.json.id])).rows[0].tenant_id;
+    const flows = matching ? [
+      await contactFlow({ type: "topic_subscribed", topic_id: topic.json.id }),
+      await contactFlow({ type: "contact_updated" }),
+    ] : [];
+    const queued = await createImport(db, { id: id("import"), tenantId: tenant, storageKey: id("file"), columnMap: {},
+      onConflict: "upsert", segments: [], topics: [{ id: topic.json.id, subscription: "opt_out" }], triggerAutomations: trigger });
+    const job = (await claimImports(db, 1))[0]!;
+    expect(job.id).toBe(queued!.id);
+    expect(job.trigger_automations).toBe(trigger);
+    const rows = [{ email: contact.json.email, first_name: "Imported", last_name: null, properties: {}, unsubscribed: false }];
+    const result = await tx(db, (client) => importBatch(client, job, rows));
+    expect(result).toMatchObject({ created: 0, updated: 1, skipped: 0 });
+    expect(result.rows[0]!.topics_subscribed).toEqual([]);
+    expect((await db.query("select status from topic_subscriptions where contact_id=$1 and topic_id=$2", [contact.json.id, topic.json.id])).rows).toEqual([{ status: "unsubscribed" }]);
+    const history = () => db.query(
+      "select contact_id,field,from_value,to_value,request_id from contact_changes where contact_id=$1 and field=$2",
+      [contact.json.id, `topics.${topic.json.id}`],
+    );
+    const expected = [{ contact_id: contact.json.id, field: `topics.${topic.json.id}`, from_value: true, to_value: false, request_id: job.id }];
+    expect((await history()).rows).toEqual(expected);
+    const repeat = await tx(db, (client) => importBatch(client, job, rows));
+    expect(repeat.rows[0]!.topics_subscribed).toEqual([]);
+    expect((await history()).rows).toEqual(expected);
+    for (const flow of flows) expect(await flowRuns(flow)).toHaveLength(0);
+    expect((await db.query("select id from custom_events where request_id=$1", [job.id])).rows).toHaveLength(0);
+    expect((await db.query("select id from automation_runs")).rows).toHaveLength(0);
+  });
+
+  it.each([false, true])("import topic history keeps effective defaults consent and last duplicate choice with stored trigger=%s", async (trigger) => {
+    const on = await post(fullKey, "/topics", { name: "History default on", key: "history_on", default_subscription: "opt_in" });
+    const off = await post(fullKey, "/topics", { name: "History default off", key: "history_off", default_subscription: "opt_out" });
+    const positive = await post(fullKey, "/topics", { name: "History positive", key: "history_positive", default_subscription: "opt_out" });
+    const contact = await post(fullKey, "/contacts", { email: "history-defaults@example.com" });
+    const explicit = await post(fullKey, "/contacts", { email: "history-explicit@example.com", topics: [{ id: positive.json.id, subscription: "opt_out" }] });
+    const global = await post(fullKey, "/contacts", { email: "history-global@example.com", unsubscribed: true });
+    const tenant = (await db.query("select tenant_id from contacts where id=$1", [contact.json.id])).rows[0].tenant_id;
+    const flows = [
+      await contactFlow({ type: "topic_subscribed", topic_id: on.json.id }),
+      await contactFlow({ type: "topic_subscribed", topic_id: off.json.id }),
+      await contactFlow({ type: "topic_subscribed", topic_id: positive.json.id }),
+      await contactFlow({ type: "contact_updated" }),
+    ];
+    await createImport(db, { id: id("import"), tenantId: tenant, storageKey: id("file"), columnMap: {}, onConflict: "upsert", segments: [],
+      topics: [
+        { id: on.json.id, subscription: "opt_in" },
+        { id: off.json.id, subscription: "opt_in" }, { id: off.json.id, subscription: "opt_out" },
+        { id: positive.json.id, subscription: "opt_out" }, { id: positive.json.id, subscription: "opt_in" },
+      ], triggerAutomations: trigger });
+    const job = (await claimImports(db, 1))[0]!;
+    expect(job.trigger_automations).toBe(trigger);
+    const rows = [contact, explicit, global].map((row) => ({
+      email: row.json.email, first_name: null, last_name: null, properties: {}, unsubscribed: false,
+    }));
+    const result = await tx(db, (client) => importBatch(client, job, rows));
+    expect(result).toMatchObject({ created: 0, updated: 3, skipped: 0 });
+    expect(result.rows.find((row) => row.id === contact.json.id)!.topics_subscribed).toEqual([positive.json.id]);
+    expect(result.rows.find((row) => row.id === explicit.json.id)!.topics_subscribed).toEqual([]);
+    expect(result.rows.find((row) => row.id === global.json.id)!.topics_subscribed).toEqual([]);
+    expect(result.rows.find((row) => row.id === global.json.id)!.contact.unsubscribed_at).not.toBeNull();
+    const history = () => db.query(
+      "select contact_id,field,from_value,to_value,request_id from contact_changes where request_id=$1 and field like 'topics.%'", [job.id],
+    );
+    const expected = [{ contact_id: contact.json.id, field: `topics.${positive.json.id}`, from_value: false, to_value: true, request_id: job.id }];
+    expect((await history()).rows).toEqual(expected);
+    expect((await db.query("select status from topic_subscriptions where contact_id=$1 and topic_id=$2", [explicit.json.id, positive.json.id])).rows).toEqual([{ status: "unsubscribed" }]);
+    const repeat = await tx(db, (client) => importBatch(client, job, rows));
+    expect(repeat.rows.every((row) => row.topics_subscribed.length === 0)).toBe(true);
+    expect((await history()).rows).toEqual(expected);
+    for (const [index, flow] of flows.entries()) expect(await flowRuns(flow)).toHaveLength(index === 2 && trigger ? 1 : 0);
+    expect((await db.query("select distinct priority from automation_runs")).rows).toEqual(trigger ? [{ priority: "bulk" }] : []);
+  });
+
+  it.each([false, true])("import topic history retains original selected receiving during combined optouts with stored trigger=%s", async (trigger) => {
+    const on = await post(fullKey, "/topics", { name: "Combined default on", key: "combined_on", default_subscription: "opt_in" });
+    const off = await post(fullKey, "/topics", { name: "Combined default off", key: "combined_off", default_subscription: "opt_out" });
+    const unselected = await post(fullKey, "/topics", { name: "Unselected receiving", key: "combined_unselected", default_subscription: "opt_in" });
+    const cases = [
+      { email: "combined-default@example.com", topic: on, receiving: true, payload: {} },
+      { email: "combined-explicit@example.com", topic: off, receiving: true, payload: { topics: [{ id: off.json.id, subscription: "opt_in" }] } },
+      { email: "combined-topic-out@example.com", topic: on, receiving: false, payload: { topics: [{ id: on.json.id, subscription: "opt_out" }] } },
+      { email: "combined-global-out@example.com", topic: on, receiving: false, payload: { unsubscribed: true } },
+      { email: "combined-default-off@example.com", topic: off, receiving: false, payload: {} },
+      { email: "combined-global-only@example.com", topic: null, receiving: false, payload: {} },
+    ];
+    // Create flows only after fixtures so no setup activity can hide an import run.
+    const contacts = [];
+    for (const entry of cases) contacts.push(await post(fullKey, "/contacts", { email: entry.email, ...entry.payload }));
+    const flows = [
+      await contactFlow({ type: "topic_subscribed", topic_id: on.json.id }),
+      await contactFlow({ type: "topic_subscribed", topic_id: off.json.id }),
+      await contactFlow({ type: "contact_updated" }),
+    ];
+    const tenant = (await db.query("select tenant_id from contacts where id=$1", [contacts[0]!.json.id])).rows[0].tenant_id;
+    for (const [index, entry] of cases.entries()) {
+      const contact = contacts[index]!;
+      await createImport(db, { id: id("import"), tenantId: tenant, storageKey: id("file"), columnMap: {}, onConflict: "upsert",
+        segments: [], topics: entry.topic ? [{ id: entry.topic.json.id, subscription: "opt_out" }] : [], triggerAutomations: trigger });
+      const job = (await claimImports(db, 1))[0]!;
+      expect(job.trigger_automations).toBe(trigger);
+      const rows = [{ email: entry.email, first_name: null, last_name: null, properties: {}, unsubscribed: true }];
+      const result = await tx(db, (client) => importBatch(client, job, rows));
+      expect(result).toMatchObject({ created: 0, updated: 1, skipped: 0, ids: [contact.json.id],
+        rows: [{ created: false, segments_added: [], topics_subscribed: [] }] });
+      expect(result.rows[0]!.contact.unsubscribed_at).not.toBeNull();
+      const expected = [
+        ...(entry.receiving ? [{ field: `topics.${entry.topic!.json.id}`, from_value: true, to_value: false, request_id: job.id }] : []),
+        ...(entry.payload.unsubscribed ? [] : [{ field: "unsubscribed", from_value: false, to_value: true, request_id: job.id }]),
+      ].sort((a, b) => a.field.localeCompare(b.field));
+      const history = () => db.query("select field,from_value,to_value,request_id from contact_changes where request_id=$1 order by field", [job.id]);
+      expect((await history()).rows).toEqual(expected);
+      if (entry.topic) expect((await db.query("select status from topic_subscriptions where contact_id=$1 and topic_id=$2",
+        [contact.json.id, entry.topic.json.id])).rows).toEqual([{ status: "unsubscribed" }]);
+      expect((await db.query("select id from topic_subscriptions where contact_id=$1 and topic_id=$2",
+        [contact.json.id, unselected.json.id])).rows).toEqual([]);
+      await tx(db, (client) => importBatch(client, job, rows));
+      expect((await history()).rows).toEqual(expected);
+      expect((await db.query("select id from custom_events where request_id=$1", [job.id])).rows).toEqual([]);
+    }
+    for (const flow of flows) expect(await flowRuns(flow)).toHaveLength(0);
+  });
+
+  it.each([
+    { trigger: false, combined: false }, { trigger: true, combined: false },
+    { trigger: false, combined: true }, { trigger: true, combined: true },
+  ])("import topic history serializes identical existing-contact optouts with stored trigger=$trigger combined=$combined", async ({ trigger, combined }) => {
+    const topic = await post(fullKey, "/topics", { name: "Concurrent history", key: "concurrent_history", default_subscription: "opt_in" });
+    const contact = await post(fullKey, "/contacts", { email: "history-race@example.com" });
+    const tenant = (await db.query("select tenant_id from contacts where id=$1", [contact.json.id])).rows[0].tenant_id;
+    const flow = await contactFlow({ type: "topic_subscribed", topic_id: topic.json.id });
+    for (let index = 0; index < 2; index++) await createImport(db, { id: id("import"), tenantId: tenant, storageKey: id("file"),
+      columnMap: {}, onConflict: "upsert", segments: [], topics: [{ id: topic.json.id, subscription: "opt_out" }], triggerAutomations: trigger });
+    const jobs = await claimImports(db, 2);
+    expect(jobs).toHaveLength(2);
+    expect(jobs.every((job) => job.trigger_automations === trigger)).toBe(true);
+    const rows = [{ email: contact.json.email, first_name: null, last_name: null, properties: {}, unsubscribed: combined }];
+    // Hold the first transaction's contact lock until Postgres observes the second waiting.
+    let release = () => {};
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let ready = () => {};
+    const locked = new Promise<void>((resolve) => { ready = resolve; });
+    let firstPid = 0;
+    const first = tx(db, async (client) => {
+      firstPid = (await client.query("select pg_backend_pid() as pid")).rows[0].pid;
+      const result = await importBatch(client, jobs[0]!, rows);
+      ready();
+      await held;
+      return result;
+    });
+    // If the first import fails, do not leave the barrier waiting forever.
+    void first.catch(() => ready());
+    await locked;
+    let secondPid = 0;
+    const second = tx(db, async (client) => {
+      secondPid = (await client.query("select pg_backend_pid() as pid")).rows[0].pid;
+      return importBatch(client, jobs[1]!, rows);
+    });
+    void second.catch(() => {});
+    try {
+      let blocked = false;
+      for (let attempt = 0; attempt < 100 && !blocked; attempt++) {
+        if (secondPid) blocked = (await db.query("select $1::int = any(pg_blocking_pids($2::int)) as blocked", [firstPid, secondPid])).rows[0].blocked;
+        if (!blocked) await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(blocked).toBe(true);
+    } finally {
+      release();
+      await Promise.allSettled([first, second]);
+    }
+    const results = await Promise.all([first, second]);
+    expect(results.every((result) => result.created === 0 && result.updated === 1 && result.rows[0]!.topics_subscribed.length === 0)).toBe(true);
+    expect((await db.query(
+      "select from_value,to_value,request_id from contact_changes where contact_id=$1 and field=$2",
+      [contact.json.id, `topics.${topic.json.id}`],
+    )).rows).toEqual([{ from_value: true, to_value: false, request_id: jobs[0]!.id }]);
+    expect((await db.query(
+      "select from_value,to_value,request_id from contact_changes where contact_id=$1 and field='unsubscribed' and request_id=any($2::text[])",
+      [contact.json.id, jobs.map((job) => job.id)],
+    )).rows).toEqual(combined ? [{ from_value: false, to_value: true, request_id: jobs[0]!.id }] : []);
+    expect((await db.query("select id from custom_events where request_id=any($1::text[])", [jobs.map((job) => job.id)])).rows).toEqual([]);
+    expect((await db.query("select status from topic_subscriptions where contact_id=$1 and topic_id=$2", [contact.json.id, topic.json.id])).rows).toEqual([{ status: "unsubscribed" }]);
+    expect(await flowRuns(flow)).toHaveLength(0);
+  });
+
+  it("import topic history skips existing contacts and retains deleted-contact revival in skip mode", async () => {
+    const topic = await post(fullKey, "/topics", { name: "Skip history", key: "skip_history", default_subscription: "opt_in" });
+    const existing = await post(fullKey, "/contacts", { email: "history-skip@example.com", first_name: "Preserved" });
+    const deleted = await post(fullKey, "/contacts", { email: "history-revive@example.com", properties: { old: true } });
+    await call(fullKey, "DELETE", `/contacts/${deleted.json.id}`);
+    const tenant = (await db.query("select tenant_id from contacts where id=$1", [existing.json.id])).rows[0].tenant_id;
+    const flow = await contactFlow({ type: "topic_subscribed", topic_id: topic.json.id });
+    await createImport(db, { id: id("import"), tenantId: tenant, storageKey: id("file"), columnMap: {}, onConflict: "skip",
+      segments: [], topics: [{ id: topic.json.id, subscription: "opt_out" }], triggerAutomations: true });
+    const job = (await claimImports(db, 1))[0]!;
+    const rows = [existing, deleted].map((contact) => ({
+      email: contact.json.email, first_name: "Revived", last_name: null, properties: { fresh: true }, unsubscribed: false,
+    }));
+    const result = await tx(db, (client) => importBatch(client, job, rows));
+    expect(result).toMatchObject({ created: 1, updated: 0, skipped: 1, ids: [deleted.json.id] });
+    expect(result.rows[0]).toMatchObject({ created: true, topics_subscribed: [], contact: { first_name: "Revived", properties: { fresh: true } } });
+    expect((await db.query("select first_name from contacts where id=$1", [existing.json.id])).rows).toEqual([{ first_name: "Preserved" }]);
+    expect((await db.query("select id from topic_subscriptions where contact_id=$1 and topic_id=$2", [existing.json.id, topic.json.id])).rows).toHaveLength(0);
+    expect((await db.query(
+      "select contact_id,from_value,to_value from contact_changes where request_id=$1 and field=$2", [job.id, `topics.${topic.json.id}`],
+    )).rows).toEqual([{ contact_id: deleted.json.id, from_value: true, to_value: false }]);
+    const repeat = await tx(db, (client) => importBatch(client, job, rows));
+    expect(repeat).toMatchObject({ created: 0, updated: 0, skipped: 2, rows: [] });
+    expect((await db.query("select id from contact_changes where request_id=$1 and field=$2", [job.id, `topics.${topic.json.id}`])).rows).toHaveLength(1);
+    expect(await flowRuns(flow)).toHaveLength(0);
+  });
+
+  it("import topic history uses SQL returned status instead of a requested optout", async () => {
+    const topic = await post(fullKey, "/topics", { name: "Returned history", key: "returned_history", default_subscription: "opt_in" });
+    const contact = await post(fullKey, "/contacts", { email: "history-returning@example.com" });
+    const tenant = (await db.query("select tenant_id from contacts where id=$1", [contact.json.id])).rows[0].tenant_id;
+    const flow = await contactFlow({ type: "topic_subscribed", topic_id: topic.json.id });
+    const job = { id: id("import"), tenant_id: tenant, on_conflict: "upsert" as const, segments: [],
+      topics: [{ id: topic.json.id, subscription: "opt_out" }], trigger_automations: true };
+    const rows = [{ email: contact.json.email, first_name: null, last_name: null, properties: {}, unsubscribed: false }];
+    await db.query(`create function preserve_import_preference() returns trigger language plpgsql as $$
+      begin if new.contact_id = TG_ARGV[0] and new.topic_id = TG_ARGV[1] then new.status := 'subscribed'; end if; return new; end $$;
+      create trigger preserve_import_preference before insert or update on topic_subscriptions
+      for each row execute function preserve_import_preference('${contact.json.id}', '${topic.json.id}')`);
+    try {
+      const result = await tx(db, (client) => importBatch(client, job, rows));
+      expect(result.rows[0]!.topics_subscribed).toEqual([]);
+      expect((await db.query("select status from topic_subscriptions where contact_id=$1 and topic_id=$2", [contact.json.id, topic.json.id])).rows).toEqual([{ status: "subscribed" }]);
+      expect((await db.query("select id from contact_changes where request_id=$1 and field like 'topics.%'", [job.id])).rows).toHaveLength(0);
+      expect(await flowRuns(flow)).toHaveLength(0);
+    } finally {
+      await db.query("drop trigger preserve_import_preference on topic_subscriptions; drop function preserve_import_preference()");
+    }
+    await tx(db, (client) => importBatch(client, job, rows));
+    expect((await db.query("select from_value,to_value from contact_changes where request_id=$1 and field=$2", [job.id, `topics.${topic.json.id}`])).rows).toEqual([{ from_value: true, to_value: false }]);
+  });
+
+  it("import topic history rolls back a failed optout and records exactly one transition on retry", async () => {
+    const topic = await post(fullKey, "/topics", { name: "Rollback history", key: "rollback_history", default_subscription: "opt_in" });
+    const contact = await post(fullKey, "/contacts", { email: "history-rollback@example.com" });
+    const tenant = (await db.query("select tenant_id from contacts where id=$1", [contact.json.id])).rows[0].tenant_id;
+    await createImport(db, { id: id("import"), tenantId: tenant, storageKey: id("file"), columnMap: {}, onConflict: "upsert",
+      segments: [], topics: [{ id: topic.json.id, subscription: "opt_out" }], triggerAutomations: false });
+    const job = (await claimImports(db, 1))[0]!;
+    const rows = [{ email: contact.json.email, first_name: "Rolled back", last_name: null, properties: {}, unsubscribed: false }];
+    await db.query(`create function reject_import_optout_history() returns trigger language plpgsql as $$
+      begin if new.request_id = TG_ARGV[0] and new.field = TG_ARGV[1] then raise exception 'synthetic import optout history failure'; end if; return new; end $$;
+      create trigger reject_import_optout_history after insert on contact_changes
+      for each row execute function reject_import_optout_history('${job.id}', 'topics.${topic.json.id}')`);
+    try {
+      await expect(tx(db, (client) => importBatch(client, job, rows))).rejects.toThrow("synthetic import optout history failure");
+      expect((await db.query("select first_name from contacts where id=$1", [contact.json.id])).rows).toEqual([{ first_name: null }]);
+      expect((await db.query("select id from topic_subscriptions where contact_id=$1 and topic_id=$2", [contact.json.id, topic.json.id])).rows).toHaveLength(0);
+      expect((await db.query("select id from contact_changes where request_id=$1", [job.id])).rows).toHaveLength(0);
+    } finally {
+      await db.query("drop trigger reject_import_optout_history on contact_changes; drop function reject_import_optout_history()");
+    }
+    await tx(db, (client) => importBatch(client, job, rows));
+    await tx(db, (client) => importBatch(client, job, rows));
+    expect((await db.query("select from_value,to_value,request_id from contact_changes where contact_id=$1 and field=$2", [contact.json.id, `topics.${topic.json.id}`])).rows).toEqual([
+      { from_value: true, to_value: false, request_id: job.id },
+    ]);
+  });
+
+  it("import triggers commit with progress, resume without duplicates, and roll back on trigger fanout failure", async () => {
+    const create = await contactFlow({ type: "contact_created" });
+    const tenant = (await db.query<{ tenant_id: string }>("select tenant_id from automations limit 1")).rows[0]!.tenant_id;
+    const importId = id("import");
+    await createImport(db, { id: importId, tenantId: tenant, storageKey: id("file"), columnMap: {}, onConflict: "upsert", segments: [], topics: [], triggerAutomations: true });
+    const job = (await claimImports(db, 1))[0]!;
+    const csv = "email\nimport-retry@example.com\n";
+    const storage = { stream: async () => Readable.from([csv]) };
+    const counts = await runImport(db, storage, job);
+    expect(counts).toMatchObject({ total: 1, created: 1 });
+    expect(await flowRuns(create)).toHaveLength(1);
+    await runImport(db, storage, { ...job, row_offset: 1, counts });
+    expect(await flowRuns(create)).toHaveLength(1);
+    await db.query(`create or replace function reject_import_run() returns trigger language plpgsql as $$
+      begin raise exception 'synthetic import failure'; end $$;
+      create trigger reject_import_run before insert on automation_runs for each row execute function reject_import_run()`);
+    try {
+      await expect(tx(db, (client) => importBatch(client, job, [{ email: "rollback-import@example.com", first_name: null, last_name: null, properties: {}, unsubscribed: false }]))).rejects.toThrow("synthetic import failure");
+    } finally {
+      await db.query("drop trigger reject_import_run on automation_runs; drop function reject_import_run()");
+    }
+    expect((await db.query("select id from contacts where email='rollback-import@example.com'")).rows).toHaveLength(0);
+    expect((await db.query("select id from custom_events where email='rollback-import@example.com'")).rows).toHaveLength(0);
+  });
+
+  it("import triggers report one actual creation under concurrent batches", async () => {
+    const flow = await contactFlow({ type: "contact_created" });
+    const tenant = (await flowRuns(flow))[0]?.tenant_id ?? (await db.query("select tenant_id from automations where id=$1", [flow])).rows[0].tenant_id;
+    const contact = { email: "concurrent-import@example.com", first_name: null, last_name: null, properties: {}, unsubscribed: false };
+    const job = { tenant_id: tenant, on_conflict: "upsert" as const, segments: [], topics: [], trigger_automations: true };
+    const results = await Promise.all([1, 2].map(() => tx(db, (client) => importBatch(client, job, [contact]))));
+    expect(results.map((row) => row.created).sort()).toEqual([0, 1]);
+    expect(results.map((row) => row.updated).sort()).toEqual([0, 1]);
+    expect(new Set(results.flatMap((row) => row.ids)).size).toBe(1);
+    expect(await flowRuns(flow)).toHaveLength(1);
+  });
+
+  it("import triggers accept real multipart overrides, expose stored flags, and protect viewer uploads", async () => {
+    await call(fullKey, "PATCH", "/settings", { import_trigger_automations: true });
+    const upload = (key: string, flag?: string) => {
+      const boundary = "entry-boundary";
+      const field = flag === undefined ? "" : `--${boundary}\r\nContent-Disposition: form-data; name="trigger_automations"\r\n\r\n${flag}\r\n`;
+      return app.inject({ method: "POST", url: "/contacts/imports", headers: {
+        authorization: `Bearer ${key}`, "content-type": `multipart/form-data; boundary=${boundary}`
+      }, payload: `${field}--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="entry.csv"\r\nContent-Type: text/csv\r\n\r\nemail\nmultipart-entry@example.com\n\r\n--${boundary}--\r\n` });
+    };
+    const inherited = await upload(fullKey);
+    const off = await upload(fullKey, "false");
+    const on = await upload(fullKey, "true");
+    expect([inherited.statusCode, off.statusCode, on.statusCode]).toEqual([200, 200, 200]);
+    expect([inherited.json().trigger_automations, off.json().trigger_automations, on.json().trigger_automations]).toEqual([true, false, true]);
+    expect((await upload(fullKey, "1")).statusCode).toBe(400);
+    await call(fullKey, "PATCH", "/settings", { import_trigger_automations: false });
+    expect((await call(fullKey, "GET", `/contacts/imports/${inherited.json().id}`)).json.trigger_automations).toBe(true);
+    const viewer = await teammate("Viewer");
+    const session = await signInAs(viewer.email, viewer.password);
+    expect((await upload(session.token, "true")).statusCode).toBe(403);
+    const list = (await call(session.token, "GET", "/contacts/imports")).json.data;
+    expect(list).toHaveLength(3);
+    expect(list.every((row: { trigger_automations: unknown }) => typeof row.trigger_automations === "boolean")).toBe(true);
+  });
+
+  it("contact triggers normalize contracts, record exact multi-field history, and suppress no-op writes", async () => {
+    const plan = await post(fullKey, "/contact-properties", { key: "plan", type: "string" });
+    const active = await post(fullKey, "/contact-properties", { key: "active", type: "boolean" });
+    expect([plan.status, active.status]).toEqual([200, 200]);
+    const created = await contactFlow({ type: "contact_created" });
+    const updated = await contactFlow({ type: "contact_updated", field: "plan", from: "free", to: "pro" });
+    const any = await contactFlow({ type: "contact_updated" });
+    const first = await post(fullKey, "/contacts", { email: "trigger@example.com", properties: { plan: "free", active: false } });
+    expect(first.status).toBe(200);
+    expect(await flowRuns(created)).toHaveLength(1);
+    expect((await post(fullKey, "/contacts", { email: "trigger@example.com", properties: { plan: "free", active: false } })).status).toBe(200);
+    expect(await flowRuns(created)).toHaveLength(1);
+    expect(await flowRuns(any)).toHaveLength(0);
+    const patch = await call(fullKey, "PATCH", `/contacts/${first.json.id}`, {
+      first_name: "Ada", properties: { plan: "pro", active: true }
+    });
+    expect(patch.status).toBe(200);
+    expect(await flowRuns(updated)).toHaveLength(1);
+    expect(await flowRuns(any)).toHaveLength(1);
+    const events = await db.query("select data from custom_events where name = '@contact.updated'");
+    expect(events.rows).toHaveLength(1);
+    expect(events.rows[0].data.changes).toEqual(expect.arrayContaining([
+      { field: "first_name", from: null, to: "Ada" },
+      { field: "plan", from: "free", to: "pro" }, { field: "active", from: false, to: true }
+    ]));
+    expect(events.rows[0].data.changes).toHaveLength(3);
+    const history = await db.query("select field, from_value, to_value from contact_changes where contact_id = $1 and from_value is not null", [first.json.id]);
+    expect(history.rows).toEqual(expect.arrayContaining([
+      { field: "plan", from_value: "free", to_value: "pro" },
+      { field: "active", from_value: false, to_value: true }
+    ]));
+    expect((await call(fullKey, "GET", "/fired-events")).json.data).toHaveLength(0);
+    const wire = (await call(fullKey, "GET", `/automations/${created}`)).json;
+    expect(wire).toMatchObject({ trigger: null, trigger_config: { type: "contact_created" }, reentry: "every_time" });
+    await migrate(db);
+    await migrate(db);
+    expect((await db.query("select trigger_type, trigger from automations where id = $1", [created])).rows).toEqual([
+      { trigger_type: "contact_created", trigger: "@contact.created" }
+    ]);
+    expect((await post(fullKey, "/events/send", { event: "@contact.created", email: "trigger@example.com" })).status).toBe(422);
+    expect((await post(fullKey, "/events", { name: "@reserved" })).status).toBe(400);
+    expect((await post(fullKey, "/automations", { name: "Reserved", trigger: "@reserved", steps: [{ type: "delay", seconds: 1 }] })).status).toBe(400);
+    const other = await seedTenant();
+    expect((await call(other, "GET", `/automations/${created}`)).status).toBe(404);
+  });
+
+  it("contact triggers record history without matching flows, serialize same-value writes, and roll back failed fanout", async () => {
+    await post(fullKey, "/contact-properties", { key: "plan", type: "string" });
+    const first = await post(fullKey, "/contacts", { email: "race@example.com", properties: { plan: "free" } });
+    await call(fullKey, "PATCH", `/contacts/${first.json.id}`, { first_name: "Ada" });
+    expect((await db.query("select id from custom_events")).rows).toHaveLength(0);
+    expect((await db.query("select id from contact_changes where field = 'first_name' and to_value = '\"Ada\"'::jsonb")).rows).toHaveLength(1);
+    const flow = await contactFlow({ type: "contact_updated", field: "plan", to: "pro" });
+    const race = await Promise.all([1, 2].map(() => call(fullKey, "PATCH", `/contacts/${first.json.id}`, { properties: { plan: "pro" } })));
+    expect(race.map((row) => row.status)).toEqual([200, 200]);
+    expect(await flowRuns(flow)).toHaveLength(1);
+    expect((await db.query("select id from custom_events where name = '@contact.updated'")).rows).toHaveLength(1);
+    // Rollback covers contact state, transition history, internal event and run webhook fanout.
+    await db.query(`create or replace function reject_contact_history() returns trigger language plpgsql as $$
+      begin if new.field = 'last_name' then raise exception 'synthetic history failure'; end if; return new; end $$;
+      create trigger reject_contact_history before insert on contact_changes for each row execute function reject_contact_history()`);
+    try {
+      expect((await call(fullKey, "PATCH", `/contacts/${first.json.id}`, { last_name: "Rollback" })).status).toBe(500);
+      expect((await call(fullKey, "GET", `/contacts/${first.json.id}`)).json.last_name).toBe(null);
+    } finally {
+      await db.query("drop trigger reject_contact_history on contact_changes; drop function reject_contact_history()");
+    }
+    expect((await db.query("select id from contact_changes where field = 'last_name'")).rows).toHaveLength(0);
+    expect(await flowRuns(flow)).toHaveLength(1);
+  });
+
+  it("contact triggers retain their once default under concurrent real transitions and reset enrollments on deletion", async () => {
+    await post(fullKey, "/contact-properties", { key: "plan", type: "string" });
+    const flow = await post(fullKey, "/automations", { name: "Once", status: "enabled", steps: [
+      { key: "start", type: "trigger", config: { type: "contact_updated", field: "plan" } }
+    ] });
+    expect(flow.status).toBe(200);
+    expect(flow.json.reentry).toBe("once");
+    const first = await post(fullKey, "/contacts", { email: "once@example.com", properties: { plan: "free" } });
+    const race = await Promise.all(["pro", "business"].map((plan) => call(fullKey, "PATCH", `/contacts/${first.json.id}`, { properties: { plan } })));
+    expect(race.map((row) => row.status)).toEqual([200, 200]);
+    expect(await flowRuns(flow.json.id)).toHaveLength(1);
+    expect((await db.query("select id from contact_changes where contact_id = $1 and field = 'plan'", [first.json.id])).rows).toHaveLength(3);
+    expect((await db.query("select contact_id from automation_enrollments where automation_id = $1", [flow.json.id])).rows).toEqual([{ contact_id: first.json.id }]);
+    await call(fullKey, "DELETE", `/contacts/${first.json.id}`);
+    expect((await db.query("select contact_id from automation_enrollments where automation_id = $1", [flow.json.id])).rows).toHaveLength(0);
+    await post(fullKey, "/contacts", { email: "once@example.com" });
+    await call(fullKey, "PATCH", `/contacts/${first.json.id}`, { properties: { plan: "revived" } });
+    expect(await flowRuns(flow.json.id)).toHaveLength(2);
+  });
+
+  it("contact triggers cover topic and segment APIs, creation and revival, effective defaults, and deleted resources", async () => {
+    const topic = await post(fullKey, "/topics", { name: "Opt-in", default_subscription: "opt_out" });
+    const defaultTopic = await post(fullKey, "/topics", { name: "Default", default_subscription: "opt_in" });
+    const segment = await post(fullKey, "/segments", { name: "Static" });
+    const created = await contactFlow({ type: "contact_created" });
+    const subscribed = await contactFlow({ type: "topic_subscribed", topic_id: topic.json.id });
+    const defaults = await contactFlow({ type: "topic_subscribed", topic_id: defaultTopic.json.id });
+    const joined = await contactFlow({ type: "segment_added", segment_id: segment.json.id });
+    const contact = await post(fullKey, "/contacts", { email: "members@example.com",
+      topics: [{ id: topic.json.id, subscription: "opt_in" }, { id: defaultTopic.json.id, subscription: "opt_in" }],
+      segments: [{ id: segment.json.id }] });
+    expect(contact.status).toBe(200);
+    expect(await flowRuns(created)).toHaveLength(1);
+    expect(await flowRuns(subscribed)).toHaveLength(1);
+    expect(await flowRuns(defaults)).toHaveLength(0);
+    expect(await flowRuns(joined)).toHaveLength(1);
+    await call(fullKey, "PATCH", `/contacts/${contact.json.id}/topics`, { topics: [{ id: topic.json.id, subscription: "opt_in" }] });
+    await post(fullKey, `/contacts/${contact.json.id}/segments/${segment.json.id}`, {});
+    expect(await flowRuns(subscribed)).toHaveLength(1);
+    expect(await flowRuns(joined)).toHaveLength(1);
+    await call(fullKey, "PATCH", `/contacts/${contact.json.id}/topics`, { topics: [{ id: topic.json.id, subscription: "opt_out" }] });
+    await post(fullKey, `/topics/${topic.json.id}/subscriptions`, { email: "members@example.com", status: "opt_in" });
+    expect(await flowRuns(subscribed)).toHaveLength(2);
+    expect((await post(fullKey, `/topics/${topic.json.id}/subscriptions`, { email: "topic-new@example.com", status: "opt_in" })).status).toBe(200);
+    expect((await post(fullKey, `/segments/${segment.json.id}/contacts`, { email: "segment-new@example.com" })).status).toBe(200);
+    expect(await flowRuns(created)).toHaveLength(3);
+    expect(await flowRuns(subscribed)).toHaveLength(3);
+    expect(await flowRuns(joined)).toHaveLength(2);
+    await call(fullKey, "DELETE", `/contacts/${contact.json.id}`);
+    await post(fullKey, "/contacts", { email: "members@example.com" });
+    expect(await flowRuns(created)).toHaveLength(4);
+    await post(fullKey, `/automations/${subscribed}/stop`, {});
+    await call(fullKey, "DELETE", `/topics/${topic.json.id}`);
+    expect((await call(fullKey, "PATCH", `/automations/${subscribed}`, { status: "enabled" })).status).toBe(422);
+    await post(fullKey, `/automations/${joined}/stop`, {});
+    await call(fullKey, "DELETE", `/segments/${segment.json.id}`);
+    expect((await call(fullKey, "PATCH", `/automations/${joined}`, { status: "enabled" })).status).toBe(422);
+    expect((await db.query("select trigger_type from automations where id = $1", [joined])).rows[0].trigger_type).toBe("segment_added");
+  });
+
+  it("contact triggers cover event-created contacts, name filling, preferences, and one-click without reviving deleted contacts", async () => {
+    const created = await contactFlow({ type: "contact_created" });
+    const named = await contactFlow({ type: "contact_updated", field: "first_name", to: "Ada" });
+    const left = await contactFlow({ type: "contact_updated", field: "unsubscribed", from: false, to: true });
+    const topic = await post(fullKey, "/topics", { name: "Preferences", visibility: "public", default_subscription: "opt_out" });
+    const subscribed = await contactFlow({ type: "topic_subscribed", topic_id: topic.json.id });
+    await post(fullKey, "/events/send", { event: "profile", email: "profile@example.com" });
+    await post(fullKey, "/events/send", { event: "profile", email: "profile@example.com", payload: { first_name: "Ada" } });
+    await post(fullKey, "/events/send", { event: "profile", email: "profile@example.com", payload: { first_name: "Changed" } });
+    expect(await flowRuns(created)).toHaveLength(1);
+    expect(await flowRuns(named)).toHaveLength(1);
+    const contact = (await db.query("select id, tenant_id from contacts where email = 'profile@example.com'")).rows[0];
+    const token = unsubscribeToken({ tenant_id: contact.tenant_id, contact_id: contact.id }, process.env.APP_SECRET ?? "dev-secret-change-before-deploy");
+    expect((await app.inject({ method: "POST", url: `/unsubscribe/${token}`, payload: { topics: [{ id: topic.json.id, subscription: "opt_in" }] } })).statusCode).toBe(200);
+    expect(await flowRuns(subscribed)).toHaveLength(1);
+    for (let index = 0; index < 2; index++) expect((await app.inject({ method: "POST", url: `/unsubscribe/${token}`, headers: { "content-type": "application/x-www-form-urlencoded" }, payload: "List-Unsubscribe=One-Click" })).statusCode).toBe(200);
+    expect(await flowRuns(left)).toHaveLength(1);
+    await call(fullKey, "DELETE", `/contacts/${contact.id}`);
+    await post(fullKey, "/events/send", { event: "profile", email: "profile@example.com", payload: { first_name: "Ada" } });
+    expect((await db.query("select deleted_at from contacts where id = $1", [contact.id])).rows[0].deleted_at).not.toBe(null);
+    expect(await flowRuns(created)).toHaveLength(1);
+    const missing = unsubscribeToken({ tenant_id: contact.tenant_id, email: "unsub-created@example.com" }, process.env.APP_SECRET ?? "dev-secret-change-before-deploy");
+    expect((await app.inject({ method: "POST", url: `/unsubscribe/${missing}`, payload: { unsubscribe_all: true } })).statusCode).toBe(200);
+    expect(await flowRuns(created)).toHaveLength(1);
+  });
+
+  it("contact triggers prevent self-entry, stop cross-flow chains at recorded depth five, and never wake event waits", async () => {
+    await post(fullKey, "/contact-properties", { key: "state", type: "string" });
+    const a = await contactFlow({ type: "contact_updated", field: "state", to: "a" }, [{ key: "update", type: "contact_update", config: { properties: { state: "b" } } }]);
+    const b = await contactFlow({ type: "contact_updated", field: "state", to: "b" }, [{ key: "update", type: "contact_update", config: { properties: { state: "a" } } }]);
+    const self = await contactFlow({ type: "contact_updated", field: "first_name" }, [{ key: "name", type: "contact_update", config: { first_name: "Self" } }]);
+    const contact = await post(fullKey, "/contacts", { email: "chain@example.com", properties: { state: "none" } });
+    await call(fullKey, "PATCH", `/contacts/${contact.json.id}`, { first_name: "External" });
+    const own = await flowRuns(self);
+    expect(own).toHaveLength(1);
+    await executeAutomationRun(db, own[0].tenant_id, own[0].id);
+    expect(await flowRuns(self)).toHaveLength(1);
+    const waiting = await post(fullKey, "/automations", { name: "Wait", status: "enabled", trigger: "wait.start", steps: [{ type: "wait_for_event", event_name: "contact.updated", timeout: "1 day" }] });
+    await post(fullKey, "/events/send", { event: "wait.start", email: "chain@example.com" });
+    const wait = (await flowRuns(waiting.json.id))[0];
+    await executeAutomationRun(db, wait.tenant_id, wait.id);
+    await call(fullKey, "PATCH", `/contacts/${contact.json.id}`, { properties: { state: "a" } });
+    for (let i = 0; i < 8; i++) {
+      const ready = await db.query("select id, tenant_id from automation_runs where state = 'ready' and automation_id = any($1)", [[a, b]]);
+      for (const run of ready.rows) await executeAutomationRun(db, run.tenant_id, run.id);
+    }
+    expect([...(await flowRuns(a)), ...(await flowRuns(b))]).toHaveLength(5);
+    expect((await db.query("select depth from automation_runs where automation_id=any($1) order by depth", [[a, b]])).rows)
+      .toEqual([0, 1, 2, 3, 4].map((depth) => ({ depth })));
+    expect((await db.query("select data from custom_events where name = '@contact.updated' and data->>'depth' = '5'")).rows).toHaveLength(1);
+    expect((await db.query(`select r.id from automation_runs r join custom_events e on e.id=r.event_id
+      where e.name='@contact.updated' and e.data->>'depth'='5'`)).rows).toHaveLength(0);
+    expect((await db.query("select state from automation_runs where id = $1", [wait.id])).rows).toEqual([{ state: "waiting" }]);
+    // A legacy @-named event automation remains an event, never a contact subscriber.
+    await db.query("update automations set trigger = '@contact.updated', steps = $2::jsonb where id = $1", [waiting.json.id,
+      JSON.stringify([{ key: "trigger", type: "trigger", config: { event_name: "@contact.updated" } }])]);
+    await call(fullKey, "PATCH", `/contacts/${contact.json.id}`, { last_name: "Not an app event" });
+    expect(await flowRuns(waiting.json.id)).toHaveLength(1);
+    const legacy = await fireEvent(db, wait.tenant_id, "legacy-event-trigger", { name: "@contact.updated", email: "chain@example.com", data: {} });
+    expect(legacy.runs).toHaveLength(1);
+    expect(await flowRuns(waiting.json.id)).toHaveLength(2);
+    expect([...(await flowRuns(a)), ...(await flowRuns(b))]).toHaveLength(5);
+  });
+
+  it("contact triggers dispatch step-created contacts and static additions exactly once and preserve typed transitions", async () => {
+    await post(fullKey, "/contact-properties", { key: "active", type: "boolean" });
+    await post(fullKey, "/contact-properties", { key: "due_at", type: "date" });
+    const created = await contactFlow({ type: "contact_created" });
+    const segment = await post(fullKey, "/segments", { name: "Step members" });
+    const joined = await contactFlow({ type: "segment_added", segment_id: segment.json.id });
+    const flow = await post(fullKey, "/automations", { name: "Step creator", trigger: "create.other", status: "enabled", steps: [
+      { type: "add_to_segment", segment_id: segment.json.id, email: "step-created@example.com" },
+      { type: "add_to_segment", segment_id: segment.json.id, email: "step-created@example.com" }
+    ] });
+    await post(fullKey, "/events/send", { event: "create.other", payload: { depth: 100 } });
+    const run = (await flowRuns(flow.json.id))[0];
+    await executeAutomationRun(db, run.tenant_id, run.id);
+    expect(await flowRuns(created)).toHaveLength(1);
+    expect(await flowRuns(joined)).toHaveLength(1);
+    expect((await db.query("select data from custom_events where name = '@segment.added:' || $1", [segment.json.id])).rows[0].data).toMatchObject({ depth: 1, origin_run_id: run.id });
+    expect((await post(fullKey, "/automations", { name: "Wrong type", steps: [{ key: "start", type: "trigger", config: { type: "contact_updated", field: "active", to: "true" } }] })).status).toBe(422);
+    const active = await contactFlow({ type: "contact_updated", field: "active", from: false, to: true });
+    const contact = await post(fullKey, "/contacts", { email: "typed@example.com", properties: { active: false } });
+    await call(fullKey, "PATCH", `/contacts/${contact.json.id}`, { properties: { active: true } });
+    expect(await flowRuns(active)).toHaveLength(1);
+    const due = await contactFlow({ type: "contact_updated", field: "due_at", from: null, to: "2026-10-04T00:00:00Z" });
+    await call(fullKey, "PATCH", `/contacts/${contact.json.id}`, { properties: { due_at: "2026-10-04T00:00:00Z" } });
+    await call(fullKey, "PATCH", `/contacts/${contact.json.id}`, { properties: { due_at: "2026-10-04T00:00:00+00:00" } });
+    expect(await flowRuns(due)).toHaveLength(1);
+    // Exercise a legacy rule-backed row without changing the shipped schema.
+    const original = (await db.query("select rule from segments where tenant_id=$1 and id=$2", [run.tenant_id, segment.json.id])).rows[0]!;
+    try {
+      await db.query("update segments set rule=$3::jsonb where tenant_id=$1 and id=$2", [run.tenant_id, segment.json.id, JSON.stringify({ type: "rule", field: "contact.active", operator: "eq", value: true })]);
+      expect((await call(fullKey, "PATCH", `/automations/${joined}`, { status: "enabled" })).status).toBe(422);
+      expect((await post(fullKey, `/contacts/${contact.json.id}/segments/${segment.json.id}`, {})).status).toBe(409);
+    } finally {
+      await db.query("update segments set rule=$3::jsonb where tenant_id=$1 and id=$2", [run.tenant_id, segment.json.id, original.rule === null ? null : JSON.stringify(original.rule)]);
+    }
+  });
+
+  it("renders reserved and configured sandbox recipients and exposes their stored flags in detail and list responses", async () => {
+    expect((await call(fullKey, "PATCH", "/settings", {
+      sandbox_domains: ["qa.dispatch-fixture.net"],
+    })).status).toBe(200);
+    const template = await post(fullKey, "/templates", {
+      name: "Sandbox",
+      alias: "sandbox",
+      subject: "Hello {{name}}",
+      html: "<p>Hi {{name}}</p>",
+      text: "Hi {{name}}",
+      variables: ["name"],
+      publish: true,
+    });
+    expect(template.status).toBe(200);
+    const fixtures: Array<[string, boolean]> = [
+      ["ada@example.com", true],
+      ["ada@TEAM.EXAMPLE.COM", true],
+      ["ada@example.net", true],
+      ["ada@team.example.net", true],
+      ["ada@example.org", true],
+      ["ada@team.example.org", true],
+      ["ada@mailer.test", true],
+      ["ada@team.mailer.test", true],
+      ["ada@mailer.example", true],
+      ["ada@mailer.invalid", true],
+      ["ada@qa.dispatch-fixture.net", true],
+      ["ada@team.qa.dispatch-fixture.net", true],
+      ["ada@notqa.dispatch-fixture.net", false],
+      ["ada@dispatch-fixture.net", false],
+    ];
+    const accepted: Array<{ id: string; email: string; sandbox: boolean }> = [];
+    for (const [email, sandbox] of fixtures) {
+      const sent = await post(fullKey, "/emails", {
+        from: "hello@dispatch-fixture.net",
+        to: email,
+        template: "sandbox",
+        variables: { name: "Ada" },
+      });
+      expect(sent.status).toBe(200);
+      expect(sent.json).toMatchObject({ id: expect.any(String), sandbox });
+      const detail = await call(fullKey, "GET", `/emails/${sent.json.id}`);
+      expect(detail.status).toBe(200);
+      expect(detail.json).toMatchObject({
+        id: sent.json.id, sandbox, last_event: "queued",
+        subject: "Hello Ada", html: "<p>Hi Ada</p>", text: "Hi Ada",
+        to: [email], cc: [], bcc: [],
+        recipients: [{ email, kind: "to", sandbox }],
+      });
+      accepted.push({ id: sent.json.id, email, sandbox });
+    }
+    const list = await call(fullKey, "GET", "/emails?limit=100");
+    expect(list.status).toBe(200);
+    expect(list.json.data).toHaveLength(fixtures.length);
+    for (const email of accepted)
+      expect(list.json.data.find((row: { id: string }) => row.id === email.id)).toMatchObject({
+        id: email.id, sandbox: email.sandbox, to: [email.email],
+        recipients: [{ email: email.email, kind: "to", sandbox: email.sandbox }],
+      });
+    const flags = await db.query(
+      `select e.id, e.sandbox, r.email, r.sandbox as recipient_sandbox
+       from emails e join email_recipients r on r.email_id = e.id order by e.id`,
+    );
+    expect(flags.rows).toEqual(accepted.map((email) => ({
+      id: email.id, sandbox: email.sandbox, email: email.email,
+      recipient_sandbox: email.sandbox,
+    })).sort((a, b) => a.id.localeCompare(b.id)));
+  });
+
+  it("preserves sandbox attribution across repeated migrations and setting removal without sharing custom domains between tenants", async () => {
+    expect((await call(fullKey, "PATCH", "/settings", {
+      sandbox_domains: ["qa.dispatch-fixture.net"],
+    })).status).toBe(200);
+    const sandbox = await post(fullKey, "/emails", letter({
+      to: "ada@qa.dispatch-fixture.net",
+    }));
+    const mixed = await post(fullKey, "/emails", letter({
+      to: ["ada@team.qa.dispatch-fixture.net", "real@dispatch-fixture.net"],
+    }));
+    expect([sandbox.status, mixed.status]).toEqual([200, 200]);
+    expect([sandbox.json.sandbox, mixed.json.sandbox]).toEqual([true, false]);
+    const otherKey = await seedTenant();
+    expect((await call(otherKey, "GET", "/settings")).json.sandbox_domains).toEqual([]);
+    const other = await post(otherKey, "/emails", letter({ to: "ada@qa.dispatch-fixture.net" }));
+    expect(other.status).toBe(200);
+    expect(other.json.sandbox).toBe(false);
+    expect((await call(otherKey, "GET", `/emails/${sandbox.json.id}`)).status).toBe(404);
+    expect((await call(otherKey, "GET", "/emails")).json.data.map((row: { id: string }) => row.id)).toEqual([other.json.id]);
+    const snapshot = () => db.query(
+      `select e.id, e.sandbox, e.xmin::text as email_version, r.id as recipient_id,
+              r.sandbox as recipient_sandbox, r.xmin::text as recipient_version
+       from emails e join email_recipients r on r.email_id = e.id order by e.id, r.id`,
+    );
+    const before = (await snapshot()).rows;
+    await migrate(db);
+    await migrate(db);
+    expect((await snapshot()).rows).toEqual(before);
+    expect((await call(fullKey, "PATCH", "/settings", { sandbox_domains: [] })).status).toBe(200);
+    await migrate(db);
+    await migrate(db);
+    expect((await snapshot()).rows).toEqual(before);
+
+    const current = await post(fullKey, "/emails", letter({ to: "ada@qa.dispatch-fixture.net" }));
+    expect(current.status).toBe(200);
+    expect(current.json.sandbox).toBe(false);
+
+    const blocked = recordingSes({ refuse: true });
+    await productionDelivery(await sendJob(sandbox.json.id), blocked.provider);
+    expect(blocked.quotas).toEqual([]);
+    expect(blocked.sent).toEqual([]);
+    const ses = recordingSes();
+    await productionDelivery(await sendJob(mixed.json.id), ses.provider);
+    await productionDelivery(await sendJob(other.json.id), ses.provider);
+    await productionDelivery(await sendJob(current.json.id), ses.provider);
+    expect(ses.sent.map((email) => email.recipients)).toEqual([
+      [{ email: "real@dispatch-fixture.net", kind: "to" }],
+      [{ email: "ada@qa.dispatch-fixture.net", kind: "to" }],
+      [{ email: "ada@qa.dispatch-fixture.net", kind: "to" }],
+    ]);
+    expect((await call(fullKey, "GET", `/emails/${sandbox.json.id}`)).json).toMatchObject({
+      sandbox: true, last_event: "delivered",
+      recipients: [{ email: "ada@qa.dispatch-fixture.net", sandbox: true }],
+    });
+    expect((await call(fullKey, "GET", `/emails/${mixed.json.id}`)).json.recipients).toEqual(expect.arrayContaining([
+      expect.objectContaining({ email: "ada@team.qa.dispatch-fixture.net", sandbox: true }),
+      expect.objectContaining({ email: "real@dispatch-fixture.net", sandbox: false }),
+    ]));
+    expect((await db.query(
+      "select email, sandbox, status from email_recipients where email_id = $1 order by email",
+      [mixed.json.id],
+    )).rows).toEqual([
+      { email: "ada@team.qa.dispatch-fixture.net", sandbox: true, status: "delivered" },
+      { email: "real@dispatch-fixture.net", sandbox: false, status: "sent" },
+    ]);
+  });
+
+  it("bypasses SES in production and delivers one signed sandbox webhook without duplicate events or attempts on job retries", async () => {
+    const capture = await captureWebhook();
+    try {
+      const webhook = await post(fullKey, "/webhooks", {
+        url: `${capture.base}/ok`,
+        events: ["email.delivered"],
+      });
+      expect(webhook.status).toBe(200);
+      const sent = await post(fullKey, "/emails", letter({
+        to: "ada@example.com", cc: "grace@nested.example.org", bcc: "linus@mailer.invalid",
+      }));
+      expect(sent.status).toBe(200);
+      expect(sent.json.sandbox).toBe(true);
+      const job = await sendJob(sent.json.id);
+      const ses = recordingSes({ refuse: true });
+      await productionDelivery(job, ses.provider);
+      const events = await db.query(
+        "select id, type, data from email_events where email_id = $1 order by id",
+        [sent.json.id],
+      );
+      expect(events.rows).toEqual([{
+        id: expect.any(String), type: "email.delivered",
+        data: { sandbox: true, recipients: expect.arrayContaining(["ada@example.com", "grace@nested.example.org", "linus@mailer.invalid"]) },
+      }]);
+      expect(events.rows[0]!.data.recipients).toHaveLength(3);
+      expect(events.rows[0]!.data).not.toHaveProperty("provider_message_id");
+      const attempts = await db.query(
+        "select id, event_id, attempt, state from webhook_attempts where webhook_id = $1",
+        [webhook.json.id],
+      );
+      expect(attempts.rows).toEqual([{
+        id: expect.any(String), event_id: events.rows[0]!.id, attempt: 1, state: "queued",
+      }]);
+      await productionDelivery(job, ses.provider);
+      expect((await db.query("select id, type, data from email_events where email_id = $1 order by id", [sent.json.id])).rows).toEqual(events.rows);
+      expect((await db.query("select id, event_id, attempt, state from webhook_attempts where webhook_id = $1", [webhook.json.id])).rows).toEqual(attempts.rows);
+      expect((await db.query("select status, sandbox, provider_message_id, message_id from emails where id = $1", [sent.json.id])).rows).toEqual([{
+        status: "delivered", sandbox: true, provider_message_id: null, message_id: null,
+      }]);
+      expect((await db.query("select status, sandbox from email_recipients where email_id = $1", [sent.json.id])).rows).toEqual([
+        { status: "delivered", sandbox: true },
+        { status: "delivered", sandbox: true },
+        { status: "delivered", sandbox: true },
+      ]);
+      expect((await db.query("select state from send_jobs where id = $1", [job.id])).rows).toEqual([{ state: "done" }]);
+      expect((await db.query("select id from provider_events_raw where tenant_id = $1", [job.tenant_id])).rows).toEqual([]);
+      expect((await db.query("select value from usage_counters where tenant_id = $1 and name = 'emails.sent'", [job.tenant_id])).rows).toEqual([]);
+      await tick();
+      expect(capture.received).toHaveLength(1);
+      const delivered = capture.received[0]!;
+      expect(JSON.parse(delivered.body)).toMatchObject({
+        id: events.rows[0]!.id, type: "email.delivered",
+        data: events.rows[0]!.data,
+      });
+      expect(JSON.parse(delivered.body).data).not.toHaveProperty("provider_message_id");
+      expect(sign(delivered.body, webhook.json.signing_secret, delivered.id, Number(delivered.timestamp)).signature).toBe(delivered.signature);
+      expect(verify(delivered.body, webhook.json.signing_secret, delivered.id, delivered.timestamp, delivered.signature)).toBe(true);
+      await productionDelivery(job, ses.provider);
+      await tick();
+      expect(capture.received).toHaveLength(1);
+      expect((await db.query("select id, attempt, state from webhook_attempts where webhook_id = $1", [webhook.json.id])).rows).toEqual([{
+        id: attempts.rows[0]!.id, attempt: 1, state: "sent",
+      }]);
+      expect(ses.quotas).toEqual([]);
+      expect(ses.sent).toEqual([]);
+    } finally {
+      await capture.close();
+    }
+  });
+
+  it("hands only real to cc and bcc recipients to SES while sandbox delivery cannot promote a mixed email", async () => {
+    const sent = await post(fullKey, "/emails", letter({
+      to: ["real-to@dispatch-fixture.net", "sandbox-to@example.com"],
+      cc: ["real-cc@dispatch-fixture.net", "sandbox-cc@mailer.test"],
+      bcc: ["real-bcc@dispatch-fixture.net", "sandbox-bcc@example.net"],
+    }));
+    expect(sent.status).toBe(200);
+    expect(sent.json.sandbox).toBe(false);
+    const job = await sendJob(sent.json.id);
+    const real = [
+      { email: "real-to@dispatch-fixture.net", kind: "to" },
+      { email: "real-cc@dispatch-fixture.net", kind: "cc" },
+      { email: "real-bcc@dispatch-fixture.net", kind: "bcc" },
+    ];
+    const sandbox = ["sandbox-to@example.com", "sandbox-cc@mailer.test", "sandbox-bcc@example.net"];
+    const ses = recordingSes({
+      beforeSend: async () => {
+        expect((await db.query("select status, sandbox, provider_message_id from emails where id = $1", [sent.json.id])).rows).toEqual([{
+          status: "queued", sandbox: false, provider_message_id: null,
+        }]);
+        expect((await db.query("select type, data from email_events where email_id = $1", [sent.json.id])).rows).toEqual([{
+          type: "email.delivered", data: { sandbox: true, recipients: expect.arrayContaining(sandbox) },
+        }]);
+        const recipients = await db.query("select email, status, sandbox from email_recipients where email_id = $1", [sent.json.id]);
+        for (const row of recipients.rows)
+          expect(row).toMatchObject({
+            sandbox: sandbox.includes(row.email),
+            status: sandbox.includes(row.email) ? "delivered" : "queued",
+          });
+      },
+    });
+    await productionDelivery(job, ses.provider);
+    expect(ses.quotas).toEqual(["us-west-2"]);
+    expect(ses.sent).toHaveLength(1);
+    expect(ses.sent[0]!.recipients).toHaveLength(3);
+    expect(ses.sent[0]!.recipients).toEqual(expect.arrayContaining(real));
+    const detail = await call(fullKey, "GET", `/emails/${sent.json.id}`);
+    expect(detail.json).toMatchObject({
+      sandbox: false, last_event: "sent",
+      to: expect.arrayContaining(["real-to@dispatch-fixture.net", "sandbox-to@example.com"]),
+      cc: expect.arrayContaining(["real-cc@dispatch-fixture.net", "sandbox-cc@mailer.test"]),
+      bcc: expect.arrayContaining(["real-bcc@dispatch-fixture.net", "sandbox-bcc@example.net"]),
+    });
+    expect(detail.json.recipients).toHaveLength(6);
+    for (const row of detail.json.recipients)
+      expect(row.sandbox).toBe(sandbox.includes(row.email));
+    const afterSend = await db.query("select email, sandbox, status from email_recipients where email_id = $1", [sent.json.id]);
+    for (const row of afterSend.rows)
+      expect(row).toMatchObject({
+        sandbox: sandbox.includes(row.email),
+        status: sandbox.includes(row.email) ? "delivered" : "sent",
+      });
+    const list = await call(fullKey, "GET", "/emails");
+    expect(list.json.data[0]).toMatchObject({
+      id: sent.json.id, sandbox: false,
+      recipients: expect.arrayContaining([
+        ...real.map((recipient) => ({ ...recipient, status: "sent", sandbox: false })),
+        ...sandbox.map((email, index) => ({ email, kind: ["to", "cc", "bcc"][index], status: "delivered", sandbox: true })),
+      ]),
+    });
+    await appendEvent(db, {
+      tenantId: job.tenant_id, requestId: job.request_id, emailId: job.email_id,
+      type: "email.delivered", providerEventId: `${job.email_id}:ses:delivered`,
+      data: { provider_message_id: `ses_${job.email_id}` },
+      mode: "delivery", provider: "ses", recipients: real.map((recipient) => recipient.email),
+    });
+    expect((await stored(sent.json.id)).status).toBe("delivered");
+    expect((await db.query("select status, sandbox from email_recipients where email_id = $1 and sandbox", [sent.json.id])).rows).toEqual([
+      { status: "delivered", sandbox: true },
+      { status: "delivered", sandbox: true },
+      { status: "delivered", sandbox: true },
+    ]);
+    await productionDelivery(job, ses.provider);
+    expect(ses.sent).toHaveLength(1);
+    expect((await db.query("select id from email_events where email_id = $1", [sent.json.id])).rows).toHaveLength(3);
+  });
+
+  it("finishes mixed sandbox jobs without claiming real delivery when every real recipient is suppressed", async () => {
+    await post(fullKey, "/suppressions", { email: "suppressed@dispatch-fixture.net" });
+    const accepted = await post(fullKey, "/emails", letter({
+      to: ["preview@example.com", "suppressed@dispatch-fixture.net"],
+    }));
+    expect(accepted.status).toBe(200);
+    expect(accepted.json.sandbox).toBe(false);
+    const ses = recordingSes({ refuse: true });
+    const job = await sendJob(accepted.json.id);
+    await productionDelivery(job, ses.provider);
+    expect(ses.sent).toEqual([]);
+    expect(ses.quotas).toEqual([]);
+    expect((await db.query("select status, sandbox from emails where id = $1", [accepted.json.id])).rows).toEqual([{ status: "suppressed", sandbox: false }]);
+    expect((await db.query("select state from send_jobs where id = $1", [job.id])).rows).toEqual([{ state: "done" }]);
+    expect((await db.query("select email, sandbox, status from email_recipients where email_id = $1 order by email", [accepted.json.id])).rows).toEqual([
+      { email: "preview@example.com", sandbox: true, status: "delivered" },
+      { email: "suppressed@dispatch-fixture.net", sandbox: false, status: "suppressed" },
+    ]);
+  });
+
+  it("marks actual sandbox tracking requests as simulated and excludes their opens and clicks", async () => {
+    const accepted = await post(fullKey, "/emails", letter({
+      to: "preview@example.com", html: '<p><a href="https://dispatch-fixture.net/docs">Docs</a></p>',
+    }));
+    expect(accepted.status).toBe(200);
+    await productionDelivery(await sendJob(accepted.json.id), recordingSes({ refuse: true }).provider);
+    const tracked = (await db.query<{ html_tracked: string }>("select html_tracked from emails where id = $1", [accepted.json.id])).rows[0]!.html_tracked;
+    const open = new URL(tracked.match(/src="([^"]+\/open\/[^"]+)"/)![1]!);
+    const click = new URL(tracked.match(/href="([^"]+\/click\/[^"]+)"/)![1]!);
+    expect((await app.inject({ method: "GET", url: open.pathname })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: click.pathname })).statusCode).toBe(302);
+    const events = (await db.query<{ type: string; data: Record<string, unknown> }>("select type, data from email_events where email_id = $1", [accepted.json.id])).rows;
+    expect(events.map((event) => event.type).sort()).toEqual(["email.clicked", "email.delivered", "email.opened"]);
+    expect(events.every((event) => event.data.sandbox === true)).toBe(true);
+    const metrics = await call(fullKey, "GET", "/emails/metrics?metrics=sent,delivered,opened,clicked,open_rate,click_rate");
+    expect(metrics.status).toBe(200);
+    expect(metrics.json.totals).toEqual({ sent: 0, delivered: 0, opened: 0, clicked: 0, open_rate: 0, click_rate: 0 });
+  });
+
+  it("reconciles newly sandboxed recipients on a mixed retry without duplicating the delivery webhook", async () => {
+    const webhook = await post(fullKey, "/webhooks", { url: "http://127.0.0.1:9/sandbox-retry", events: ["email.delivered"] });
+    expect(webhook.status).toBe(200);
+    const accepted = await post(fullKey, "/emails", letter({
+      to: ["preview@example.com", "real@retry.dispatch-fixture.net"],
+    }));
+    const job = await sendJob(accepted.json.id);
+    const retry = recordingSes();
+    retry.provider.send = async () => { throw new ProviderError("Throttled", true, true); };
+    await expect(productionDelivery(job, retry.provider)).rejects.toThrow("Throttled");
+    expect((await stored(accepted.json.id)).status).toBe("queued");
+    const before = (await db.query("select id, data from email_events where email_id = $1", [accepted.json.id])).rows;
+    expect(before).toHaveLength(1);
+    expect((await call(fullKey, "PATCH", "/settings", { sandbox_domains: ["retry.dispatch-fixture.net"] })).status).toBe(200);
+    const ses = recordingSes({ refuse: true });
+    await productionDelivery(job, ses.provider);
+    expect(ses.quotas).toEqual([]);
+    expect(ses.sent).toEqual([]);
+    expect((await db.query("select sandbox, status from emails where id = $1", [accepted.json.id])).rows).toEqual([{ sandbox: true, status: "delivered" }]);
+    expect((await db.query("select sandbox, status from email_recipients where email_id = $1", [accepted.json.id])).rows).toEqual([
+      { sandbox: true, status: "delivered" }, { sandbox: true, status: "delivered" },
+    ]);
+    expect((await db.query("select id, data from email_events where email_id = $1", [accepted.json.id])).rows).toEqual(before);
+    expect((await db.query("select id from webhook_attempts where webhook_id = $1", [webhook.json.id])).rows).toHaveLength(1);
+    expect((await db.query("select state from send_jobs where id = $1", [job.id])).rows).toEqual([{ state: "done" }]);
+  });
+
+  it("returns each email's sandbox flag on split marketing and batch idempotency replays", async () => {
+    const topic = await post(fullKey, "/topics", { name: "Sandbox", default_subscription: "opt_in" });
+    expect(topic.status).toBe(200);
+    const body = letter({
+      to: ["ada@example.com", "real@dispatch-fixture.net"],
+      cc: "grace@mailer.test",
+      bcc: "real-bcc@dispatch-fixture.net",
+      topic_id: topic.json.id,
+    });
+    const first = await post(fullKey, "/emails", body, { "idempotency-key": "sandbox-split" });
+    expect(first.status).toBe(200);
+    expect(first.json.sandbox).toBe(true);
+    expect(first.json.emails.map((email: { to: string; sandbox: boolean }) => ({ to: email.to, sandbox: email.sandbox }))).toEqual([
+      { to: "ada@example.com", sandbox: true },
+      { to: "real@dispatch-fixture.net", sandbox: false },
+      { to: "grace@mailer.test", sandbox: true },
+      { to: "real-bcc@dispatch-fixture.net", sandbox: false },
+    ]);
+    expect((await post(fullKey, "/emails", body, { "idempotency-key": "sandbox-split" })).json).toEqual({ ...first.json, request_id: expect.any(String) });
+    const batchBody = { emails: [
+      letter({ to: "batch@example.org" }),
+      letter({ to: "batch@dispatch-fixture.net" }),
+      body,
+    ] };
+    const batch = await post(fullKey, "/emails/batch", batchBody, { "idempotency-key": "sandbox-batch" });
+    expect(batch.status).toBe(200);
+    expect(batch.json.data.map((email: { sandbox: boolean }) => email.sandbox)).toEqual([true, false, true]);
+    expect(batch.json.data[2].emails.map((email: { sandbox: boolean }) => email.sandbox)).toEqual([true, false, true, false]);
+    expect((await post(fullKey, "/emails/batch", batchBody, { "idempotency-key": "sandbox-batch" })).json).toEqual({ ...batch.json, request_id: expect.any(String) });
+    expect((await db.query("select id from emails")).rows).toHaveLength(10);
+  });
+
+  describe("sandbox history", () => {
+    it("calculates broadcast counts after waiting for the current classification transaction", async () => {
+      const broadcast = await queuedBroadcast("locked@locked.dispatch-fixture.net");
+      const job = await sendJob(broadcast.emailId);
+      const writer = await db.connect();
+      const reader = await db.connect();
+      let pending: Promise<void> | undefined;
+      try {
+        await writer.query("begin");
+        await writer.query("select id from broadcasts where tenant_id = $1 and id = $2 for update", [job.tenant_id, broadcast.id]);
+        await reader.query("begin");
+        const pid = (await reader.query<{ pid: number }>("select pg_backend_pid() as pid")).rows[0]!.pid;
+        pending = reconcileBroadcastSent(reader, job.tenant_id, broadcast.id);
+        let waiting = false;
+        for (let attempt = 0; attempt < 100; attempt++) {
+          waiting = (await db.query("select wait_event_type = 'Lock' as waiting from pg_stat_activity where pid = $1", [pid])).rows[0]?.waiting === true;
+          if (waiting) break;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect(waiting).toBe(true);
+        // The aggregate's snapshot must follow this committed classification, not the
+        // earlier snapshot it had while blocked behind the broadcast row lock.
+        await writer.query("update emails set sandbox = true where tenant_id = $1 and id = $2", [job.tenant_id, broadcast.emailId]);
+        await writer.query("commit");
+        await pending;
+        await reader.query("commit");
+        expect((await call(fullKey, "GET", `/broadcasts/${broadcast.id}`)).json.sent_count).toBe(0);
+        await appendEvent(db, {
+          tenantId: job.tenant_id, requestId: job.request_id, emailId: broadcast.emailId,
+          type: "email.sent", providerEventId: "historical:locked:sent",
+          data: { sandbox: false }, mode: "delivery", provider: "ses",
+        });
+        await Promise.all(Array.from({ length: 3 }, () => tx(db, (client) =>
+          reconcileBroadcastSent(client, job.tenant_id, broadcast.id))));
+        expect((await call(fullKey, "GET", `/broadcasts/${broadcast.id}`)).json.sent_count).toBe(1);
+        await tx(db, (client) => reconcileBroadcastSent(client, "other_tenant", broadcast.id));
+        expect((await call(fullKey, "GET", `/broadcasts/${broadcast.id}`)).json.sent_count).toBe(1);
+      } finally {
+        await writer.query("rollback");
+        await pending?.catch(() => undefined);
+        await reader.query("rollback");
+        writer.release();
+        reader.release();
+      }
+    });
+
+    it("reconciles a queued real broadcast to zero after late sandbox routing and keeps retries and setting removal stable", async () => {
+      const capture = await captureWebhook();
+      try {
+        const webhook = await post(fullKey, "/webhooks", {
+          url: `${capture.base}/ok`, events: ["email.delivered"],
+        });
+        expect(webhook.status).toBe(200);
+        const broadcast = await queuedBroadcast("late@late.dispatch-fixture.net");
+        const job = await sendJob(broadcast.emailId);
+        const count = async (expected: number) => {
+          const detail = await call(fullKey, "GET", `/broadcasts/${broadcast.id}`);
+          expect(detail.status).toBe(200);
+          expect(detail.json).toMatchObject({ sent_count: expected, recipient_count: 1 });
+          const list = await call(fullKey, "GET", "/broadcasts");
+          expect(list.status).toBe(200);
+          expect(list.json.data.find((row: { id: string }) => row.id === broadcast.id)).toMatchObject({ id: broadcast.id });
+          expect((await db.query("select sent_count from broadcasts where id = $1", [broadcast.id])).rows).toEqual([{ sent_count: expected }]);
+        };
+        // Ordinary real broadcasts count at queue time, before SES acceptance.
+        await count(1);
+        expect((await db.query("select sandbox, status, provider_message_id from emails where id = $1", [broadcast.emailId])).rows).toEqual([{
+          sandbox: false, status: "queued", provider_message_id: null,
+        }]);
+        expect((await call(fullKey, "PATCH", "/settings", {
+          sandbox_domains: ["late.dispatch-fixture.net"],
+        })).status).toBe(200);
+        const ses = recordingSes({ refuse: true });
+        await productionDelivery(job, ses.provider);
+        await count(0);
+        expect((await call(fullKey, "GET", `/emails/${broadcast.emailId}`)).json).toMatchObject({
+          sandbox: true, last_event: "delivered",
+          recipients: [{ email: "late@late.dispatch-fixture.net", sandbox: true, status: "delivered" }],
+        });
+        const events = (await db.query("select id, type, data from email_events where email_id = $1 order by id", [broadcast.emailId])).rows;
+        expect(events).toEqual([{
+          id: expect.any(String), type: "email.delivered",
+          data: { sandbox: true, recipients: ["late@late.dispatch-fixture.net"] },
+        }]);
+        const attempts = (await db.query("select id, event_id, attempt from webhook_attempts where webhook_id = $1", [webhook.json.id])).rows;
+        expect(attempts).toEqual([{ id: expect.any(String), event_id: events[0]!.id, attempt: 1 }]);
+        for (let repeat = 0; repeat < 2; repeat++) {
+          await productionDelivery(job, ses.provider);
+          await count(0);
+        }
+        expect((await call(fullKey, "PATCH", "/settings", { sandbox_domains: [] })).status).toBe(200);
+        await migrate(db);
+        await migrate(db);
+        await productionDelivery(job, ses.provider);
+        await count(0);
+        expect((await db.query("select id, type, data from email_events where email_id = $1 order by id", [broadcast.emailId])).rows).toEqual(events);
+        expect((await db.query("select id, event_id, attempt from webhook_attempts where webhook_id = $1", [webhook.json.id])).rows).toEqual(attempts);
+        expect((await db.query("select state from send_jobs where id = $1", [job.id])).rows).toEqual([{ state: "done" }]);
+        expect((await db.query("select status from broadcast_recipients where broadcast_id = $1", [broadcast.id])).rows).toEqual([{ status: "sent" }]);
+        expect((await db.query("select id from provider_events_raw where tenant_id = $1", [job.tenant_id])).rows).toEqual([]);
+        expect((await db.query("select value from usage_counters where tenant_id = $1 and name = 'emails.sent'", [job.tenant_id])).rows).toEqual([]);
+        const metrics = await call(fullKey, "GET", `/emails/metrics?broadcast_id=${broadcast.id}&metrics=sent,delivered,opened,clicked`);
+        expect(metrics.status).toBe(200);
+        expect(metrics.json.totals).toEqual({ sent: 0, delivered: 0, opened: 0, clicked: 0 });
+        await tick();
+        await productionDelivery(job, ses.provider);
+        await tick();
+        await count(0);
+        expect(capture.received).toHaveLength(1);
+        const delivered = capture.received[0]!;
+        expect(JSON.parse(delivered.body)).toMatchObject({ id: events[0]!.id, type: "email.delivered", data: events[0]!.data });
+        expect(verify(delivered.body, webhook.json.signing_secret, delivered.id, delivered.timestamp, delivered.signature)).toBe(true);
+        expect(ses.quotas).toEqual([]);
+        expect(ses.sent).toEqual([]);
+      } finally {
+        await capture.close();
+      }
+    });
+
+    it.each(["explicit", "legacy"] as const)(
+      "preserves %s real broadcast email automation step and click history when an API retry becomes sandbox",
+      async (attribution) => {
+        const broadcast = await queuedBroadcast("history@history.dispatch-fixture.net");
+        const job = await sendJob(broadcast.emailId);
+        const flow = await post(fullKey, "/automations", {
+          name: "Historical broadcast", enabled: false,
+          steps: [{ key: "start", type: "trigger", config: { event_name: "sandbox.history" } }],
+          connections: [],
+        });
+        expect(flow.status).toBe(200);
+        await db.query("update emails set automation_id = $1, automation_step = 'welcome' where id = $2", [flow.json.id, broadcast.emailId]);
+        const ses = recordingSes();
+        await productionDelivery(job, ses.provider);
+        const callback = {
+          mail: {
+            messageId: `ses_${broadcast.emailId}`, destination: ["history@history.dispatch-fixture.net"],
+            tags: { dispatch_email_id: [broadcast.emailId], dispatch_tenant_id: [job.tenant_id] },
+          },
+        };
+        expect(await tx(db, (client) => applySesEvent(client, {
+          ...callback, eventType: "Delivery", delivery: { recipients: ["history@history.dispatch-fixture.net"] },
+        }))).toHaveLength(1);
+        const tracked = await stored(broadcast.emailId);
+        const open = new URL(tracked.html_tracked.match(/src="([^"]+\/open\/[^"]+)"/)![1]!);
+        const click = new URL(tracked.html_tracked.match(/href="([^"]+\/click\/[^"]+)"/)![1]!);
+        expect((await app.inject({ method: "GET", url: open.pathname })).statusCode).toBe(200);
+        expect((await app.inject({ method: "GET", url: click.pathname })).statusCode).toBe(302);
+        // Tracking deduplicates within the same millisecond; these are two genuine clicks.
+        await new Promise((resolve) => setTimeout(resolve, 2));
+        expect((await app.inject({ method: "GET", url: click.pathname })).statusCode).toBe(302);
+        const bounce = {
+          ...callback, eventType: "Bounce",
+          bounce: { bounceType: "Transient", bounceSubType: "General", bouncedRecipients: [{ emailAddress: "history@history.dispatch-fixture.net" }] },
+        };
+        expect(await tx(db, (client) => applySesEvent(client, bounce))).toHaveLength(1);
+        expect(await tx(db, (client) => applySesEvent(client, bounce))).toEqual([]);
+        expect((await stored(broadcast.emailId)).status).toBe("bounced");
+        // Permanent bounce/suppression would mask the retry routing regression.
+        expect((await db.query("select id from suppressions where tenant_id = $1 and removed_at is null", [job.tenant_id])).rows).toEqual([]);
+        if (attribution === "legacy")
+          await db.query("update email_events set data = data - 'sandbox' where email_id = $1", [broadcast.emailId]);
+        const history = (await db.query<{ id: string; type: string; data: Record<string, unknown> }>(
+          "select id, type, data from email_events where email_id = $1 order by id", [broadcast.emailId],
+        )).rows;
+        expect(history).toHaveLength(6);
+        expect(history.every((event) => attribution === "legacy"
+          ? !Object.hasOwn(event.data, "sandbox") : event.data.sandbox === false)).toBe(true);
+        const metricsQuery = new URLSearchParams({
+          metrics: "sent,delivered,bounced,bounced_transient,opened,unique_opened,clicked,unique_clicked,delivery_rate,open_rate,click_rate,bounce_rate",
+          automation_id: flow.json.id,
+        });
+        const totals = {
+          sent: 1, delivered: 1, bounced: 1, bounced_transient: 1,
+          opened: 1, unique_opened: 1, clicked: 2, unique_clicked: 1,
+          delivery_rate: 100, open_rate: 100, click_rate: 100, bounce_rate: 100,
+        };
+        const reports = async () => {
+          // Count committed history using the clock that timestamps those rows.
+          const end = (await db.query<{ end_date: Date }>("select clock_timestamp() as end_date")).rows[0]!.end_date;
+          metricsQuery.set("end_date", end.toISOString());
+          for (const dimensions of ["", "email", "automation", "step"]) {
+            metricsQuery.set("dimensions", dimensions);
+            const metrics = await call(fullKey, "GET", `/emails/metrics?${metricsQuery}`);
+            expect(metrics.status).toBe(200);
+            expect(metrics.json.totals).toEqual(totals);
+            if (dimensions)
+              expect(metrics.json.data).toEqual([{
+                ...(dimensions === "email" ? { email_id: broadcast.emailId } : { automation_id: flow.json.id }),
+                ...(dimensions === "step" ? { automation_step: "welcome" } : {}),
+                ...totals,
+              }]);
+          }
+          const clicks = await call(fullKey, "GET", `/broadcasts/${broadcast.id}/clicked-links`);
+          expect(clicks.status).toBe(200);
+          expect(clicks.json.data).toEqual([{
+            object: "clicked_link", id: expect.any(String), url: "https://dispatch-fixture.net/docs",
+            clicks: 2, unique_clicks: 1,
+          }]);
+          expect((await call(fullKey, "GET", `/broadcasts/${broadcast.id}`)).json.sent_count).toBe(1);
+        };
+        await reports();
+        const webhook = await post(fullKey, "/webhooks", {
+          url: "http://127.0.0.1:9/history", events: ["email.delivered"],
+        });
+        expect(webhook.status).toBe(200);
+        expect((await call(fullKey, "PATCH", "/settings", { sandbox_domains: ["history.dispatch-fixture.net"] })).status).toBe(200);
+        const retried = await post(fullKey, `/emails/${broadcast.emailId}/retry`, {});
+        expect(retried.status).toBe(200);
+        expect(retried.json.job).toMatchObject({ id: expect.any(String), email_id: broadcast.emailId, state: "ready" });
+        expect((await db.query("select provider_message_id, status, sandbox from emails where id = $1", [broadcast.emailId])).rows).toEqual([{
+          provider_message_id: null, status: "queued", sandbox: false,
+        }]);
+        const retryJob = (await db.query<Job>("select id, tenant_id, email_id, request_id from send_jobs where id = $1", [retried.json.job.id])).rows[0]!;
+        const blocked = recordingSes({ refuse: true });
+        await productionDelivery(retryJob, blocked.provider);
+        expect((await call(fullKey, "GET", `/emails/${broadcast.emailId}`)).json).toMatchObject({
+          sandbox: true, last_event: "delivered",
+          recipients: [{ email: "history@history.dispatch-fixture.net", sandbox: true }],
+        });
+        expect((await db.query("select provider_message_id from emails where id = $1", [broadcast.emailId])).rows).toEqual([{ provider_message_id: null }]);
+        expect((await db.query("select id, type, data from email_events where id = any($1::text[]) order by id", [history.map((event) => event.id)])).rows).toEqual(
+          history.map((event) => ({ ...event, data: { ...event.data, sandbox: false } })),
+        );
+        await reports();
+        expect((await post(fullKey, `/emails/${broadcast.emailId}/retry`, {})).status).toBe(409);
+        expect((await app.inject({ method: "GET", url: open.pathname })).statusCode).toBe(200);
+        expect((await app.inject({ method: "GET", url: click.pathname })).statusCode).toBe(302);
+        const simulated = (await db.query("select type, data from email_events where email_id = $1 and data->>'sandbox' = 'true'", [broadcast.emailId])).rows;
+        expect(simulated.map((event) => event.type).sort()).toEqual(["email.clicked", "email.delivered", "email.opened"]);
+        await reports();
+        const snapshot = (await db.query("select id, type, data from email_events where email_id = $1 order by id", [broadcast.emailId])).rows;
+        const attempts = (await db.query("select id, event_id, attempt from webhook_attempts where webhook_id = $1", [webhook.json.id])).rows;
+        expect(attempts).toEqual([{ id: expect.any(String), event_id: expect.any(String), attempt: 1 }]);
+        await productionDelivery(retryJob, blocked.provider);
+        await productionDelivery(job, blocked.provider);
+        expect((await call(fullKey, "PATCH", "/settings", { sandbox_domains: [] })).status).toBe(200);
+        await migrate(db);
+        await migrate(db);
+        await productionDelivery(retryJob, blocked.provider);
+        await reports();
+        expect((await db.query("select id, type, data from email_events where email_id = $1 order by id", [broadcast.emailId])).rows).toEqual(snapshot);
+        expect((await db.query("select id, event_id, attempt from webhook_attempts where webhook_id = $1", [webhook.json.id])).rows).toEqual(attempts);
+        expect((await db.query("select value from usage_counters where tenant_id = $1 and name = 'emails.sent'", [job.tenant_id])).rows).toEqual([{ value: "1" }]);
+        expect(ses.quotas).toEqual(["us-west-2"]);
+        expect(ses.sent).toHaveLength(1);
+        expect(blocked.quotas).toEqual([]);
+        expect(blocked.sent).toEqual([]);
+      },
+    );
+
+    it.each(["partial", "all"] as const)(
+      "preserves explicit and legacy mixed-recipient history when %s real recipients become simulated on an API retry",
+      async (routing) => {
+        const webhook = await post(fullKey, "/webhooks", {
+          url: "http://127.0.0.1:9/mixed-history", events: ["email.delivered"],
+        });
+        expect(webhook.status).toBe(200);
+        const segment = await post(fullKey, "/segments", { name: "Mixed history" });
+        expect(segment.status).toBe(200);
+        const broadcast = await post(fullKey, "/broadcasts", {
+          name: "Mixed clicks", segment_id: segment.json.id, from: "hello@dispatch-fixture.net",
+          subject: "History", html: '<a href="https://dispatch-fixture.net/docs">Docs</a>',
+        });
+        const flow = await post(fullKey, "/automations", {
+          name: "Mixed history", enabled: false,
+          steps: [{ key: "start", type: "trigger", config: { event_name: "sandbox.mixed.history" } }],
+          connections: [],
+        });
+        expect([broadcast.status, flow.status]).toEqual([200, 200]);
+        const accepted = await post(fullKey, "/emails", letter({
+          to: ["preview@example.com", "new@new.dispatch-fixture.net", "remaining@remaining.dispatch-fixture.net"],
+          html: '<a href="https://dispatch-fixture.net/docs">Docs</a>',
+        }));
+        expect(accepted.status).toBe(200);
+        const job = await sendJob(accepted.json.id);
+        await db.query("update emails set broadcast_id = $1, automation_id = $2, automation_step = 'mixed' where id = $3", [
+          broadcast.json.id, flow.json.id, accepted.json.id,
+        ]);
+        const ses = recordingSes();
+        await productionDelivery(job, ses.provider);
+        expect(ses.sent[0]!.recipients).toEqual(expect.arrayContaining([
+          { email: "new@new.dispatch-fixture.net", kind: "to" },
+          { email: "remaining@remaining.dispatch-fixture.net", kind: "to" },
+        ]));
+        expect(ses.sent[0]!.recipients).toHaveLength(2);
+        const callback = {
+          mail: {
+            messageId: `ses_${accepted.json.id}`,
+            tags: { dispatch_email_id: [accepted.json.id], dispatch_tenant_id: [job.tenant_id] },
+          },
+        };
+        expect(await tx(db, (client) => applySesEvent(client, {
+          ...callback, eventType: "Delivery",
+          delivery: { recipients: ["new@new.dispatch-fixture.net", "remaining@remaining.dispatch-fixture.net"] },
+        }))).toHaveLength(2);
+        const recipients = (await db.query<{ id: string; email: string; sandbox: boolean }>(
+          "select id, email, sandbox from email_recipients where email_id = $1 order by email", [accepted.json.id],
+        )).rows;
+        const history: Array<{ id: string; sandbox: boolean }> = [];
+        for (const recipient of recipients) {
+          for (const type of ["email.opened", "email.clicked"]) {
+            const event = await appendEvent(db, {
+              tenantId: job.tenant_id, requestId: job.request_id, emailId: accepted.json.id, recipientId: recipient.id,
+              type, providerEventId: `history:${recipient.id}:${type}`,
+              data: type === "email.clicked" ? { url: "https://dispatch-fixture.net/docs" } : {},
+            });
+            expect(event).not.toBeNull();
+            expect(event!.data.sandbox).toBe(recipient.sandbox);
+            history.push({ id: event!.id, sandbox: recipient.sandbox });
+            // One real recipient and the original sandbox recipient predate explicit markers.
+            // The other real recipient keeps explicit false even as current routing changes.
+            if (recipient.email !== "remaining@remaining.dispatch-fixture.net")
+              await db.query("update email_events set data = data - 'sandbox' where id = $1", [event!.id]);
+          }
+        }
+        const tracked = await stored(accepted.json.id);
+        const open = new URL(tracked.html_tracked.match(/src="([^"]+\/open\/[^"]+)"/)![1]!);
+        const click = new URL(tracked.html_tracked.match(/href="([^"]+\/click\/[^"]+)"/)![1]!);
+        expect((await app.inject({ method: "GET", url: open.pathname })).statusCode).toBe(200);
+        expect((await app.inject({ method: "GET", url: click.pathname })).statusCode).toBe(302);
+        const bounce = {
+          ...callback, eventType: "Bounce",
+          bounce: { bounceType: "Transient", bouncedRecipients: [
+            { emailAddress: "new@new.dispatch-fixture.net" }, { emailAddress: "remaining@remaining.dispatch-fixture.net" },
+          ] },
+        };
+        expect(await tx(db, (client) => applySesEvent(client, bounce))).toHaveLength(2);
+        expect(await tx(db, (client) => applySesEvent(client, bounce))).toEqual([]);
+        expect((await stored(accepted.json.id)).status).toBe("bounced");
+        expect((await db.query("select id from suppressions where tenant_id = $1 and removed_at is null", [job.tenant_id])).rows).toEqual([]);
+        // Also preserve legacy provider events with no recipient_id.
+        await db.query(
+          "update email_events set data = data - 'sandbox' where email_id = $1 and type in ('email.sent', 'email.bounced')",
+          [accepted.json.id],
+        );
+        const metricsQuery = new URLSearchParams({
+          metrics: "sent,delivered,bounced,bounced_transient,opened,unique_opened,clicked,unique_clicked",
+          automation_id: flow.json.id,
+        });
+        const original = { sent: 1, delivered: 2, bounced: 2, bounced_transient: 2, opened: 3, unique_opened: 1, clicked: 3, unique_clicked: 1 };
+        const after = routing === "all" ? original
+          : { sent: 2, delivered: 3, bounced: 2, bounced_transient: 2, opened: 4, unique_opened: 1, clicked: 4, unique_clicked: 1 };
+        const reports = async (totals: typeof original) => {
+          const end = (await db.query<{ end_date: Date }>("select clock_timestamp() as end_date")).rows[0]!.end_date;
+          metricsQuery.set("end_date", end.toISOString());
+          for (const dimensions of ["", "email", "automation", "step"]) {
+            metricsQuery.set("dimensions", dimensions);
+            const metrics = await call(fullKey, "GET", `/emails/metrics?${metricsQuery}`);
+            expect(metrics.status).toBe(200);
+            expect(metrics.json.totals).toEqual(totals);
+            if (dimensions)
+              expect(metrics.json.data).toEqual([{
+                ...(dimensions === "email" ? { email_id: accepted.json.id } : { automation_id: flow.json.id }),
+                ...(dimensions === "step" ? { automation_step: "mixed" } : {}),
+                ...totals,
+              }]);
+          }
+          const clicks = await call(fullKey, "GET", `/broadcasts/${broadcast.json.id}/clicked-links`);
+          expect(clicks.status).toBe(200);
+          expect(clicks.json.data).toEqual([{
+            object: "clicked_link", id: expect.any(String), url: "https://dispatch-fixture.net/docs",
+            clicks: totals.clicked, unique_clicks: 1,
+          }]);
+        };
+        await reports(original);
+        expect((await call(fullKey, "PATCH", "/settings", {
+          sandbox_domains: routing === "all"
+            ? ["new.dispatch-fixture.net", "remaining.dispatch-fixture.net"] : ["new.dispatch-fixture.net"],
+        })).status).toBe(200);
+        const retried = await post(fullKey, `/emails/${accepted.json.id}/retry`, {});
+        expect(retried.status).toBe(200);
+        expect((await db.query("select provider_message_id, status from emails where id = $1", [accepted.json.id])).rows).toEqual([{
+          provider_message_id: null, status: "queued",
+        }]);
+        const retryJob = (await db.query<Job>("select id, tenant_id, email_id, request_id from send_jobs where id = $1", [retried.json.job.id])).rows[0]!;
+        const retrySes = recordingSes({ refuse: routing === "all" });
+        const send = retrySes.provider.send;
+        retrySes.provider.send = async (email) => {
+          const result = await send(email);
+          const messageId = `ses_retry_${email.id}`;
+          return { ...result, provider_message_id: messageId, events: result.events.map((event) => ({
+            ...event, provider_event_id: `${messageId}:sent`, data: { provider_message_id: messageId },
+          })) };
+        };
+        await productionDelivery(retryJob, retrySes.provider);
+        if (routing === "partial") {
+          expect(retrySes.quotas).toEqual(["us-west-2"]);
+          expect(retrySes.sent.map((email) => email.recipients)).toEqual([[{ email: "remaining@remaining.dispatch-fixture.net", kind: "to" }]]);
+          const delivery = {
+            ...callback, mail: { ...callback.mail, messageId: `ses_retry_${accepted.json.id}` },
+            eventType: "Delivery", delivery: { recipients: ["remaining@remaining.dispatch-fixture.net"] },
+          };
+          expect(await tx(db, (client) => applySesEvent(client, delivery))).toHaveLength(1);
+          expect(await tx(db, (client) => applySesEvent(client, delivery))).toEqual([]);
+        } else {
+          expect(retrySes.quotas).toEqual([]);
+          expect(retrySes.sent).toEqual([]);
+        }
+        const detail = await call(fullKey, "GET", `/emails/${accepted.json.id}`);
+        expect(detail.json).toMatchObject({ sandbox: routing === "all", last_event: "delivered" });
+        expect(detail.json.recipients).toEqual(expect.arrayContaining([
+          expect.objectContaining({ email: "preview@example.com", sandbox: true, status: "delivered" }),
+          // The old bounce remains a terminal recipient status; routing is independent.
+          expect.objectContaining({ email: "new@new.dispatch-fixture.net", sandbox: true }),
+          expect.objectContaining({ email: "remaining@remaining.dispatch-fixture.net", sandbox: routing === "all" }),
+        ]));
+        expect((await db.query("select id, data->'sandbox' as sandbox from email_events where id = any($1::text[]) order by id", [history.map((event) => event.id)])).rows).toEqual(
+          [...history].sort((a, b) => a.id.localeCompare(b.id)),
+        );
+        const newlySandbox = recipients.find((recipient) => recipient.email === "new@new.dispatch-fixture.net")!;
+        for (const type of ["email.opened", "email.clicked"]) {
+          const event = await appendEvent(db, {
+            tenantId: job.tenant_id, requestId: job.request_id, emailId: accepted.json.id, recipientId: newlySandbox.id,
+            type, providerEventId: `simulated:${newlySandbox.id}:${type}`,
+            data: type === "email.clicked" ? { url: "https://dispatch-fixture.net/docs" } : {},
+          });
+          expect(event!.data.sandbox).toBe(true);
+        }
+        expect((await app.inject({ method: "GET", url: open.pathname })).statusCode).toBe(200);
+        expect((await app.inject({ method: "GET", url: click.pathname })).statusCode).toBe(302);
+        await reports(after);
+        const snapshot = (await db.query("select id, type, data from email_events where email_id = $1 order by id", [accepted.json.id])).rows;
+        const attempts = (await db.query("select id, event_id, attempt from webhook_attempts where webhook_id = $1 order by id", [webhook.json.id])).rows;
+        expect(attempts).toHaveLength(routing === "all" ? 3 : 4);
+        expect(attempts.every((attempt) => attempt.attempt === 1)).toBe(true);
+        await productionDelivery(retryJob, retrySes.provider);
+        expect((await call(fullKey, "PATCH", "/settings", { sandbox_domains: [] })).status).toBe(200);
+        await migrate(db);
+        await migrate(db);
+        await productionDelivery(retryJob, retrySes.provider);
+        await reports(after);
+        expect((await db.query("select id, type, data from email_events where email_id = $1 order by id", [accepted.json.id])).rows).toEqual(snapshot);
+        expect((await db.query("select id, event_id, attempt from webhook_attempts where webhook_id = $1 order by id", [webhook.json.id])).rows).toEqual(attempts);
+        expect(retrySes.sent).toHaveLength(routing === "all" ? 0 : 1);
+        expect(retrySes.quotas).toHaveLength(routing === "all" ? 0 : 1);
+        expect((await db.query("select value from usage_counters where tenant_id = $1 and name = 'emails.sent'", [job.tenant_id])).rows).toEqual([{ value: routing === "all" ? "1" : "2" }]);
+      },
+    );
+  });
+
+  it("hand-counts only real sending and engagement metrics including mixed recipients and automation steps", async () => {
+    const flow = await post(fullKey, "/automations", {
+      name: "Sandbox metrics", enabled: false,
+      steps: [{ key: "start", type: "trigger", config: { event_name: "sandbox.metrics" } }],
+      connections: [],
+    });
+    expect(flow.status).toBe(200);
+    const allSandbox = await post(fullKey, "/emails", letter({ to: "only@example.com" }));
+    const mixed = await post(fullKey, "/emails", letter({
+      to: ["real@dispatch-fixture.net", "sandbox@example.net"],
+    }));
+    const real = await post(fullKey, "/emails", letter({ to: "other@dispatch-fixture.net" }));
+    expect([allSandbox.status, mixed.status, real.status]).toEqual([200, 200, 200]);
+    const job = await sendJob(mixed.json.id);
+    await db.query(
+      `update emails set automation_id = $1, automation_step = case id
+       when $2 then 'sandbox' when $3 then 'welcome' else 'followup' end,
+       created_at = '2026-10-01T12:00:00Z' where id = any($4::text[])`,
+      [flow.json.id, allSandbox.json.id, mixed.json.id, [allSandbox.json.id, mixed.json.id, real.json.id]],
+    );
+    const recipients = (await db.query<{ id: string; email_id: string; sandbox: boolean }>(
+      "select id, email_id, sandbox from email_recipients",
+    )).rows;
+    const types = ["email.sent", "email.delivered", "email.opened", "email.clicked", "email.unsubscribed"];
+    await tx(db, async (client) => {
+      const append = async (emailId: string, recipientId: string | null, type: string, key: string, sandbox = false) => {
+        const event = await appendEvent(client, {
+          tenantId: job.tenant_id, requestId: job.request_id, emailId, recipientId,
+          type, providerEventId: `metrics:${key}`, data: sandbox ? { sandbox: true } : {},
+        });
+        expect(event).not.toBeNull();
+        await client.query("update email_events set created_at = '2026-10-01T12:00:00Z' where id = $1", [event!.id]);
+        return event!;
+      };
+      for (const [index, type] of types.entries()) {
+        // Legacy events without the JSON marker must still be excluded by the email flag.
+        const emailEvent = await append(allSandbox.json.id, null, type, `all:${index}`);
+        expect(emailEvent.data.sandbox).toBe(true);
+        await client.query("update email_events set data = '{}' where id = $1", [emailEvent.id]);
+        // A simulation on a mixed email is excluded by its marker even without recipient_id.
+        await append(mixed.json.id, null, type, `marker:${index}`, true);
+        // Legacy recipient events must be excluded by the stored recipient flag alone.
+        const recipient = recipients.find((row) => row.email_id === mixed.json.id && row.sandbox)!;
+        const recipientEvent = await append(mixed.json.id, recipient.id, type, `recipient:${index}`);
+        expect(recipientEvent.data.sandbox).toBe(true);
+        await client.query("update email_events set data = '{}' where id = $1", [recipientEvent.id]);
+      }
+      const mixedRecipient = recipients.find((row) => row.email_id === mixed.json.id && !row.sandbox)!;
+      for (const [index, type] of [...types, "email.opened"].entries())
+        await append(mixed.json.id, mixedRecipient.id, type, `mixed-real:${index}`);
+      const realRecipient = recipients.find((row) => row.email_id === real.json.id)!;
+      for (const [index, type] of ["email.sent", "email.delivered", "email.opened", "email.clicked", "email.clicked"].entries())
+        await append(real.json.id, realRecipient.id, type, `real:${index}`);
+    });
+    const query = new URLSearchParams({
+      start_date: "2026-10-01T00:00:00Z", end_date: "2026-10-02T00:00:00Z",
+      metrics: "sent,delivered,opened,unique_opened,clicked,unique_clicked,unsubscribed,delivery_rate,open_rate,click_rate,unsubscribe_rate",
+    });
+    const totals = {
+      sent: 2, delivered: 2, opened: 3, unique_opened: 2, clicked: 3, unique_clicked: 2,
+      unsubscribed: 1, delivery_rate: 100, open_rate: 100, click_rate: 100, unsubscribe_rate: 50,
+    };
+    const metrics = await call(fullKey, "GET", `/emails/metrics?${query}`);
+    expect(metrics.status).toBe(200);
+    expect(metrics.json.totals).toEqual(totals);
+    query.set("dimensions", "step");
+    query.set("automation_id", flow.json.id);
+    const steps = await call(fullKey, "GET", `/emails/metrics?${query}`);
+    expect(steps.status).toBe(200);
+    expect(steps.json.totals).toEqual(totals);
+    expect(steps.json.data.sort((a: { automation_step: string }, b: { automation_step: string }) => a.automation_step.localeCompare(b.automation_step))).toEqual([
+      {
+        automation_id: flow.json.id, automation_step: "followup",
+        sent: 1, delivered: 1, opened: 1, unique_opened: 1, clicked: 2, unique_clicked: 1,
+        unsubscribed: 0, delivery_rate: 100, open_rate: 100, click_rate: 100, unsubscribe_rate: 0,
+      },
+      {
+        automation_id: flow.json.id, automation_step: "welcome",
+        sent: 1, delivered: 1, opened: 2, unique_opened: 1, clicked: 1, unique_clicked: 1,
+        unsubscribed: 1, delivery_rate: 100, open_rate: 100, click_rate: 100, unsubscribe_rate: 100,
+      },
+    ]);
+    expect((await db.query("select count(*)::int as count from email_events where created_at = '2026-10-01T12:00:00Z'")).rows).toEqual([{ count: 26 }]);
+  });
+
+  it("merges concurrent settings patches atomically without changing another tenant", async () => {
+    const otherKey = await seedTenant();
+    const results = await Promise.all([
+      call(fullKey, "PATCH", "/settings", { import_trigger_automations: true }),
+      call(fullKey, "PATCH", "/settings", { sandbox_domains: ["atomic.test"] }),
+    ]);
+    expect(results.map((result) => result.status)).toEqual([200, 200]);
+    expect((await call(fullKey, "GET", "/settings")).json).toMatchObject({
+      import_trigger_automations: true,
+      sandbox_domains: ["atomic.test"],
+    });
+    expect((await call(otherKey, "GET", "/settings")).json).toMatchObject({
+      import_trigger_automations: false,
+      sandbox_domains: [],
+    });
+  });
+
+  it("keeps tenant settings across repeated migrations and refuses viewer writes", async () => {
+    const original = await call(fullKey, "GET", "/settings");
+    expect(original.json).toMatchObject({
+      import_trigger_automations: false,
+      sandbox_domains: [],
+    });
+    const changed = await call(fullKey, "PATCH", "/settings", {
+      import_trigger_automations: true,
+    });
+    expect(changed.status).toBe(200);
+    await call(fullKey, "PATCH", "/settings", { sandbox_domains: ["qa.test"] });
+    await migrate(db);
+    await migrate(db);
+    expect((await call(fullKey, "GET", "/settings")).json).toMatchObject({
+      import_trigger_automations: true,
+      sandbox_domains: ["qa.test"],
+    });
+    const viewer = await teammate("Viewer");
+    const session = await signInAs(viewer.email, viewer.password);
+    expect((await call(session.token, "GET", "/settings")).status).toBe(200);
+    expect(
+      (
+        await call(session.token, "PATCH", "/settings", {
+          import_trigger_automations: false,
+        })
+      ).status,
+    ).toBe(403);
+  });
+
+  it("signs in with a password, and lets a viewer read but not write or see secrets", async () => {
+    await teammate("Admin");
+    const viewer = await teammate("Viewer");
+    const webhook = await call(fullKey, "POST", "/webhooks", {
+      endpoint: "http://127.0.0.1:9/hooks/secret-path",
+      events: ["email.sent"],
+    });
+    expect(webhook.status).toBe(200);
+    const session = await signInAs(viewer.email, viewer.password);
+    expect(session.status).toBe(200);
+
+    // The real preHandler, not a test stand-in, decides.
+    expect((await call(session.token, "GET", "/emails")).status).toBe(200);
+    expect(
+      (await call(session.token, "POST", "/emails", letter())).status,
+    ).toBe(403);
+    expect(
+      (
+        await call(session.token, "PATCH", `/webhooks/${webhook.json.id}`, {
+          enabled: false,
+        })
+      ).status,
+    ).toBe(403);
+    expect(
+      (
+        await call(session.token, "POST", "/roles", {
+          name: "Sneaky",
+          permissions: ["full"],
+        })
+      ).status,
+    ).toBe(403);
+    const shown = await call(
+      session.token,
+      "GET",
+      `/webhooks/${webhook.json.id}`,
+    );
+    expect(shown.status).toBe(200);
+    expect(shown.json.signing_secret).toBeUndefined();
+    expect(shown.json.endpoint).toBe("http://127.0.0.1:9/…");
+    expect((await call(session.token, "GET", "/me")).json.scope).toBe("read");
+    expect(
+      (
+        await call(session.token, "POST", "/me/password", {
+          current_password: "not the password",
+          password: "another long password",
+        })
+      ).status,
+    ).toBe(422);
+
+    // Ending its own session is the one delete a viewer may make.
+    const me = await call(session.token, "GET", "/me");
+    expect(
+      (await call(session.token, "DELETE", `/sessions/${me.json.session_id}`))
+        .status,
+    ).toBe(200);
+    expect((await call(session.token, "GET", "/emails")).status).toBe(401);
+  });
+
+  it("refuses an email after 10 failed sign-ins, counting attempts that arrive together", async () => {
+    const admin = await teammate("Admin");
+    const results = await Promise.all(
+      Array.from({ length: 15 }, () =>
+        signInAs(admin.email, "wrong password here"),
+      ),
+    );
+    expect(results.filter((result) => result.status === 401)).toHaveLength(10);
+    expect(results.filter((result) => result.status === 429)).toHaveLength(5);
+    expect((await signInAs(admin.email, admin.password)).status).toBe(429);
+  });
+
+  it("applies the schema again after an admin renamed the Viewer role", async () => {
+    await migrate(db);
+    const tenant = (
+      await db.query<{ id: string }>("select id from tenants limit 1")
+    ).rows[0]!.id;
+    const viewer = (
+      await db.query<{ id: string }>(
+        "select id from roles where tenant_id = $1 and name = 'Viewer'",
+        [tenant],
+      )
+    ).rows[0]!;
+    expect(
+      (await call(fullKey, "PATCH", `/roles/${viewer.id}`, { name: "Support" }))
+        .status,
+    ).toBe(200);
+    await migrate(db);
+    const roles = await db.query<{ name: string }>(
+      "select name from roles where tenant_id = $1 and permissions = '[\"read\"]'::jsonb",
+      [tenant],
+    );
+    expect(roles.rows.map((row) => row.name)).toEqual(["Support"]);
+  });
+
+  it("makes one contact when two events for a new address arrive together", async () => {
+    const sends = await Promise.all(
+      ["Ada", "Grace"].map((name) =>
+        post(fullKey, "/events/send", {
+          event: "user.created",
+          email: "new@dispatch-fixture.net",
+          payload: { first_name: name },
+        }),
+      ),
+    );
+    expect(sends.map((send) => send.status)).toEqual([202, 202]);
+    const contacts = await db.query<{ first_name: string }>(
+      "select first_name from contacts where lower(email) = 'new@dispatch-fixture.net'",
+    );
+    expect(contacts.rows).toHaveLength(1);
+    expect(["Ada", "Grace"]).toContain(contacts.rows[0]!.first_name);
+  });
+
+  it("lets a send key send, then returns 403 after that key is revoked", async () => {
+    const created = await post(fullKey, "/api-keys", {
+      name: "send",
+      scope: "send",
+    });
+    expect(created.status).toBe(200);
+    const secret = created.json.token as string;
+    const keyId = created.json.id as string;
+
+    const sent = await post(secret, "/emails", letter());
+    expect(sent.status).toBe(200);
+    expect(sent.json.id).toEqual(expect.any(String));
+
+    const removed = await app.inject({
+      method: "DELETE",
+      url: `/api-keys/${keyId}`,
+      headers: { authorization: `Bearer ${fullKey}` },
+    });
+    expect(removed.statusCode).toBe(200);
+
+    const again = await post(
+      secret,
+      "/emails",
+      letter({ to: "again@dispatch-fixture.net" }),
+    );
+    expect(again.status).toBe(403);
+  });
+
+  it("replays the same idempotency key and rejects a different body", async () => {
+    const body = letter();
+    const headers = { "idempotency-key": "idem-accept-1" };
+    const first = await post(fullKey, "/emails", body, headers);
+    const second = await post(fullKey, "/emails", body, headers);
+    expect(first.status).toBe(200);
+    expect(second.json.id).toBe(first.json.id);
+
+    const conflict = await post(
+      fullKey,
+      "/emails",
+      letter({ subject: "Different" }),
+      headers,
+    );
+    expect(conflict.status).toBe(409);
+
+    const stored = await db.query("select id from emails");
+    expect(stored.rows).toEqual([{ id: first.json.id }]);
+  });
+
+  it("stores inline attachment metadata after its parent transactional email", async () => {
+    const sent = await post(
+      fullKey,
+      "/emails",
+      letter({
+        attachments: [
+          {
+            filename: "a.txt",
+            content: "YQ==",
+            disposition: "inline",
+            content_id: "logo",
+          },
+        ],
+      }),
+    );
+    expect(sent.status).toBe(200);
+    expect(sent.json.id).toEqual(expect.any(String));
+    expect(sent.json).not.toHaveProperty("emails");
+    const stored = await db.query(
+      `select a.filename, a.content_id, a.disposition, a.size_bytes
+       from email_attachments a join emails e on e.id = a.email_id where e.id = $1`,
+      [sent.json.id],
+    );
+    expect(stored.rows).toEqual([
+      {
+        filename: "a.txt",
+        content_id: "logo",
+        disposition: "inline",
+        size_bytes: 1,
+      },
+    ]);
+  });
+
+  it("replays a batch and rejects a batch that includes an attachment", async () => {
+    const body = {
+      emails: [
+        letter({ to: "one@dispatch-fixture.net", subject: "One" }),
+        letter({ to: "two@dispatch-fixture.net", subject: "Two" }),
+      ],
+    };
+    const headers = { "idempotency-key": "idem-batch-1" };
+    const first = await post(fullKey, "/emails/batch", body, headers);
+    const second = await post(fullKey, "/emails/batch", body, headers);
+    expect(first.status).toBe(200);
+    const ids = first.json.data.map((email: { id: string }) => email.id);
+    expect(second.json.data.map((email: { id: string }) => email.id)).toEqual(
+      ids,
+    );
+
+    const stored = await db.query(
+      "select id from emails order by created_at, id",
+    );
+    expect(stored.rows.map((row) => row.id).sort()).toEqual([...ids].sort());
+
+    const rejected = await post(fullKey, "/emails/batch", {
+      emails: [
+        letter({ attachments: [{ filename: "a.txt", content: "YQ==" }] }),
+      ],
+    });
+    expect(rejected.status).toBe(400);
+  });
+
+  it("returns 403 for an unverified sender", async () => {
+    const response = await post(
+      fullKey,
+      "/emails",
+      letter({ from: "hello@not-verified.test" }),
+    );
+    expect(response.status).toBe(403);
+    const stored = await db.query("select id from emails");
+    expect(stored.rows).toEqual([]);
+  });
+
+  it("returns 422 when to plus cc is more than 50", async () => {
+    const response = await post(
+      fullKey,
+      "/emails",
+      letter({
+        to: Array.from({ length: 50 }, (_, index) => `to-${index}@dispatch-fixture.net`),
+        cc: "cc-0@dispatch-fixture.net",
+      }),
+    );
+    expect(response.status).toBe(422);
+    const stored = await db.query("select id from emails");
+    expect(stored.rows).toEqual([]);
+  });
+
+  it("sends to an unsubscribed contact and accepts a suppressed address", async () => {
+    const unsubscribed = await post(fullKey, "/contacts", {
+      email: "gone@dispatch-fixture.net",
+      unsubscribed: true,
+    });
+    expect(unsubscribed.status).toBe(200);
+    const contactSend = await post(
+      fullKey,
+      "/emails",
+      letter({ to: "gone@dispatch-fixture.net" }),
+    );
+    expect(contactSend.status).toBe(200);
+    const contactRow = await db.query<{ status: string }>(
+      "select status from emails where id = $1",
+      [contactSend.json.id],
+    );
+    expect(contactRow.rows[0]?.status).toBe("queued");
+
+    const suppression = await post(fullKey, "/suppressions", {
+      email: "manual@dispatch-fixture.net",
+      reason: "manual",
+    });
+    expect(suppression.status).toBe(200);
+    const suppressedSend = await post(
+      fullKey,
+      "/emails",
+      letter({ to: "manual@dispatch-fixture.net" }),
+    );
+    expect(suppressedSend.status).toBe(200);
+    const suppressedRow = await db.query<{ status: string }>(
+      "select status from emails where id = $1",
+      [suppressedSend.json.id],
+    );
+    expect(suppressedRow.rows[0]?.status).toBe("suppressed");
+    const events = await db.query<{ type: string }>(
+      "select type from email_events where email_id = $1",
+      [suppressedSend.json.id],
+    );
+    expect(events.rows.map((row) => row.type)).toContain("email.suppressed");
+  });
+
+  it("stores the rendered template on the email", async () => {
+    const template = {
+      name: "Welcome",
+      alias: "welcome",
+      subject: "Hello {{name}}",
+      text: "Hi {{name}}",
+      variables: ["name"],
+    };
+    const created = await post(fullKey, "/templates", {
+      ...template,
+      publish: true,
+    });
+    expect(created.status).toBe(200);
+
+    const sent = await post(fullKey, "/emails", {
+      from: "hello@dispatch-fixture.net",
+      to: "ada@dispatch-fixture.net",
+      template: "welcome",
+      variables: { name: "Ada" },
+    });
+    expect(sent.status).toBe(200);
+
+    const rendered = renderTemplate(template, { name: "Ada" });
+    const stored = await db.query<{ subject: string; text: string }>(
+      "select subject, text from emails where id = $1",
+      [sent.json.id],
+    );
+    expect(stored.rows[0]).toEqual({
+      subject: rendered.subject,
+      text: rendered.text,
+    });
+  });
+
+  it("leaves a future send scheduled after one worker tick", async () => {
+    const scheduledAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    const sent = await post(
+      fullKey,
+      "/emails",
+      letter({ scheduled_at: scheduledAt }),
+    );
+    expect(sent.status).toBe(200);
+    const storedBefore = await db.query<{ status: string }>(
+      "select status from emails where id = $1",
+      [sent.json.id],
+    );
+    expect(storedBefore.rows[0]?.status).toBe("scheduled");
+
+    await tick();
+
+    const stored = await db.query<{ status: string }>(
+      "select status from emails where id = $1",
+      [sent.json.id],
+    );
+    expect(stored.rows[0]?.status).toBe("scheduled");
+  });
+});
+
+describe.skipIf(!live)("contact timeline", () => {
+  it("pages thirty runs without skipped or repeated rows, including equal timestamps and case-insensitive email events", async () => {
+    const contact = await post(fullKey, "/contacts", {
+      email: "ada@dispatch-fixture.net",
+    });
+    const flow = await post(fullKey, "/automations", {
+      name: "History",
+      enabled: false,
+      steps: [
+        { key: "start", type: "trigger", config: { event_name: "history" } },
+      ],
+      connections: [],
+    });
+    expect([contact.status, flow.status]).toEqual([200, 200]);
+    const tenant = (
+      await db.query<{ tenant_id: string }>(
+        "select tenant_id from contacts where id = $1",
+        [contact.json.id],
+      )
+    ).rows[0]!.tenant_id;
+    await tx(db, async (client) => {
+      for (let i = 0; i < 30; i++) {
+        const eventId = id("ce");
+        await client.query(
+          "insert into custom_events (id, tenant_id, request_id, name, email, created_at) values ($1, $2, 'req_history', 'history', 'ADA@DISPATCH-FIXTURE.NET', '2026-10-01')",
+          [eventId, tenant],
+        );
+        await client.query(
+          `insert into automation_runs (id, tenant_id, automation_id, event_id, state, created_at, updated_at)
+           values ($1, $2, $3, $4, $5, '2026-10-01', '2026-10-02')`,
+          [
+            id("run"),
+            tenant,
+            flow.json.id,
+            eventId,
+            ["done", "failed", "stopped"][i % 3],
+          ],
+        );
+      }
+      await client.query(
+        "insert into custom_events (id, tenant_id, request_id, name, email) values ($1, $2, 'req_internal', '@contact.updated', 'ada@dispatch-fixture.net')",
+        [id("ce"), tenant],
+      );
+    });
+    const sent = await post(
+      fullKey,
+      "/emails",
+      letter({ to: ["ADA@dispatch-fixture.net", "ada@dispatch-fixture.net"] }),
+    );
+    expect(sent.status).toBe(200);
+    await db.query(
+      "insert into email_events (id, tenant_id, email_id, type, provider_event_id) values ($1, $2, $3, 'email.delivered', $4)",
+      [id("event"), tenant, sent.json.id, id("provider")],
+    );
+    const rows: Array<{
+      id: string;
+      type: string;
+      label: string;
+      created_at: string;
+      automation_id: string | null;
+      run_id: string | null;
+    }> = [];
+    let after = "";
+    for (let pages = 0; pages < 20; pages++) {
+      const page = await call(
+        fullKey,
+        "GET",
+        `/contacts/${contact.json.id}/activity?limit=7${after ? `&after=${encodeURIComponent(after)}` : ""}`,
+      );
+      expect(page.status).toBe(200);
+      rows.push(...page.json.data);
+      if (!page.json.has_more) break;
+      after = page.json.data.at(-1).id;
+    }
+    expect(rows).toHaveLength(92);
+    expect(new Set(rows.map((row) => row.id)).size).toBe(92);
+    expect(rows.filter((row) => row.type === "event.fired")).toHaveLength(30);
+    expect(
+      rows.filter((row) => row.type === "automation.run.started"),
+    ).toHaveLength(30);
+    const ended = rows.filter((row) => row.type === "automation.run.completed");
+    expect(ended).toHaveLength(30);
+    expect(new Set(ended.map((row) => row.label))).toEqual(
+      new Set(["done", "failed", "stopped"]),
+    );
+    expect(
+      ended.every(
+        (row) =>
+          row.automation_id === flow.json.id &&
+          row.id === `${row.run_id}:completed`,
+      ),
+    ).toBe(true);
+    expect(rows.filter((row) => row.type === "email.delivered")).toHaveLength(
+      1,
+    );
+    expect(rows.some((row) => row.label === "@contact.updated")).toBe(false);
+    for (let i = 1; i < rows.length; i++)
+      expect(
+        new Date(rows[i - 1]!.created_at).getTime(),
+      ).toBeGreaterThanOrEqual(new Date(rows[i]!.created_at).getTime());
+  });
+});
+
+async function audience() {
+  const topic = await post(fullKey, "/topics", {
+    name: "News",
+    default_subscription: "opt_in",
+  });
+  const first = await post(fullKey, "/contacts", {
+    email: "ada@dispatch-fixture.net",
+    first_name: "Ada",
+  });
+  const second = await post(fullKey, "/contacts", {
+    email: "bob@dispatch-fixture.net",
+    first_name: "Bob",
+  });
+  expect([topic.status, first.status, second.status]).toEqual([
+    200, 200, 200,
+  ]);
+  return {
+    topic: topic.json.id as string,
+    first: first.json.id as string,
+    second: second.json.id as string,
+  };
+}
+
+async function stored(emailId: string) {
+  const result = await db.query<{
+    headers: Record<string, string>;
+    html: string;
+    html_tracked: string;
+    text: string;
+    status: string;
+  }>(
+    "select headers, html, html_tracked, text, status from emails where id = $1",
+    [emailId],
+  );
+  return result.rows[0]!;
+}
+
+function link(headers: Record<string, string>) {
+  return new URL(headers["List-Unsubscribe"]!.slice(1, -1)).pathname;
+}
+
+describe.skipIf(!live)("marketing", () => {
+  it.each(["topic", "global", "deleted_topic"])(
+    "isolates a split recipient's %s unsubscribe and replays the whole request",
+    async (mode) => {
+      const contacts = await audience();
+      const body = letter({
+        to: ["ada@dispatch-fixture.net", "bob@dispatch-fixture.net"],
+        cc: ["ADA@dispatch-fixture.net"],
+        topic_id: contacts.topic,
+        html: '<a href="{{UNSUBSCRIBE_URL}}">Leave</a><a href="https://dispatch-fixture.net/read">Read</a><p>{{name}}</p>',
+        text: "{{{DISPATCH_UNSUBSCRIBE_URL}}}",
+        headers: {
+          "list-unsubscribe": "caller",
+          "LIST-UNSUBSCRIBE-POST": "caller",
+        },
+      });
+      const sent = await post(fullKey, "/emails", body, {
+        "idempotency-key": "marketing-split",
+      });
+      expect(sent.status).toBe(200);
+      expect(sent.json.emails).toHaveLength(2);
+      expect(sent.json.id).toBe(sent.json.emails[0].id);
+      const replay = await post(fullKey, "/emails", body, {
+        "idempotency-key": "marketing-split",
+      });
+      expect(replay.json.emails).toEqual(sent.json.emails);
+      expect((await db.query("select id from emails")).rows).toHaveLength(2);
+      const first = await stored(sent.json.emails[0].id);
+      const second = await stored(sent.json.emails[1].id);
+      expect(link(first.headers)).not.toBe(link(second.headers));
+      expect(first.headers["List-Unsubscribe-Post"]).toBe(
+        "List-Unsubscribe=One-Click",
+      );
+      expect(first.headers).not.toHaveProperty("list-unsubscribe");
+      expect(first.html).toContain("/unsubscribe?token=");
+      expect(first.html).toContain("{{name}}");
+      expect(first.html_tracked).toContain("/click/");
+      expect(first.text).toContain("/unsubscribe?token=");
+      const recipients = await db.query(
+        "select email_id, email, kind from email_recipients order by email",
+      );
+      expect(recipients.rows).toEqual([
+        {
+          email_id: sent.json.emails[0].id,
+          email: "ada@dispatch-fixture.net",
+          kind: "to",
+        },
+        {
+          email_id: sent.json.emails[1].id,
+          email: "bob@dispatch-fixture.net",
+          kind: "to",
+        },
+      ]);
+      const page = await app.inject({
+        method: "GET",
+        url: link(first.headers),
+      });
+      expect(page.statusCode).toBe(200);
+      expect(
+        page
+          .json()
+          .topics.some((row: { id: string }) => row.id === contacts.topic),
+      ).toBe(true);
+      if (mode === "deleted_topic")
+        expect(
+          (await call(fullKey, "DELETE", `/topics/${contacts.topic}`)).status,
+        ).toBe(200);
+      const action =
+        mode === "global"
+          ? { unsubscribe_all: true }
+          : { "List-Unsubscribe": "One-Click" };
+      const left = await Promise.all([
+        post("", link(first.headers), action),
+        post("", link(first.headers), action),
+      ]);
+      expect(left.map((row) => row.status)).toEqual([200, 200]);
+      const states = await db.query<{
+        email: string;
+        unsubscribed_at: Date | null;
+        status: string;
+      }>(
+        `select c.email, c.unsubscribed_at, coalesce(s.status, 'subscribed') as status
+       from contacts c left join topic_subscriptions s on s.contact_id = c.id and s.topic_id = $1
+       order by c.email`,
+        [contacts.topic],
+      );
+      expect(states.rows[1]).toEqual({
+        email: "bob@dispatch-fixture.net",
+        unsubscribed_at: null,
+        status: "subscribed",
+      });
+      if (mode === "topic")
+        expect(states.rows[0]).toEqual({
+          email: "ada@dispatch-fixture.net",
+          unsubscribed_at: null,
+          status: "unsubscribed",
+        });
+      else expect(states.rows[0]?.unsubscribed_at).not.toBeNull();
+      const events = await db.query(
+        "select email_id from email_events where type = 'email.unsubscribed'",
+      );
+      expect(events.rows).toEqual([{ email_id: sent.json.emails[0].id }]);
+    },
+  );
+
+  it("protects scheduled updates and cancels after a late topic opt-out without sending", async () => {
+    const contacts = await audience();
+    const sent = await post(
+      fullKey,
+      "/emails",
+      letter({
+        to: "ada@dispatch-fixture.net",
+        topic_id: contacts.topic,
+        text: "{{UNSUBSCRIBE_URL}}",
+        scheduled_at: new Date(Date.now() + 3600_000).toISOString(),
+      }),
+    );
+    expect(sent.status).toBe(200);
+    expect(sent.json).not.toHaveProperty("emails");
+    const updated = await call(fullKey, "PATCH", `/emails/${sent.json.id}`, {
+      text: "{{{RESEND_UNSUBSCRIBE_URL}}}",
+      headers: { "LIST-UNSUBSCRIBE": "caller" },
+    });
+    expect(updated.status).toBe(200);
+    const email = await stored(sent.json.id);
+    expect(email.text).toContain("/unsubscribe?token=");
+    expect(email.headers).not.toHaveProperty("LIST-UNSUBSCRIBE");
+    expect(
+      (await post("", link(email.headers), { "List-Unsubscribe": "One-Click" }))
+        .status,
+    ).toBe(200);
+    await db.query(
+      "update emails set scheduled_at = now() - interval '1 second' where id = $1",
+      [sent.json.id],
+    );
+    await db.query(
+      "update send_jobs set available_at = now() - interval '1 second' where email_id = $1",
+      [sent.json.id],
+    );
+    await tick();
+    expect((await stored(sent.json.id)).status).toBe("cancelled");
+    const job = await db.query(
+      "select state, error from send_jobs where email_id = $1",
+      [sent.json.id],
+    );
+    expect(job.rows[0]).toEqual({ state: "done", error: "opted_out" });
+    const events = await db.query<{
+      type: string;
+      data: { failed?: { reason: string } };
+    }>("select type, data from email_events where email_id = $1", [
+      sent.json.id,
+    ]);
+    expect(events.rows.some((row) => row.type === "email.sent")).toBe(false);
+    expect(
+      events.rows.find((row) => row.type === "email.failed")?.data.failed
+        ?.reason,
+    ).toBe("opted_out");
+  });
+
+  it("creates an opted-out contact only when an unknown address uses its link, without reviving deleted rows", async () => {
+    const contacts = await audience();
+    const sent = await post(
+      fullKey,
+      "/emails",
+      letter({ to: "new@dispatch-fixture.net", topic_id: contacts.topic }),
+    );
+    expect(sent.status).toBe(200);
+    expect(
+      (
+        await db.query(
+          "select id from contacts where email = 'new@dispatch-fixture.net'",
+        )
+      ).rows,
+    ).toHaveLength(0);
+    await post("", link((await stored(sent.json.id)).headers), {
+      "List-Unsubscribe": "One-Click",
+    });
+    const opted = await db.query(
+      "select c.deleted_at, s.status from contacts c join topic_subscriptions s on s.contact_id = c.id where c.email = 'new@dispatch-fixture.net'",
+    );
+    expect(opted.rows).toEqual([{ deleted_at: null, status: "unsubscribed" }]);
+    const deleted = await post(
+      fullKey,
+      "/emails",
+      letter({ to: "gone@dispatch-fixture.net", topic_id: contacts.topic }),
+    );
+    const gone = await post(fullKey, "/contacts", {
+      email: "gone@dispatch-fixture.net",
+    });
+    await call(fullKey, "DELETE", `/contacts/${gone.json.id}`);
+    expect(
+      (
+        await post("", link((await stored(deleted.json.id)).headers), {
+          unsubscribe_all: true,
+        })
+      ).status,
+    ).toBe(200);
+    const row = await db.query(
+      "select deleted_at, unsubscribed_at from contacts where id = $1",
+      [gone.json.id],
+    );
+    expect(row.rows[0].deleted_at).not.toBeNull();
+    expect(row.rows[0].unsubscribed_at).not.toBeNull();
+  });
+
+  it("isolates each split batch item and preserves opt-in-topic behavior for new addresses", async () => {
+    const contacts = await audience();
+    const batch = await post(
+      fullKey,
+      "/emails/batch",
+      [
+        letter({
+          topic_id: contacts.topic,
+          to: ["ada@dispatch-fixture.net", "bob@dispatch-fixture.net"],
+        }),
+        letter({ to: ["one@dispatch-fixture.net", "two@dispatch-fixture.net"] }),
+      ],
+      { "idempotency-key": "marketing-batch" },
+    );
+    expect(batch.status).toBe(200);
+    expect(batch.json.data).toHaveLength(2);
+    expect(batch.json.data[0].emails).toHaveLength(2);
+    expect(batch.json.data[1]).not.toHaveProperty("emails");
+    expect((await db.query("select id from emails")).rows).toHaveLength(3);
+    const topic = await post(fullKey, "/topics", {
+      name: "Opt-in only",
+      default_subscription: "opt_out",
+    });
+    const sent = await post(
+      fullKey,
+      "/emails",
+      letter({ topic_id: topic.json.id, to: "unknown@dispatch-fixture.net" }),
+    );
+    expect(sent.status).toBe(200);
+    expect((await stored(sent.json.id)).status).toBe("queued");
+    expect(
+      (
+        await db.query(
+          "select id from contacts where email = 'unknown@dispatch-fixture.net'",
+        )
+      ).rows,
+    ).toHaveLength(0);
+  });
+
+  it("aggregates automation steps from stored attribution and backfills legacy messages only once", async () => {
+    const template = await post(fullKey, "/templates", {
+      name: "Metrics",
+      alias: "metrics",
+      subject: "Metrics",
+      html: "<p>Hello</p>",
+      publish: true,
+    });
+    expect(template.status).toBe(200);
+    const flow = await post(fullKey, "/automations", {
+      name: "Metrics",
+      enabled: true,
+      steps: [
+        { key: "start", type: "trigger", config: { event_name: "measure" } },
+        {
+          key: "one",
+          type: "send_email",
+          config: { from: "hello@dispatch-fixture.net", template: "metrics" },
+        },
+        {
+          key: "two",
+          type: "send_email",
+          config: { from: "hello@dispatch-fixture.net", template: "metrics" },
+        },
+      ],
+      connections: [
+        { from: "start", to: "one", type: "default" },
+        { from: "one", to: "two", type: "default" },
+      ],
+    });
+    expect(flow.status).toBe(200);
+    expect(
+      (
+        await post(fullKey, "/events/send", {
+          event: "measure",
+          email: "ada@dispatch-fixture.net",
+        })
+      ).status,
+    ).toBe(202);
+    await tick();
+    await tick();
+    const messages = await db.query<{
+      id: string;
+      automation_step: string;
+      html_tracked: string;
+    }>(
+      "select id, automation_step, html_tracked from emails where automation_id = $1 order by automation_step",
+      [flow.json.id],
+    );
+    expect(messages.rows.map((row) => row.automation_step)).toEqual([
+      "one",
+      "two",
+    ]);
+    const pixel = new URL(
+      messages.rows[0]!.html_tracked.match(/src="([^"]+\/open\/[^"]+)"/)![1]!,
+    );
+    expect(
+      (await app.inject({ method: "GET", url: pixel.pathname })).statusCode,
+    ).toBe(200);
+    expect(
+      (
+        await db.query(
+          "select email_id from email_events where type = 'email.opened'",
+        )
+      ).rows,
+    ).toEqual([{ email_id: messages.rows[0]!.id }]);
+    const query = new URLSearchParams({
+      dimensions: "step",
+      automation_id: flow.json.id,
+      metrics: "sent,delivered,opened,open_rate",
+      end_date: new Date(Date.now() + 1000).toISOString(),
+    });
+    const metrics = await call(fullKey, "GET", `/emails/metrics?${query}`);
+    expect(metrics.status).toBe(200);
+    const rows = metrics.json.data.sort(
+      (a: { automation_step: string }, b: { automation_step: string }) =>
+        a.automation_step.localeCompare(b.automation_step),
+    );
+    expect(rows).toEqual([
+      {
+        automation_id: flow.json.id,
+        automation_step: "one",
+        sent: 1,
+        delivered: 1,
+        opened: 1,
+        open_rate: 100,
+      },
+      {
+        automation_id: flow.json.id,
+        automation_step: "two",
+        sent: 1,
+        delivered: 1,
+        opened: 0,
+        open_rate: 0,
+      },
+    ]);
+    expect(
+      (await call(fullKey, "GET", "/emails/metrics?dimensions=step")).status,
+    ).toBe(422);
+    const tagged = await post(
+      fullKey,
+      "/emails",
+      letter({ tags: { automation_id: flow.json.id } }),
+    );
+    expect(tagged.status).toBe(200);
+    await db.query(
+      "update emails set created_at = '2026-10-01', automation_id = null, automation_step = null where id = $1",
+      [messages.rows[0]!.id],
+    );
+    await db.query(
+      "update emails set created_at = '2026-10-01' where id = $1",
+      [tagged.json.id],
+    );
+    await migrate(db);
+    expect(
+      (
+        await db.query(
+          "select automation_id, automation_step from emails where id = $1",
+          [messages.rows[0]!.id],
+        )
+      ).rows[0],
+    ).toEqual({
+      automation_id: flow.json.id,
+      automation_step: null,
+    });
+    expect(
+      (
+        await db.query("select automation_id from emails where id = $1", [
+          tagged.json.id,
+        ])
+      ).rows[0].automation_id,
+    ).toBeNull();
+    const before = await db.query<{ version: string }>(
+      "select xmin::text as version from emails where id = $1",
+      [messages.rows[0]!.id],
+    );
+    await migrate(db);
+    const after = await db.query<{ version: string }>(
+      "select xmin::text as version from emails where id = $1",
+      [messages.rows[0]!.id],
+    );
+    expect(after.rows[0]?.version).toBe(before.rows[0]?.version);
+  });
+
+  it("renders automation recipient context and skips a later marketing step after one-click", async () => {
+    const contacts = await audience();
+    const template = await post(fullKey, "/templates", {
+      name: "Lifecycle",
+      alias: "lifecycle",
+      subject: "Hi {{{FIRST_NAME}}}",
+      text: "Hello {{{FIRST_NAME}}}. {{{UNSUBSCRIBE_URL}}}",
+      publish: true,
+    });
+    expect(template.status).toBe(200);
+    const receipt = await post(fullKey, "/templates", {
+      name: "Receipt",
+      alias: "receipt",
+      subject: "Receipt",
+      text: "Receipt for {{{FIRST_NAME}}}",
+      publish: true,
+    });
+    expect(receipt.status).toBe(200);
+    const automation = await post(fullKey, "/automations", {
+      name: "Lifecycle",
+      enabled: true,
+      steps: [
+        { key: "start", type: "trigger", config: { event_name: "joined" } },
+        {
+          key: "first",
+          type: "send_email",
+          config: {
+            from: "hello@dispatch-fixture.net",
+            template: "lifecycle",
+            topic_id: contacts.topic,
+          },
+        },
+        { key: "wait", type: "delay", config: { duration: "1 hour" } },
+        {
+          key: "second",
+          type: "send_email",
+          config: {
+            from: "hello@dispatch-fixture.net",
+            template: "lifecycle",
+            topic_id: contacts.topic,
+          },
+        },
+        {
+          key: "receipt",
+          type: "send_email",
+          config: { from: "hello@dispatch-fixture.net", template: "receipt" },
+        },
+      ],
+      connections: [
+        { from: "start", to: "first", type: "default" },
+        { from: "first", to: "wait", type: "default" },
+        { from: "wait", to: "second", type: "default" },
+        { from: "second", to: "receipt", type: "default" },
+      ],
+    });
+    expect(automation.status).toBe(200);
+    expect(
+      (
+        await post(fullKey, "/events/send", {
+          event: "joined",
+          email: "ada@dispatch-fixture.net",
+          payload: {
+            FIRST_NAME: "Mallory",
+            UNSUBSCRIBE_URL: "https://evil.example",
+          },
+        })
+      ).status,
+    ).toBe(202);
+    await tick();
+    await tick();
+    const emails = await db.query<{ id: string }>(
+      "select id from emails order by created_at",
+    );
+    expect(emails.rows).toHaveLength(1);
+    const email = await stored(emails.rows[0]!.id);
+    expect(email.text).toContain("Hello Ada");
+    expect(email.text).not.toContain("evil.example");
+    expect(
+      (await post("", link(email.headers), { "List-Unsubscribe": "One-Click" }))
+        .status,
+    ).toBe(200);
+    await db.query(
+      "update automation_runs set resume_at = now() - interval '1 second' where state = 'waiting'",
+    );
+    await tick();
+    const steps = await db.query(
+      "select state, data from automation_steps where step_key = 'second'",
+    );
+    expect(steps.rows[0]).toMatchObject({ data: { skipped: "opted_out" } });
+    expect((await stored(steps.rows[0].data.email_id)).status).toBe("failed");
+    expect(
+      (
+        await db.query("select id from send_jobs where email_id = $1", [
+          steps.rows[0].data.email_id,
+        ])
+      ).rows,
+    ).toHaveLength(0);
+    const transactional = await db.query(
+      "select text, headers from emails where text = 'Receipt for Ada'",
+    );
+    expect(transactional.rows).toEqual([
+      { text: "Receipt for Ada", headers: {} },
+    ]);
+  });
+});
+
+describe.skipIf(!live)("delivery", () => {
+  it("delivers one signed unsubscribe webhook and one event for each automation transition", async () => {
+    const received: Array<{
+      url: string;
+      body: string;
+      id: string;
+      timestamp: string;
+      signature: string;
+    }> = [];
+    const server = createServer((request, response) =>
+      recordWebhook(request, response, received),
+    );
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    const address = server.address();
+    if (!address || typeof address === "string")
+      throw new Error("webhook server did not bind");
+    try {
+      const endpoint = await post(fullKey, "/webhooks", {
+        url: `http://127.0.0.1:${address.port}/ok`,
+        events: [
+          "email.unsubscribed",
+          "automation.run.started",
+          "automation.run.completed",
+          "automation.run.failed",
+        ],
+      });
+      expect(endpoint.status).toBe(200);
+      const topic = await post(fullKey, "/topics", {
+        name: "News",
+        default_subscription: "opt_in",
+      });
+      const sent = await post(
+        fullKey,
+        "/emails",
+        letter({ topic_id: topic.json.id }),
+      );
+      expect(sent.status).toBe(200);
+      const email = (
+        await db.query<{ headers: Record<string, string> }>(
+          "select headers from emails where id = $1",
+          [sent.json.id],
+        )
+      ).rows[0]!;
+      const unsubscribe = new URL(
+        email.headers["List-Unsubscribe"]!.slice(1, -1),
+      ).pathname;
+      expect(
+        (await post("", unsubscribe, { "List-Unsubscribe": "One-Click" }))
+          .status,
+      ).toBe(200);
+      expect(
+        (await post("", unsubscribe, { "List-Unsubscribe": "One-Click" }))
+          .status,
+      ).toBe(200);
+      const flow = await post(fullKey, "/automations", {
+        name: "Complete",
+        enabled: true,
+        steps: [
+          { key: "start", type: "trigger", config: { event_name: "complete" } },
+        ],
+        connections: [],
+      });
+      const failed = await post(fullKey, "/automations", {
+        name: "Fail",
+        enabled: true,
+        steps: [
+          { key: "start", type: "trigger", config: { event_name: "fail" } },
+          {
+            key: "send",
+            type: "send_email",
+            config: { from: "hello@dispatch-fixture.net", template: "missing-template" },
+          },
+        ],
+        connections: [{ from: "start", to: "send", type: "default" }],
+      });
+      const cancelled = await post(fullKey, "/automations", {
+        name: "Cancel",
+        enabled: true,
+        steps: [
+          { key: "start", type: "trigger", config: { event_name: "cancel" } },
+          { key: "wait", type: "delay", config: { duration: "1 hour" } },
+        ],
+        connections: [{ from: "start", to: "wait", type: "default" }],
+      });
+      expect([flow.status, failed.status, cancelled.status]).toEqual([
+        200, 200, 200,
+      ]);
+      await post(fullKey, "/events/send", {
+        event: "complete",
+        email: "ada@dispatch-fixture.net",
+      });
+      await post(fullKey, "/events/send", {
+        event: "fail",
+        email: "ada@dispatch-fixture.net",
+      });
+      await post(fullKey, "/events/send", {
+        event: "cancel",
+        email: "ada@dispatch-fixture.net",
+      });
+      await tick();
+      expect(
+        (await post(fullKey, `/automations/${cancelled.json.id}/stop`, {}))
+          .status,
+      ).toBe(200);
+      await tick();
+      await tick();
+      const bodies = received.map((row) => JSON.parse(row.body));
+      expect(
+        bodies.filter((body) => body.type === "email.unsubscribed"),
+      ).toHaveLength(1);
+      expect(
+        bodies.filter((body) => body.type === "automation.run.started"),
+      ).toHaveLength(3);
+      expect(
+        bodies.filter((body) => body.type === "automation.run.completed"),
+      ).toHaveLength(2);
+      expect(
+        bodies.filter((body) => body.type === "automation.run.failed"),
+      ).toHaveLength(1);
+      for (const row of received)
+        expect(
+          verify(
+            row.body,
+            endpoint.json.signing_secret,
+            row.id,
+            row.timestamp,
+            row.signature,
+          ),
+        ).toBe(true);
+      const ended = bodies.find(
+        (body) =>
+          body.type === "automation.run.completed" &&
+          body.data.automation_id === flow.json.id,
+      );
+      expect(ended.data).toMatchObject({
+        automation_id: flow.json.id,
+        contact_id: expect.any(String),
+        state: "done",
+      });
+      expect(ended.data.run_id).toMatch(/^run_/);
+      expect(
+        bodies.find(
+          (body) =>
+            body.type === "automation.run.completed" &&
+            body.data.automation_id === cancelled.json.id,
+        )?.data.state,
+      ).toBe("stopped");
+      const before = received.length;
+      await tick();
+      expect(received).toHaveLength(before);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it.each(["one_click", "preferences", "global", "deleted_topic", "broadcast", "legacy_broadcast"])(
+    "delivers only to subscribed endpoints once for the %s unsubscribe path",
+    async (mode) => {
+      const contacts = await audience();
+      const received: Parameters<typeof recordWebhook>[2] = [];
+      const server = createServer((request, response) => recordWebhook(request, response, received));
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      const address = server.address();
+      if (!address || typeof address === "string") throw new Error("webhook server did not bind");
+      try {
+        const endpoint = await post(fullKey, "/webhooks", {
+          url: `http://127.0.0.1:${address.port}/ok`, events: ["email.unsubscribed"],
+        });
+        const unrelated = await post(fullKey, "/webhooks", {
+          url: `http://127.0.0.1:${address.port}/unrelated`, events: ["automation.run.started"],
+        });
+        const disabled = await post(fullKey, "/webhooks", {
+          url: `http://127.0.0.1:${address.port}/disabled`, events: ["email.unsubscribed"], enabled: false,
+        });
+        const otherKey = await seedTenant();
+        const other = await post(otherKey, "/webhooks", {
+          url: `http://127.0.0.1:${address.port}/other`, events: ["email.unsubscribed"],
+        });
+        expect([endpoint.status, unrelated.status, disabled.status, other.status]).toEqual([200, 200, 200, 200]);
+        const sent = await post(fullKey, "/emails", letter({ to: "ada@dispatch-fixture.net", topic_id: contacts.topic }));
+        expect(sent.status).toBe(200);
+        let path = link((await stored(sent.json.id)).headers);
+        const tenant = (await db.query<{ tenant_id: string }>("select tenant_id from contacts where id = $1", [contacts.first])).rows[0]!.tenant_id;
+        if (mode.includes("broadcast")) {
+          const broadcastId = id("broadcast");
+          await db.query(
+            "insert into broadcasts (id, tenant_id, name, from_email, topic_id) values ($1, $2, 'History', 'hello@dispatch-fixture.net', $3)",
+            [broadcastId, tenant, contacts.topic],
+          );
+          await db.query(
+            "insert into broadcast_recipients (id, tenant_id, broadcast_id, contact_id, email_id, email) values ($1, $2, $3, $4, $5, 'ada@dispatch-fixture.net')",
+            [id("br"), tenant, broadcastId, contacts.first, sent.json.id],
+          );
+          const token = unsubscribeToken({
+            tenant_id: tenant, contact_id: contacts.first, broadcast_id: broadcastId,
+            ...(mode === "broadcast" ? { email_id: sent.json.id } : {}),
+          }, process.env.APP_SECRET ?? "dev-secret-change-before-deploy");
+          path = `/unsubscribe/${encodeURIComponent(token)}`;
+        }
+        if (mode === "deleted_topic") {
+          expect((await call(fullKey, "DELETE", `/topics/${contacts.topic}`)).status).toBe(200);
+        }
+        if (mode === "preferences") {
+          // A last opt-in must neither count as an unsubscribe nor queue a delivery.
+          expect((await post("", path, { topics: [
+            { id: contacts.topic, subscription: "opt_out" },
+            { id: contacts.topic, subscription: "opt_in" },
+          ] })).status).toBe(200);
+          expect((await db.query("select id from email_events where type = 'email.unsubscribed'")).rows).toHaveLength(0);
+          expect((await db.query("select id from webhook_attempts")).rows).toHaveLength(0);
+          expect((await db.query("select status from topic_subscriptions where contact_id = $1", [contacts.first])).rows).toEqual([{ status: "subscribed" }]);
+        }
+        const action = mode === "global" ? { unsubscribe_all: true } : mode === "preferences" ? { topics: [
+          { id: contacts.topic, subscription: "opt_in" },
+          { id: contacts.topic, subscription: "opt_out" },
+        ] } : { "List-Unsubscribe": "One-Click" };
+        expect((await Promise.all([post("", path, action), post("", path, action)])).map((row) => row.status)).toEqual([200, 200]);
+        const attempts = await db.query(
+          `select a.webhook_id, e.email_id from webhook_attempts a join email_events e on e.id = a.event_id
+           where e.type = 'email.unsubscribed'`,
+        );
+        expect(attempts.rows).toEqual([{ webhook_id: endpoint.json.id, email_id: sent.json.id }]);
+        if (mode.includes("broadcast")) {
+          expect((await db.query("select unsubscribed_at from broadcast_recipients where email_id = $1", [sent.json.id])).rows[0]!.unsubscribed_at).not.toBeNull();
+        }
+        await tick();
+        await tick();
+        expect(received).toHaveLength(1);
+        expect(received[0]!.url).toBe("/ok");
+        const delivery = received[0]!;
+        expect(JSON.parse(delivery.body)).toMatchObject({ type: "email.unsubscribed", data: { email_id: sent.json.id } });
+        expect(verify(delivery.body, endpoint.json.signing_secret, delivery.id, delivery.timestamp, delivery.signature)).toBe(true);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    },
+  );
+
+  it.each(["delay", "event", "timeout", "recovery"])(
+    "does not repeat lifecycle transitions after %s resumption and retries",
+    async (mode) => {
+      const endpoint = await post(fullKey, "/webhooks", {
+        url: "http://127.0.0.1:1/unused",
+        events: ["automation.run.started", "automation.run.completed", "automation.run.failed"],
+      });
+      const flow = await post(fullKey, "/automations", {
+        name: "Resume", enabled: true,
+        steps: [
+          { key: "start", type: "trigger", config: { event_name: "resume" } },
+          mode === "delay"
+            ? { key: "wait", type: "delay", config: { duration: "1 hour" } }
+            : { key: "wait", type: "wait_for_event", config: { event_name: "wake", timeout: "1 hour" } },
+        ],
+        connections: [{ from: "start", to: "wait", type: "default" }],
+      });
+      expect([endpoint.status, flow.status]).toEqual([200, 200]);
+      await post(fullKey, "/events/send", { event: "resume", email: "ada@dispatch-fixture.net" });
+      // Execute directly so webhook attempts stay queued, without network retries.
+      const run = (await db.query<{ id: string; tenant_id: string }>("select id, tenant_id from automation_runs")).rows[0]!;
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect((await db.query("select state from automation_runs where id = $1", [run.id])).rows).toEqual([{ state: "waiting" }]);
+      expect((await db.query("select id from email_events where type = 'automation.run.started'")).rows).toHaveLength(1);
+      expect((await db.query("select id from email_events where type = 'automation.run.completed'")).rows).toHaveLength(0);
+      if (mode === "event") {
+        await post(fullKey, "/events/send", { event: "wake", email: "ADA@dispatch-fixture.net" });
+      } else {
+        await db.query(
+          `update automation_runs set state = $2, resume_data = $3::jsonb, updated_at = now() - interval '6 minutes'
+           where id = $1`,
+          [run.id, mode === "recovery" ? "running" : "ready", JSON.stringify({ timed_out: mode !== "delay" })],
+        );
+      }
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      const events = await db.query<{ type: string; data: Record<string, unknown> }>(
+        "select type, data from email_events where type like 'automation.run.%' order by type",
+      );
+      expect(events.rows.map((row) => row.type)).toEqual(["automation.run.completed", "automation.run.started"]);
+      for (const event of events.rows) expect(event.data).toMatchObject({
+        automation_id: flow.json.id, run_id: run.id, contact_id: expect.any(String),
+        state: event.type === "automation.run.started" ? "ready" : "done",
+      });
+      expect((await db.query("select webhook_id from webhook_attempts")).rows).toEqual([
+        { webhook_id: endpoint.json.id }, { webhook_id: endpoint.json.id },
+      ]);
+      expect((await db.query("select state from automation_steps where run_id = $1", [run.id])).rows).toEqual([{ state: "done" }]);
+    },
+  );
+
+  it("rolls back enrollment and stop together with failed event insertion or fanout", async () => {
+    const endpoint = await post(fullKey, "/webhooks", {
+      url: "http://127.0.0.1:1/unused", events: ["automation.run.started", "automation.run.completed"],
+    });
+    const flow = await post(fullKey, "/automations", {
+      name: "Atomic", enabled: true,
+      steps: [{ key: "start", type: "trigger", config: { event_name: "atomic" } }],
+      connections: [],
+    });
+    expect([endpoint.status, flow.status]).toEqual([200, 200]);
+    try {
+      await db.query(`
+        create function lifecycle_reject_start() returns trigger language plpgsql as $$
+          begin if new.type = 'automation.run.started' then raise exception 'synthetic start failure'; end if; return new; end $$;
+        create trigger lifecycle_reject_start before insert on email_events for each row execute function lifecycle_reject_start();
+      `);
+      expect((await post(fullKey, "/events/send", { event: "atomic", email: "ada@dispatch-fixture.net" })).status).toBe(500);
+      expect((await db.query("select id from contacts")).rows).toHaveLength(0);
+      expect((await db.query("select id from custom_events")).rows).toHaveLength(0);
+      expect((await db.query("select id from automation_runs")).rows).toHaveLength(0);
+      expect((await db.query("select id from webhook_attempts")).rows).toHaveLength(0);
+      await db.query("drop trigger lifecycle_reject_start on email_events; drop function lifecycle_reject_start()");
+      expect((await post(fullKey, "/events/send", { event: "atomic", email: "ada@dispatch-fixture.net" })).status).toBe(202);
+      await db.query(`
+        create function lifecycle_reject_terminal() returns trigger language plpgsql as $$
+          begin if exists (select 1 from email_events where id = new.event_id and type = 'automation.run.completed')
+            then raise exception 'synthetic terminal fanout failure'; end if; return new; end $$;
+        create trigger lifecycle_reject_terminal before insert on webhook_attempts for each row execute function lifecycle_reject_terminal();
+      `);
+      expect((await post(fullKey, `/automations/${flow.json.id}/stop`, {})).status).toBe(500);
+      expect((await db.query("select enabled from automations where id = $1", [flow.json.id])).rows).toEqual([{ enabled: true }]);
+      expect((await db.query("select state from automation_runs")).rows).toEqual([{ state: "ready" }]);
+      expect((await db.query("select id from email_events where type = 'automation.run.completed'")).rows).toHaveLength(0);
+      await db.query("drop trigger lifecycle_reject_terminal on webhook_attempts; drop function lifecycle_reject_terminal()");
+      expect((await post(fullKey, `/automations/${flow.json.id}/stop`, {})).status).toBe(200);
+      expect((await post(fullKey, `/automations/${flow.json.id}/stop`, {})).status).toBe(200);
+      expect((await db.query("select state from automation_runs")).rows).toEqual([{ state: "stopped" }]);
+      expect((await db.query("select id from email_events where type = 'automation.run.completed'")).rows).toHaveLength(1);
+      expect((await db.query("select id from webhook_attempts")).rows).toHaveLength(2);
+    } finally {
+      await db.query(`
+        drop trigger if exists lifecycle_reject_start on email_events;
+        drop function if exists lifecycle_reject_start();
+        drop trigger if exists lifecycle_reject_terminal on webhook_attempts;
+        drop function if exists lifecycle_reject_terminal();
+      `);
+    }
+  });
+
+  it("serializes a stop against completion without two terminal events", async () => {
+    const flow = await post(fullKey, "/automations", {
+      name: "Race", enabled: true,
+      steps: [{ key: "start", type: "trigger", config: { event_name: "race" } }],
+      connections: [],
+    });
+    expect(flow.status).toBe(200);
+    await post(fullKey, "/events/send", { event: "race", email: "ada@dispatch-fixture.net" });
+    const run = (await db.query<{ id: string; tenant_id: string }>("select id, tenant_id from automation_runs")).rows[0]!;
+    const [, stop] = await Promise.all([
+      executeAutomationRun(db, run.tenant_id, run.id),
+      post(fullKey, `/automations/${flow.json.id}/stop`, {}),
+    ]);
+    expect(stop.status).toBe(200);
+    const state = (await db.query<{ state: string }>("select state from automation_runs where id = $1", [run.id])).rows[0]!.state;
+    expect(["done", "stopped"]).toContain(state);
+    expect((await db.query("select data from email_events where type = 'automation.run.completed'")).rows).toEqual([{
+      data: { automation_id: flow.json.id, run_id: run.id, contact_id: expect.any(String), state, exit_reason: state === "done" ? "completed" : "stopped" },
+    }]);
+    await executeAutomationRun(db, run.tenant_id, run.id);
+    expect((await db.query("select id from email_events where type like 'automation.run.%'")).rows).toHaveLength(2);
+  });
+
+  it("writes a bounce event and a suppression row from one worker tick", async () => {
+    const sent = await post(
+      fullKey,
+      "/emails",
+      letter({ to: "bounce@dispatch-fixture.net" }),
+    );
+    expect(sent.status).toBe(200);
+
+    await tick();
+
+    const events = await db.query<{ type: string }>(
+      "select type from email_events where email_id = $1 order by created_at",
+      [sent.json.id],
+    );
+    expect(events.rows.map((row) => row.type)).toContain("email.bounced");
+    const suppressed = await db.query(
+      "select email, reason from suppressions where removed_at is null",
+    );
+    expect(suppressed.rows).toEqual([
+      { email: "bounce@dispatch-fixture.net", reason: "email.bounced" },
+    ]);
+  });
+
+  it("writes open and click events when the tracking urls are fetched", async () => {
+    const sent = await post(
+      fullKey,
+      "/emails",
+      letter({
+        html: `<p><a href="https://dispatch-fixture.net/docs">Docs</a></p>`,
+        text: undefined,
+      }),
+    );
+    expect(sent.status).toBe(200);
+
+    const stored = await db.query<{
+      html: string;
+      html_tracked: string | null;
+    }>("select html, html_tracked from emails where id = $1", [sent.json.id]);
+    expect(stored.rows[0]?.html ?? "").not.toContain("/click/");
+    const html = stored.rows[0]?.html_tracked ?? "";
+    const click = new URL(
+      html.match(/href="(https?:\/\/[^"]+\/click\/[^"]+)"/)?.[1] ?? "",
+    );
+    const open = new URL(
+      html.match(/src="(https?:\/\/[^"]+\/open\/[^"]+)"/)?.[1] ?? "",
+    );
+
+    const opened = await app.inject({
+      method: "GET",
+      url: `${open.pathname}${open.search}`,
+    });
+    const clicked = await app.inject({
+      method: "GET",
+      url: `${click.pathname}${click.search}`,
+    });
+    expect(opened.statusCode).toBe(200);
+    expect(clicked.statusCode).toBe(302);
+
+    const events = await db.query<{ type: string }>(
+      "select type from email_events where email_id = $1 order by created_at",
+      [sent.json.id],
+    );
+    expect(events.rows.map((row) => row.type)).toEqual(
+      expect.arrayContaining(["email.opened", "email.clicked"]),
+    );
+  });
+
+  it("verifies a delivered webhook with sign and queues a second attempt after a refusal", async () => {
+    const received: Array<{
+      url: string;
+      body: string;
+      id: string;
+      timestamp: string;
+      signature: string;
+    }> = [];
+    const server = createServer((request, response) =>
+      recordWebhook(request, response, received),
+    );
+    await new Promise<void>((resolve) =>
+      server.listen(0, "127.0.0.1", resolve),
+    );
+    const address = server.address();
+    if (!address || typeof address === "string")
+      throw new Error("webhook server did not bind");
+    const base = `http://127.0.0.1:${address.port}`;
+
+    try {
+      const accepted = await post(fullKey, "/webhooks", {
+        url: `${base}/ok`,
+        events: ["email.sent"],
+      });
+      const refused = await post(fullKey, "/webhooks", {
+        url: `${base}/refuse`,
+        events: ["email.sent"],
+      });
+      expect(accepted.status).toBe(200);
+      expect(refused.status).toBe(200);
+
+      const sent = await post(
+        fullKey,
+        "/emails",
+        letter({ to: "webhook@dispatch-fixture.net" }),
+      );
+      expect(sent.status).toBe(200);
+      await tick();
+
+      const delivery = received.find((call) => call.url === "/ok");
+      expect(delivery).toBeTruthy();
+      const signed = sign(
+        delivery!.body,
+        accepted.json.signing_secret,
+        delivery!.id,
+        Number(delivery!.timestamp),
+      );
+      expect(signed.signature).toBe(delivery!.signature);
+      expect(
+        verify(
+          delivery!.body,
+          accepted.json.signing_secret,
+          delivery!.id,
+          delivery!.timestamp,
+          delivery!.signature,
+        ),
+      ).toBe(true);
+
+      const attempts = await db.query<{ attempt: number; state: string }>(
+        "select attempt, state from webhook_attempts where webhook_id = $1 order by attempt",
+        [refused.json.id],
+      );
+      expect(attempts.rows).toEqual([
+        { attempt: 1, state: "failed" },
+        { attempt: 2, state: "queued" },
+      ]);
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+});
+
+describe.skipIf(!live)("phase 2 contract closeout", () => {
+  it("rejects missing-trigger create and replacement without any stored graph or run changes", async () => {
+    const graph = { steps: [{ key: "end", type: "exit", config: {} }], connections: [] };
+    const counts = async () => (await db.query(`select
+      (select count(*)::integer from automations) as automations,
+      (select count(*)::integer from automation_runs) as runs,
+      (select count(*)::integer from automation_steps) as steps`)).rows[0];
+    const before = await counts();
+    const invalid = await post(fullKey, "/automations", { name: "No trigger", ...graph });
+    expect(invalid).toMatchObject({ status: 400, json: { name: "validation_error" } });
+    expect(await counts()).toEqual(before);
+    const flow = await post(fullKey, "/automations", { name: "Kept graph", steps: [
+      { key: "start", type: "trigger", config: { event_name: "closeout.graph" } },
+      ...graph.steps,
+    ], connections: [{ from: "start", to: "end" }] });
+    expect(flow.status).toBe(200);
+    const stored = (await db.query("select * from automations where id=$1", [flow.json.id])).rows[0];
+    const afterCreate = await counts();
+    const replacement = await call(fullKey, "PATCH", `/automations/${flow.json.id}`, graph);
+    expect(replacement).toMatchObject({ status: 400, json: { name: "validation_error" } });
+    expect((await db.query("select * from automations where id=$1", [flow.json.id])).rows[0]).toEqual(stored);
+    expect(await counts()).toEqual(afterCreate);
+  });
+
+  it("saves declared hyphenated mapping and renders actual event values through execution", async () => {
+    expect((await post(fullKey, "/events", { name: "closeout.mapping", schema: { "plan-id": "string" } })).status).toBe(200);
+    const template = await post(fullKey, "/templates", { name: "Hyphenated", subject: "Plan", text: "Plan: {{{PLAN}}}", variables: ["PLAN"], publish: true });
+    const flow = await post(fullKey, "/automations", { name: "Hyphenated mapping", enabled: true, steps: [
+      { key: "start", type: "trigger", config: { event_name: "closeout.mapping" } },
+      { key: "send", type: "send_email", config: { kind: "transactional", from: "hello@dispatch-fixture.net",
+        template: template.json.id, variable_mapping: { PLAN: "event.plan-id" } } },
+    ], connections: [{ from: "start", to: "send" }] });
+    expect(flow.status, JSON.stringify(flow.json)).toBe(200);
+    expect((await call(fullKey, "GET", `/automations/${flow.json.id}`)).json.steps[1].config.variable_mapping).toEqual({ PLAN: "event.plan-id" });
+    expect((await db.query("select steps from automations where id=$1", [flow.json.id])).rows[0].steps[1].config.variable_mapping).toEqual({ PLAN: "event.plan-id" });
+    expect((await post(fullKey, "/events/send", { event: "closeout.mapping", email: "mapped@dispatch-fixture.net", payload: { "plan-id": "actual-pro" } })).status).toBe(202);
+    const run = (await flowRuns(flow.json.id))[0]!;
+    await executeAutomationRun(db, run.tenant_id, run.id);
+    expect((await db.query("select text from emails")).rows).toEqual([{ text: "Plan: actual-pro" }]);
+    expect((await db.query("select state from automation_runs where id=$1", [run.id])).rows[0].state).toBe("done");
+  });
+
+  it("classifies reserved inline defaults and blocks Transactional save activation and execution", async () => {
+    const start = { key: "start", type: "trigger", config: { event_name: "closeout.kind" } };
+    const steps = (template: string, kind = "transactional") => [start, { key: "send", type: "send_email", config: {
+      kind, from: "hello@dispatch-fixture.net", template,
+    } }];
+    const connections = [{ from: "start", to: "send" }];
+    for (const [index, key] of ["UNSUBSCRIBE_URL", "RESEND_UNSUBSCRIBE_URL", "DISPATCH_UNSUBSCRIBE_URL"].entries()) {
+      const content = `Leave {{{${key}|${index ? "" : "https://dispatch-fixture.net/leave"}}}}`;
+      const template = await post(fullKey, "/templates", { name: key, subject: key, ...(index === 1 ? { html: `<a href="${content}">Leave</a>` } : { text: content }), publish: true });
+      expect(template.json.kind).toBe("marketing");
+      expect((await post(fullKey, "/automations", { name: "Wrong kind", steps: steps(template.json.id), connections })).status).toBe(422);
+      const draft = await post(fullKey, "/automations", { name: `Topic needed ${index}`, steps: steps(template.json.id, "marketing"), connections });
+      expect(draft.status).toBe(200);
+      expect((await call(fullKey, "PATCH", `/automations/${draft.json.id}`, { status: "enabled" })).status).toBe(422);
+    }
+    const ordinary = await post(fullKey, "/templates", { name: "Ordinary", subject: "Receipt", text: "Receipt", publish: true });
+    const flow = await post(fullKey, "/automations", { name: "Later publication", enabled: true, steps: steps(ordinary.json.id), connections });
+    expect(flow.status).toBe(200);
+    expect((await call(fullKey, "PATCH", `/templates/${ordinary.json.id}`, { text: "Leave {{{UNSUBSCRIBE_URL|}}}" })).status).toBe(200);
+    expect((await post(fullKey, `/templates/${ordinary.json.id}/publish`, {})).json.kind).toBe("marketing");
+    expect((await post(fullKey, "/events/send", { event: "closeout.kind", email: "kind@dispatch-fixture.net" })).status).toBe(202);
+    const run = (await flowRuns(flow.json.id))[0]!;
+    await executeAutomationRun(db, run.tenant_id, run.id);
+    expect((await db.query("select state,error from automation_runs where id=$1", [run.id])).rows[0])
+      .toMatchObject({ state: "failed", error: expect.stringContaining("must be Marketing") });
+    expect((await db.query("select id from emails")).rows).toEqual([]);
+    expect((await db.query("select id from send_jobs")).rows).toEqual([]);
+  });
+
+  it("retains Marketing intent and replacement content across alternate publication and legacy PATCH", async () => {
+    const installed = await post(fullKey, "/template-library/newsletter/install", {});
+    expect(installed.status).toBe(200);
+    const replacement = { subject: "Tenant replacement", html: "<p>Exact tenant HTML &amp; text</p>", text: "Exact tenant plain text" };
+    const version = await post(fullKey, `/templates/${installed.json.id}/versions`, replacement);
+    expect(version.status).toBe(200);
+    expect(version.json).toMatchObject({ ...replacement, kind: "marketing", source: { kind: "custom", send_kind: "marketing" } });
+    expect(version.json.source).not.toHaveProperty("slug");
+    const published = await post(fullKey, `/templates/${installed.json.id}/publish`, {});
+    expect(published.json).toMatchObject({ ...replacement, kind: "marketing", source: { kind: "custom", send_kind: "marketing" } });
+    const legacy = await post(fullKey, "/templates", { name: "Legacy library copy", subject: "Legacy", text: "Leave {{{UNSUBSCRIBE_URL}}}",
+      source: { kind: "library", slug: "newsletter", version: "1.0.0" }, publish: true });
+    expect(legacy.status).toBe(200);
+    const patch = await call(fullKey, "PATCH", `/templates/${legacy.json.id}`, { ...replacement, source: { kind: "custom", path: "tenant/news.html" } });
+    expect(patch.status).toBe(200);
+    expect(patch.json).toMatchObject({ ...replacement, kind: "marketing", source: { kind: "custom", send_kind: "marketing", path: "tenant/news.html" } });
+    expect(patch.json.source).not.toHaveProperty("slug");
+    expect((await post(fullKey, `/templates/${legacy.json.id}/publish`, {})).json).toMatchObject({ ...replacement, kind: "marketing" });
+    const stored = (await db.query(`select v.html,v.text,v.source from templates t join template_versions v
+      on v.id=t.published_version_id where t.id=any($1::text[])`, [[installed.json.id, legacy.json.id]])).rows;
+    expect(stored).toHaveLength(2);
+    expect(stored.every((row) => row.html === replacement.html && row.text === replacement.text &&
+      row.source.kind === "custom" && row.source.send_kind === "marketing" && !("slug" in row.source))).toBe(true);
+    for (const [index, templateId] of [installed.json.id, legacy.json.id].entries()) {
+      const steps = [
+        { key: "start", type: "trigger", config: { event_name: `closeout.version.${index}` } },
+        { key: "send", type: "send_email", config: { kind: "transactional", from: "hello@dispatch-fixture.net", template: templateId } },
+      ];
+      const connections = [{ from: "start", to: "send" }];
+      expect((await post(fullKey, "/automations", { name: `Version wrong kind ${index}`, steps, connections })).status).toBe(422);
+      steps[1].config.kind = "marketing";
+      const draft = await post(fullKey, "/automations", { name: `Version draft ${index}`, steps, connections });
+      expect(draft.status).toBe(200);
+      expect((await call(fullKey, "PATCH", `/automations/${draft.json.id}`, { status: "enabled" })).status).toBe(422);
+      // A stored old/wrong kind must also fail at execution, not just API validation.
+      steps[1].config.kind = "transactional";
+      await db.query("update automations set enabled=true,steps=$2 where id=$1", [draft.json.id, JSON.stringify(steps)]);
+      await post(fullKey, "/events/send", { event: `closeout.version.${index}`, email: "version@dispatch-fixture.net" });
+      const run = (await flowRuns(draft.json.id))[0]!;
+      await executeAutomationRun(db, run.tenant_id, run.id);
+      expect((await db.query("select state,error from automation_runs where id=$1", [run.id])).rows[0])
+        .toMatchObject({ state: "failed", error: expect.stringContaining("must be Marketing") });
+    }
+    expect((await db.query("select id from emails")).rows).toEqual([]);
+    expect((await db.query("select id from send_jobs")).rows).toEqual([]);
+  });
+
+  it("exposes executor-produced terminal reason and legacy null through tenant-scoped contact activity", async () => {
+    const contact = await post(fullKey, "/contacts", { email: "timeline@dispatch-fixture.net" });
+    const flow = await post(fullKey, "/automations", { name: "Timeline exit", enabled: true, steps: [
+      { key: "start", type: "trigger", config: { event_name: "closeout.timeline" } },
+      { key: "end", type: "exit", config: {} },
+    ], connections: [{ from: "start", to: "end" }] });
+    expect(flow.status).toBe(200);
+    await post(fullKey, "/events/send", { event: "closeout.timeline", email: "TIMELINE@dispatch-fixture.net" });
+    const run = (await flowRuns(flow.json.id))[0]!;
+    await executeAutomationRun(db, run.tenant_id, run.id);
+    expect((await db.query("select state,exit_reason from automation_runs where id=$1", [run.id])).rows[0]).toEqual({ state: "done", exit_reason: "exit" });
+    await post(fullKey, "/events/send", { event: "closeout.timeline", email: "timeline@dispatch-fixture.net" });
+    const legacy = (await flowRuns(flow.json.id)).find((row) => row.id !== run.id)!;
+    await db.query("update automation_runs set state='stopped',exit_reason=null where id=$1", [legacy.id]);
+    const page = await call(fullKey, "GET", `/contacts/${contact.json.id}/activity`);
+    expect(page.status).toBe(200);
+    expect(page.json.data).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: `${run.id}:completed`, label: "done", run_id: run.id, automation_id: flow.json.id, exit_reason: "exit" }),
+      expect.objectContaining({ id: `${legacy.id}:completed`, label: "stopped", exit_reason: null }),
+    ]));
+    expect(page.json.data.filter((row: any) => row.type !== "automation.run.completed").every((row: any) => row.exit_reason === null)).toBe(true);
+    const viewer = await teammate("Viewer");
+    const session = await signInAs(viewer.email, viewer.password);
+    expect((await call(session.token, "GET", `/contacts/${contact.json.id}/activity`)).json.data).toEqual(page.json.data);
+    const foreign = await seedTenant();
+    expect((await call(foreign, "GET", `/contacts/${contact.json.id}/activity`)).status).toBe(404);
+  });
+});
+
+describe.skipIf(!live)("typed properties and rules", () => {
+  it("wakes a date-filtered event wait using the stored received time, not payload metadata", async () => {
+    for (const name of ["typed.wait.start", "typed.wait.done"]) expect((await post(fullKey, "/events", { name })).status).toBe(200);
+    const flow = await post(fullKey, "/automations", { name: "Typed wait", enabled: true, steps: [
+      { key: "start", type: "trigger", config: { event_name: "typed.wait.start" } },
+      { key: "wait", type: "wait_for_event", config: { event_name: "typed.wait.done", filter_rule: {
+        type: "rule", field: "event.received_at", operator: "within", value: "1 day",
+      } } },
+    ], connections: [{ from: "start", to: "wait" }] });
+    expect(flow.status).toBe(200);
+    expect((await post(fullKey, "/events/send", { event: "typed.wait.start", email: "wait@example.com" })).status).toBe(202);
+    const run = (await db.query<{ id: string; tenant_id: string }>("select id,tenant_id from automation_runs")).rows[0]!;
+    await executeAutomationRun(db, run.tenant_id, run.id);
+    expect((await db.query("select state from automation_runs")).rows).toEqual([{ state: "waiting" }]);
+    // Give this date fixture a controlled SQL receipt time. The disposable VM's
+    // clock can be milliseconds ahead of Node, which correctly fails "within".
+    const receivedAt = new Date(Date.now() - 60_000).toISOString();
+    await db.query(`create function typed_wait_receipt() returns trigger language plpgsql as $$
+      begin
+        if new.name='typed.wait.done' then new.created_at='${receivedAt}'::timestamptz; end if;
+        return new;
+      end $$;
+      create trigger typed_wait_receipt before insert on custom_events for each row execute function typed_wait_receipt()`);
+    try {
+      expect((await post(fullKey, "/events/send", { event: "typed.wait.done", email: "WAIT@example.com", payload: { received_at: "invalid" } })).status).toBe(202);
+      expect((await db.query("select created_at,data from custom_events where name='typed.wait.done'")).rows[0])
+        .toMatchObject({ created_at: new Date(receivedAt), data: { received_at: "invalid" } });
+    } finally {
+      await db.query("drop trigger typed_wait_receipt on custom_events; drop function typed_wait_receipt()");
+    }
+    expect((await db.query("select state from automation_runs")).rows).toEqual([{ state: "ready" }]);
+    await executeAutomationRun(db, run.tenant_id, run.id);
+    expect((await db.query("select state from automation_runs")).rows).toEqual([{ state: "done" }]);
+  });
+
+  it("stores four types across repeated migrations and protects reserved definitions and viewer writes", async () => {
+    const fixtures = [["plan", "string", "free"], ["seats", "number", 3], ["activated", "boolean", false], ["last_active_at", "date", "2026-10-01T01:02:03+02:00"]] as const;
+    for (const [key, type, fallback_value] of fixtures) {
+      expect((await post(fullKey, "/contact-properties", { key, type, fallback_value })).status).toBe(200);
+    }
+    await migrate(db);
+    await migrate(db);
+    expect((await call(fullKey, "GET", "/contact-properties")).json.data).toEqual(expect.arrayContaining(
+      fixtures.map(([key, type, fallback_value]) => expect.objectContaining({ key, type, fallback_value })),
+    ));
+    for (const key of ["topics", "segments"]) {
+      expect((await post(fullKey, "/contact-properties", { key, type: "string" })).status).toBe(400);
+    }
+    const saved = await post(fullKey, "/contacts", { email: "typed@example.com", properties: {
+      plan: "pro", seats: 4, activated: true, last_active_at: "2026-10-02", undeclared: { ok: true },
+    } });
+    expect(saved.status).toBe(200);
+    expect(saved.json.properties).toMatchObject({
+      activated: { type: "boolean", value: true }, last_active_at: { type: "date", value: "2026-10-02" }, undeclared: { value: { ok: true } },
+    });
+    for (const properties of [{ activated: "true" }, { last_active_at: "2026-02-30" }, { seats: "4" }, { plan: false }]) {
+      expect((await call(fullKey, "PATCH", `/contacts/${saved.json.id}`, { properties })).status).toBe(400);
+    }
+    const tenant = (await db.query<{ tenant_id: string }>("select tenant_id from contacts where id = $1", [saved.json.id])).rows[0]!.tenant_id;
+    await db.query("insert into contact_properties (id, tenant_id, key, type) values ($1,$2,'topics','string')", [id("prop"), tenant]);
+    expect((await post(fullKey, "/contact-properties", { key: "topics", type: "string", fallback_value: "legacy" })).status).toBe(200);
+    expect((await call(fullKey, "PATCH", `/contacts/${saved.json.id}`, { properties: { topics: "legacy", segments: false } })).status).toBe(200);
+    expect(await contactContext(db, tenant, "TYPED@example.com")).toMatchObject({ topics: "legacy", segments: false });
+    const otherKey = await seedTenant();
+    expect((await call(otherKey, "GET", `/contacts/${saved.json.id}`)).status).toBe(404);
+    expect((await call(otherKey, "GET", "/contact-properties")).json.data).toEqual([]);
+    const viewer = await teammate("Viewer");
+    const signed = await signInAs(viewer.email, viewer.password);
+    expect((await post(signed.token, "/contact-properties", { key: "hidden", type: "boolean" })).status).toBe(403);
+    expect((await call(signed.token, "PATCH", `/contacts/${saved.json.id}`, { properties: { activated: false } })).status).toBe(403);
+  });
+
+  it("imports typed booleans and ISO dates into actual JSONB with row errors and retry-safe counts", async () => {
+    for (const [key, type] of [["activated", "boolean"], ["last_active_at", "date"]]) {
+      expect((await post(fullKey, "/contact-properties", { key, type })).status).toBe(200);
+    }
+    const tenant = (await db.query<{ tenant_id: string }>("select tenant_id from contact_properties limit 1")).rows[0]!.tenant_id;
+    const importId = id("import");
+    await createImport(db, { id: importId, tenantId: tenant, storageKey: `imports/${tenant}/${importId}`,
+      columnMap: { properties: { activated: { column: "active" }, last_active_at: { column: "date" } } },
+      onConflict: "upsert", segments: [], topics: [] });
+    const job = (await claimImports(db, 1))[0]!;
+    const csv = "email,active,date\none@example.com,YES,2026-10-01\ntwo@example.com,0,2026-10-02T03:04:05Z\nbadbool@example.com,maybe,2026-10-01\nbaddate@example.com,true,2026-02-30\n";
+    const counts = await runImport(db, { stream: async () => Readable.from([csv]) }, job);
+    expect(counts).toEqual({ total: 4, created: 2, updated: 0, skipped: 0, failed: 2 });
+    expect((await db.query("select email, properties from contacts order by email")).rows).toEqual([
+      { email: "one@example.com", properties: { activated: true, last_active_at: "2026-10-01" } },
+      { email: "two@example.com", properties: { activated: false, last_active_at: "2026-10-02T03:04:05Z" } },
+    ]);
+    expect((await db.query("select status, counts from contact_imports where id = $1", [importId])).rows).toEqual([{ status: "completed", counts }]);
+    const restarted = await runImport(db, { stream: async () => Readable.from([csv]) }, { ...job, row_offset: 4, counts });
+    expect(restarted).toEqual(counts);
+    expect((await db.query("select id from contacts")).rows).toHaveLength(2);
+  });
+
+  it("routes receiving topics with defaults and fresh changes, preserves segment membership and maps immutable event age", async () => {
+    const subscribed = await post(fullKey, "/topics", { name: "Receiving", key: "receiving", default_subscription: "opt_in" });
+    const optedOut = await post(fullKey, "/topics", { name: "Not receiving", key: "not_receiving", default_subscription: "opt_out" });
+    const segment = await post(fullKey, "/segments", { name: "Members" });
+    const contact = await post(fullKey, "/contacts", { email: "member@example.com", first_name: "Ada" });
+    expect((await post(fullKey, `/segments/${segment.json.id}/contacts`, { email: "member@example.com" })).status).toBe(200);
+    const tenant = (await db.query<{ tenant_id: string }>("select tenant_id from contacts where id=$1", [contact.json.id])).rows[0]!.tenant_id;
+    expect(await contactContext(db, tenant, "MEMBER@example.com")).toMatchObject({ topics: [subscribed.json.id], segments: [segment.json.id], created_at: expect.any(String) });
+    const template = await post(fullKey, "/templates", { name: "Mapped", subject: "Mapped", text: "{{{NAME}}}: {{{SEATS}}}: {{{WHEN}}}", variables: ["NAME", { key: "SEATS", type: "number" }, "WHEN"], publish: true });
+    expect((await post(fullKey, "/events", { name: "typed.context" })).status).toBe(200);
+    const flow = await post(fullKey, "/automations", { name: "Typed context", enabled: true, steps: [
+      { key: "start", type: "trigger", config: { event_name: "typed.context" } },
+      { key: "check", type: "condition", config: { type: "and", rules: [
+        { type: "rule", field: "contact.topics", operator: "contains", value: subscribed.json.id },
+        { type: "rule", field: "contact.topics", operator: "not_contains", value: optedOut.json.id },
+        { type: "rule", field: "contact.segments", operator: "contains", value: segment.json.id },
+        { type: "rule", field: "event.received_at", operator: "within", value: "1 day" },
+      ] } },
+      { key: "send", type: "send_email", config: { from: "hello@dispatch-fixture.net", template: template.json.id,
+        variable_mapping: { NAME: "contact.first_name", SEATS: "event.seats", WHEN: "event.received_at" } } },
+    ], connections: [{ from: "start", to: "check" }, { from: "check", to: "send", type: "condition_met" }] });
+    expect(flow.status).toBe(200);
+    const fire = () => post(fullKey, "/events/send", { event: "typed.context", email: "MEMBER@example.com", payload: { seats: 3, received_at: "spoof" } });
+    expect((await fire()).status).toBe(202);
+    const run = (await db.query<{ id: string }>("select id from automation_runs")).rows[0]!;
+    await executeAutomationRun(db, tenant, run.id);
+    const event = (await db.query<{ created_at: Date }>("select created_at from custom_events")).rows[0]!;
+    const emails = await db.query<{ text: string }>("select text from emails");
+    expect(emails.rows).toEqual([{ text: `Ada: 3: ${event.created_at.toISOString()}` }]);
+    expect((await call(fullKey, "PATCH", `/contacts/${contact.json.id}`, { unsubscribed: true })).status).toBe(200);
+    expect(await contactContext(db, tenant, "member@example.com")).toMatchObject({ topics: [], segments: [segment.json.id] });
+    expect((await fire()).status).toBe(202);
+    const second = (await db.query<{ id: string }>("select id from automation_runs where id <> $1", [run.id])).rows[0]!;
+    await executeAutomationRun(db, tenant, second.id);
+    expect((await db.query("select id from emails")).rows).toHaveLength(1);
+    expect((await db.query("select data from automation_steps where run_id=$1 and step_key='check'", [second.id])).rows).toEqual([{ data: { result: false } }]);
+  });
+});
+
+async function call(
+  token: string,
+  method: "GET" | "POST" | "PATCH" | "DELETE",
+  path: string,
+  body?: unknown,
+) {
+  const response = await app.inject({
+    method,
+    url: path,
+    headers: {
+      authorization: `Bearer ${token}`,
+      "user-agent": "dispatch-accept-test",
+      ...(body === undefined ? {} : { "content-type": "application/json" }),
+    },
+    payload: body === undefined ? undefined : JSON.stringify(body),
+  });
+  return {
+    status: response.statusCode,
+    json: response.body ? response.json() : null,
+  };
+}
+
+// A user with a password and a role, made through the API the way the team page makes one. The
+// email is new on every run, because sign-in counters live in Redis and outlast the truncate.
+async function teammate(
+  role: "Admin" | "Viewer",
+  password = "a long private password",
+) {
+  const roles = await call(fullKey, "GET", "/roles");
+  let found = (roles.json.data as Array<{ id: string; name: string }>).find(
+    (row) => row.name === role,
+  );
+  if (!found)
+    found = (
+      await call(fullKey, "POST", "/roles", {
+        name: role,
+        permissions: [role === "Admin" ? "full" : "read"],
+      })
+    ).json;
+  const email = `${role.toLowerCase()}-${id("run").slice(4, 14)}@dispatch-fixture.net`;
+  const user = await call(fullKey, "POST", "/users", {
+    email,
+    name: role,
+    password,
+  });
+  expect(user.status).toBe(200);
+  expect(
+    (
+      await call(fullKey, "POST", "/memberships", {
+        user_id: user.json.id,
+        role_id: found!.id,
+      })
+    ).status,
+  ).toBe(200);
+  return { email, password, id: user.json.id as string };
+}
+
+async function signInAs(email: string, password: string) {
+  const response = await app.inject({
+    method: "POST",
+    url: "/sessions",
+    headers: { "content-type": "application/json" },
+    payload: { email, password },
+  });
+  return {
+    status: response.statusCode,
+    token: response.statusCode === 200 ? (response.json().token as string) : "",
+  };
+}
+
+async function ensureDatabase() {
+  const admin = connect(adminUrl);
+  try {
+    const existing = await admin.query(
+      "select 1 from pg_database where datname = $1",
+      [databaseName],
+    );
+    if (existing.rowCount === 0)
+      await admin.query(
+        `create database "${databaseName.replaceAll('"', '""')}"`,
+      );
+  } finally {
+    await admin.end();
+  }
+}
+
+async function truncate() {
+  // Persist queued telemetry while its tenant and credential foreign keys still exist.
+  // The shared API stays alive across cases with its automatic flush timer delayed.
+  await flushApiTelemetry();
+  const tables = await db.query<{ tablename: string }>(
+    "select tablename from pg_tables where schemaname = 'public'",
+  );
+  if (tables.rowCount === 0) return;
+  const list = tables.rows
+    .map((row) => `"${row.tablename.replaceAll('"', '""')}"`)
+    .join(", ");
+  const sql = `truncate ${list} restart identity cascade`;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      await db.query(sql);
+      return;
+    } catch (error) {
+      const code =
+        typeof error === "object" && error && "code" in error
+          ? String(error.code)
+          : "";
+      if (code !== "40P01" || attempt === 4) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+  }
+}
+
+async function seedTenant() {
+  const tenantId = id("tenant");
+  const secret = makeKey().secret;
+  const pepper =
+    process.env.API_KEY_PEPPER ?? "dev-pepper-change-before-deploy";
+  await tx(db, async (client) => {
+    await client.query("insert into tenants (id, name) values ($1, $2)", [
+      tenantId,
+      "Test",
+    ]);
+    await client.query(
+      "insert into domains (id, tenant_id, name, region, status, open_tracking, click_tracking) values ($1, $2, 'dispatch-fixture.net', 'us-west-2', 'verified', true, true)",
+      [id("domain"), tenantId],
+    );
+    await client.query(
+      "insert into api_keys (id, tenant_id, name, prefix, hash, scope) values ($1, $2, 'full', $3, $4, 'full')",
+      [id("key"), tenantId, secret.slice(0, 12), keyHash(secret, pepper)],
+    );
+  });
+  return secret;
+}
+
+async function contactFlow(config: Record<string, unknown>, following: Array<Record<string, unknown>> = []) {
+  const steps = [{ key: "trigger", type: "trigger", config }, ...following];
+  const result = await post(fullKey, "/automations", { name: id("flow"), status: "enabled", reentry: "every_time", steps,
+    connections: steps.slice(1).map((step, index) => ({ from: steps[index].key, to: step.key, type: "default" })) });
+  expect(result.status, JSON.stringify(result.json)).toBe(200);
+  return result.json.id as string;
+}
+
+async function flowRuns(automationId: string) {
+  return (await db.query<{ id: string; tenant_id: string }>(
+    "select id, tenant_id from automation_runs where automation_id = $1 order by created_at, id", [automationId]
+  )).rows;
+}
+
+function letter(overrides: Record<string, unknown> = {}) {
+  return {
+    from: "hello@dispatch-fixture.net",
+    to: "you@dispatch-fixture.net",
+    subject: "Hello",
+    text: "Hi",
+    ...overrides,
+  };
+}
+
+async function queuedBroadcast(email: string) {
+  const segment = await post(fullKey, "/segments", { name: "Sandbox history" });
+  expect(segment.status).toBe(200);
+  expect((await post(fullKey, `/segments/${segment.json.id}/contacts`, { email })).status).toBe(200);
+  const broadcast = await post(fullKey, "/broadcasts", {
+    name: "Sandbox history", segment_id: segment.json.id,
+    from: "hello@dispatch-fixture.net", subject: "History",
+    html: '<a href="https://dispatch-fixture.net/docs">Docs</a>', send: true,
+  });
+  expect(broadcast.status).toBe(200);
+  // A tick queues broadcast recipients after processing ready send jobs. Stop here so
+  // the fixture can change settings before its first production-configured delivery.
+  expect((await tick()).jobs).toBe(0);
+  const recipients = await db.query<{ email_id: string; status: string }>(
+    "select email_id, status from broadcast_recipients where broadcast_id = $1",
+    [broadcast.json.id],
+  );
+  expect(recipients.rows).toEqual([{ email_id: expect.any(String), status: "sent" }]);
+  return { id: broadcast.json.id as string, emailId: recipients.rows[0]!.email_id };
+}
+
+async function sendJob(emailId: string) {
+  const result = await db.query<Job>(
+    "select id, tenant_id, email_id, request_id from send_jobs where email_id = $1",
+    [emailId],
+  );
+  expect(result.rows).toHaveLength(1);
+  return result.rows[0]!;
+}
+
+// These fixtures have no attachments. Fail rather than accidentally touch local/S3 storage.
+const noStorage: Storage = {
+  async put() { throw new Error("unexpected attachment write"); },
+  async get() { throw new Error("unexpected attachment read"); },
+  async stream() { throw new Error("unexpected attachment stream"); },
+  async url() { throw new Error("unexpected attachment URL"); },
+  async delete() { throw new Error("unexpected attachment deletion"); },
+};
+
+async function productionDelivery(job: Job, provider: Provider) {
+  const previous = process.env.NODE_ENV;
+  process.env.NODE_ENV = "production";
+  try {
+    await deliverJob(db, noStorage, provider, job, { durable: true });
+  } finally {
+    if (previous === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previous;
+  }
+}
+
+function recordingSes(options: {
+  refuse?: boolean;
+  beforeSend?: (email: ProviderEmail) => Promise<void>;
+} = {}) {
+  const quotas: string[] = [];
+  const sent: ProviderEmail[] = [];
+  const provider: Provider = {
+    name: "ses",
+    async quota(region) {
+      quotas.push(region);
+      expect(process.env.NODE_ENV).toBe("production");
+      if (options.refuse) throw new Error("sandbox mail called the SES quota API");
+      return { max_24_hour: 100_000, max_per_second: 0, sent_24_hour: 0, sandbox: false };
+    },
+    async send(email) {
+      sent.push(email);
+      expect(process.env.NODE_ENV).toBe("production");
+      if (options.refuse) throw new Error("sandbox mail called the SES send API");
+      await options.beforeSend?.(email);
+      const messageId = `ses_${email.id}`;
+      // Like SES, accept the send but leave terminal delivery to a later provider callback.
+      return {
+        provider_message_id: messageId,
+        events: [{
+          type: "email.sent", provider_event_id: `${messageId}:sent`, delay_ms: 0,
+          recipients: email.recipients.map((recipient) => recipient.email),
+          data: { provider_message_id: messageId },
+        }],
+      };
+    },
+  };
+  return { provider, quotas, sent };
+}
+
+async function captureWebhook() {
+  const received: Parameters<typeof recordWebhook>[2] = [];
+  const server = createServer((request, response) =>
+    recordWebhook(request, response, received),
+  );
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  if (!address || typeof address === "string")
+    throw new Error("webhook server did not bind");
+  return {
+    received,
+    base: `http://127.0.0.1:${address.port}`,
+    close: () => new Promise<void>((resolve, reject) =>
+      server.close((error) => error ? reject(error) : resolve()),
+    ),
+  };
+}
+
+async function post(
+  secret: string,
+  path: string,
+  body: unknown,
+  headers: Record<string, string> = {},
+) {
+  const response = await app.inject({
+    method: "POST",
+    url: path,
+    headers: {
+      authorization: `Bearer ${secret}`,
+      "content-type": "application/json",
+      "user-agent": "dispatch-accept-test",
+      ...headers,
+    },
+    payload: JSON.stringify(body),
+  });
+  return { status: response.statusCode, json: response.json() };
+}
+
+function recordWebhook(
+  request: IncomingMessage,
+  response: ServerResponse,
+  received: Array<{
+    url: string;
+    body: string;
+    id: string;
+    timestamp: string;
+    signature: string;
+  }>,
+) {
+  const chunks: Buffer[] = [];
+  request.on("data", (chunk) => chunks.push(chunk));
+  request.on("end", () => {
+    received.push({
+      url: request.url ?? "",
+      body: Buffer.concat(chunks).toString("utf8"),
+      id: request.headers["dispatch-webhook-id"]?.toString() ?? "",
+      timestamp:
+        request.headers["dispatch-webhook-timestamp"]?.toString() ?? "",
+      signature:
+        request.headers["dispatch-webhook-signature"]?.toString() ?? "",
+    });
+    if (request.url === "/refuse") {
+      response.writeHead(500);
+      response.end("no");
+      return;
+    }
+    response.writeHead(200);
+    response.end("ok");
+  });
+}

@@ -1,6 +1,7 @@
 import { ingestReceived, verdict, type Queryable } from "@dispatchmail/db";
 import type { Storage } from "@dispatchmail/storage";
 import PostalMime from "postal-mime";
+import { PermanentMessageError } from "./events.js";
 
 export type SesReceipt = {
   mail?: { messageId?: string; source?: string };
@@ -61,9 +62,14 @@ export async function applyInbound(
   notification: SesReceipt,
   options: { requestId?: string; region?: string | null } = {}
 ) {
-  const objectKey = notification.receipt?.action?.objectKey;
-  const recipient = notification.receipt?.recipients?.[0];
-  if (!objectKey || !recipient?.includes("@")) return null;
+  const objectKey = notification?.receipt?.action?.objectKey;
+  const envelope = notification?.receipt?.recipients;
+  if (typeof objectKey !== "string" || !objectKey || !Array.isArray(envelope) ||
+      envelope.length === 0 || envelope.length > 50 ||
+      envelope.some((address) => typeof address !== "string" || !/^[^\s@]+@[^\s@]+$/.test(address))) {
+    throw new PermanentMessageError("Inbound notification has an invalid receipt envelope");
+  }
+  const recipient = envelope[0];
   const domain = recipient.split("@")[1].toLowerCase();
   // SES identities are per region, so two tenants can both hold a row for one name. Mail goes
   // only to a tenant that has verified the domain in the region the message arrived in, and to
@@ -86,15 +92,25 @@ export async function applyInbound(
     if (seen.rows[0]) return null;
   }
   const bytes = await storage.get(objectKey);
-  const parsed = await parseInbound(bytes);
+  let parsed: Awaited<ReturnType<typeof parseInbound>>;
+  try {
+    parsed = await parseInbound(bytes);
+  } catch (error) {
+    // Match PostalMime's bounded deterministic errors only. Storage, DB and unexpected parser
+    // failures retain the notification for retry; sender-controlled malformed MIME cannot loop.
+    if (error instanceof Error && (/^Maximum MIME nesting depth of \d+ levels exceeded$/.test(error.message) ||
+        /^Maximum header size of \d+ bytes exceeded$/.test(error.message) || error.message === "Unknown attachment encoding")) {
+      throw new PermanentMessageError(error.message);
+    }
+    throw error;
+  }
   return ingestReceived(db, {
     tenantId,
     requestId: options.requestId ?? "ses_inbound",
     dedupeKey,
     from: parsed.from || notification.mail?.source || "unknown@localhost",
-    to: parsed.to.length > 0 ? parsed.to : [recipient],
-    cc: parsed.cc,
-    bcc: parsed.bcc,
+    // Header addresses remain in headers/raw MIME; delivery recipients come from SES.
+    to: envelope.filter((address) => address.split("@")[1].toLowerCase() === domain),
     replyTo: parsed.replyTo,
     subject: parsed.subject || "(no subject)",
     html: parsed.html,

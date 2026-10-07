@@ -21,6 +21,7 @@ import {
   Sun,
   Users,
   Webhook,
+  Zap,
 } from "lucide-react";
 import { Menu } from "../components/Menu";
 import { useHotkey } from "../hooks/useHotkey";
@@ -32,7 +33,7 @@ import { Shortcuts } from "./Shortcuts";
 import { useSession } from "./session";
 import { useTheme } from "./theme";
 
-/** Sidebar order: sending and content first, then delivery and developer tools, then Settings. */
+/** One shared menu for desktop, mobile, and every role. */
 export const nav = [
   { to: "/emails", label: "Emails", icon: Mail },
   { to: "/broadcasts", label: "Broadcasts", icon: Megaphone },
@@ -40,18 +41,29 @@ export const nav = [
   { to: "/templates", label: "Templates", icon: FileText },
   { to: "/audience", label: "Audience", icon: Users },
   { to: "/metrics", label: "Metrics", icon: BarChart3 },
+  { to: "/goals", label: "Goals", icon: BarChart3 },
   { to: "/domains", label: "Domains", icon: Globe2 },
   { to: "/logs", label: "Logs", icon: ScrollText },
   { to: "/api-keys", label: "API keys", icon: KeyRound },
   { to: "/webhooks", label: "Webhooks", icon: Webhook },
   { to: "/timeline", label: "Timeline", icon: Activity },
+  { to: "/events", label: "Events", icon: Zap },
   { to: "/settings", label: "Settings", icon: Settings },
 ] as const;
+
+/** Compatibility route retains query state without adding a history entry. */
+export function EventsRedirect() {
+  const location = useLocation();
+  return <Navigate to={`/events${location.search}${location.hash}`} replace />;
+}
 
 /** Layout for every signed-in page. Sends visitors without a session to `/login`. */
 export function Shell() {
   const { session } = useSession();
   const location = useLocation();
+  const params = new URLSearchParams(location.search);
+  const workspace = /^\/automations\/[^/]+\/editor\/?$/.test(location.pathname)
+    && params.get("tab") !== "runs" && params.get("tab") !== "metrics" && params.get("view") !== "list";
   const [panel, setPanel] = useState<"api" | "keys" | null>(null);
   const open = (next: "api" | "keys") => () => {
     if (!panel && !dialogOpen()) setPanel(next);
@@ -63,11 +75,11 @@ export function Shell() {
   }
 
   return (
-    <div className="app">
+    <div className={workspace ? "app automationWorkspace" : "app"}>
       <aside className="sidebar">
         <div className="brand">
           <span className="brandMark" aria-hidden>
-            <Activity size={18} />
+            <img src="/logo.svg" alt="" />
           </span>
           <span>Dispatch</span>
         </div>
@@ -79,10 +91,12 @@ export function Shell() {
             </NavLink>
           ))}
         </nav>
-        <Account />
+        <div className="sidebarFoot">
+          <Tools apiUrl={session.apiUrl} onApi={() => setPanel("api")} onKeys={() => setPanel("keys")} />
+          <Account />
+        </div>
       </aside>
       <div className="main">
-        <TopBar apiUrl={session.apiUrl} onApi={() => setPanel("api")} onKeys={() => setPanel("keys")} />
         <main className="content">
           {location.pathname === "/emails" ? <Onboarding /> : null}
           <Outlet />
@@ -94,29 +108,30 @@ export function Shell() {
   );
 }
 
-function TopBar({ apiUrl, onApi, onKeys }: { apiUrl: string; onApi: () => void; onKeys: () => void }) {
+/** Icon row above the account menu: API reference, shortcuts, and docs. The API host shows on hover. */
+function Tools({ apiUrl, onApi, onKeys }: { apiUrl: string; onApi: () => void; onKeys: () => void }) {
   const docs = import.meta.env.VITE_DOCS_URL as string | undefined;
   return (
-    <header className="topbar">
-      <span className="envChip mono" title="API URL">
-        {new URL(apiUrl).host}
-      </span>
-      <div className="toolbar">
-        <button type="button" className="ghost small" onClick={onApi} title="API reference for this page">
-          <Code2 size={14} />
-          API <kbd>{shortcuts.api.keys[0]}</kbd>
-        </button>
-        <button type="button" className="ghost icon small" onClick={onKeys} aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">
-          <Keyboard size={14} />
-        </button>
-        {docs ? (
-          <a className="button ghost small" href={docs} target="_blank" rel="noreferrer">
-            <BookOpen size={14} />
-            Docs
-          </a>
-        ) : null}
-      </div>
-    </header>
+    <div className="sidebarTools">
+      <button
+        type="button"
+        className="ghost icon small"
+        onClick={onApi}
+        aria-label="API reference"
+        title={`API reference for this page (${shortcuts.api.keys[0]}) · ${new URL(apiUrl).host}`}
+      >
+        <Code2 size={15} />
+      </button>
+      <button type="button" className="ghost icon small" onClick={onKeys} aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">
+        <Keyboard size={15} />
+      </button>
+      <span className="spacer" />
+      {docs ? (
+        <a className="button ghost icon small" href={docs} target="_blank" rel="noreferrer" aria-label="Docs" title="Docs">
+          <BookOpen size={15} />
+        </a>
+      ) : null}
+    </div>
   );
 }
 

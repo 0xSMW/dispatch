@@ -1,8 +1,8 @@
-import { useEffect, useState, type ChangeEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { Badge } from "../../components/Badge";
 import { Drawer } from "../../components/Drawer";
 import { Failed } from "../../components/Empty";
-import { Select } from "../../components/Field";
+import { Select, Switch } from "../../components/Field";
 import { Modal } from "../../components/Modal";
 import { Skeleton } from "../../components/Skeleton";
 import { Table } from "../../components/Table";
@@ -11,9 +11,11 @@ import { useList } from "../../hooks/useList";
 import { useMutation } from "../../hooks/useMutation";
 import { useAll, useResource } from "../../hooks/useResource";
 import { errorMessage } from "../../lib/client";
-import { useClient } from "../../shell/session";
-import type { ContactImport, ContactProperty, List, Segment, Topic } from "../../types";
-import { columnMap, guessMapping, readHead, type FieldName, type Mapping, type PropertyType } from "./csv";
+import { useCan, useClient } from "../../shell/session";
+import type { Automation, ContactImport, ContactProperty, List, Segment, Settings, Topic } from "../../types";
+import { automationTrigger } from "../automations/graph";
+import { isEnabled } from "../automations/Stop";
+import { columnMap, countRows, guessMapping, readHead, type FieldName, type Mapping, type PropertyType } from "./csv";
 import "../../styles/audience.css";
 
 type Step = "upload" | "map" | "audience" | "review";
@@ -57,6 +59,11 @@ export function ImportContacts({ onClose, onDone }: { onClose: () => void; onDon
   const segments = useAll<Segment>("/segments");
   const topics = useAll<Topic>("/topics");
   const properties = useAll<ContactProperty>("/contact-properties");
+  const settings = useResource<Settings>("/settings");
+  // Null follows the tenant default until the user makes an explicit choice.
+  const [triggerChoice, setTriggerChoice] = useState<boolean | null>(null);
+  const triggerAutomations = triggerChoice ?? settings.data?.import_trigger_automations ?? false;
+  const automations = useAll<Automation>(triggerAutomations ? "/automations" : null);
   const [step, setStep] = useState<Step>("upload");
   const [file, setFile] = useState<File | null>(null);
   const [head, setHead] = useState<{ headers: string[]; rows: string[][] } | null>(null);
@@ -66,32 +73,47 @@ export function ImportContacts({ onClose, onDone }: { onClose: () => void; onDon
   const [segmentIds, setSegmentIds] = useState<string[]>([]);
   const [topicChoice, setTopicChoice] = useState<Record<string, "opt_in" | "opt_out">>({});
   const [started, setStarted] = useState<string | null>(null);
+  const [rowCount, setRowCount] = useState<number | null>(null);
+  const reading = useRef<AbortController | null>(null);
+  useEffect(() => () => reading.current?.abort(), []);
 
   async function choose(event: ChangeEvent<HTMLInputElement>) {
+    reading.current?.abort();
+    const controller = new AbortController();
+    reading.current = controller;
     const next = event.target.files?.[0] ?? null;
     setFile(next);
     setHead(null);
     setReadError(null);
+    setMapping(null);
+    setRowCount(null);
     if (!next) return;
     try {
       // Checked here, so a file the API would refuse is not uploaded first.
       if (next.size > maxImportBytes) throw new Error("The file is over the 200 MB limit.");
       const parsed = await readHead(next);
+      if (controller.signal.aborted) return;
       if (!parsed.headers.length) throw new Error("The file has no header row.");
       const repeated = duplicateHeader(parsed.headers);
       if (repeated) throw new Error(`The CSV has two columns named "${repeated}". Rename one and choose the file again.`);
       setHead(parsed);
       setMapping(guessMapping(parsed.headers, properties.data?.data ?? []));
+      const count = await countRows(next, controller.signal);
+      if (!controller.signal.aborted) setRowCount(count);
     } catch (error) {
+      if (controller.signal.aborted) return;
       setReadError(errorMessage(error));
+      setHead(null);
+      setMapping(null);
     }
   }
 
   const start = useMutation(
     () => {
       const form = new FormData();
-      form.append("column_map", JSON.stringify(columnMap(mapping!)));
+      form.append("column_map", JSON.stringify(columnMap(mapping!, properties.data?.data)));
       form.append("on_conflict", onConflict);
+      form.append("trigger_automations", String(triggerAutomations));
       form.append("segments", JSON.stringify(segmentIds.map((id) => ({ id }))));
       form.append(
         "topics",
@@ -99,9 +121,12 @@ export function ImportContacts({ onClose, onDone }: { onClose: () => void; onDon
       );
       // Fields before the file: the API reads parts in order and stores the file as it streams.
       form.append("file", file!, file!.name);
-      return client.upload<{ object: "contact_import"; id: string }>("/contacts/imports", form);
+      return client.upload<Pick<ContactImport, "object" | "id" | "trigger_automations">>("/contacts/imports", form);
     },
-    { success: "Import started.", onSuccess: (result) => setStarted(result.id) },
+    { success: "Import started.", onSuccess: (result) => {
+      reading.current?.abort();
+      setStarted(result.id);
+    } },
   );
 
   if (started) {
@@ -122,11 +147,20 @@ export function ImportContacts({ onClose, onDone }: { onClose: () => void; onDon
   }
 
   const index = steps.findIndex((item) => item.id === step);
-  const ready = step !== "upload" || Boolean(head && mapping);
+  const ready = Boolean(head && mapping);
   const collisions = mapping ? keyCollisions(mapping) : [];
-  const blocked = (step === "map" && (!mapping?.email || collisions.length > 0)) || !ready;
+  const blocked = (step === "map" && (!mapping?.email || collisions.length > 0)) || !ready
+    || (step === "review" && ((triggerChoice === null && settings.loading) || (triggerAutomations && (rowCount === null || automations.loading || !!automations.error))));
+  const matching = (automations.data?.data ?? []).filter((automation) => {
+    if (!isEnabled(automation)) return false;
+    const trigger = automationTrigger(automation);
+    return trigger.type === "contact_created"
+      || (trigger.type === "topic_subscribed" && topicChoice[trigger.topic_id] === "opt_in")
+      || (trigger.type === "segment_added" && segmentIds.includes(trigger.segment_id));
+  });
 
   function next() {
+    if (blocked || start.isLoading) return;
     if (step === "review") void start.mutate();
     else setStep(steps[index + 1].id);
   }
@@ -192,7 +226,7 @@ export function ImportContacts({ onClose, onDone }: { onClose: () => void; onDon
         ) : null}
 
         {step === "map" && mapping && head ? (
-          <MapColumns headers={head.headers} mapping={mapping} onChange={setMapping} onConflict={onConflict} setOnConflict={setOnConflict} />
+          <MapColumns headers={head.headers} mapping={mapping} onChange={setMapping} onConflict={onConflict} setOnConflict={setOnConflict} properties={properties.data?.data ?? []} />
         ) : null}
 
         {step === "audience" ? (
@@ -200,7 +234,7 @@ export function ImportContacts({ onClose, onDone }: { onClose: () => void; onDon
             <fieldset className="checkList">
               <legend>Add to segments</legend>
               {segments.loading ? <Skeleton lines={2} /> : null}
-              {(segments.data?.data ?? []).map((segment) => (
+              {(segments.data?.data ?? []).filter((segment) => segment.type !== "dynamic").map((segment) => (
                 <label key={segment.id} className="check">
                   <input
                     type="checkbox"
@@ -252,6 +286,10 @@ export function ImportContacts({ onClose, onDone }: { onClose: () => void; onDon
               <span>File</span>
               <span className="mono">{file?.name}</span>
             </li>
+            <li>
+              <span>Data rows</span>
+              <span>{rowCount === null ? "Counting…" : rowCount.toLocaleString()}</span>
+            </li>
             {fields.map((field) => (
               <li key={field.id}>
                 <span>{field.label}</span>
@@ -288,6 +326,35 @@ export function ImportContacts({ onClose, onDone }: { onClose: () => void; onDon
             </li>
           </ul>
         ) : null}
+        {step === "audience" || step === "review" ? (
+          <div className="stack">
+            <Switch
+              label="Start automations for these contacts"
+              checked={triggerAutomations}
+              onChange={setTriggerChoice}
+              disabled={start.isLoading}
+            />
+            <p className="fieldHint">This import can override the default in Settings, General.</p>
+            {settings.loading && triggerChoice === null ? <p className="fieldHint" role="status">Loading the import default…</p> : null}
+            {settings.error ? <p className="fieldHint">Could not load the import default. Automations stay off unless you turn them on.</p> : null}
+            {triggerAutomations ? (
+              <>
+                <p className="notice warning" role="status">Matching enabled automations may send emails immediately or after their configured waits. This import does not create or enable automations. Contact changes do not trigger automations during imports.</p>
+                {rowCount !== null && rowCount > 10000 ? (
+                  <p className="notice warning" role="status">This file has {rowCount.toLocaleString()} data rows, more than 10,000. Starting automations for a large import may send many emails.</p>
+                ) : null}
+                {automations.loading ? <p className="fieldHint" role="status">Loading matching automations…</p> : automations.error ? (
+                  <Failed message={`Could not load matching automations: ${automations.error}`} onRetry={automations.reload} />
+                ) : (
+                  <div>
+                    <p>{matching.length.toLocaleString()} matching enabled {matching.length === 1 ? "automation" : "automations"}</p>
+                    {matching.length ? <ul>{matching.map((automation) => <li key={automation.id}>{automation.name}</li>)}</ul> : null}
+                  </div>
+                )}
+              </>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </Modal>
   );
@@ -299,12 +366,14 @@ function MapColumns({
   onChange,
   onConflict,
   setOnConflict,
+  properties,
 }: {
   headers: string[];
   mapping: Mapping;
   onChange: (mapping: Mapping) => void;
   onConflict: "upsert" | "skip";
   setOnConflict: (value: "upsert" | "skip") => void;
+  properties: ContactProperty[];
 }) {
   const options = headers.map((header) => ({ value: header, label: header }));
   return (
@@ -340,6 +409,7 @@ function MapColumns({
             <span>Type</span>
           </div>
           {mapping.properties.map((item, position) => {
+            const declared = properties.find((property) => property.key === item.key);
             const update = (patch: Partial<typeof item>) =>
               onChange({
                 ...mapping,
@@ -356,16 +426,22 @@ function MapColumns({
                   className="mono"
                   value={item.key}
                   disabled={!item.include}
-                  onChange={(event) => update({ key: event.target.value.replace(/[^A-Za-z0-9_]/g, "").slice(0, 50) })}
+                  onChange={(event) => {
+                    const key = event.target.value.replace(/[^A-Za-z0-9_]/g, "").slice(0, 50);
+                    const property = properties.find((row) => row.key === key);
+                    update({ key, ...(property ? { type: property.type } : {}) });
+                  }}
                 />
                 <select
                   aria-label={`Type for ${item.column}`}
-                  value={item.type}
-                  disabled={!item.include}
+                  value={declared?.type ?? item.type}
+                  disabled={!item.include || Boolean(declared)}
                   onChange={(event) => update({ type: event.target.value as PropertyType })}
                 >
                   <option value="string">String</option>
                   <option value="number">Number</option>
+                  <option value="boolean">True or false</option>
+                  <option value="date">Date</option>
                 </select>
               </div>
             );
@@ -381,12 +457,15 @@ function MapColumns({
   );
 }
 
-const finished = (status: ContactImport["status"]) => status === "completed" || status === "failed";
+const finished = (status: ContactImport["status"]) => status === "completed" || status === "failed" || status === "cancelled";
 const importTone = (status: ContactImport["status"]) => (status === "in_progress" ? ("info" as const) : undefined);
 
 /** Polls `GET /contacts/imports/:id` until the import finishes, then calls `onFinish` once. */
 export function ImportProgress({ id, onFinish }: { id: string; onFinish?: () => void }) {
+  const client = useClient();
+  const can = useCan();
   const run = useResource<ContactImport>(`/contacts/imports/${id}`);
+  const cancel = useMutation(() => client.delete<ContactImport>(`/contacts/imports/${id}`), { onSuccess: run.setData });
   const status = run.data?.status;
 
   const done = status ? finished(status) : false;
@@ -398,17 +477,17 @@ export function ImportProgress({ id, onFinish }: { id: string; onFinish?: () => 
   // One failed poll is not the end of the import. The last counts stay on screen and polling
   // goes on, more slowly while the API cannot be reached.
   useEffect(() => {
-    if (!status || done || run.loading) return;
+    if (!status || done || run.loading || cancel.isLoading) return;
     const timer = setTimeout(() => void run.reload(), run.error ? 5000 : 1500);
     return () => clearTimeout(timer);
     // `run.reload` changes only with the id.
-  }, [status, done, run.loading, run.error, run.data]);
+  }, [status, done, run.loading, run.error, run.data, cancel.isLoading]);
 
   if (run.error && !run.data) return <Failed message={run.error} onRetry={run.reload} />;
   if (!run.data) return <Skeleton lines={3} />;
   const { counts } = run.data;
   const handled = counts.created + counts.updated + counts.skipped + counts.failed;
-  const share = finished(run.data.status) ? 100 : counts.total ? Math.min(100, Math.round((handled / counts.total) * 100)) : 0;
+  const share = done && status !== "cancelled" ? 100 : counts.total ? Math.min(100, Math.round((handled / counts.total) * 100)) : 0;
 
   return (
     <div className="stack">
@@ -424,6 +503,7 @@ export function ImportProgress({ id, onFinish }: { id: string; onFinish?: () => 
                 : ""}
         </span>
       </div>
+      <p className="fieldHint">Automations for this import: {run.data.trigger_automations ? "On" : "Off"}.</p>
       <div className="progress" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={share}>
         <div className="progressFill" style={{ width: `${share}%` }} />
       </div>
@@ -436,6 +516,12 @@ export function ImportProgress({ id, onFinish }: { id: string; onFinish?: () => 
         ))}
       </dl>
       {run.data.error ? <p className="fieldError">{run.data.error}</p> : null}
+      {cancel.error ? <p className="fieldError" role="alert">{cancel.error.message}</p> : null}
+      {status === "cancelled" ? <p className="fieldHint">Future batches were cancelled. Contacts already created or updated are not reverted.</p> : null}
+      {can && (status === "queued" || status === "in_progress") ? <>
+        <p className="fieldHint">Cancellation stops future batches. Contacts already created or updated are not reverted.</p>
+        <button type="button" className="secondary" disabled={run.loading || cancel.isLoading} onClick={() => { if (can && !run.loading && !cancel.isLoading) void cancel.mutate(); }}>Cancel import</button>
+      </> : null}
       {run.error && !done ? <p className="fieldHint">Could not refresh the progress. The import is still running. Trying again.</p> : null}
     </div>
   );
@@ -472,6 +558,7 @@ export function Imports({ onClose }: { onClose: () => void }) {
             columns={[
               { header: "Status", cell: (row) => <Badge value={row.status} variant={importTone(row.status)} label={row.status.replace("_", " ")} /> },
               { header: "Rows", cell: (row) => row.counts.total.toLocaleString() },
+              { header: "Automations", cell: (row) => row.trigger_automations ? "On" : "Off" },
               {
                 header: "Result",
                 cell: (row) => (

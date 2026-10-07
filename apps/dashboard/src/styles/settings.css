@@ -1,5 +1,26 @@
 /* Settings pages: team, usage, SMTP, brand, and the unsubscribe page. */
 
+.integrationGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 16px;
+}
+
+.integrationCard {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-raised);
+}
+
+.integrationCard h3,
+.integrationCard p {
+  margin: 0;
+}
+
 .settingsSplit {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 420px);
@@ -101,7 +122,7 @@
 .meter > span {
   display: block;
   height: 100%;
-  background: var(--primary);
+  background: var(--success);
 }
 
 .meter.warning > span {

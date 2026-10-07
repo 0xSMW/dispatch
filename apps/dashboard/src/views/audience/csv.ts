@@ -1,6 +1,8 @@
-// CSV helpers for the contact import and export. The import reads only the head of the file in the
-// browser, to list its columns; the API streams the whole file to storage and the worker parses it.
+// CSV helpers for the contact import and export. Preview and row counting use bounded chunks;
+// the API streams the whole file to storage and the worker parses it.
 import { csvCell } from "../../components/CsvExport";
+import type { PropertyType } from "../../types";
+export type { PropertyType } from "../../types";
 
 /** Parses CSV text into rows. Handles quoted fields, doubled quotes, and line breaks inside quotes. */
 export function parseCsv(text: string, maxRows = Infinity): string[][] {
@@ -59,9 +61,74 @@ function blobText(blob: Blob): Promise<string> {
   });
 }
 
+/** Counts CSV data records, skipping blank lines and the header, without keeping rows or fields. */
+export async function countRows(file: Blob, signal?: AbortSignal, chunkSize = 64 * 1024): Promise<number> {
+  const decoder = new TextDecoder();
+  let records = 0;
+  let quoted = false;
+  let afterQuote = false;
+  let fieldStart = true;
+  let nonempty = false;
+  let first = true;
+
+  function scan(text: string) {
+    for (const char of text) {
+      if (first) {
+        first = false;
+        if (char === "\uFEFF") continue;
+      }
+      if (quoted) {
+        if (char === '"') {
+          quoted = false;
+          afterQuote = true;
+        } else if (char.trim()) nonempty = true;
+      } else if (afterQuote && char === '"') {
+        // A doubled quote may straddle a chunk boundary.
+        quoted = true;
+        afterQuote = false;
+        nonempty = true;
+      } else {
+        afterQuote = false;
+        if (char === '"' && fieldStart) {
+          quoted = true;
+          fieldStart = false;
+          nonempty = true;
+        } else if (char === ",") {
+          fieldStart = true;
+          nonempty = true;
+        } else if (char === "\n" || char === "\r") {
+          if (nonempty) records++;
+          nonempty = false;
+          fieldStart = true;
+        } else {
+          // The worker trims unquoted fields, including whitespace before an opening quote.
+          if (char.trim()) {
+            fieldStart = false;
+            nonempty = true;
+          }
+        }
+      }
+    }
+  }
+
+  for (let offset = 0; offset < file.size; offset += chunkSize) {
+    signal?.throwIfAborted();
+    const part = file.slice(offset, offset + chunkSize);
+    const bytes = typeof part.arrayBuffer === "function" ? await part.arrayBuffer() : await new Promise<ArrayBuffer>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as ArrayBuffer);
+      reader.onerror = () => reject(reader.error);
+      reader.readAsArrayBuffer(part);
+    });
+    signal?.throwIfAborted();
+    scan(decoder.decode(bytes, { stream: true }));
+  }
+  scan(decoder.decode());
+  if (nonempty) records++;
+  return Math.max(0, records - 1);
+}
+
 export type FieldName = "email" | "first_name" | "last_name" | "unsubscribed";
-// Contact properties are strings or numbers. A true or false column imports as a string.
-export type PropertyType = "string" | "number";
 export type PropertyColumn = { column: string; key: string; type: PropertyType; include: boolean };
 export type Mapping = Record<FieldName, string> & { properties: PropertyColumn[] };
 
@@ -101,13 +168,13 @@ export function guessMapping(headers: string[], known: Array<{ key: string; type
     .map((header) => {
       const key = propertyKey(header);
       const type = types.get(key);
-      return { column: header, key, type: type === "number" ? "number" : "string", include: types.has(key) };
+      return { column: header, key, type: (["number", "boolean", "date"].includes(type ?? "") ? type : "string") as PropertyType, include: types.has(key) };
     });
   return mapping;
 }
 
 /** The `column_map` field for `POST /contacts/imports`. */
-export function columnMap(mapping: Mapping) {
+export function columnMap(mapping: Mapping, known: Array<{ key: string; type: PropertyType }> = []) {
   const map: Record<string, unknown> = {};
   if (mapping.email) map.email = { column: mapping.email };
   // Null tells the worker not to import the field. Leaving it out would let the worker pick up a
@@ -116,8 +183,9 @@ export function columnMap(mapping: Mapping) {
     map[field] = mapping[field] ? { column: mapping[field] } : null;
   }
   map.unsubscribed = mapping.unsubscribed ? { column: mapping.unsubscribed, type: "boolean" } : null;
+  const types = new Map(known.map((property) => [property.key, property.type]));
   const properties = Object.fromEntries(
-    mapping.properties.filter((item) => item.include && item.key).map((item) => [item.key, { column: item.column, type: item.type }]),
+    mapping.properties.filter((item) => item.include && item.key).map((item) => [item.key, { column: item.column, type: types.get(item.key) ?? item.type }]),
   );
   if (Object.keys(properties).length) map.properties = properties;
   return map;

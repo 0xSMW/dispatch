@@ -1,5 +1,11 @@
 import "@dispatchmail/core/env";
 import cors from "@fastify/cors";
+import { ConfirmSubscriptionCommand, SNSClient } from "@aws-sdk/client-sns";
+import MessageValidator from "sns-validator";
+import { waitUntil } from "@vercel/functions";
+import { awsCredentials } from "@dispatchmail/core";
+import { applySesEvent, mapSesEvent, type SesEvent } from "../../worker/src/events.js";
+import { countHit as postgresCountHit, postgresSignins, pruneCounters } from "./counters.js";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { Readable } from "node:stream";
@@ -9,6 +15,8 @@ import {
   brandContext,
   brandSchema,
   brandTextColor,
+  assertBrandContrast,
+  resolvedTheme,
   type BrandRecord,
   batchEnvelopeSchema,
   domainSchema,
@@ -69,11 +77,14 @@ import {
   publishTemplate,
   publishedTemplate,
   retrackEmail,
+  replaceUnsubscribe,
+  subscriptionLinks,
   textFromHtml,
   templateDetail,
   templateFrom,
   templateSelect,
   updateTemplateMeta,
+  updateLibraryTemplates,
   type TemplateRecord,
   type TemplateWrite,
   softDelete,
@@ -98,15 +109,20 @@ import { permitted, presentKey, readOnly, registerPlatform, type KeyRow } from "
 import { rateKey, rateLimitValue, sessionRateKey, sessionRateLimitValue, signins } from "./rate.js";
 import { registerBroadcasts } from "./broadcasts.js";
 import { registerUnsubscribe } from "./unsubscribe.js";
+import { registerForms } from "./forms.js";
+import { registerGoals } from "./goals.js";
+import { registerIntegrations } from "./integrations.js";
+import { registerReceiver } from "./receiver.js";
 import {
   installLibraryTemplate,
   libraryEntry,
   listLibrary,
   loadLibrary,
   previewLibrary,
+  registerLibraryAutomations,
 } from "./library.js";
 import { hideLinks, hostOnly, jsonbParams, logBodies, logWhere, presentLog, responseText, type LogQuery, type StoredLog } from "./logs.js";
-import { presentDomain, presentEmail, presentWebhook, type DomainRow, type EmailRow, type WebhookRecord } from "./present.js";
+import { presentDomain, presentEmail, presentSend, presentWebhook, type DomainRow, type EmailRow, type WebhookRecord } from "./present.js";
 import {
   listWebhookEvents,
   presentStoredWebhook,
@@ -115,7 +131,7 @@ import {
   webhookEventAttempts,
   webhookEventDetail,
 } from "./webhooks.js";
-import { presentTemplate, presentVersion, templateContentChanged } from "./templates.js";
+import { presentTemplate, presentVersion, templateContentChanged, templateVersionSource } from "./templates.js";
 import { scheduleAt, withSchedule } from "./schedule.js";
 import { loadSharedEmail, readShareToken, shareExpiry, shareToken } from "./share.js";
 
@@ -174,7 +190,9 @@ type AuditRecord = {
 };
 
 const db = connect();
-const redis = new Redis(process.env.REDIS_URL ?? "redis://localhost:6379", {
+const vercelRuntime = process.env.WORKER_RUNTIME === "vercel";
+const postgresCounters = process.env.COUNTER_BACKEND === "postgres";
+const redis = postgresCounters ? null : new Redis(process.env.REDIS_URL ?? "redis://localhost:6379", {
   lazyConnect: true,
   maxRetriesPerRequest: 1,
 });
@@ -182,9 +200,8 @@ const pepper = requireSecret("API_KEY_PEPPER");
 const storage = createStorage();
 const appSecret = requireSecret("APP_SECRET");
 const publicUrl = requireUrl("PUBLIC_URL", "http://localhost:3100");
-requireUrl("APP_URL", "http://localhost:5173");
+const appUrl = requireUrl("APP_URL", "http://localhost:5173");
 const bodyLimit = Number(process.env.MAX_BODY_BYTES ?? 50 * 1024 * 1024);
-const authCacheTtlMs = Number(process.env.AUTH_CACHE_TTL_MS ?? 5_000);
 const domainCacheTtlMs = Number(process.env.DOMAIN_CACHE_TTL_MS ?? 5_000);
 // Sealed tokens in paths (/unsubscribe/:token, /shared/:token) run past Fastify's default 100 characters.
 const app = Fastify({
@@ -197,14 +214,13 @@ const app = Fastify({
     },
   },
   bodyLimit,
-  maxParamLength: 1024,
+  routerOptions: { maxParamLength: 1024 },
   // Behind a load balancer the client address is in X-Forwarded-For. TRUST_PROXY says how far
   // to trust it: a hop count ("1"), or a list of proxy addresses or ranges. Unset, the socket
   // address is used, which behind a proxy is the proxy itself and puts every caller of the
   // public routes into one rate-limit bucket.
   trustProxy: trustProxy(),
 });
-const apiKeyCache = new Map<string, { row: ApiKeyRow; expires_at: number }>();
 const domainCache = new Map<string, number>();
 const logQueue: LogRecord[] = [];
 const auditQueue: AuditRecord[] = [];
@@ -215,6 +231,17 @@ const usageDeltas = new Map<
 let telemetryFlushPromise: Promise<void> | null = null;
 
 assertProductionConfig();
+
+app.addHook("onRequest", async (request, reply) => {
+  request.started_at = Date.now();
+  request.request_id = safeRequestId(
+    request.headers["x-request-id"]?.toString(),
+  );
+  securityHeaders(reply);
+  reply.header("x-request-id", request.request_id);
+  if (!request.headers["user-agent"])
+    reply.header("dispatch-warning", "missing_user_agent");
+});
 
 await app.register(cors, {
   origin(origin, callback) {
@@ -230,27 +257,17 @@ await app.register(cors, {
   methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
 });
 
-const telemetryTimer = setInterval(
+const telemetryTimer = vercelRuntime ? null : setInterval(
   () => {
     void flushTelemetry();
   },
   Number(process.env.TELEMETRY_FLUSH_MS ?? 100),
 );
-telemetryTimer.unref();
-
-app.addHook("onRequest", async (request, reply) => {
-  request.started_at = Date.now();
-  request.request_id = safeRequestId(
-    request.headers["x-request-id"]?.toString(),
-  );
-  securityHeaders(reply);
-  reply.header("x-request-id", request.request_id);
-  if (!request.headers["user-agent"])
-    reply.header("dispatch-warning", "missing_user_agent");
-});
+telemetryTimer?.unref();
 
 app.addHook("preHandler", async (request, reply) => {
   const path = request.url.split("?")[0];
+  if (path === "/internal/reconcile" || path === "/internal/events") return;
   if (
     request.url === "/health" ||
     // Public setup lets a caller with no key ask whether the install is seeded. A caller who
@@ -262,6 +279,8 @@ app.addHook("preHandler", async (request, reply) => {
     path.startsWith("/files/") ||
     path.startsWith("/shared/") ||
     path.startsWith("/unsubscribe/")
+    || (request.method === "POST" && request.routeOptions.url === "/inbound/:token")
+    || (request.routeOptions.config as { public?: boolean }).public === true
   ) {
     // Keyed on the route pattern. Keyed on the path, every token in /unsubscribe/:token or
     // /click/:token would get its own bucket and the limit would never apply.
@@ -304,13 +323,18 @@ app.addHook("preSerialization", async (request, reply, payload) => {
   return payload;
 });
 
-app.addHook("onSend", async (request, _reply, payload) => {
+app.addHook("onSend", async (request, reply, payload) => {
+  if (vercelRuntime && reply.statusCode < 400 && ["POST", "PATCH", "DELETE"].includes(request.method) && !request.url.startsWith("/internal/")) {
+    const { wakeWorker } = await import("./workflows/worker.js");
+    await wakeWorker();
+  }
   request.response_text = responseText(payload);
   return payload;
 });
 
 app.addHook("onResponse", async (request, reply) => {
   enqueueTelemetry(request, reply);
+  if (vercelRuntime) waitUntil(flushTelemetry());
 });
 
 app.setErrorHandler((error, request, reply) => {
@@ -366,8 +390,61 @@ app.setErrorHandler((error, request, reply) => {
 
 app.get("/health", async () => {
   await db.query("select 1");
-  await redis.ping();
+  if (redis) await redis.ping();
   return { ok: true, provider: process.env.SES_PROVIDER ?? "fake" };
+});
+
+
+app.get("/internal/reconcile", async (request) => {
+  const secret = process.env.CRON_SECRET;
+  const supplied = request.headers.authorization ?? "";
+  const expected = Buffer.from(`Bearer ${secret}`);
+  const credential = Buffer.from(supplied);
+  if (!secret || credential.length !== expected.length || !timingSafeEqual(credential, expected)) {
+    throw new ApiError("forbidden", 403, "Invalid cron credential");
+  }
+  const { wakeWorker } = await import("./workflows/worker.js");
+  await wakeWorker();
+  if (postgresCounters) await pruneCounters(db);
+  return { ok: true };
+});
+
+// SNS sends application/json or text/plain depending on subscription configuration.
+app.addContentTypeParser("text/plain", { parseAs: "string" }, (_request, body, done) => {
+  try { done(null, JSON.parse(String(body))); }
+  catch { done(new ApiError("validation_error", 400, "Invalid notification JSON")); }
+});
+const snsValidator = new MessageValidator();
+app.post("/internal/events", async (request) => {
+  const body = request.body;
+  if (!body || typeof body !== "object" || Array.isArray(body)) throw new ApiError("validation_error", 400, "Invalid notification");
+  const notification = body as Record<string, unknown>;
+  if (!process.env.SNS_TOPIC_ARN || notification.TopicArn !== process.env.SNS_TOPIC_ARN) throw new ApiError("forbidden", 403, "Unexpected notification topic");
+  await new Promise<void>((resolve, reject) => snsValidator.validate(notification, (error) => error ? reject(new ApiError("forbidden", 403, "Invalid notification signature")) : resolve()));
+  if (notification.Type === "SubscriptionConfirmation") {
+    if (typeof notification.Token !== "string") throw new ApiError("validation_error", 400, "Missing subscription token");
+    const sns = new SNSClient({ region: process.env.AWS_REGION ?? "us-west-2", credentials: awsCredentials() });
+    await sns.send(new ConfirmSubscriptionCommand({ TopicArn: process.env.SNS_TOPIC_ARN, Token: notification.Token }));
+    return { ok: true };
+  }
+  if (notification.Type !== "Notification" || typeof notification.Message !== "string") throw new ApiError("validation_error", 400, "Unsupported notification");
+  let event: SesEvent;
+  try { event = JSON.parse(notification.Message); }
+  catch { throw new ApiError("validation_error", 400, "Invalid event JSON"); }
+  try {
+    if (!event || typeof event !== "object" || Array.isArray(event) || !mapSesEvent(event)) throw new Error("Invalid event");
+  } catch { throw new ApiError("validation_error", 400, "Invalid SES event"); }
+  try {
+    const applied = await tx(db, (client) => applySesEvent(client, event));
+    if (!applied) throw new ApiError("validation_error", 400, "Unmatched SES event");
+  } catch (error) {
+    if (error instanceof ApiError) throw error;
+    request.log.error(error);
+    throw new ApiError("application_error", 503, "Event processing unavailable; retry notification");
+  }
+  const { wakeWorker } = await import("./workflows/worker.js");
+  await wakeWorker();
+  return { ok: true };
 });
 
 registerPlatform(app, {
@@ -376,7 +453,7 @@ registerPlatform(app, {
   flushTelemetry,
   validKey,
   sessionsEnabled: passwordlessSessionsEnabled,
-  signins: signins(redis),
+  signins: postgresCounters ? postgresSignins(db) : signins(redis!),
   quota: sendingQuota,
 });
 
@@ -404,7 +481,6 @@ app.post("/api-keys", async (request) => {
       request.auth!.user_id ?? null,
     ],
   );
-  apiKeyCache.clear();
   return { id: row.rows[0].id, object: "api_key", token: secret };
 });
 
@@ -456,7 +532,6 @@ app.patch("/api-keys/:id", async (request) => {
     [request.auth!.tenant_id, keyId, input.name],
   );
   if (!row.rows[0]) throw new ApiError("not_found", 404, "API key not found");
-  apiKeyCache.clear();
   return { object: "api_key", id: keyId };
 });
 
@@ -467,7 +542,6 @@ app.delete("/api-keys/:id", async (request) => {
     [request.auth!.tenant_id, keyId],
   );
   if (!row.rows[0]) throw new ApiError("not_found", 404, "API key not found");
-  apiKeyCache.clear();
   return { object: "api_key", id: keyId, deleted: true };
 });
 
@@ -736,7 +810,7 @@ app.patch("/templates/:id", async (request) => {
           html: input.html !== undefined ? input.html : current.html,
           text: input.text !== undefined ? input.text : current.text,
           variables: input.variables !== undefined ? input.variables : (current.variables ?? []),
-          source: input.source,
+          source: templateVersionSource(current, input.source),
           publish: input.publish,
         };
         // An edit to a template whose latest version was never published changes that version.
@@ -775,7 +849,7 @@ app.post("/templates/:id/versions", async (request) => {
     html: input.html,
     text: input.text,
     variables: input.variables,
-    source: input.source,
+    source: templateVersionSource(template, input.source),
     track: input.track,
   }));
   return presentTemplate(row);
@@ -797,6 +871,8 @@ app.post("/templates/:id/publish", async (request) => {
   ));
   return presentTemplate(row);
 });
+
+registerLibraryAutomations(app, loadLibrary, db);
 
 app.get("/template-library", async () => {
   return listLibrary(await loadLibrary());
@@ -823,15 +899,24 @@ app.get("/brand", async (request) => {
 
 app.patch("/brand", async (request) => {
   const input = brandSchema.parse(request.body ?? {});
-  const current = await tenantBrand(request.auth!.tenant_id);
-  const next: BrandRecord = { ...current };
-  for (const [key, value] of Object.entries(input)) {
-    if (value === null) delete next[key as keyof BrandRecord];
-    else (next as Record<string, unknown>)[key] = value;
-  }
-  await db.query("update tenants set brand = $2 where id = $1", [request.auth!.tenant_id, JSON.stringify(next)]);
+  const next = await tx(db, async (client) => {
+    const locked = await client.query<{ brand: BrandRecord | null }>("select brand from tenants where id=$1 for update", [request.auth!.tenant_id]);
+    const merged: BrandRecord = { ...locked.rows[0]?.brand };
+    for (const [key, value] of Object.entries(input)) {
+      if (value === null) delete merged[key as keyof BrandRecord];
+      else (merged as Record<string, unknown>)[key] = value;
+    }
+    assertBrandContrast(merged);
+    await client.query("update tenants set brand=$2 where id=$1", [request.auth!.tenant_id, JSON.stringify(merged)]);
+    return merged;
+  });
   clearBrandCache(request.auth!.tenant_id);
   return { ...presentBrand(next), variables: await previewBrand(request.auth!.tenant_id) };
+});
+app.post("/brand/update-library", async (request) => {
+  const library = await loadLibrary();
+  return tx(db, (client) => updateLibraryTemplates(client, request.auth!.tenant_id,
+    library.templates.map((entry) => libraryEntry(library, entry.slug)), library.version));
 });
 
 app.post("/templates/:id/render", async (request) => {
@@ -877,6 +962,10 @@ registerLinks(app);
 
 registerBroadcasts(app, { db, paging });
 registerUnsubscribe(app, { db, secret: appSecret });
+registerForms(app, { db, paging, secret: appSecret, appUrl, publicUrl });
+registerGoals(app, { db, paging });
+registerIntegrations(app, { db, paging, secret: appSecret, publicUrl });
+registerReceiver(app, { db, secret: appSecret });
 
 registerAutomations(app, { db, paging });
 registerEvents(app, { db, paging });
@@ -888,10 +977,11 @@ app.post(
     const response = await acceptEmail(db, request.body, emailContext(request), {
       prepare: withSchedule,
       publicUrl,
+      unsubscribe: { secret: appSecret, appUrl, publicUrl },
       storeAttachment: writeBlob,
     });
     reply.status(200);
-    return { id: response.email.id };
+    return presentSend({ ...response.email, ...(response.emails ? { emails: response.emails } : {}) });
   },
 );
 
@@ -910,16 +1000,17 @@ app.post(
       validation: header === "permissive" ? "permissive" : "strict",
       prepare: withSchedule,
       publicUrl,
+      unsubscribe: { secret: appSecret, appUrl, publicUrl },
       storeAttachment: writeBlob,
     });
     reply.status(200);
-    return response;
+    return { ...response, data: response.data.map(presentSend) };
   },
 );
 
 app.get("/emails", async (request) => {
   const filters = emailWhere(request.query as EmailQuery);
-  const page = await paginate<EmailRow & { to: string[]; cc: string[]; bcc: string[] }>(
+  const page = await paginate<EmailRow>(
     db,
     "emails e left join email_recipients r on r.email_id = e.id",
     request.auth!.tenant_id,
@@ -931,24 +1022,14 @@ app.get("/emails", async (request) => {
       where: filters.where,
       params: filters.params,
       groupBy: "e.id",
-      select: `e.id, e.message_id, e.from_email, e.from_name, e.subject, e.reply_to, e.status, e.scheduled_at, e.tags, e.created_at,
-        coalesce(json_agg(r.email order by r.created_at) filter (where r.kind = 'to'), '[]') as to,
-        coalesce(json_agg(r.email order by r.created_at) filter (where r.kind = 'cc'), '[]') as cc,
-        coalesce(json_agg(r.email order by r.created_at) filter (where r.kind = 'bcc'), '[]') as bcc`,
+      select: `e.id, e.message_id, e.from_email, e.from_name, e.subject, e.reply_to, e.status, e.sandbox, e.scheduled_at, e.tags, e.created_at,
+        coalesce(json_agg(json_build_object('email', r.email, 'kind', r.kind, 'status', r.status, 'sandbox', r.sandbox)
+          order by r.created_at) filter (where r.id is not null), '[]') as recipients`,
     },
   );
   return {
     ...page,
-    data: page.data.map((row) =>
-      presentEmail({
-        ...row,
-        recipients: [
-          ...(row.to ?? []).map((email) => ({ email, kind: "to" })),
-          ...(row.cc ?? []).map((email) => ({ email, kind: "cc" })),
-          ...(row.bcc ?? []).map((email) => ({ email, kind: "bcc" })),
-        ],
-      }),
-    ),
+    data: page.data.map(presentEmail),
   };
 });
 
@@ -1017,7 +1098,7 @@ app.get("/emails/:id/events", async (request) => {
   await findBy(db, "emails", request.auth!.tenant_id, emailId, {
     errorMessage: "Email not found",
   });
-  return paginate(
+  const page = await paginate(
     db,
     "email_events",
     request.auth!.tenant_id,
@@ -1029,6 +1110,7 @@ app.get("/emails/:id/events", async (request) => {
       select: "id, request_id, type, data, created_at",
     },
   );
+  return presentEvent(page, readOnly(request.auth));
 });
 
 app.patch("/emails/:id", { config: { scope: "send" } }, async (request) => {
@@ -1045,8 +1127,11 @@ app.patch("/emails/:id", { config: { scope: "send" } }, async (request) => {
       status: string;
       scheduled_at: string | null;
       from_email: string;
+      topic_id: string | null;
+      contact_id: string | null;
+      broadcast_id: string | null;
     }>(
-      `select id, subject, html, text, headers, tags, status, scheduled_at, from_email
+      `select id, subject, html, text, headers, tags, status, scheduled_at, from_email, topic_id, contact_id, broadcast_id
        from emails
        where tenant_id = $1 and id = $2
        for update`,
@@ -1078,10 +1163,31 @@ app.patch("/emails/:id", { config: { scope: "send" } }, async (request) => {
       scheduledAt && scheduledAt.getTime() > Date.now()
         ? "scheduled"
         : "queued";
-    const html = input.html === undefined ? email.html : input.html;
+    let html = input.html === undefined ? email.html : input.html;
+    let headers = input.headers ?? email.headers ?? {};
+    let context: Record<string, unknown> = {};
+    if (email.topic_id) {
+      const recipient = await client.query<{ email: string }>(
+        "select email from email_recipients where tenant_id = $1 and email_id = $2 order by created_at, id limit 1",
+        [request.auth!.tenant_id, emailId],
+      );
+      if (!recipient.rows[0]) throw new ApiError("validation_error", 422, "Marketing email needs a recipient");
+      const links = subscriptionLinks({
+        tenantId: request.auth!.tenant_id, emailId, contactId: email.contact_id,
+        email: recipient.rows[0].email, topicId: email.topic_id, broadcastId: email.broadcast_id,
+        secret: appSecret, appUrl, publicUrl,
+      });
+      context = links.context;
+      html = replaceUnsubscribe(html, context) ?? null;
+      headers = {
+        ...Object.fromEntries(Object.entries(headers).filter(([key]) => !["list-unsubscribe", "list-unsubscribe-post"].includes(key.toLowerCase()))),
+        ...links.headers,
+      };
+    }
     const htmlChanged = input.html !== undefined && input.html !== email.html;
     // New HTML with no new text gets its text rebuilt, so the two parts of the message agree.
-    const text = input.text !== undefined ? input.text : htmlChanged && html ? textFromHtml(html) : email.text;
+    let text = input.text !== undefined ? input.text : htmlChanged && html ? textFromHtml(html) : email.text;
+    if (email.topic_id) text = replaceUnsubscribe(text, context) ?? null;
     if (!html && !text)
       throw new ApiError("validation_error", 400, "html or text is required");
     // The worker sends the tracked copy. Left alone, it would still hold the old HTML.
@@ -1106,7 +1212,7 @@ app.patch("/emails/:id", { config: { scope: "send" } }, async (request) => {
         input.subject ?? email.subject,
         html,
         text,
-        JSON.stringify(input.headers ?? email.headers ?? {}),
+        JSON.stringify(headers),
         JSON.stringify(input.tags ?? email.tags ?? {}),
         scheduledAt,
         nextStatus,
@@ -1357,7 +1463,7 @@ app.get("/webhooks/:id/events/:event_id", async (request) => {
   await findBy(db, "webhooks", request.auth!.tenant_id, params.id, {
     errorMessage: "Webhook not found",
   });
-  return webhookEventDetail(db, request.auth!.tenant_id, params.id, params.event_id);
+  return presentEvent(await webhookEventDetail(db, request.auth!.tenant_id, params.id, params.event_id), readOnly(request.auth));
 });
 
 app.get("/webhooks/:id/events/:event_id/attempts", async (request) => {
@@ -1365,7 +1471,7 @@ app.get("/webhooks/:id/events/:event_id/attempts", async (request) => {
   await findBy(db, "webhooks", request.auth!.tenant_id, params.id, {
     errorMessage: "Webhook not found",
   });
-  return webhookEventAttempts(db, request.auth!.tenant_id, params.id, params.event_id);
+  return presentEvent(await webhookEventAttempts(db, request.auth!.tenant_id, params.id, params.event_id), readOnly(request.auth));
 });
 
 app.post("/webhooks/:id/events/:event_id/replay", async (request) => {
@@ -1761,13 +1867,10 @@ async function authenticate(request: FastifyRequest) {
   }
 }
 
-async function validKey(secret: string) {
+export async function validKey(secret: string) {
   const prefix = secret.slice(0, 12);
   const expected = keyHash(secret, pepper);
-  const cached = apiKeyCache.get(prefix);
-  if (cached && cached.expires_at > Date.now()) {
-    return safeEqualHex(cached.row.hash, expected) ? cached.row : null;
-  }
+  // Persisted revocation must take effect across API instances on the next authentication.
   const row = await db.query<ApiKeyRow>(
     `select k.id, k.tenant_id, k.hash, k.scope, k.last_used_at, k.domain_id, d.name as domain_name
      from api_keys k
@@ -1778,17 +1881,30 @@ async function validKey(secret: string) {
   );
   const apiKey = row.rows[0];
   if (!apiKey || !safeEqualHex(apiKey.hash, expected)) return null;
-  apiKeyCache.set(prefix, {
-    row: apiKey,
-    expires_at: Date.now() + authCacheTtlMs,
-  });
   return apiKey;
+}
+
+// Event payloads can contain bearer tracking credentials and credential-bearing URLs.
+export function presentEvent(value: unknown, viewer: boolean): unknown {
+  if (!viewer) return value;
+  if (Array.isArray(value)) return value.map((child) => presentEvent(child, true));
+  if (value instanceof Date) return value;
+  if (typeof value === "string") {
+    return hideLinks(value).replace(/https?:\/\/[^\s"'<>()]+/gi, (url) => hostOnly(url));
+  }
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => [
+    key,
+    key === "response" || key === "response_body" || /pass|secret|token|api_?key|authorization/i.test(key)
+      ? "[redacted]" : presentEvent(child, true),
+  ]));
 }
 
 // Counts a request and sets the key's expiry in one round trip, so a process that stops between
 // the two cannot leave a key behind with no expiry.
 async function countHit(key: string) {
-  const results = await redis.multi().incr(key).expire(key, 2).exec();
+  if (postgresCounters) return postgresCountHit(db, key);
+  const results = await redis!.multi().incr(key).expire(key, 2).exec();
   const count = Number(results?.[0]?.[1] ?? 0);
   if (!Number.isFinite(count) || count < 1) throw new Error("rate limit counter unavailable");
   return count;
@@ -1796,13 +1912,16 @@ async function countHit(key: string) {
 
 function trustProxy(value = process.env.TRUST_PROXY) {
   if (!value) return false;
-  if (/^\d+$/.test(value)) return Number(value);
+  if (/^\d+$/.test(value)) {
+    const hops = Number(value);
+    return (_address: string, hop: number) => hop < hops;
+  }
   return value.split(",").map((part) => part.trim()).filter(Boolean);
 }
 
 // /unsubscribe/<token>, /shared/<token>, /files/<token>, /open/<token>.gif, /click/<token>
 function redactPath(url: string) {
-  return url.replace(/^\/(unsubscribe|shared|files|open|click)\/[^?]+/, "/$1/[token]");
+  return url.replace(/^\/(unsubscribe|confirm|inbound|shared|files|open|click)\/[^?]+/, "/$1/[token]");
 }
 
 async function rateLimit(request: FastifyRequest, reply: FastifyReply) {
@@ -1955,7 +2074,7 @@ async function tenantBrand(tenantId: string) {
 }
 
 function presentBrand(brand: BrandRecord) {
-  return { object: "brand" as const, ...brand, text_color: brandTextColor(brand.color || "#18181b") };
+  return { object: "brand" as const, ...brand, ...resolvedTheme(brand), button_text_color: brandTextColor(brand.color || "#18181b") };
 }
 
 async function renderBrand(tenantId: string, from?: string | null) {
@@ -1971,7 +2090,7 @@ async function previewBrand(tenantId: string) {
   return brandContext(brand.brand, { tenantName: brand.name, domain, from: `support@${domain}` });
 }
 
-async function flushTelemetry() {
+export async function flushTelemetry() {
   if (telemetryFlushPromise) return telemetryFlushPromise;
   telemetryFlushPromise = flushTelemetryNow().finally(() => {
     telemetryFlushPromise = null;
@@ -2047,7 +2166,7 @@ async function flushTelemetryNow() {
       auditQueue.unshift(...audits);
       for (const row of usage)
         addUsageDelta(row.tenant_id, row.name, row.amount);
-      app.log.warn({ error }, "failed to flush telemetry");
+      app.log.warn({ err: error }, "failed to flush telemetry");
       break;
     }
   }
@@ -2260,9 +2379,10 @@ function domainRecords(
 }
 
 export async function close() {
-  clearInterval(telemetryTimer);
+  if (telemetryTimer) clearInterval(telemetryTimer);
   await app.close();
-  redis.disconnect();
+  await flushTelemetry();
+  redis?.disconnect();
   await db.end();
 }
 

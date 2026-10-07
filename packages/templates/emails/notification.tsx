@@ -58,6 +58,9 @@ Notification.PreviewProps = {
 } satisfies Props;
 Notification.Subject = "{{{HEADING}}}";
 Notification.Category = "general";
+Notification.Kind = "transactional" as const;
+Notification.Stage = null;
+Notification.When = "Send for a specific account notification. Set the heading and body, with an optional action link.";
 Notification.Track = true;
 Notification.Description = "Sent for a single account notice with one optional action.";
 Notification.Variables = [

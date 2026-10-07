@@ -13,7 +13,7 @@ import {
   userSchema,
   userUpdateSchema,
 } from "@dispatchmail/core";
-import { paginate, presentPage, softDelete, type Db, type PagingParams } from "@dispatchmail/db";
+import { paginate, presentPage, settings, updateSettings, softDelete, type Db, type PagingParams } from "@dispatchmail/db";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { Signins } from "./rate.js";
 
@@ -48,6 +48,7 @@ export function permitted(permissions: string[], method: string, route: string) 
   if (permissions.includes("full")) return true;
   if (!permissions.includes("read")) return false;
   if (method === "GET" || method === "HEAD") return true;
+  if (method === "POST" && route === "/segments/preview") return true;
   return (method === "POST" && route === "/me/password") || (method === "DELETE" && route === "/sessions/:id");
 }
 
@@ -157,6 +158,9 @@ export function registerPlatform(
 ) {
   const { db, paging, flushTelemetry, validKey, sessionsEnabled, signins } = deps;
 
+  app.get("/settings", async (request) => present("settings", await settings(db, request.auth!.tenant_id)));
+  app.patch("/settings", async (request) => present("settings", await updateSettings(db, request.auth!.tenant_id, request.body)));
+
   // A deactivated user must lose access at once, not when their session runs out in 30 days.
   // A password change ends every session but the one that made it.
   async function revokeSessions(tenantId: string, userId: string, keep = "") {
@@ -210,7 +214,8 @@ export function registerPlatform(
   app.post("/sessions", async (request) => {
     const input = sessionSchema.parse(request.body);
     if (!input.password) return keySession(input.email, input.api_key!);
-    if (!(await signins.take(input.email))) throw tooMany();
+    const reservation = await signins.take(input.email);
+    if (!reservation) throw tooMany();
     const users = await db.query<{ id: string; tenant_id: string; email: string; name: string; role: string; permissions: string[]; password_hash: string }>(
       `select u.id, u.tenant_id, u.email, u.name, r.name as role, r.permissions, u.password_hash
        from users u
@@ -230,7 +235,7 @@ export function registerPlatform(
     }
     if (!users.rows.length) await checkPassword(input.password, null);
     if (!found) throw new ApiError("invalid_credentials", 401, "Invalid email or password");
-    await signins.release(input.email);
+    await signins.release(input.email, reservation);
     const { tenant_id: tenantId, password_hash: _hash, ...user } = found;
     return startSession(tenantId, user);
   });
@@ -280,11 +285,12 @@ export function registerPlatform(
       [auth.tenant_id, auth.user_id],
     );
     const email = current.rows[0]?.email ?? auth.user_id;
-    if (!(await signins.take(email))) throw tooMany();
+    const reservation = await signins.take(email);
+    if (!reservation) throw tooMany();
     if (!(await checkPassword(input.current_password, current.rows[0]?.password_hash))) {
       throw new ApiError("validation_error", 422, "The current password is wrong");
     }
-    await signins.release(email);
+    await signins.release(email, reservation);
     const row = await db.query(
       `update users set password_hash = $3, updated_at = now()
        where tenant_id = $1 and id = $2
@@ -589,7 +595,7 @@ export function registerPlatform(
     const quota = deps.quota ? await deps.quota(region).catch(() => null) : null;
     return presentSystem({
       sending: quota ? { region, ...quota } : null,
-      smtp: {
+      smtp: process.env.VERCEL && !process.env.SMTP_HOST ? undefined : {
         host: process.env.SMTP_HOST || null,
         // Each setting may list several ports. The first is the one to show people.
         port: Number.parseInt(process.env.SMTP_PORT || "587", 10) || 587,

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { AlertTriangle, CheckCircle2, Info, XCircle } from "lucide-react";
+import { AlertTriangle, Info } from "lucide-react";
 import { Badge } from "../../components/Badge";
+import { Checks, type CheckRow } from "../../components/Checks";
 import { Copy } from "../../components/Copy";
 import { Failed } from "../../components/Empty";
 import { Field, Select } from "../../components/Field";
@@ -17,7 +18,7 @@ import { addresses } from "../../lib/utils";
 import { usable, useWhen, whenHint } from "../../lib/when";
 import { useCan, useClient } from "../../shell/session";
 import type { BroadcastAudience, BroadcastDetail, ContactProperty, LinkCheck, List, Rendered, Segment, Template, Topic } from "../../types";
-import { EditorScreen, LeaveGuard, Preview, Source, TestSend, useDraft, type Flush } from "../templates/editor";
+import { EditorScreen, LeaveGuard, Preview, Source, TestSend, useDraft, type Flush, type SourceCheck } from "../templates/editor";
 import { contactField, contactKeys, fill, hasUnsubscribe, links, noFallback, sampleContact } from "../templates/render";
 import { useBrand } from "../templates/Versions";
 import "../../styles/editor.css";
@@ -92,6 +93,7 @@ export function BroadcastEditor() {
   const [testing, setTesting] = useState(false);
   const [reviewing, setReviewing] = useState(false);
   const [template, setTemplate] = useState("");
+  const [sourceCheck, setSourceCheck] = useState<SourceCheck | null>(null);
   const can = useCan();
   const editable = can && broadcast.data?.status === "draft";
 
@@ -159,7 +161,7 @@ export function BroadcastEditor() {
     <EditorScreen
       crumb={{ to: "/broadcasts", label: "Broadcasts" }}
       title={row?.name ?? "Loading"}
-      status={row ? <Badge value={row.status} /> : null}
+      status={row ? <><Badge value={row.status} /><Badge value="marketing" label="Marketing" /></> : null}
       save={editable ? draft.state : undefined}
       actions={
         <>
@@ -195,6 +197,8 @@ export function BroadcastEditor() {
       ) : (
         <>
           <div className="editorHead">
+            <Field label="Email kind" value="Marketing" onChange={() => undefined} disabled className="wide"
+              hint="Broadcasts are always Marketing. They respect contact and topic opt-outs and add an unsubscribe header." />
             <Field label="Name" value={form.name} onChange={set("name")} disabled={!editable} />
             <Field label="From" value={form.from} onChange={set("from")} placeholder="Acme <news@acme.com>" disabled={!editable} />
             <Field label="Reply-To" value={form.reply_to} onChange={set("reply_to")} placeholder="support@acme.com" disabled={!editable} />
@@ -219,7 +223,7 @@ export function BroadcastEditor() {
           </div>
           <div className="editorPanes">
             <div className="editorPane">
-              <Source html={form.html} text={form.text} onHtml={set("html")} onText={set("text")} disabled={!editable} textareaRef={html} flushRef={flushVisual} />
+              <Source html={form.html} text={form.text} onHtml={set("html")} onText={set("text")} disabled={!editable} textareaRef={html} flushRef={flushVisual} onCheck={setSourceCheck} />
               {editable ? (
                 <Panel title="Personalize">
                   <div className="insertList">
@@ -288,6 +292,7 @@ export function BroadcastEditor() {
           topic={topics.data?.data.find((topic) => topic.id === form.topic_id) ?? null}
           save={draft.save}
           saveError={draft.state.error}
+          sourceCheck={sourceCheck}
           onClose={() => setReviewing(false)}
           onSent={() => navigate(`/broadcasts/${row.id}`)}
         />
@@ -296,7 +301,7 @@ export function BroadcastEditor() {
   );
 }
 
-type Check = { tone: "ok" | "warn" | "fail"; text: string; detail?: string };
+type Check = CheckRow;
 
 export type AudienceState = BroadcastAudience | "loading" | "failed";
 
@@ -316,6 +321,7 @@ export function blankNames(form: BroadcastForm, audience: BroadcastAudience): Ch
   return names
     .filter((name) => name.count > 0 && noFallback(name.keys, form.subject, form.html, form.text))
     .map((name): Check => ({
+      id: `blank-name:${name.keys[0]}`,
       tone: "warn",
       text: `${name.count} of ${audience.recipients} recipients ${name.count === 1 ? "has" : "have"} no ${name.label}. They will see a blank where it goes.`,
       detail: name.fix,
@@ -333,6 +339,7 @@ export function unknownFields(form: BroadcastForm, properties: string[] | null):
   const names = unknown.map((key) => `contact.${key}`).join(", ");
   return [
     {
+      id: "unknown-fields",
       tone: "warn",
       text: `${names} ${unknown.length === 1 ? "is not a contact field" : "are not contact fields"}, so every recipient will see a blank there.`,
       detail: "Check the spelling, or add the property under Audience, Properties.",
@@ -351,12 +358,13 @@ export function reviewChecks(
   properties: string[] | null = null,
 ): Check[] {
   const checks: Check[] = [];
-  if (!segment) checks.push({ tone: "fail", text: "Choose a segment to send to." });
-  else if (audience === "loading") checks.push({ tone: "ok", text: `Counting the contacts in ${segment.name}…` });
-  else if (audience === "failed") checks.push({ tone: "warn", text: `Could not count the contacts in ${segment.name}.` });
+  if (!segment) checks.push({ id: "audience", tone: "fail", text: "Choose a segment to send to." });
+  else if (audience === "loading") checks.push({ id: "audience", tone: "ok", text: `Counting the contacts in ${segment.name}…` });
+  else if (audience === "failed") checks.push({ id: "audience", tone: "warn", text: `Could not count the contacts in ${segment.name}.` });
   else {
     const count = audience.recipients;
     checks.push({
+      id: "audience",
       tone: count === 0 ? "warn" : "ok",
       text: `Sending to ${count} ${count === 1 ? "contact" : "contacts"} in ${segment.name}.`,
       detail: skipped(audience, Boolean(form.topic_id)),
@@ -364,27 +372,27 @@ export function reviewChecks(
     checks.push(...blankNames(form, audience));
   }
   checks.push(...unknownFields(form, properties));
-  if (!form.subject.trim()) checks.push({ tone: "fail", text: "Add a subject." });
-  if (!form.html.trim() && !form.text.trim()) checks.push({ tone: "fail", text: "Add HTML or plain text content." });
-  if (!form.from.trim()) checks.push({ tone: "fail", text: "Add a From address." });
+  if (!form.subject.trim()) checks.push({ id: "subject", tone: "fail", text: "Add a subject." });
+  if (!form.html.trim() && !form.text.trim()) checks.push({ id: "content", tone: "fail", text: "Add HTML or plain text content." });
+  if (!form.from.trim()) checks.push({ id: "from", tone: "fail", text: "Add a From address." });
   checks.push(
     hasUnsubscribe(form.html) || hasUnsubscribe(form.text)
-      ? { tone: "ok", text: "Includes an unsubscribe link." }
-      : { tone: "warn", text: "No unsubscribe link.", detail: "Add {{{DISPATCH_UNSUBSCRIBE_URL}}} so contacts can opt out." },
+      ? { id: "unsubscribe", tone: "ok", text: "Includes an unsubscribe link." }
+      : { id: "unsubscribe", tone: "warn", text: "No unsubscribe link.", detail: "Add {{{DISPATCH_UNSUBSCRIBE_URL}}} so contacts can opt out." },
   );
   checks.push(
     topic
-      ? { tone: "ok", text: `Topic: ${topic.name}.` }
-      : { tone: "warn", text: "No topic selected.", detail: "Contacts cannot opt out of just this kind of email." },
+      ? { id: "topic", tone: "ok", text: `Topic: ${topic.name}.` }
+      : { id: "topic", tone: "warn", text: "No topic selected.", detail: "Contacts cannot opt out of just this kind of email." },
   );
-  if (linkCount === 0) checks.push({ tone: "ok", text: "No links to check." });
-  else if (!linkResults) checks.push({ tone: "ok", text: `Checking ${linkCount} ${linkCount === 1 ? "link" : "links"}…` });
+  if (linkCount === 0) checks.push({ id: "links", tone: "ok", text: "No links to check." });
+  else if (!linkResults) checks.push({ id: "links", tone: "ok", text: `Checking ${linkCount} ${linkCount === 1 ? "link" : "links"}…` });
   else if (linkResults === "failed") {
-    checks.push({ tone: "warn", text: `Could not check the ${linkCount === 1 ? "link" : `${linkCount} links`}.`, detail: "Open them yourself before sending." });
+    checks.push({ id: "links", tone: "warn", text: `Could not check the ${linkCount === 1 ? "link" : `${linkCount} links`}.`, detail: "Open them yourself before sending." });
   } else {
     const broken = linkResults.filter((item) => !item.ok);
-    if (broken.length === 0) checks.push({ tone: "ok", text: `All ${linkResults.length} links work.` });
-    for (const item of broken) checks.push({ tone: "warn", text: `Link ${item.message}.`, detail: item.url });
+    if (broken.length === 0) checks.push({ id: "links", tone: "ok", text: `All ${linkResults.length} links work.` });
+    for (const item of broken) checks.push({ id: `link:${item.url}`, tone: "warn", text: `Link ${item.message}.`, detail: item.url });
   }
   return checks;
 }
@@ -396,6 +404,7 @@ function Review({
   topic,
   save,
   saveError,
+  sourceCheck,
   onClose,
   onSent,
 }: {
@@ -405,6 +414,7 @@ function Review({
   topic: Topic | null;
   save: () => Promise<boolean>;
   saveError: string | null;
+  sourceCheck: SourceCheck | null;
   onClose: () => void;
   onSent: () => void;
 }) {
@@ -447,7 +457,7 @@ function Review({
 
   const properties = useAll<ContactProperty>("/contact-properties");
   const checks = reviewChecks(form, segment, topic, audience, linkResults, urls.length, properties.data?.data.map((property) => property.key) ?? null);
-  if (saveError) checks.unshift({ tone: "fail", text: `Not saved: ${saveError}` });
+  if (saveError) checks.unshift({ id: "save", tone: "fail", text: `Not saved: ${saveError}` });
   const blocked = checks.some((item) => item.tone === "fail") || (when === "later" && !usable(schedule));
 
   const send = useMutation(
@@ -475,17 +485,7 @@ function Review({
       submitDisabled={blocked || typed !== confirmPhrase}
     >
       <div className="stack">
-        <ul className="checklist" aria-label="Checks">
-          {checks.map((item, index) => (
-            <li key={`${item.text}-${index}`} className={item.tone}>
-              {item.tone === "ok" ? <CheckCircle2 size={15} aria-hidden /> : item.tone === "warn" ? <AlertTriangle size={15} aria-hidden /> : <XCircle size={15} aria-hidden />}
-              <span>
-                {item.text}
-                {item.detail ? <span className="detail">{item.detail}</span> : null}
-              </span>
-            </li>
-          ))}
-        </ul>
+        <Checks rows={sourceCheck ? [sourceCheck, ...checks] : checks} />
 
         <div className="form">
           <Select

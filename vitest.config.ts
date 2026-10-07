@@ -16,7 +16,8 @@ export default defineConfig({
   },
   test: {
     environment: "node",
-    include: ["packages/**/*.test.ts", "apps/**/*.test.ts", "examples/**/*.test.ts"],
+    setupFiles: ["./scripts/test-setup.ts"],
+    include: ["packages/**/*.test.{ts,tsx}", "apps/**/*.test.{ts,tsx}", "examples/**/*.test.ts"],
     fileParallelism: false,
     slowTestThreshold: 0
   }

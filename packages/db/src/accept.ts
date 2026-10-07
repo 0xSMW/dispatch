@@ -12,6 +12,7 @@ import {
 } from "@dispatchmail/core";
 import { ingestEmail, type IngestEmailResult } from "./emails.js";
 import { tx, type Db, type Queryable } from "./index.js";
+import { subscriptionLinks } from "./unsubscribe.js";
 
 export type AcceptEmailContext = {
   tenant_id: string;
@@ -28,12 +29,23 @@ export type AcceptEmailOptions = {
   prepare?: (input: unknown) => unknown;
   client?: Queryable;
   publicUrl?: string;
+  unsubscribe?: { secret: string; appUrl: string; publicUrl: string };
   storeAttachment?: (storageKey: string, bytes: Buffer) => Promise<void>;
   fetchAttachment?: (path: string, remaining: number) => Promise<Buffer>;
 };
 
+export type SendResult = {
+  id: string;
+  sandbox: boolean;
+  emails?: Array<{ id: string; to: string; sandbox: boolean }>;
+};
+export type AcceptedEmail = {
+  email: IngestEmailResult;
+  emails?: Array<{ id: string; to: string; sandbox: boolean }>;
+};
+
 export type BatchResult = {
-  data: Array<{ id: string }>;
+  data: SendResult[];
   errors?: Array<{ index: number; message: string }>;
 };
 
@@ -86,7 +98,8 @@ export async function claimIdempotency(
       "Idempotency request is still in flight",
     );
   }
-  if (existing.rows[0].response_json) return { replay: existing.rows[0].response_json };
+  if (existing.rows[0].response_json)
+    return { replay: existing.rows[0].response_json };
   return null;
 }
 
@@ -95,86 +108,194 @@ export async function acceptEmail(
   input: unknown,
   context: AcceptEmailContext,
   options: AcceptEmailOptions = {},
-): Promise<{ email: IngestEmailResult }> {
-  const idemKey = options.idempotency === false ? undefined : context.idempotency_key;
+): Promise<AcceptedEmail> {
+  const idemKey =
+    options.idempotency === false ? undefined : context.idempotency_key;
   const requestHash = idemKey ? stableHash(input) : null;
-  const parsed = sendSchema.parse(options.prepare ? options.prepare(input) : input);
-  const from = parsed.from ? parseAddress(parsed.from) : { email: "", name: null };
+  const parsed = sendSchema.parse(
+    options.prepare ? options.prepare(input) : input,
+  );
+  const from = parsed.from
+    ? parseAddress(parsed.from)
+    : { email: "", name: null };
   // Checked again in ingestEmail once a template has supplied the sender. This early check fails
   // a restricted key before anything is fetched or written.
-  if (context.domain_name && from.email && from.email.split("@")[1]?.toLowerCase() !== context.domain_name.toLowerCase()) {
-    throw new ApiError("validation_error", 403, "API key is restricted to another domain");
+  if (
+    context.domain_name &&
+    from.email &&
+    from.email.split("@")[1]?.toLowerCase() !==
+      context.domain_name.toLowerCase()
+  ) {
+    throw new ApiError(
+      "validation_error",
+      403,
+      "API key is restricted to another domain",
+    );
   }
-  const scheduledAt = parsed.scheduled_at ? new Date(parsed.scheduled_at) : null;
+  const scheduledAt = parsed.scheduled_at
+    ? new Date(parsed.scheduled_at)
+    : null;
   if (scheduledAt && Number.isNaN(scheduledAt.getTime())) {
-    throw new ApiError("validation_error", 422, "scheduled_at must be ISO 8601 or a phrase like 'in 1 hour'");
+    throw new ApiError(
+      "validation_error",
+      422,
+      "scheduled_at must be ISO 8601 or a phrase like 'in 1 hour'",
+    );
   }
-  const attachments = await resolveAttachments(parsed.attachments ?? [], options.fetchAttachment);
+  const attachments = await resolveAttachments(
+    parsed.attachments ?? [],
+    options.fetchAttachment,
+  );
 
   const run = async (client: Queryable) => {
     if (idemKey && requestHash) {
-      const claim = await claimIdempotency(client, context.tenant_id, idemKey, requestHash);
-      if (claim) return claim.replay as { email: IngestEmailResult };
+      const claim = await claimIdempotency(
+        client,
+        context.tenant_id,
+        idemKey,
+        requestHash,
+      );
+      if (claim) return claim.replay as AcceptedEmail;
     }
 
-    const emailId = id("email");
-    const stored = prepareAttachments(context.tenant_id, emailId, attachments);
-    for (const attachment of stored) {
-      if (options.storeAttachment) await options.storeAttachment(attachment.storage_key, attachment.bytes);
-    }
-    if (stored.length > 0) {
-      await client.query(
-        `insert into email_attachments (
+    const addresses = [
+      ...toArray(parsed.to).map((email) => ({ email, role: "to" })),
+      ...toArray(parsed.cc).map((email) => ({ email, role: "cc" })),
+      ...toArray(parsed.bcc).map((email) => ({ email, role: "bcc" })),
+    ];
+    if (addresses.length > 50)
+      throw new ApiError(
+        "validation_error",
+        422,
+        "An email can have at most 50 recipients",
+      );
+    const seen = new Set<string>();
+    const unique = addresses.filter((recipient) => {
+      const email = recipient.email.toLowerCase();
+      if (seen.has(email)) return false;
+      seen.add(email);
+      return true;
+    });
+    const split = Boolean(parsed.topic_id) && addresses.length > 1;
+    const recipients = parsed.topic_id ? unique : [null];
+    const accepted: IngestEmailResult[] = [];
+    for (const recipient of recipients) {
+      const emailId = id("email");
+      let contactId: string | null = null;
+      let subscription: ReturnType<typeof subscriptionLinks> | undefined;
+      if (parsed.topic_id && recipient) {
+        const contact = await client.query<{ id: string }>(
+          "select id from contacts where tenant_id = $1 and lower(email) = lower($2) and deleted_at is null",
+          [context.tenant_id, recipient.email],
+        );
+        contactId = contact.rows[0]?.id ?? null;
+        subscription = subscriptionLinks({
+          tenantId: context.tenant_id,
+          contactId,
+          email: recipient.email,
+          topicId: parsed.topic_id,
+          emailId,
+          ...options.unsubscribe,
+        });
+      }
+      const stored = prepareAttachments(
+        context.tenant_id,
+        emailId,
+        attachments,
+      );
+      for (const attachment of stored) {
+        if (options.storeAttachment)
+          await options.storeAttachment(
+            attachment.storage_key,
+            attachment.bytes,
+          );
+      }
+
+      const { email } = await ingestEmail(client, {
+        tenantId: context.tenant_id,
+        requestId: context.request_id,
+        emailId,
+        from: from.email,
+        fromName: from.name,
+        to: recipient ? recipient.email : parsed.to,
+        cc: recipient ? undefined : parsed.cc,
+        bcc: recipient ? undefined : parsed.bcc,
+        replyTo: toArray(parsed.reply_to).map((value) => {
+          const parsedAddress = parseAddress(value);
+          return parsedAddress.name
+            ? `${parsedAddress.name} <${parsedAddress.email}>`
+            : parsedAddress.email;
+        }),
+        subject: parsed.subject,
+        html: parsed.html,
+        text: parsed.text,
+        template: parsed.template?.id,
+        variables: parsed.template?.variables ?? parsed.variables,
+        headers: subscription
+          ? {
+              ...Object.fromEntries(
+                Object.entries(parsed.headers ?? {}).filter(
+                  ([key]) =>
+                    !["list-unsubscribe", "list-unsubscribe-post"].includes(
+                      key.toLowerCase(),
+                    ),
+                ),
+              ),
+              ...subscription.headers,
+            }
+          : parsed.headers,
+        context: subscription?.context,
+        contactId,
+        tags:
+          split && recipient
+            ? { ...parsed.tags, split_role: recipient.role }
+            : parsed.tags,
+        topicId: parsed.topic_id,
+        scheduledAt,
+        idempotencyKey: idemKey,
+        apiKeyId: context.api_key_id ?? null,
+        publicUrl: options.publicUrl,
+        restrictDomain: context.domain_name,
+      });
+      if (stored.length > 0) {
+        await client.query(
+          `insert into email_attachments (
           id, tenant_id, email_id, filename, content_type, content_id, disposition, size_bytes, content_hash, storage_key
         )
          select * from unnest(
           $1::text[], $2::text[], $3::text[], $4::text[], $5::text[],
           $6::text[], $7::text[], $8::integer[], $9::text[], $10::text[]
         )`,
-        [
-          stored.map((attachment) => attachment.id),
-          stored.map(() => context.tenant_id),
-          stored.map(() => emailId),
-          stored.map((attachment) => attachment.filename),
-          stored.map((attachment) => attachment.content_type),
-          stored.map((attachment) => attachment.content_id ?? null),
-          stored.map((attachment) => attachment.disposition),
-          stored.map((attachment) => attachment.size_bytes),
-          stored.map((attachment) => attachment.content_hash),
-          stored.map((attachment) => attachment.storage_key),
-        ],
-      );
+          [
+            stored.map((attachment) => attachment.id),
+            stored.map(() => context.tenant_id),
+            stored.map(() => emailId),
+            stored.map((attachment) => attachment.filename),
+            stored.map((attachment) => attachment.content_type),
+            stored.map((attachment) => attachment.content_id ?? null),
+            stored.map((attachment) => attachment.disposition),
+            stored.map((attachment) => attachment.size_bytes),
+            stored.map((attachment) => attachment.content_hash),
+            stored.map((attachment) => attachment.storage_key),
+          ],
+        );
+      }
+
+      accepted.push(email);
     }
 
-    const { email } = await ingestEmail(client, {
-      tenantId: context.tenant_id,
-      requestId: context.request_id,
-      emailId,
-      from: from.email,
-      fromName: from.name,
-      to: parsed.to,
-      cc: parsed.cc,
-      bcc: parsed.bcc,
-      replyTo: toArray(parsed.reply_to).map((value) => {
-        const parsedAddress = parseAddress(value);
-        return parsedAddress.name ? `${parsedAddress.name} <${parsedAddress.email}>` : parsedAddress.email;
-      }),
-      subject: parsed.subject,
-      html: parsed.html,
-      text: parsed.text,
-      template: parsed.template?.id,
-      variables: parsed.template?.variables ?? parsed.variables,
-      headers: parsed.headers,
-      tags: parsed.tags,
-      topicId: parsed.topic_id,
-      scheduledAt,
-      idempotencyKey: idemKey,
-      apiKeyId: context.api_key_id ?? null,
-      publicUrl: options.publicUrl,
-      restrictDomain: context.domain_name,
-    });
-
-    const response = { email };
+    const response: AcceptedEmail = {
+      email: accepted[0]!,
+      ...(split
+        ? {
+            emails: accepted.map((email, index) => ({
+              id: email.id,
+              to: unique[index]!.email,
+              sandbox: email.sandbox,
+            })),
+          }
+        : {}),
+    };
     if (idemKey) {
       await client.query(
         "update idempotency_keys set response_json = $3, state = 'done' where tenant_id = $1 and key = $2",
@@ -194,20 +315,30 @@ export async function acceptBatch(
   context: AcceptEmailContext,
   options: AcceptEmailOptions & { validation?: "strict" | "permissive" } = {},
 ): Promise<BatchResult> {
-  const validation = options.validation === "permissive" ? "permissive" : "strict";
+  const validation =
+    options.validation === "permissive" ? "permissive" : "strict";
   const idemKey = context.idempotency_key;
   const requestHash = idemKey ? stableHash({ emails, validation }) : null;
   return tx(db, async (client) => {
     if (idemKey && requestHash) {
-      const claim = await claimIdempotency(client, context.tenant_id, idemKey, requestHash);
+      const claim = await claimIdempotency(
+        client,
+        context.tenant_id,
+        idemKey,
+        requestHash,
+      );
       if (claim) return claim.replay as BatchResult;
     }
-    const data: Array<{ id: string }> = [];
+    const data: SendResult[] = [];
     const errors: Array<{ index: number; message: string }> = [];
     for (const [index, email] of emails.entries()) {
       const acceptOne = async () => {
         if (email && typeof email === "object" && "attachments" in email) {
-          throw new ApiError("validation_error", 400, "attachments are not supported in batch sends");
+          throw new ApiError(
+            "validation_error",
+            400,
+            "attachments are not supported in batch sends",
+          );
         }
         return acceptEmail(
           db,
@@ -217,19 +348,30 @@ export async function acceptBatch(
         );
       };
       if (validation === "strict") {
-        data.push({ id: (await acceptOne()).email.id });
+        const result = await acceptOne();
+        data.push({
+          id: result.email.id,
+          sandbox: result.email.sandbox,
+          ...(result.emails ? { emails: result.emails } : {}),
+        });
         continue;
       }
       await client.query("savepoint batch_item");
       try {
-        data.push({ id: (await acceptOne()).email.id });
+        const result = await acceptOne();
+        data.push({
+          id: result.email.id,
+          sandbox: result.email.sandbox,
+          ...(result.emails ? { emails: result.emails } : {}),
+        });
         await client.query("release savepoint batch_item");
       } catch (error) {
         await client.query("rollback to savepoint batch_item");
         errors.push({ index, message: errorMessage(error) });
       }
     }
-    const body: BatchResult = validation === "permissive" ? { data, errors } : { data };
+    const body: BatchResult =
+      validation === "permissive" ? { data, errors } : { data };
     if (idemKey) {
       await client.query(
         "update idempotency_keys set response_json = $3, state = 'done' where tenant_id = $1 and key = $2",
@@ -242,10 +384,16 @@ export async function acceptBatch(
 
 // A ZodError's own message is a JSON dump of every issue. The first issue's text is what a caller can act on.
 function errorMessage(error: unknown) {
-  const issues = (error as { issues?: Array<{ message?: string; path?: Array<string | number> }> }).issues;
+  const issues = (
+    error as {
+      issues?: Array<{ message?: string; path?: Array<string | number> }>;
+    }
+  ).issues;
   if (Array.isArray(issues) && issues[0]?.message) {
     const path = (issues[0].path ?? []).join(".");
-    return path && !issues[0].message.includes(path) ? `${path}: ${issues[0].message}` : issues[0].message;
+    return path && !issues[0].message.includes(path)
+      ? `${path}: ${issues[0].message}`
+      : issues[0].message;
   }
   return error instanceof Error ? error.message : "Invalid email";
 }
@@ -266,14 +414,23 @@ async function resolveAttachments(
   let remaining = attachmentByteLimit;
   const resolved = [];
   for (const attachment of attachments) {
-    const contentType = attachment.content_type ?? contentTypeForFilename(attachment.filename);
+    const contentType =
+      attachment.content_type ?? contentTypeForFilename(attachment.filename);
     if (attachment.path) {
       const bytes = await fetchImpl(attachment.path, remaining);
       remaining -= bytes.byteLength;
-      resolved.push({ ...attachment, content: bytes.toString("base64"), content_type: contentType });
+      resolved.push({
+        ...attachment,
+        content: bytes.toString("base64"),
+        content_type: contentType,
+      });
       continue;
     }
-    resolved.push({ ...attachment, content: attachment.content ?? "", content_type: contentType });
+    resolved.push({
+      ...attachment,
+      content: attachment.content ?? "",
+      content_type: contentType,
+    });
   }
   return resolved;
 }
@@ -288,19 +445,38 @@ export async function fetchAttachment(
   try {
     url = new URL(path);
   } catch {
-    throw new ApiError("invalid_attachment", 422, "Attachment path must be http or https");
+    throw new ApiError(
+      "invalid_attachment",
+      422,
+      "Attachment path must be http or https",
+    );
   }
   if (!["http:", "https:"].includes(url.protocol)) {
-    throw new ApiError("invalid_attachment", 422, "Attachment path must be http or https");
+    throw new ApiError(
+      "invalid_attachment",
+      422,
+      "Attachment path must be http or https",
+    );
   }
   try {
     await assertPublicWebhookTarget(url.hostname);
   } catch {
-    throw new ApiError("invalid_attachment", 422, "Attachment host is not allowed");
+    throw new ApiError(
+      "invalid_attachment",
+      422,
+      "Attachment host is not allowed",
+    );
   }
-  const response = await fetchImpl(url, { redirect: "error", signal: AbortSignal.timeout(10_000) });
+  const response = await fetchImpl(url, {
+    redirect: "error",
+    signal: AbortSignal.timeout(10_000),
+  });
   if (!response.ok) {
-    throw new ApiError("invalid_attachment", 422, `Attachment fetch failed with ${response.status}`);
+    throw new ApiError(
+      "invalid_attachment",
+      422,
+      `Attachment fetch failed with ${response.status}`,
+    );
   }
   const advertised = Number(response.headers.get("content-length"));
   if (Number.isFinite(advertised) && advertised > remaining) {
@@ -341,7 +517,11 @@ function prepareAttachments(
     const bytes = decodeAttachment(attachment.content);
     total += Buffer.byteLength(attachment.content, "utf8");
     if (total > attachmentByteLimit) {
-      throw new ApiError("invalid_attachment", 422, "Attachments exceed 40 MB after base64 encoding");
+      throw new ApiError(
+        "invalid_attachment",
+        422,
+        "Attachments exceed 40 MB after base64 encoding",
+      );
     }
     const attachmentId = id("att");
     return {
@@ -360,11 +540,22 @@ function prepareAttachments(
 
 function decodeAttachment(content: string) {
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(content) || content.length % 4 !== 0) {
-    throw new ApiError("invalid_attachment", 422, "Attachment content must be base64");
+    throw new ApiError(
+      "invalid_attachment",
+      422,
+      "Attachment content must be base64",
+    );
   }
   const bytes = Buffer.from(content, "base64");
-  if (bytes.length === 0 || bytes.toString("base64").replace(/=+$/, "") !== content.replace(/=+$/, "")) {
-    throw new ApiError("invalid_attachment", 422, "Attachment content must be base64");
+  if (
+    bytes.length === 0 ||
+    bytes.toString("base64").replace(/=+$/, "") !== content.replace(/=+$/, "")
+  ) {
+    throw new ApiError(
+      "invalid_attachment",
+      422,
+      "Attachment content must be base64",
+    );
   }
   return bytes;
 }

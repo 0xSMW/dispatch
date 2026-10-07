@@ -12,14 +12,43 @@ export type Deleted = {
   id: string;
   deleted: true;
 };
+export type Integration = import("@dispatchmail/core").Integration;
+export type IntegrationInput = import("@dispatchmail/core").IntegrationInput;
+export type IntegrationUpdate = import("@dispatchmail/core").IntegrationUpdate;
+export type IntegrationCreated = Integration & { token: string; url: string };
+export type InboundDelivery = Omit<import("@dispatchmail/core").InboundDelivery, "tenant_id">;
+
+export type Settings = { import_trigger_automations: boolean; sandbox_domains: string[]; confirmation_daily_limit: number };
+
+export type Form = {
+  object: "form"; id: string; name: string; key: string; topic_ids: string[]; properties: string[];
+  double_opt_in: boolean; from_email: string; allowed_origins: string[]; redirect_url: string | null;
+  created_at: string; updated_at: string;
+};
+export type Confirmation = {
+  object: "confirmation"; form_name: string; confirmed: boolean;
+  brand: { product_name: string; logo_url: string | null; primary_color: string; background_color: string; text_color: string };
+};
+export type Confirmed = { object: "confirmation"; confirmed: true; redirect_url: string | null };
 
 // Emails
 
 export type Tag = { name: string; value: string };
 
+export type EmailRecipient = {
+  id?: string;
+  email: string;
+  kind: "to" | "cc" | "bcc";
+  status: string;
+  sandbox: boolean;
+  created_at?: string;
+};
+
 export type Email = {
   object: "email";
   id: string;
+  sandbox: boolean;
+  recipients?: EmailRecipient[];
   message_id: string | null;
   from: string;
   to: string[];
@@ -193,11 +222,14 @@ export type WebhookAttempt = {
 // Templates
 
 export type TemplateVariable = string | { key: string; type?: string; fallback_value?: string | number | null };
+export type SendKind = "transactional" | "marketing";
 
 export type Template = {
   object: "template";
   id: string;
   name: string;
+  /** Computed from content. Optional for older API responses. */
+  kind?: SendKind;
   alias: string | null;
   from: string | null;
   reply_to: string[];
@@ -219,7 +251,7 @@ export type Template = {
   source?: TemplateSource | null;
 };
 
-export type TemplateSource = { kind?: string; path?: string; slug?: string; version?: string };
+export type TemplateSource = { kind?: string; path?: string; slug?: string; version?: string; send_kind?: SendKind };
 
 export type TemplateVersion = {
   id: string;
@@ -273,12 +305,14 @@ export type Contact = {
   segments?: Array<{ id: string; name: string }>;
 };
 
+export type PropertyType = "string" | "number" | "boolean" | "date";
+
 export type ContactProperty = {
   object: "contact_property";
   id: string;
   key: string;
-  type: "string" | "number";
-  fallback_value: string | number | null;
+  type: PropertyType;
+  fallback_value: string | number | boolean | null;
   created_at: string;
   updated_at: string;
 };
@@ -301,8 +335,8 @@ export type TopicSubscription = {
   email: string;
   first_name: string | null;
   last_name: string | null;
-  status: "subscribed" | "unsubscribed";
-  subscription: "opt_in" | "opt_out";
+  status: "subscribed" | "unsubscribed" | "pending";
+  subscription: "opt_in" | "opt_out" | "pending";
   created_at: string;
   updated_at: string;
 };
@@ -311,10 +345,14 @@ export type Segment = {
   object: "segment";
   id: string;
   name: string;
-  contacts?: number;
+  description?: string | null;
+  type: "static" | "dynamic";
+  rule: import("./views/automations/graph").Rule | null;
+  contacts?: number | null;
   created_at: string;
   updated_at: string;
 };
+export type SegmentPreview = { count: number; sample: Contact[] };
 
 export type SegmentContact = {
   object: "contact";
@@ -403,21 +441,55 @@ export type RunMetrics = {
   data: Array<RunCounts & { date: string }>;
 };
 
+export type { SplitConfig, SplitVariant, SplitMetric, SplitReport } from "../../../packages/core/src/splits";
 export type AutomationStep = { type: string; key?: string; config?: Record<string, unknown>; [field: string]: unknown };
+
+/** `PATCH /automations/:id?dry_run=true`: runs affected by a proposed graph, without saving. */
+export type AutomationPreview = { stranded_runs: number; by_step: Record<string, number> };
 
 export type Automation = {
   object?: "automation";
   id: string;
   name: string;
-  trigger?: string;
-  status?: "enabled" | "disabled";
+  trigger?: string | null;
+  trigger_config?: import("./views/automations/graph").TriggerConfig;
+  reentry?: "once" | "every_time";
+  status?: "enabled" | "disabled" | "paused";
+  version?: number;
   enabled?: boolean;
   steps: AutomationStep[];
-  connections?: Array<{ from: string; to: string; type?: string }>;
+  connections?: Array<{ from: string; to: string; type?: string; path?: string }>;
   /** Present on list rows from `GET /automations`, which omit `steps` and `connections`. */
   run_count?: number;
   created_at: string;
   updated_at?: string;
+};
+
+export type AutomationPreset = {
+  object?: "automation_preset";
+  slug: string;
+  name: string;
+  stage: "acquisition" | "onboarding" | "retention" | "reengagement" | "dunning" | "reactivation";
+  description: string;
+  when: string;
+  trigger_config: import("./views/automations/graph").TriggerConfig;
+  reentry: "once" | "every_time";
+  events: Array<{ name: string; schema: Record<string, PropertyType> }>;
+  properties: Array<{ key: string; type: PropertyType }>;
+  steps: AutomationStep[];
+  connections: Array<{ from: string; to: string; type?: string; path?: string }>;
+  templates: string[];
+};
+
+export type AutomationInstallation = {
+  automation: Automation;
+  templates: {
+    created: Array<{ id: string; slug: string }>;
+    reused: Array<{ id: string; slug: string }>;
+  };
+  events: Array<{ id: string; name: string }>;
+  properties: Array<{ id: string; key: string; type: PropertyType }>;
+  next_steps: string[];
 };
 
 export type AutomationRun = {
@@ -430,9 +502,24 @@ export type AutomationRun = {
   status?: string;
   state?: string;
   error?: string | null;
+  exit_reason?: "completed" | "exit" | "filter" | "stopped" | "stranded" | null;
+  guards?: Array<{ filter: string; rule: import("./views/automations/graph").Rule }>;
+  cancellation_reason?: string | null;
   created_at: string;
   updated_at?: string;
   event?: { id: string; name: string; email: string | null; payload?: Record<string, unknown> };
+};
+
+export type EnrollmentJob = {
+  object: "automation_enrollment_job";
+  id: string;
+  automation_id: string;
+  segment_id: string | null;
+  status: "queued" | "in_progress" | "completed" | "failed" | "cancelled";
+  counts: { total: number; processed: number; enrolled: number; skipped: number; failed: number };
+  error: string | null;
+  created_at: string;
+  completed_at: string | null;
 };
 
 export type AutomationRunDetail = AutomationRun & {
@@ -474,6 +561,8 @@ export type EventDefinition = {
   schema: Record<string, "string" | "number" | "boolean" | "date">;
   created_at: string;
   updated_at?: string;
+  fired_count?: number;
+  last_fired_at?: string | null;
 };
 
 // Logs, timeline, system
@@ -592,25 +681,29 @@ export type ContactStats = { object: "contact_stats"; all: number; subscribed: n
 export type ContactActivity = {
   object: "contact_activity";
   id: string;
-  /** contact.created, segment.added, topic.opted_in, topic.opted_out, or an email event type. */
+  /** Contact, subscription, email, fired-event, or automation-run activity. */
   type: string;
   resource_id: string | null;
   label: string | null;
   email_id: string | null;
+  automation_id?: string | null;
+  run_id?: string | null;
+  exit_reason?: AutomationRun["exit_reason"];
   created_at: string;
 };
 
-export type ContactSegment = { object: "segment"; id: string; name: string; created_at: string };
+export type ContactSegment = { object: "segment"; id: string; name: string; type: "static" | "dynamic"; rule?: Segment["rule"]; created_at: string };
 
 /** `explicit` is false when the contact made no choice and `subscription` is the topic's default. */
-export type ContactTopic = { id: string; name: string; key: string; subscription: "opt_in" | "opt_out"; explicit?: boolean };
+export type ContactTopic = { id: string; name: string; key: string; subscription: "opt_in" | "opt_out" | "pending"; explicit?: boolean };
 
 export type ImportCounts = { total: number; created: number; updated: number; skipped: number; failed: number };
 
 export type ContactImport = {
   object: "contact_import";
   id: string;
-  status: "queued" | "in_progress" | "completed" | "failed";
+  trigger_automations: boolean;
+  status: "queued" | "in_progress" | "completed" | "failed" | "cancelled";
   counts: ImportCounts;
   error: string | null;
   created_at: string;
@@ -619,7 +712,10 @@ export type ContactImport = {
 
 // Brand and public pages
 
-export type BrandSettings = {
+export type Goal = import("@dispatchmail/core").Goal;
+export type GoalMetrics = import("@dispatchmail/core").GoalMetrics;
+export type LibraryUpdates = import("@dispatchmail/core").LibraryUpdates;
+export type BrandSettings = Partial<import("@dispatchmail/core").ThemeTokens> & {
   object: "brand";
   product_name?: string;
   product_url?: string;
@@ -633,14 +729,14 @@ export type BrandSettings = {
   /** The public unsubscribe page's heading and the line under it. Null or absent means the default. */
   unsubscribe_title?: string | null;
   unsubscribe_description?: string | null;
-  text_color: string;
+  button_text_color?: string;
 };
 
 export type Preferences = {
   object: "unsubscribe";
   email: string;
   unsubscribed: boolean;
-  topics: Array<{ id: string; name: string; description: string | null; subscription: "opt_in" | "opt_out" }>;
+  topics: Array<{ id: string; name: string; description: string | null; subscription: "opt_in" | "opt_out" | "pending" }>;
   brand: { product_name: string; logo_url: string | null; color: string; text_color: string; title?: string | null; description?: string | null };
 };
 

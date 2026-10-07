@@ -11,19 +11,27 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@aws-sdk/client-sns": "^3.1146.0",
     "@dispatchmail/core": "workspace:*",
     "@dispatchmail/db": "workspace:*",
     "@dispatchmail/provider-ses": "workspace:*",
     "@dispatchmail/storage": "workspace:*",
     "@fastify/cors": "^10.1.0",
     "@fastify/multipart": "^10.1.2",
+    "@vercel/functions": "^3.9.11",
     "chrono-node": "^2.10.1",
     "dotenv": "^16.5.0",
-    "fastify": "^5.3.3",
-    "ioredis": "^5.6.1"
+    "fastify": "^5.12.5",
+    "ioredis": "^5.6.1",
+    "nitro": "3.0.260903-beta",
+    "rollup": "^4.64.0",
+    "sns-validator": "^0.3.5",
+    "workflow": "5.0.1"
   },
   "devDependencies": {
-    "@types/node": "^22.15.29",
+    "@modelcontextprotocol/sdk": "1.31.0",
+    "@types/node": "^24.19.1",
+    "@types/sns-validator": "^0.3.3",
     "tsx": "^4.19.4",
     "typescript": "^5.8.3"
   }

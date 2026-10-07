@@ -2,7 +2,7 @@
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { h, signIn } from "../../testing";
-import type { Email as EmailRow, EmailEvent } from "../../types";
+import type { Email as EmailRow, EmailEvent, EmailInsights } from "../../types";
 import { Email, timeline } from "./Email";
 import { adviceFor, problemOf } from "./Problem";
 import { api, list, requests, visit } from "./visit";
@@ -10,6 +10,7 @@ import { api, list, requests, visit } from "./visit";
 const row = (patch: Partial<EmailRow> = {}): EmailRow => ({
   object: "email",
   id: "email_1",
+  sandbox: false,
   message_id: "<abc@ses>",
   from: "Acme <hello@acme.test>",
   to: ["ada@example.com"],
@@ -105,6 +106,131 @@ describe("Email", () => {
     expect(screen.getByText("Needs attention")).toBeTruthy();
     expect(screen.getByText("A plain text version is included")).toBeTruthy();
     expect(requests(fetch, "GET", "/emails/email_1/insights")).toHaveLength(1);
+    expect(screen.getByRole("heading", { name: "Checks" })).toBeTruthy();
+    expect(screen.getAllByRole("list", { name: "Checks" })).toHaveLength(1);
+    expect(screen.getByText("No DMARC record found.")).toBeTruthy();
+    expect(screen.getByText("A valid DMARC record exists").closest("li")?.className).toBe("fail");
+    expect(screen.getByText("A plain text version is included").closest("li")?.className).toBe("ok");
+    expect(screen.getByText("A valid DMARC record exists").closest("li")?.getAttribute("data-check-id")).toBe("dmarc");
+    expect(screen.getByText("Possible improvements").querySelector(".badge")?.textContent).toBe("0");
+    expect(screen.getByText("Nothing here.")).toBeTruthy();
+  });
+
+  it("shows every server-provided insight with its existing severity for a viewer", async () => {
+    signIn("sess_test", ["read"]);
+    const insights: EmailInsights = {
+      object: "email_insights",
+      email_id: "email_1",
+      needs_attention: [
+        { id: "dmarc", title: "A valid DMARC record exists", detail: "No DMARC record found." },
+        { id: "links", title: "Links work", detail: "https://acme.test/broken returned 404." },
+      ],
+      possible_improvements: [{ id: "preview", title: "Preview text is included", detail: "<img src=x onerror=alert(1)>" }],
+      doing_great: [{ id: "plain_text", title: "A plain text version is included", detail: "Yes." }],
+    };
+    const fetch = stack(row(), [], { "/emails/email_1/insights": insights });
+    visit(h(Email), "/emails/email_1", "/emails/:id");
+    await screen.findByRole("heading", { name: "ada@example.com" });
+    fireEvent.click(screen.getByRole("tab", { name: "Insights" }));
+    await screen.findByText("Links work");
+    const checks = screen.getByRole("list", { name: "Checks" });
+    expect(checks.querySelectorAll("[data-check-id]")).toHaveLength(4);
+    for (const [key, tone] of [["needs_attention", "fail"], ["possible_improvements", "warn"], ["doing_great", "ok"]] as const) {
+      for (const item of insights[key]) {
+        const text = within(checks).getByText(item.title);
+        expect(text.closest("li")?.getAttribute("data-check-id")).toBe(item.id);
+        expect(text.closest("li")?.className).toBe(tone);
+        expect(within(checks).getByText(item.detail)).toBeTruthy();
+      }
+    }
+    expect(checks.querySelector("img")).toBeNull();
+    expect(requests(fetch, "GET", "/emails/email_1/insights")).toHaveLength(1);
+    expect(fetch.mock.calls.every(([, init]) => (init?.method ?? "GET") === "GET")).toBe(true);
+  });
+
+  it("keeps the insights loading state instead of showing empty or successful checks", async () => {
+    const fetch = stack(row(), [], {
+      "/emails/email_1/insights": { object: "email_insights", email_id: "email_1", needs_attention: [], possible_improvements: [], doing_great: [] },
+    });
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const reply = fetch.getMockImplementation()!;
+    fetch.mockImplementation(async (input, init) => {
+      if (new URL(String(input)).pathname === "/emails/email_1/insights") await pending;
+      return reply(input, init);
+    });
+    visit(h(Email), "/emails/email_1", "/emails/:id");
+    await screen.findByRole("heading", { name: "ada@example.com" });
+    fireEvent.click(screen.getByRole("tab", { name: "Insights" }));
+    const panel = screen.getByRole("heading", { name: "Checks" }).closest(".panel")!;
+    expect(panel.querySelectorAll(".skeleton")).toHaveLength(4);
+    expect(within(panel as HTMLElement).queryByRole("list")).toBeNull();
+    expect(screen.queryByText("Nothing here.")).toBeNull();
+    release();
+    await screen.findByRole("list", { name: "Checks" });
+    expect(screen.getAllByText("Nothing here.")).toHaveLength(3);
+    expect(panel.querySelectorAll("[data-check-id]")).toHaveLength(0);
+  });
+
+  it("preserves insights errors and retries the same GET endpoint", async () => {
+    let attempts = 0;
+    const fetch = stack(row(), [], {
+      "/emails/email_1/insights": () => ++attempts === 1
+        ? { status: 500, body: { name: "internal_error", message: "Insights unavailable" } }
+        : { body: { object: "email_insights", email_id: "email_1", needs_attention: [], possible_improvements: [], doing_great: [{ id: "text", title: "Plain text included", detail: "Yes." }] } },
+    });
+    visit(h(Email), "/emails/email_1", "/emails/:id");
+    await screen.findByRole("heading", { name: "ada@example.com" });
+    fireEvent.click(screen.getByRole("tab", { name: "Insights" }));
+    expect(within(await screen.findByRole("alert")).getByText("Insights unavailable")).toBeTruthy();
+    expect(screen.queryByRole("list", { name: "Checks" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByText("Plain text included")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(requests(fetch, "GET", "/emails/email_1/insights")).toHaveLength(2);
+  });
+
+  it.each(["full", "read"])("distinguishes simulated delivery for %s users without changing status", async (permission) => {
+    signIn("sess_test", [permission]);
+    stack(row({ sandbox: true, message_id: null }), [event("email.delivered", { sandbox: true })]);
+    visit(h(Email), "/emails/email_1", "/emails/:id");
+
+    expect(await screen.findByText("Sandbox")).toBeTruthy();
+    expect(screen.getByText("Sandbox delivery is simulated. No email is sent externally.")).toBeTruthy();
+    expect(screen.getByText("delivered", { selector: ".pageHeader .badge" })).toBeTruthy();
+    expect(await screen.findByText("delivered (simulated)")).toBeTruthy();
+    expect(screen.queryByText("Message ID")).toBeNull();
+  });
+
+  it("marks sandbox recipients separately in a mixed send, including CC and BCC", async () => {
+    const recipients = [
+      { id: "rcpt_1", email: "ada@acme.com", kind: "to" as const, status: "delivered", sandbox: false, created_at: row().created_at },
+      { id: "rcpt_2", email: "cc@example.com", kind: "cc" as const, status: "delivered", sandbox: true, created_at: row().created_at },
+      { id: "rcpt_3", email: "bcc@example.com", kind: "bcc" as const, status: "queued", sandbox: true, created_at: row().created_at },
+    ];
+    stack(row({ to: ["ada@acme.com"], cc: ["cc@example.com"], bcc: ["bcc@example.com"], recipients }), [event("email.delivered")]);
+    visit(h(Email), "/emails/email_1", "/emails/:id");
+
+    const table = await screen.findByRole("table");
+    const rows = within(table).getAllByRole("row");
+    expect(within(rows[1]).queryByText("Sandbox")).toBeNull();
+    expect(within(rows[1]).getByText("delivered")).toBeTruthy();
+    expect(within(rows[2]).getByText("Sandbox")).toBeTruthy();
+    expect(within(rows[2]).getByText("CC")).toBeTruthy();
+    expect(within(rows[3]).getByText("Sandbox")).toBeTruthy();
+    expect(within(rows[3]).getByText("queued")).toBeTruthy();
+    expect(within(rows[3]).getByText("BCC")).toBeTruthy();
+    expect(screen.getByText(/Sandbox recipients are simulated and are never sent externally/)).toBeTruthy();
+    expect(screen.queryByText("delivered (simulated)")).toBeNull();
+    expect(document.querySelector(".pageHeader")?.textContent).not.toContain("Sandbox");
+  });
+
+  it("identifies sandbox timeline events without changing their event status", () => {
+    const simulated = timeline([event("email.delivered", { sandbox: true })])[0];
+    expect(simulated.label).toBe("delivered (simulated)");
+    expect(simulated.status).toBe("email.delivered");
+    expect(simulated.detail).toContain("No email is sent externally.");
+    expect(timeline([event("email.delivered", { sandbox: false })])[0].label).toBe("delivered");
   });
 
   it("explains a bounce in a drawer and removes the address from the suppression list", async () => {

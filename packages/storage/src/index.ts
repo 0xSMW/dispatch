@@ -6,7 +6,7 @@ import { pipeline } from "node:stream/promises";
 import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { Upload } from "@aws-sdk/lib-storage";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { ApiError, requireSecret, seal, unseal } from "@dispatchmail/core";
+import { ApiError, awsCredentials, requireSecret, seal, unseal } from "@dispatchmail/core";
 
 export interface Storage {
   put(key: string, bytes: Buffer | NodeJS.ReadableStream, contentType?: string): Promise<void>;
@@ -193,7 +193,7 @@ export function createStorage(env: NodeJS.ProcessEnv = process.env): Storage {
     const endpoint = env.S3_ENDPOINT || undefined;
     return s3Storage({
       bucket: env.S3_BUCKET ?? "",
-      client: new S3Client(endpoint ? { region, endpoint, forcePathStyle: true } : { region })
+      client: new S3Client(endpoint ? { region, endpoint, forcePathStyle: true, credentials: awsCredentials() } : { region, credentials: awsCredentials() })
     });
   }
   return localStorage({

@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { Storage } from "@dispatchmail/storage";
-import { applyInbound, parseInbound } from "./inbound.js";
+import { DeleteMessageCommand, ReceiveMessageCommand } from "@aws-sdk/client-sqs";
+import { consumeOnce } from "./events.js";
+import { applyInbound, parseInbound, type SesReceipt } from "./inbound.js";
 
 const mime = Buffer.from([
   "From: Ada <ada@example.com>",
@@ -25,6 +27,42 @@ describe("parseInbound", () => {
 });
 
 describe("applyInbound", () => {
+  it("rejects an invalid envelope before database or storage access", async () => {
+    const db = { query: vi.fn() };
+    const storage = { get: vi.fn() } as unknown as Storage;
+    await expect(applyInbound(db, storage, { receipt: {
+      recipients: Array.from({ length: 51 }, (_, i) => `recipient${i}@example.com`), action: { objectKey: "raw/mail" }
+    } })).rejects.toThrow("invalid receipt envelope");
+    expect(db.query).not.toHaveBeenCalled();
+    expect(storage.get).not.toHaveBeenCalled();
+  });
+
+  it("deletes deeply nested malformed MIME and ingests a valid queue sibling", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    let nested = "Content-Type: text/plain\r\n\r\nbody";
+    for (let i = 0; i < 300; i++) nested = `Content-Type: multipart/mixed; boundary=b${i}\r\n\r\n--b${i}\r\n${nested}\r\n--b${i}--`;
+    const db = { query: vi.fn(async (sql: string, params: unknown[] = []) => {
+      if (sql.includes("from domains")) return { rows: [{ tenant_id: "tenant_1" }] };
+      if (sql.includes("insert into received_emails")) return { rows: [{ id: params[0] }] };
+      return { rows: [], rowCount: 1 };
+    }) };
+    const storage = { get: vi.fn(async (key: string) => key === "poison" ? Buffer.from(nested) : mime),
+      put: vi.fn(async () => {}) } as unknown as Storage;
+    const receipt = (key: string) => ({ receipt: { recipients: ["inbound@example.com"], action: { objectKey: key } } });
+    const sqs = { send: vi.fn(async (command: unknown) => command instanceof ReceiveMessageCommand ? {
+      Messages: [{ Body: JSON.stringify(receipt("poison")), ReceiptHandle: "poison" },
+        { Body: JSON.stringify(receipt("valid")), ReceiptHandle: "valid" }]
+    } : {}) };
+    await expect(consumeOnce(sqs, "queue", async (body) => { await applyInbound(db, storage, body as SesReceipt); })).resolves.toBe(2);
+    expect(log).toHaveBeenCalledWith("Discarding permanently invalid queue notification", expect.objectContaining({
+      message: expect.stringMatching(/^Maximum MIME nesting depth/)
+    }));
+    expect(db.query.mock.calls.filter(([sql]) => sql.includes("insert into received_emails"))).toHaveLength(1);
+    expect(sqs.send.mock.calls.filter(([command]) => command instanceof DeleteMessageCommand)
+      .map(([command]) => (command as DeleteMessageCommand).input.ReceiptHandle)).toEqual(["poison", "valid"]);
+    log.mockRestore();
+  });
+
   it("ingests a receipt into the tenant that enabled receiving and skips an unknown domain", async () => {
     const queries: string[] = [];
     const db = {
@@ -60,8 +98,18 @@ describe("applyInbound", () => {
         action: { objectKey: "raw/inbound/message" }
       }
     };
+    files.set("raw/inbound/message", Buffer.from([
+      "From: Ada <ada@example.com>",
+      `To: ${Array.from({ length: 60 }, (_, i) => `hostile${i}@other.test`).join(", ")}`,
+      "Cc: forged@other.test", "Bcc: hidden@other.test", "", "Hi there"
+    ].join("\r\n")));
     const saved = await applyInbound(db, storage, notification);
     expect(saved?.to).toEqual(["inbound@example.com"]);
+    const recipientWrite = db.query.mock.calls.find((call) => call[0].includes("insert into received_recipients"));
+    expect(recipientWrite?.[1][3]).toEqual(["inbound@example.com"]);
+    expect(recipientWrite?.[1][4]).toEqual(["to"]);
+    const emailWrite = db.query.mock.calls.find((call) => call[0].includes("insert into received_emails"));
+    expect(JSON.parse(String(emailWrite?.[1][7])).to).toContain("hostile59@other.test");
     expect(queries.some((sql) => sql.includes("insert into received_emails"))).toBe(true);
     const auth = db.query.mock.calls.find((call) => String(call[0]).includes("insert into received_emails"))?.[1][11];
     expect(JSON.parse(String(auth))).toEqual({ spf: "pass", dkim: "fail", dmarc: "gray" });

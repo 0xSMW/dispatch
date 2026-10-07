@@ -3,8 +3,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { signWebhook } from "@dispatchmail/core";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Dispatch, WebhookVerificationError, type Result } from "./index.js";
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
+import { Dispatch, WebhookVerificationError, type Automation, type AutomationCreate, type AutomationDryRun, type AutomationUpdate, type AutomationStatus, type AutomationReentry, type AutomationTriggerConfig, type AutomationExitReason, type AutomationPreset, type AutomationPresetDetail, type ContactActivity, type ImportColumnMap, type List, type Operator, type PropertyType, type PropertyValue, type Result, type Rule, type SendEmailConfig, type TemplateCreate, type TemplateUpdate } from "./index.js";
 
 const base = "http://localhost:3100";
 
@@ -39,6 +39,112 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
+describe("automation preset library", () => {
+  const preset: AutomationPreset = {
+    slug: "newsletter-welcome", name: "Newsletter welcome", stage: "acquisition",
+    description: "Welcome a subscriber.", when: "Start on subscription.",
+    trigger_config: { type: "topic_subscribed", topic_id: "{{topic_id}}" }, reentry: "once",
+    events: [{ name: "stripe.invoice.payment_failed", schema: { AMOUNT: "string", UPDATE_PAYMENT_URL: "string", invoice_id: "string" } }],
+    properties: [{ key: "activated", type: "boolean" }],
+    steps: [
+      { key: "start", type: "trigger", config: { type: "topic_subscribed", topic_id: "{{topic_id}}" } },
+      { key: "guard", type: "filter", config: { scope: "following", rule: { type: "rule", field: "event.received_at", operator: "within", value: "7 days" } } },
+      { key: "send", type: "send_email", config: { template: "newsletter-welcome", kind: "marketing", variable_mapping: { camelKey: "event.AMOUNT" } } },
+      { key: "active", type: "condition", config: { type: "rule", field: "contact.activated", operator: "eq", value: false } },
+    ],
+    connections: [{ from: "start", to: "guard", type: "default" }, { from: "active", to: "send", type: "condition_not_met" }],
+    templates: ["newsletter-welcome"],
+  };
+
+  it.each([{ data: [] }, { data: [preset] }])("lists typed wire definitions without a paging query: %j", async ({ data }) => {
+    const page = { object: "list", has_more: false, data };
+    const fetch = stub(page);
+    const result = await new Dispatch({ apiKey: "sk_test" }).templates.library.automations();
+    expectTypeOf(result).toEqualTypeOf<Result<List<AutomationPreset>>>();
+    expectTypeOf<NonNullable<typeof result.data>["data"][number]["trigger_config"]>().toEqualTypeOf<AutomationTriggerConfig>();
+    expect(result.data).toEqual(page);
+    expect(request(fetch)).toMatchObject({ method: "GET", url: `${base}/template-library/automations`, body: undefined });
+  });
+
+  it("gets a typed object envelope and encodes the entire slug as one segment", async () => {
+    const detail: AutomationPresetDetail = { object: "automation_preset", ...preset };
+    const fetch = stub(detail);
+    const result = await new Dispatch({ apiKey: "sk_test" }).templates.library.automation("newsletter/welcome ?#%");
+    expectTypeOf(result).toEqualTypeOf<Result<AutomationPresetDetail>>();
+    expectTypeOf(result.data!.object).toEqualTypeOf<"automation_preset">();
+    expect(result.data).toEqual(detail);
+    expect(JSON.parse(JSON.stringify(result.data))).toEqual(detail);
+    expect(request(fetch)).toMatchObject({
+      method: "GET", url: `${base}/template-library/automations/newsletter%2Fwelcome%20%3F%23%25`, body: undefined,
+    });
+  });
+
+  it("returns the existing not_found error for an unknown preset", async () => {
+    globalThis.fetch = vi.fn(async () => reply({ name: "not_found", message: "Preset not found" }, { status: 404 }));
+    const result = await new Dispatch({ apiKey: "sk_test" }).templates.library.automation("missing");
+    expect(result.data).toBeNull();
+    expect(result.error).toMatchObject({ name: "not_found", statusCode: 404, message: "Preset not found" });
+  });
+});
+
+describe("automation preset installation", () => {
+  it.each([false, true])("posts encoded options and preserves the full aggregate (dependencies: %s)", async (dependencies) => {
+    const installation = {
+      automation: {
+        object: "automation", id: "auto_1", name: "Welcome", status: "disabled", version: 1,
+        trigger: null, trigger_config: { type: "contact_created" }, reentry: "once",
+        steps: [{ key: "trigger", type: "trigger", config: { type: "contact_created" } }],
+        connections: [], created_at: "2026-10-05T00:00:00Z", updated_at: "2026-10-05T00:00:00Z",
+      },
+      templates: { created: dependencies ? [{ id: "tpl_1", slug: "welcome" }] : [], reused: dependencies ? [{ id: "tpl_2", slug: "tips" }] : [] },
+      events: dependencies ? [{ id: "evt_1", name: "user.activated" }] : [],
+      properties: dependencies ? [{ id: "prop_1", key: "activated", type: "boolean" }] : [],
+      next_steps: ["Review the automation and its emails", "Enable the automation"], request_id: "req_install",
+    };
+    const fetch = stub(installation);
+    const result = await new Dispatch({ apiKey: "sk_test" }).templates.library.installAutomation("onboarding/drip ?#%", {
+      from: "Acme <you@acme.com>", ...(dependencies ? { name: "My onboarding", topicId: "topic_1" } : {}),
+    });
+    expectTypeOf(result).toEqualTypeOf<Result<import("./index.js").AutomationInstallation>>();
+    expect(result.data).toEqual(installation);
+    expect(JSON.parse(JSON.stringify(result.data))).toEqual(installation);
+    expect(request(fetch)).toMatchObject({
+      method: "POST", url: `${base}/template-library/automations/onboarding%2Fdrip%20%3F%23%25/install`,
+      body: { from: "Acme <you@acme.com>", ...(dependencies ? { name: "My onboarding", topic_id: "topic_1" } : {}) },
+    });
+    expect(request(fetch).headers.get("authorization")).toBe("Bearer sk_test");
+  });
+
+  it.each([
+    [403, "forbidden", "Access denied"], [404, "not_found", "Preset not found"],
+    [409, "conflict", "Name already exists"], [422, "validation_error", "Choose a topic"],
+  ])("preserves install errors (%s %s)", async (status, name, message) => {
+    const body = { name, message, request_id: "req_error" };
+    globalThis.fetch = vi.fn(async () => reply(body, { status: status as number, headers: { "x-request-id": "req_error" } }));
+    const result = await new Dispatch({ apiKey: "sk_test" }).templates.library.installAutomation("newsletter-welcome", { from: "you@acme.com" });
+    expect(result.data).toBeNull();
+    expect(result.error).toMatchObject({ ...body, statusCode: status });
+    expect(result.headers?.["x-request-id"]).toBe("req_error");
+  });
+
+  it("keeps list event counts and nullable timestamps without requiring them in details", async () => {
+    const rows: import("./index.js").Event[] = [
+      { id: "evt_0", name: "never", schema: {}, fired_count: 0, last_fired_at: null },
+      { id: "evt_1", name: "fired", schema: {}, fired_count: 3, last_fired_at: "2026-10-05T00:00:00Z" },
+    ];
+    const page = { object: "list", has_more: true, data: rows };
+    const fetch = stub(page);
+    const client = new Dispatch({ apiKey: "sk_test" });
+    const result = await client.events.list({ after: "evt_prev", limit: 2 });
+    expectTypeOf(result).toEqualTypeOf<Result<List<import("./index.js").Event>>>();
+    expect(result.data).toEqual(page);
+    expect(request(fetch).url).toBe(`${base}/events?after=evt_prev&limit=2`);
+    const detail: import("./index.js").Event = { id: "evt_0", name: "never", schema: {} };
+    stub(detail);
+    expect((await client.events.get("evt_0")).data).toEqual(detail);
+  });
+});
+
 describe("constructor", () => {
   it("reads the key, base URL, and user agent from options or the environment", async () => {
     vi.stubEnv("DISPATCH_API_KEY", "sk_env");
@@ -58,6 +164,251 @@ describe("constructor", () => {
 });
 
 describe("transport", () => {
+  it.each(["completed", "exit", "filter", "stopped", "stranded", null, undefined] as const)("preserves nullable/legacy contact activity exit_reason %s", async (exit_reason) => {
+    const activity: ContactActivity = {
+      object: "contact_activity", id: "run_1:completed", type: "automation.run.completed",
+      resource_id: "run_1", label: "done", email_id: null, automation_id: "a/1",
+      run_id: "run_1", created_at: "2026-10-04T00:00:00Z",
+      ...(exit_reason === undefined ? {} : { exit_reason }),
+    };
+    const page = { object: "list", has_more: true, data: [activity] };
+    const fetch = stub(page);
+    const result = await new Dispatch({ apiKey: "sk_test" }).contacts.activity("c/1", { after: "run_0:completed", limit: 5 });
+    expectTypeOf(result.data!.data[0]!.exit_reason).toEqualTypeOf<AutomationExitReason | null | undefined>();
+    expect(result.data).toEqual(page);
+    expect(JSON.parse(JSON.stringify(result.data))).toEqual(page);
+    expect(request(fetch).url).toBe(`${base}/contacts/c%2F1/activity?after=run_0%3Acompleted&limit=5`);
+  });
+
+  it.each([
+    { stranded_runs: 3, by_step: { removed: 2, "send/email": 1 } },
+    { stranded_runs: 0, by_step: {} },
+  ])("previews the ordinary automation update body with a distinct typed response: %j", async (preview) => {
+    const client = new Dispatch({ apiKey: "sk_test" });
+    const payload: AutomationUpdate = {
+      name: "Edited", reentry: "once",
+      steps: [
+        { key: "start", type: "trigger", config: { type: "contact_updated", field: "activated", from: false, to: true } },
+        { key: "send", type: "send_email", config: { template: "welcome", variables: { camelKey: "literal" } } },
+      ],
+      connections: [{ from: "start", to: "send", type: "default" }],
+    };
+    const fetch = stub(preview);
+    const result = await client.automations.dryRun("a/1", payload);
+    expectTypeOf(result).toEqualTypeOf<Result<AutomationDryRun>>();
+    expectTypeOf(result.data!.by_step).toEqualTypeOf<Record<string, number>>();
+    expect(result.data).toEqual(preview);
+    expect(request(fetch)).toMatchObject({
+      method: "PATCH", url: `${base}/automations/a%2F1?dry_run=true`, body: payload,
+    });
+    await client.automations.update("a/1", payload);
+    expect(request(fetch, 1)).toMatchObject({
+      method: "PATCH", url: `${base}/automations/a%2F1`, body: payload,
+    });
+    expectTypeOf<Awaited<ReturnType<typeof client.automations.update>>>().toEqualTypeOf<Result<Automation>>();
+  });
+
+  it.each([403, 409, 422])("preserves automation dry-run permission and validation errors (%s)", async (status) => {
+    const error = { name: status === 409 ? "conflict" : status === 403 ? "forbidden" : "validation_error", statusCode: status, message: "Cannot save this graph" };
+    globalThis.fetch = vi.fn(async () => reply(error, { status })) as never;
+    const result = await new Dispatch({ apiKey: "sk_test" }).automations.dryRun("a1", { steps: [] });
+    expect(result.data).toBeNull();
+    expect(result.error).toEqual(error);
+  });
+
+  it("preserves pause statuses and graph versions without widening creation choices", async () => {
+    expectTypeOf<AutomationCreate["status"]>().toEqualTypeOf<"enabled" | "disabled" | undefined>();
+    expectTypeOf<AutomationUpdate["status"]>().toEqualTypeOf<AutomationStatus | undefined>();
+    expectTypeOf<AutomationCreate["version"]>().toEqualTypeOf<undefined>();
+    expectTypeOf<AutomationUpdate["version"]>().toEqualTypeOf<undefined>();
+    const client = new Dispatch({ apiKey: "sk_test" });
+    for (const status of ["enabled", "paused", "disabled"] as const) {
+      const automation: Automation = {
+        id: "a/1", status, version: 4, trigger: null,
+        trigger_config: { type: "contact_created" }, reentry: "once",
+      };
+      const fetch = stub(automation);
+      const updated = await client.automations.update("a/1", { status });
+      expect(request(fetch)).toMatchObject({
+        method: "PATCH", url: `${base}/automations/a%2F1`, body: { status },
+      });
+      expect(updated.data).toEqual(automation);
+      expectTypeOf(updated.data!.status).toEqualTypeOf<AutomationStatus>();
+      expectTypeOf(updated.data!.version).toEqualTypeOf<number>();
+      expect((await client.automations.get("a/1")).data).toEqual(automation);
+      const listFetch = stub({ object: "list", has_more: false, data: [automation] });
+      const listed = await client.automations.list({ status });
+      expect(request(listFetch).url).toBe(`${base}/automations?status=${status}`);
+      expect(listed.data?.data[0]).toEqual(automation);
+    }
+    for (const enabled of [false, true]) {
+      const fetch = stub();
+      await client.automations.update("a/1", { enabled });
+      expect(request(fetch).body).toEqual({ enabled });
+      await client.automations.create({ name: "Legacy", steps: [], enabled });
+      expect(request(fetch, 1).body).toEqual({ name: "Legacy", steps: [], enabled });
+    }
+    const fetch = vi.fn(async () => reply({ name: "conflict", message: "Disabled cannot pause" }, { status: 409 }));
+    globalThis.fetch = fetch as never;
+    expect((await client.automations.update("a1", { status: "paused" })).error).toMatchObject({ name: "conflict", statusCode: 409 });
+  });
+
+  it("creates, retrieves, and cancels typed enrollment jobs without altering their counts", async () => {
+    const job = {
+      object: "automation_enrollment_job", id: "j/1", automation_id: "a/1", segment_id: null,
+      status: "queued", counts: { total: 501, processed: 0, enrolled: 0, skipped: 0, failed: 0 },
+      error: null, created_at: "2026-10-03T00:00:00Z", completed_at: null,
+    };
+    const fetch = vi.fn(async () => reply(job, { status: 202 }));
+    globalThis.fetch = fetch as never;
+    const client = new Dispatch({ apiKey: "sk_test" });
+    const created = await client.automations.enroll("a/1", { all: true }, { idempotencyKey: "enroll-retry" });
+    expect(created.data).toEqual(job);
+    expectTypeOf(created.data!.counts.enrolled).toEqualTypeOf<number>();
+    expectTypeOf(created.data!.segment_id).toEqualTypeOf<string | null>();
+    expect(request(fetch as never).body).toEqual({ all: true });
+    expect(request(fetch as never).url).toBe(`${base}/automations/a%2F1/enroll`);
+    expect(request(fetch as never).headers.get("idempotency-key")).toBe("enroll-retry");
+    await client.automations.enroll("a/1", { segmentId: "s/1" });
+    expect(request(fetch as never, 1).body).toEqual({ segment_id: "s/1" });
+    expect((await client.automations.getEnrollmentJob("a/1", "j/1")).data).toEqual(job);
+    expect(request(fetch as never, 2)).toMatchObject({
+      method: "GET", url: `${base}/automations/a%2F1/enroll-jobs/j%2F1`, body: undefined,
+    });
+    stub({ ...job, status: "cancelled" });
+    expect((await client.automations.cancelEnrollmentJob("a/1", "j/1")).data?.status).toBe("cancelled");
+  });
+
+  it("cancels a contact import using DELETE and returns its state", async () => {
+    const imported = { object: "contact_import", id: "i/1", status: "cancelled", trigger_automations: true };
+    const fetch = stub(imported);
+    const result = await new Dispatch({ apiKey: "sk_test" }).contacts.imports.cancel("i/1");
+    expect(result.data).toEqual(imported);
+    expect(request(fetch)).toMatchObject({ method: "DELETE", url: `${base}/contacts/imports/i%2F1`, body: undefined });
+  });
+  it.each([undefined, false, true])("preserves the optional stop reset flag: %s", async (resetReentry) => {
+    const fetch = stub({ object: "automation", id: "a1", stopped: 2 });
+    const client = new Dispatch({ apiKey: "sk_test" });
+    const result = resetReentry === undefined
+      ? await client.automations.stop("a/1")
+      : await client.automations.stop("a/1", { resetReentry });
+    const sent = request(fetch);
+    expect(sent.method).toBe("POST");
+    expect(sent.url).toBe(`${base}/automations/a%2F1/stop`);
+    expect(sent.body).toEqual(resetReentry === undefined ? {} : { reset_reentry: resetReentry });
+    expect(result.data?.stopped).toBe(2);
+  });
+
+  it("preserves contact trigger configs, primitive transitions, and reentry", async () => {
+    const configs: AutomationTriggerConfig[] = [
+      { type: "event", event_name: "user.created" },
+      { type: "contact_created" },
+      { type: "contact_updated" },
+      { type: "contact_updated", field: "unsubscribed", from: false, to: true },
+      { type: "contact_updated", field: "properties.score", from: 0, to: 42.5 },
+      { type: "contact_updated", field: "properties.last_active_at", from: null, to: "2026-10-03T09:30:00+02:00" },
+      { type: "contact_updated", field: "first_name", from: "Ada", to: null },
+      { type: "topic_subscribed", topic_id: "topic_1" },
+      { type: "segment_added", segment_id: "segment_1" },
+    ];
+    const client = new Dispatch({ apiKey: "sk_test" });
+    for (const config of configs) {
+      const automation: Automation = { id: "a1", status: "disabled", version: 0, trigger: config.type === "event" ? config.event_name : null, trigger_config: config, reentry: "every_time" };
+      const fetch = stub(automation);
+      const steps = [{ key: "start", type: "trigger", config }];
+      const created = await client.automations.create({ name: "Contacts", steps, reentry: "every_time" });
+      expectTypeOf(created.data!.trigger).toEqualTypeOf<string | null>();
+      expectTypeOf(created.data!.trigger_config).toEqualTypeOf<AutomationTriggerConfig>();
+      expectTypeOf(created.data!.reentry).toEqualTypeOf<AutomationReentry>();
+      expect(created.data).toEqual(automation);
+      expect(request(fetch).body).toEqual({ name: "Contacts", steps, reentry: "every_time" });
+      await client.automations.update("a1", { steps, reentry: "once" });
+      expect(request(fetch, 1).body).toEqual({ steps, reentry: "once" });
+      expect((await client.automations.get("a1")).data).toEqual(automation);
+      expect((await client.automations.duplicate("a1")).data).toEqual(automation);
+      stub({ object: "list", has_more: false, data: [automation] });
+      const list = await client.automations.list();
+      expectTypeOf(list.data!.data[0]!.trigger).toEqualTypeOf<string | null>();
+      expect(list.data?.data[0]).toEqual(automation);
+    }
+    const fetch = stub();
+    const steps = [{ key: "start", type: "trigger", config: { event_name: "user.created" } }];
+    await client.automations.create({ name: "Legacy", trigger: "user.created", steps });
+    expect(request(fetch).body).toEqual({ name: "Legacy", trigger: "user.created", steps });
+  });
+
+  it("preserves typed property fallbacks, date imports, rules, and literal send mappings", async () => {
+    const fetch = stub({ id: "prop_1", object: "contact_property", key: "activated", type: "boolean", fallback_value: false });
+    const client = new Dispatch({ apiKey: "sk_test" });
+    const created = await client.contactProperties.create({ key: "activated", type: "boolean", fallbackValue: false });
+    expectTypeOf(created.data!.type).toEqualTypeOf<PropertyType>();
+    expectTypeOf(created.data!.fallback_value).toEqualTypeOf<PropertyValue>();
+    expect(request(fetch).body).toEqual({ key: "activated", type: "boolean", fallback_value: false });
+    await client.contactProperties.update({ id: "prop_1", fallbackValue: null });
+    expect(request(fetch, 1).body).toEqual({ fallback_value: null });
+    await client.contactProperties.create({ key: "last_active_at", type: "date", fallbackValue: "2026-10-03T09:30:00+02:00" });
+    expect(request(fetch, 2).body.fallback_value).toBe("2026-10-03T09:30:00+02:00");
+
+    const columnMap: ImportColumnMap = { properties: { last_active_at: { column: "Last active", type: "date" } } };
+    await client.contacts.imports.create({ file: "email,Last active\na@example.com,2026-10-03\n", columnMap });
+    const form = request(fetch, 3).body as FormData;
+    expect(JSON.parse(String(form.get("column_map")))).toEqual(columnMap);
+
+    const config: SendEmailConfig = { template: { id: "template_1", variables: { PLAN: "contact.plan", camelKey: false } }, variable_mapping: { PLAN: "contact.plan", WHEN: "event.received_at" } };
+    const rule: Rule = { type: "rule", field: "event.received_at", operator: "within", value: "2 days" };
+    expectTypeOf<Operator>().extract<"not_contains" | "within" | "not_within">().toEqualTypeOf<"not_contains" | "within" | "not_within">();
+    await client.automations.create({ name: "Typed", steps: [{ key: "send", type: "send_email", config }, { key: "condition", type: "condition", config: rule }] });
+    expect(request(fetch, 4).body.steps).toEqual([{ key: "send", type: "send_email", config }, { key: "condition", type: "condition", config: rule }]);
+  });
+
+  it("exposes typed sandbox flags on send, batch, list, and mixed detail responses", async () => {
+    const client = new Dispatch({ apiKey: "sk_test" });
+    const sent = { id: "email_1", sandbox: true };
+    stub(sent);
+    const send = await client.emails.send({ from: "a@acme.com", to: "test@example.com", text: "Hi", subject: "Test" });
+    expectTypeOf(send.data!.sandbox).toEqualTypeOf<boolean>();
+    expect(send.data).toEqual(sent);
+    stub({ data: [sent] });
+    expect((await client.batch.send([{ from: "a@acme.com", to: "test@example.com", text: "Hi", subject: "Test" }])).data?.data[0]?.sandbox).toBe(true);
+    const email = { object: "email", id: "email_1", sandbox: true, last_event: "delivered", recipients: [{ email: "test@example.com", kind: "to", status: "delivered", sandbox: true }] };
+    stub({ object: "list", has_more: false, data: [email] });
+    const page = await client.emails.list();
+    expectTypeOf(page.data!.data[0]!.sandbox).toEqualTypeOf<boolean>();
+    expectTypeOf(page.data!.data[0]!.recipients[0]!.sandbox).toEqualTypeOf<boolean>();
+    expect(page.data?.data[0]).toEqual(email);
+
+    const recipients = [
+      { id: "rcpt_1", email: "test@example.com", kind: "cc", sandbox: true, status: "delivered", created_at: "2026-10-03T10:00:00Z" },
+      { id: "rcpt_2", email: "ada@acme.com", kind: "to", sandbox: false, status: "delivered", created_at: "2026-10-03T10:00:00Z" },
+    ];
+    stub({ ...email, sandbox: false, recipients });
+    const detail = await client.emails.get("email_1");
+    expectTypeOf(detail.data!.recipients[0]!.sandbox).toEqualTypeOf<boolean>();
+    expect(detail.data?.sandbox).toBe(false);
+    expect(detail.data?.recipients).toEqual(recipients);
+    expect(detail.data?.last_event).toBe("delivered");
+  });
+
+  it("forwards automation and step metric filters", async () => {
+    const fetch = stub({ object: "metrics", data: [] });
+    await new Dispatch({ apiKey: "sk_test" }).emails.metrics({ dimensions: ["step"], automationId: ["automation_1"] });
+    const url = new URL(request(fetch).url);
+    expect(url.searchParams.get("dimensions")).toBe("step");
+    expect(url.searchParams.get("automation_id")).toBe("automation_1");
+  });
+
+  it("preserves recipient-specific marketing results on single and batch sends", async () => {
+    const result = { id: "email_1", sandbox: true, emails: [{ id: "email_1", to: "ada@example.com", sandbox: true }, { id: "email_2", to: "bob@dispatch-fixture.net", sandbox: false }] };
+    stub(result);
+    const client = new Dispatch({ apiKey: "sk_test" });
+    const body = { from: "a@example.com", to: ["ada@example.com", "bob@dispatch-fixture.net"], subject: "News", text: "Hi", topicId: "topic_1" };
+    const sent = await client.emails.send(body);
+    expectTypeOf(sent.data!.emails![0]!.sandbox).toEqualTypeOf<boolean>();
+    expect(sent.data?.emails).toEqual(result.emails);
+    stub({ data: [result] });
+    expect((await client.batch.send([body])).data?.data[0]?.emails).toEqual(result.emails);
+  });
+
   it("returns data, a null error, and the response headers", async () => {
     globalThis.fetch = vi.fn(async () => reply({ id: "email_1" }, { headers: { "x-request-id": "req_1" } })) as never;
     const result = await new Dispatch({ apiKey: "sk_test" }).emails.send({ from: "a@example.com", to: "b@example.com", subject: "Hi", text: "Yo" });
@@ -129,6 +480,39 @@ describe("transport", () => {
     globalThis.fetch = vi.fn(async () => new Response(JSON.stringify("oops"), { status: 500, statusText: "Internal Server Error" })) as never;
     const result = await new Dispatch({ apiKey: "sk_test" }).logs.list();
     expect(result.error).toEqual({ name: "application_error", statusCode: 500, message: "Internal Server Error" });
+  });
+});
+
+describe("template tracking", () => {
+  const createCases: Array<{ tracking: string; input: TemplateCreate; body: { name: string; track?: boolean } }> = [
+    { tracking: "true", input: { name: "Welcome", track: true }, body: { name: "Welcome", track: true } },
+    { tracking: "false", input: { name: "Welcome", track: false }, body: { name: "Welcome", track: false } },
+    { tracking: "omitted", input: { name: "Welcome" }, body: { name: "Welcome" } }
+  ];
+  const updateCases: Array<{ tracking: string; input: TemplateUpdate; body: { subject: string; track?: boolean } }> = [
+    { tracking: "true", input: { subject: "Welcome back", track: true }, body: { subject: "Welcome back", track: true } },
+    { tracking: "false", input: { subject: "Welcome back", track: false }, body: { subject: "Welcome back", track: false } },
+    { tracking: "omitted", input: { subject: "Welcome back" }, body: { subject: "Welcome back" } }
+  ];
+
+  it.each(createCases)("preserves $tracking tracking in template create request JSON", async ({ input, body }) => {
+    const fetch = stub({ id: "template_1" });
+    await new Dispatch({ apiKey: "sk_test" }).templates.create(input);
+    const sent = request(fetch);
+    expect(sent.url).toBe(`${base}/templates`);
+    expect(sent.method).toBe("POST");
+    expect(sent.body).toEqual(body);
+    expect(Object.hasOwn(sent.body, "track")).toBe(Object.hasOwn(body, "track"));
+  });
+
+  it.each(updateCases)("preserves $tracking tracking in template update request JSON", async ({ input, body }) => {
+    const fetch = stub({ id: "template_1" });
+    await new Dispatch({ apiKey: "sk_test" }).templates.update("welcome", input);
+    const sent = request(fetch);
+    expect(sent.url).toBe(`${base}/templates/welcome`);
+    expect(sent.method).toBe("PATCH");
+    expect(sent.body).toEqual(body);
+    expect(Object.hasOwn(sent.body, "track")).toBe(Object.hasOwn(body, "track"));
   });
 });
 
@@ -313,6 +697,7 @@ const cases: Case[] = [
   ["automations.remove", (c) => c.automations.remove("a1"), "DELETE", "/automations/a1"],
   ["automations.duplicate", (c) => c.automations.duplicate("a1"), "POST", "/automations/a1/duplicate"],
   ["automations.stop", (c) => c.automations.stop("a1"), "POST", "/automations/a1/stop"],
+  ["automations.cancelEnrollmentJob", (c) => c.automations.cancelEnrollmentJob("a/1", "j/1"), "DELETE", "/automations/a%2F1/enroll-jobs/j%2F1"],
   ["automations.runs.list", (c) => c.automations.runs.list("a1", { status: "running,failed" }), "GET", "/automations/a1/runs?status=running%2Cfailed"],
   ["automations.runs.get", (c) => c.automations.runs.get("a1", "run_1"), "GET", "/automations/a1/runs/run_1"],
   ["events.send", (c) => c.events.send({ event: "user.created", contactId: "c1", payload: { planTier: "pro" } }), "POST", "/events/send", { event: "user.created", contact_id: "c1", payload: { planTier: "pro" } }],
@@ -326,6 +711,8 @@ const cases: Case[] = [
   ["logs.get", (c) => c.logs.get("log_1"), "GET", "/logs/log_1"],
   ["logs.export", (c) => c.logs.export(), "GET", "/logs/export"],
   ["brand.get", (c) => c.brand.get(), "GET", "/brand"],
+  ["settings.get", (c) => c.settings.get(), "GET", "/settings"],
+  ["settings.update", (c) => c.settings.update({ importTriggerAutomations: true, sandboxDomains: ["qa.test"] }), "PATCH", "/settings", { import_trigger_automations: true, sandbox_domains: ["qa.test"] }],
   ["brand.update", (c) => c.brand.update({ productName: "Acme", logoUrl: null }), "PATCH", "/brand", { product_name: "Acme", logo_url: null }],
   ["usage.get", (c) => c.usage.get(), "GET", "/usage"],
   ["system.get", (c) => c.system.get(), "GET", "/system"],
@@ -463,6 +850,37 @@ describe("resource methods", () => {
     expect(form.get("on_conflict")).toBe("skip");
     expect(JSON.parse(String(form.get("column_map")))).toEqual({ email: { column: "email", type: "string" } });
     expect(await (form.get("file") as Blob).text()).toBe("email\nada@x.com\n");
+  });
+
+  it.each([undefined, false, true])("preserves the optional import automation flag: %s", async (triggerAutomations) => {
+    // Omission must let the API resolve a tenant default, not send the SDK's own default.
+    const imported = { object: "contact_import", id: "imp_1", trigger_automations: triggerAutomations ?? true };
+    const fetch = stub(imported);
+    const client = new Dispatch({ apiKey: "sk_test" });
+    const created = await client.contacts.imports.create({
+      file: "email\nada@x.com\n",
+      ...(triggerAutomations === undefined ? {} : { triggerAutomations })
+    });
+    const sent = request(fetch);
+    expect(sent.method).toBe("POST");
+    expect(sent.url).toBe(`${base}/contacts/imports`);
+    expect(sent.headers.get("content-type")).toBeNull();
+    const form = sent.body as FormData;
+    expect(form.has("trigger_automations")).toBe(triggerAutomations !== undefined);
+    expect(form.get("trigger_automations")).toBe(triggerAutomations === undefined ? null : String(triggerAutomations));
+    expect(await (form.get("file") as Blob).text()).toBe("email\nada@x.com\n");
+    expectTypeOf(created.data!.trigger_automations).toEqualTypeOf<boolean>();
+    expect(created.data).toEqual(imported);
+
+    const detail = await client.contacts.imports.get("imp_1");
+    expectTypeOf(detail.data!.trigger_automations).toEqualTypeOf<boolean>();
+    expect(detail.data).toEqual(imported);
+    expect(request(fetch, 1).url).toBe(`${base}/contacts/imports/imp_1`);
+    const listFetch = stub({ object: "list", has_more: false, data: [imported] });
+    const list = await client.contacts.imports.list();
+    expectTypeOf(list.data!.data[0]!.trigger_automations).toEqualTypeOf<boolean>();
+    expect(list.data?.data[0]).toEqual(imported);
+    expect(request(listFetch).url).toBe(`${base}/contacts/imports`);
   });
 
   it("returns missing_required_field instead of throwing when a contact is not named", async () => {

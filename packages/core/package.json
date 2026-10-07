@@ -6,7 +6,8 @@
   "types": "dist/index.d.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./env": "./src/env.ts"
+    "./env": "./src/env.ts",
+    "./brand": "./src/brand.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -15,6 +16,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@vercel/oidc-aws-credentials-provider": "^3.3.11",
     "dotenv": "^16.5.0",
     "undici": "^7.30.0",
     "zod": "^3.25.42"

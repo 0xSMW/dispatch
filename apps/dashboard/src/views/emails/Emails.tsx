@@ -20,6 +20,7 @@ import { useClient } from "../../shell/session";
 import type { Email } from "../../types";
 import { useKeyOptions } from "../keys/options";
 import { emailTabs } from "../tabs";
+import { Sandbox } from "./Sandbox";
 
 export const emailCsv: Array<CsvColumn<Email>> = [
   { header: "id", value: (row) => row.id },
@@ -27,6 +28,7 @@ export const emailCsv: Array<CsvColumn<Email>> = [
   { header: "from", value: (row) => row.from },
   { header: "subject", value: (row) => row.subject },
   { header: "status", value: (row) => row.last_event },
+  { header: "sandbox", value: (row) => String(row.sandbox) },
   { header: "created_at", value: (row) => row.created_at },
 ];
 
@@ -83,7 +85,7 @@ export function Emails() {
             </span>
           ),
         },
-        { header: "Status", cell: (row) => <Badge value={row.last_event} /> },
+        { header: "Status", cell: (row) => <span className="inline"><Badge value={row.last_event} />{row.sandbox ? <Sandbox /> : null}</span> },
         { header: "Subject", cell: (row) => <span className="truncate">{row.subject}</span> },
         { header: "Sent", cell: (row) => <Time value={row.created_at} /> },
       ]}

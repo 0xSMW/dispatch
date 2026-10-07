@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ApiError } from "@dispatchmail/core";
-import { addTemplateVersion, createTemplate, installLibrary, listTemplateVersions, publishTemplate, templateDetail, updateTemplateMeta } from "./templates.js";
+import { addTemplateVersion, createTemplate, installLibrary, installLibraryMissing, listTemplateVersions, publishTemplate, templateDetail, updateTemplateMeta } from "./templates.js";
 
 function memoryDb() {
   const sqls: string[] = [];
@@ -33,6 +33,36 @@ function memoryDb() {
 }
 
 describe("templates", () => {
+  it("publishes a missing alias only for the winning insert", async () => {
+    const query = vi.fn(async (sql: string, values: unknown[]) =>
+      ({ rows: sql.includes("do nothing returning id") ? [{ id: values[0] }] : [] }));
+    const result = await installLibraryMissing({ query }, "tenant_1", {
+      slug: "welcome", name: "Welcome", subject: "Hello", html: "<p>Hello</p>", kind: "transactional",
+    });
+    expect(result).toEqual({ id: expect.stringMatching(/^template_/), created: true });
+    expect(query.mock.calls[0]![0]).toContain("on conflict (tenant_id, alias)");
+    expect(query.mock.calls.filter(([sql]) => sql.includes("insert into template_versions"))).toHaveLength(1);
+    expect(query.mock.calls.filter(([sql]) => sql.includes("set published_version_id"))).toHaveLength(1);
+  });
+
+  it("reuses a concurrent alias without writing content, versions or publication", async () => {
+    const query = vi.fn(async (sql: string) => ({ rows: sql.startsWith("select t.id") ? [{ id: "template_edited" }] : [] }));
+    expect(await installLibraryMissing({ query }, "tenant_1", {
+      slug: "welcome", name: "Welcome", subject: "Library", html: "<p>Library</p>",
+    })).toEqual({ id: "template_edited", created: false });
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(query.mock.calls[1]![0]).toContain("for update of t");
+    expect(query.mock.calls[1]![1]).toEqual(["tenant_1", "welcome"]);
+  });
+
+  it("conflicts rather than repairing a disappeared or unusable alias winner", async () => {
+    const query = vi.fn(async () => ({ rows: [] }));
+    await expect(installLibraryMissing({ query }, "tenant_1", {
+      slug: "welcome", name: "Welcome", subject: "Library", html: "<p>Library</p>",
+    })).rejects.toMatchObject({ name: "conflict", statusCode: 409 });
+    expect(query).toHaveBeenCalledTimes(2);
+  });
+
   it("looks up a template by id or alias", async () => {
     const db = memoryDb();
     const row = await templateDetail(db, "tenant_1", "welcome");
@@ -45,7 +75,7 @@ describe("templates", () => {
     const draft = memoryDb();
     await createTemplate(draft, "tenant_1", { name: "Welcome", alias: "welcome", subject: "Hello", text: "Hi" });
     const inserted = draft.sqls.find((sql) => sql.includes("insert into template_versions"));
-    expect(inserted).toContain("null)");
+    expect(inserted).toContain("null, clock_timestamp())");
     expect(draft.sqls.some((sql) => sql.includes("set published_version_id"))).toBe(false);
 
     const published = memoryDb();
@@ -81,7 +111,8 @@ describe("templates", () => {
   it("adds an unpublished version unless publish is set", async () => {
     const draft = memoryDb();
     await addTemplateVersion(draft, "tenant_1", "template_1", { name: "Welcome", subject: "Next", html: "<p>Next</p>" });
-    expect(draft.sqls.find((sql) => sql.includes("insert into template_versions"))).toContain("null)");
+    expect(draft.sqls.find((sql) => sql.includes("insert into template_versions"))).toContain("null, clock_timestamp())");
+    expect(draft.sqls).toContain("select id from templates where tenant_id = $1 and id = $2 for update");
     expect(draft.sqls.some((sql) => sql.includes("set published_version_id"))).toBe(false);
 
     const published = memoryDb();

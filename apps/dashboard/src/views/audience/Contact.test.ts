@@ -18,7 +18,7 @@ const ada: ContactRow = {
   updated_at: "2026-09-01T00:00:00.000Z",
 };
 
-function api() {
+function api(activity?: unknown[]) {
   return stubApi({
     "GET /contacts/contact_ada": ada,
     "PATCH /contacts/contact_ada": (_url: URL, init: RequestInit) => ({ ...ada, ...JSON.parse(String(init.body)), properties: ada.properties }),
@@ -39,9 +39,22 @@ function api() {
       { object: "topic", id: "topic_news", name: "News", key: "news", description: null, visibility: "public", default_subscription: "opt_in" },
       { object: "topic", id: "topic_tips", name: "Tips", key: "tips", description: null, visibility: "private", default_subscription: "opt_out" },
     ]),
-    "GET /contacts/contact_ada/activity": list([
+    "GET /contacts/contact_ada/activity": list(activity ?? [
       { object: "contact_activity", id: "ev_1", type: "email.delivered", resource_id: "email_1", label: "Welcome", email_id: "email_1", created_at: "2026-09-02T00:00:00.000Z" },
       { object: "contact_activity", id: "sc_1", type: "segment.added", resource_id: "seg_vip", label: "VIP", email_id: null, created_at: "2026-09-01T00:00:00.000Z" },
+      { object: "contact_activity", id: "run_1:started", type: "automation.run.started", resource_id: "run_1", label: "Onboarding", email_id: null, automation_id: "automation_1", run_id: "run_1", created_at: "2026-09-01T00:00:00.000Z" },
+      { object: "contact_activity", id: "fired_1", type: "event.fired", resource_id: "fired_1", label: "user.joined", email_id: null, created_at: "2026-09-01T00:00:00.000Z" },
+      ...["done", "failed", "stopped"].map((state) => ({
+        object: "contact_activity",
+        id: `run_${state}:completed`,
+        type: "automation.run.completed",
+        resource_id: `run_${state}`,
+        label: state,
+        email_id: null,
+        automation_id: "automation_1",
+        run_id: `run_${state}`,
+        created_at: "2026-09-02T00:00:00.000Z",
+      })),
     ]),
   });
 }
@@ -76,8 +89,56 @@ describe("Contact", () => {
     expect(screen.getByText("Default: opt out")).toBeTruthy();
     expect(await screen.findByText("Added to segment")).toBeTruthy();
     expect(screen.getByRole("link", { name: "Welcome" }).getAttribute("href")).toBe("/emails/email_1");
+    expect(screen.getByRole("link", { name: "Onboarding" }).getAttribute("href")).toBe("/automations/automation_1/editor?tab=runs&run=run_1");
+    expect(screen.getByText("Event received")).toBeTruthy();
     expect(((await screen.findByLabelText("seats")) as HTMLInputElement).value).toBe("3");
     expect(screen.getByText("Not a defined property.")).toBeTruthy();
+  });
+
+  it.each(["done", "failed", "stopped"])("shows a completed %s run with its state label and run link", async (state) => {
+    api();
+    open();
+    const link = await screen.findByRole("link", { name: state });
+    expect(link.getAttribute("href")).toBe(`/automations/automation_1/editor?tab=runs&run=run_${state}`);
+    expect(within(link.closest("tr")!).getByText("Automation run ended")).toBeTruthy();
+  });
+
+  it.each([
+    ["completed", "done", "Reached the end"],
+    ["exit", "done", "Exit step"],
+    ["filter", "done", "Filter did not match"],
+    ["stopped", "stopped", "Automation stopped"],
+    ["stranded", "stopped", "Waiting step removed or changed"],
+  ])("explains stored %s beside the unchanged %s state and run link", async (exit_reason, state, explanation) => {
+    api([{
+      object: "contact_activity", id: "run_1:completed", type: "automation.run.completed",
+      resource_id: "run_1", label: state, email_id: null, automation_id: "automation_1",
+      run_id: "run_1", exit_reason, created_at: "2026-09-02T00:00:00.000Z",
+    }]);
+    open();
+    const link = await screen.findByRole("link", { name: state });
+    expect(link.getAttribute("href")).toBe("/automations/automation_1/editor?tab=runs&run=run_1");
+    expect(within(link.closest("tr")!).getByText(`· ${explanation}`)).toBeTruthy();
+    expect(link.textContent).toBe(state);
+  });
+
+  it.each([
+    ["automation.run.completed", "done", undefined],
+    ["automation.run.completed", "failed", null],
+    ["automation.run.completed", "stopped", null],
+    ["automation.run.started", "Onboarding", "exit"],
+    ["event.fired", "user.joined", "exit"],
+  ])("adds no explanation for legacy/null/nonterminal %s (%s, %s)", async (type, label, exit_reason) => {
+    api([{
+      object: "contact_activity", id: "run_1", type, resource_id: "run_1", label,
+      email_id: null, automation_id: "automation_1", run_id: "run_1",
+      ...(exit_reason === undefined ? {} : { exit_reason }), created_at: "2026-09-02T00:00:00.000Z",
+    }]);
+    open();
+    const link = await screen.findByRole("link", { name: label! });
+    const cells = within(link.closest("tr")!).getAllByRole("cell");
+    expect(cells[1].textContent).toBe(label);
+    expect(link.getAttribute("href")).toBe("/automations/automation_1/editor?tab=runs&run=run_1");
   });
 
   it("saves properties, sending cleared values as null", async () => {
@@ -94,6 +155,37 @@ describe("Contact", () => {
       last_name: "Lovelace",
       properties: { seats: 8, legacy: null },
     });
+  });
+
+  it("edits boolean/date values with typed controls and prevents malformed ISO writes", async () => {
+    const typed = { ...ada, properties: { active: { value: true, type: "boolean" }, renewed: { value: "2026-10-04", type: "date" }, topics: { value: false, type: "boolean" } } };
+    const fetch = stubApi({
+      "GET /contacts/contact_ada": typed,
+      "PATCH /contacts/contact_ada": typed,
+      "GET /contact-properties": list([
+        { key: "active", type: "boolean", fallback_value: false },
+        { key: "renewed", type: "date", fallback_value: null },
+        { key: "topics", type: "boolean", fallback_value: false },
+      ]),
+      "GET /contacts/contact_ada/segments": list([]), "GET /segments": list([]),
+      "GET /contacts/contact_ada/topics": list([]), "GET /topics": list([]),
+      "GET /contacts/contact_ada/activity": list([]),
+    });
+    open();
+    await screen.findByLabelText("active");
+    fireEvent.change(screen.getByLabelText("active"), { target: { value: "false" } });
+    fireEvent.change(screen.getByLabelText("topics"), { target: { value: "true" } });
+    fireEvent.change(screen.getByLabelText("renewed format"), { target: { value: "text" } });
+    fireEvent.change(screen.getByLabelText("renewed"), { target: { value: "2026-02-30" } });
+    expect(screen.getByRole("button", { name: /^Save/ })).toHaveProperty("disabled", true);
+    fireEvent.submit(screen.getByLabelText("renewed").closest("form")!);
+    expect(calls(fetch).some((call) => call.startsWith("PATCH"))).toBe(false);
+    const date = "2026-10-05T12:34:56+05:30";
+    fireEvent.change(screen.getByLabelText("renewed"), { target: { value: date } });
+    fireEvent.click(screen.getByRole("button", { name: /^Save/ }));
+    await waitFor(() => expect(bodyOf(fetch, "PATCH /contacts/contact_ada")).toEqual({
+      first_name: "Ada", last_name: null, properties: { active: false, topics: true, renewed: date },
+    }));
   });
 
   it("unsubscribes the contact", async () => {
@@ -134,5 +226,10 @@ describe("propertyPatch", () => {
         { "property:n": "3", "property:same": "1" },
       ),
     ).toEqual({ first_name: null, last_name: "L", properties: { n: 4, s: "hi" } });
+  });
+  it("preserves false, ISO strings and null for cleared boolean/date properties", () => {
+    expect(propertyPatch({ first_name: "", last_name: "", "property:b": "false", "property:d": "2026-10-04T12:34:56+05:30", "property:clear": "" }, { b: "boolean", d: "date", clear: "date" }, { "property:clear": "2026-10-03" })).toEqual({
+      first_name: null, last_name: null, properties: { b: false, d: "2026-10-04T12:34:56+05:30", clear: null },
+    });
   });
 });

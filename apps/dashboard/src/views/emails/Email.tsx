@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Mail, Paperclip } from "lucide-react";
 import { Badge, statusToVariant } from "../../components/Badge";
+import { Checks, type CheckRow } from "../../components/Checks";
 import { Code } from "../../components/Code";
 import { ConfirmPhrase } from "../../components/ConfirmPhrase";
 import { Empty, Failed } from "../../components/Empty";
@@ -21,11 +22,12 @@ import { useMutation } from "../../hooks/useMutation";
 import { useAll, useResource } from "../../hooks/useResource";
 import { usable, useWhen, whenHint } from "../../lib/when";
 import { useCan, useClient } from "../../shell/session";
-import type { Attachment, Email as EmailRow, EmailEvent, EmailInsights, Insight, List } from "../../types";
+import type { Attachment, Email as EmailRow, EmailEvent, EmailInsights, List } from "../../types";
 import { cancelable, retryable } from "./Emails";
 import { Preview } from "./Preview";
 import { problemOf, ProblemBanner } from "./Problem";
 import { Share } from "./Share";
+import { Sandbox, sandboxHint } from "./Sandbox";
 import "../../styles/operations.css";
 
 type Body = "preview" | "text" | "html" | "attachments" | "insights";
@@ -34,6 +36,7 @@ type Body = "preview" | "text" | "html" | "attachments" | "insights";
 export function timeline(events: EmailEvent[]): TimelineEvent[] {
   return events.map((event) => {
     const data = event.data ?? {};
+    const simulated = data.sandbox === true;
     const bounce = data.bounce as { type?: string; subType?: string; message?: string } | undefined;
     const failed = data.failed as { reason?: string } | undefined;
     const suppressed = data.suppressed as { message?: string } | undefined;
@@ -43,10 +46,10 @@ export function timeline(events: EmailEvent[]): TimelineEvent[] {
       : (failed?.reason ?? suppressed?.message ?? click?.link ?? (Array.isArray(data.recipients) ? `To ${(data.recipients as string[]).join(", ")}` : undefined));
     return {
       id: event.id,
-      label: event.type.replace(/^email\./, "").replaceAll("_", " "),
+      label: event.type.replace(/^email\./, "").replaceAll("_", " ") + (simulated ? " (simulated)" : ""),
       status: event.type,
       time: event.created_at,
-      detail: detail || undefined,
+      detail: simulated ? [sandboxHint, detail].filter(Boolean).join(" ") : detail || undefined,
     };
   });
 }
@@ -94,6 +97,7 @@ export function Email() {
           row ? (
             <>
               <Badge value={row.last_event} />
+              {row.sandbox ? <Sandbox /> : null}
               <Menu
                 label="Email actions"
                 items={[
@@ -110,6 +114,10 @@ export function Email() {
       />
 
       {problem ? <ProblemBanner problem={problem} /> : null}
+
+      {row?.sandbox ? <p className="muted">{sandboxHint}</p> : row?.recipients?.some((recipient) => recipient.sandbox) ? (
+        <p className="muted">Sandbox recipients are simulated and are never sent externally. Other recipients follow normal delivery.</p>
+      ) : null}
 
       {row ? (
         <Facts
@@ -149,6 +157,20 @@ export function Email() {
       ) : (
         <Skeleton lines={3} />
       )}
+
+      {row?.recipients?.length ? (
+        <Panel title="Recipients">
+          <Table
+            compact
+            rows={row.recipients}
+            columns={[
+              { header: "Email", cell: (recipient) => recipient.email },
+              { header: "Kind", cell: (recipient) => recipient.kind.toUpperCase() },
+              { header: "Status", cell: (recipient) => <span className="inline"><Badge value={recipient.status} />{recipient.sandbox ? <Sandbox /> : null}</span> },
+            ]}
+          />
+        </Panel>
+      ) : null}
 
       <Panel title="Events">
         {events.error ? (
@@ -250,37 +272,26 @@ function Reschedule({ email, onClose, onDone }: { email: EmailRow; onClose: () =
   );
 }
 
-const groups: Array<{ key: keyof Omit<EmailInsights, "object" | "email_id">; title: string; tone: "danger" | "warning" | "success" }> = [
-  { key: "needs_attention", title: "Needs attention", tone: "danger" },
-  { key: "possible_improvements", title: "Possible improvements", tone: "warning" },
-  { key: "doing_great", title: "Doing great", tone: "success" },
+const groups: Array<{ key: keyof Omit<EmailInsights, "object" | "email_id">; title: string; tone: CheckRow["tone"] }> = [
+  { key: "needs_attention", title: "Needs attention", tone: "fail" },
+  { key: "possible_improvements", title: "Possible improvements", tone: "warn" },
+  { key: "doing_great", title: "Doing great", tone: "ok" },
 ];
 
 function Insights({ state }: { state: { data: EmailInsights | null; loading: boolean; error: string | null; reload: () => Promise<void> } }) {
-  if (state.error) return <Failed message={state.error} onRetry={state.reload} />;
-  if (!state.data) return <Skeleton lines={4} />;
-  const data = state.data;
   return (
-    <div className="insights">
-      {groups.map((group) => (
-        <section key={group.key} className="stack">
-          <h3 className="inline">
-            {group.title} <Badge value={data[group.key].length} variant={data[group.key].length ? group.tone : "neutral"} />
-          </h3>
-          {data[group.key].length === 0 ? (
-            <p className="dim">Nothing here.</p>
-          ) : (
-            <ul className="insightList">
-              {data[group.key].map((item: Insight) => (
-                <li key={item.id} className={`insight ${group.tone}`}>
-                  <strong>{item.title}</strong>
-                  <span className="muted">{item.detail}</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-      ))}
-    </div>
+    <Checks
+      rows={groups.flatMap((group) => (state.data?.[group.key] ?? []).map((item): CheckRow => ({
+        id: item.id,
+        group: group.key,
+        tone: group.tone,
+        text: item.title,
+        detail: item.detail,
+      })))}
+      groups={groups.map((group) => ({ id: group.key, title: group.title, tone: group.tone }))}
+      loading={!state.data}
+      error={state.error}
+      onRetry={state.reload}
+    />
   );
 }

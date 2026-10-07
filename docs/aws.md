@@ -2,7 +2,7 @@
 
 Dispatch talks to SES, SQS, S3, and Route 53 through the AWS SDK. Credentials come from the SDK's default chain: environment variables, a shared profile, or an instance or task role.
 
-There is no reference deployment. `infra/terraform` holds an empty `dispatch` module that creates nothing. Do not expect it to provision ECS, RDS, queues, or SES resources. [Self-hosting](self-hosting/README.md) lists what a deployment has to set up by hand.
+The starter module in `infra/terraform` creates a private, encrypted S3 content bucket and encrypted send and webhook queues. It does not provision compute, a database, Redis, SES identities or receipt rules, subscriptions, or the IAM wiring for a complete deployment. [Self-hosting](self-hosting/README.md) lists the remaining resources a deployment must configure.
 
 ## Calls Dispatch makes
 

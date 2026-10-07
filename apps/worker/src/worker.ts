@@ -23,6 +23,10 @@ import {
 import {
   connect,
   executeAutomationRun,
+  claimAutomationRuns,
+  processEnrollmentJobs,
+  pruneInboundDeliveries,
+  pruneInboundDeliveriesIfDue,
   tx,
   type Queryable,
 } from "@dispatchmail/db";
@@ -35,7 +39,7 @@ import { verifyDueDomains } from "./domains.js";
 import { applySesEvent, consumeOnce, type SesEvent } from "./events.js";
 import { applyInbound, type SesReceipt } from "./inbound.js";
 import { startImports } from "./imports.js";
-import { pruneLogsIfDue } from "./logs.js";
+import { pruneLogs, pruneLogsIfDue, pruneContactChanges, pruneContactChangesIfDue } from "./logs.js";
 
 const db = connect();
 const concurrency = Number(process.env.WORKER_CONCURRENCY ?? 5);
@@ -50,23 +54,20 @@ assertRealProvider();
 const provider = (process.env.SES_PROVIDER || "fake") === "ses" ? createSesProvider() : fakeProvider();
 const pollState = { last: 0 };
 const logPrune = { last: 0 };
+const changesPrune = { last: 0 };
+const inboundPrune = { last: 0 };
+const claimCursor = { normal: "", bulk: "" };
 
-type AutomationRunRef = {
-  id: string;
-  tenant_id: string;
-  wait_event: string | null;
-};
-
-export async function tick() {
+export async function tick(options: { durable?: boolean } = {}) {
   const jobs = await claimJobs();
-  await Promise.all(jobs.map((job) => processJob(job)));
-  const runs = await claimAutomationRuns();
+  await Promise.all(jobs.map((job) => processJob(job, options.durable)));
+  const runs = await claimAutomationRuns(db, concurrency, claimCursor);
   await Promise.all(
-    runs.map((run) => executeAutomationRun(db, run.tenant_id, run.id, { publicUrl })),
+    runs.map((run) => executeAutomationRun(db, run.tenant_id, run.id, { publicUrl, appUrl, secret: appSecret })),
   );
   const attempts = await processQueuedAttempts();
   // Each of these stands alone. A failure in one is logged and the others still run.
-  await alone("broadcasts", () =>
+  const broadcasts = await alone("broadcasts", () =>
     sendBroadcasts(db, {
       publicUrl,
       appUrl,
@@ -75,14 +76,17 @@ export async function tick() {
       onError: (broadcastId, error) => console.error(`broadcast ${broadcastId ?? "claim"} failed`, error),
     }),
   );
-  await alone("imports", () => startImports(db, storage));
-  await alone("log pruning", () => pruneLogsIfDue(db, logPrune));
-  return { jobs: jobs.length, runs: runs.length, attempts };
+  const imports = await alone("imports", () => startImports(db, storage, undefined, undefined, { bounded: options.durable }));
+  const enrollments = await alone("enrollments", () => processEnrollmentJobs(db));
+  await alone("log pruning", () => options.durable ? pruneLogs(db, undefined, undefined, 1) : pruneLogsIfDue(db, logPrune));
+  await alone("contact change pruning", () => options.durable ? pruneContactChanges(db, undefined, undefined, 1) : pruneContactChangesIfDue(db, changesPrune));
+  await alone("inbound delivery pruning", () => options.durable ? pruneInboundDeliveries(db, undefined, undefined, 1) : pruneInboundDeliveriesIfDue(db, inboundPrune));
+  return { jobs: jobs.length, runs: runs.length, attempts, broadcasts: broadcasts ?? 0, imports: imports ?? 0, enrollments: enrollments ?? 0 };
 }
 
-async function alone(name: string, run: () => Promise<unknown>) {
+async function alone<T>(name: string, run: () => Promise<T>) {
   try {
-    await run();
+    return await run();
   } catch (error) {
     console.error(`${name} failed`, error);
   }
@@ -170,11 +174,11 @@ async function claimJobs() {
   });
 }
 
-async function processJob(job: Job) {
+async function processJob(job: Job, durable = false) {
   try {
-    await deliverJob(db, storage, provider, job);
+    await deliverJob(db, storage, provider, job, { durable });
   } catch (error) {
-    await handleSendFailure(db, job, error);
+    await handleSendFailure(db, job, error, { durable });
   }
 }
 
@@ -405,34 +409,6 @@ async function failAttempt(
   });
 }
 
-async function claimAutomationRuns() {
-  return tx(db, async (client) => {
-    const rows = await client.query<AutomationRunRef>(
-      // Three kinds of work: a run an event just started or woke (ready), a run whose delay or
-      // wait has run out (waiting), and a run a stopped worker left behind (running, with no
-      // step committed for five minutes). Every step refreshes updated_at.
-      `select id, tenant_id, wait_event
-       from automation_runs
-       where state = 'ready'
-          or (state = 'waiting' and resume_at is not null and resume_at <= now())
-          or (state = 'running' and updated_at < now() - interval '5 minutes')
-       order by coalesce(resume_at, created_at), id
-       limit $1
-       for update skip locked`,
-      [concurrency],
-    );
-    if (rows.rowCount === 0) return [];
-    // A wait that ran out is marked as timed out, so the run takes the timeout branch.
-    await client.query(
-      `update automation_runs
-       set resume_data = case when state = 'waiting' then jsonb_build_object('timed_out', wait_event is not null) else resume_data end,
-         state = 'running', resume_at = null, wait_event = null, updated_at = now()
-       where id = any($1)`,
-      [rows.rows.map((row) => row.id)],
-    );
-    return rows.rows;
-  });
-}
 
 async function markWebhook(
   client: Queryable,

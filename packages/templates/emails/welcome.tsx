@@ -65,6 +65,9 @@ Welcome.PreviewProps = {
 } satisfies Props;
 Welcome.Subject = "Welcome to {{{PRODUCT_NAME}}}";
 Welcome.Category = "authentication";
+Welcome.Kind = "transactional" as const;
+Welcome.Stage = "onboarding" as const;
+Welcome.When = "Send when a new account is ready to use. Link to the first useful step in the product.";
 Welcome.Track = false;
 Welcome.Description = "Sent when a new account is ready to use.";
 Welcome.Variables = [

@@ -92,6 +92,9 @@ ShippingUpdate.PreviewProps = {
 } satisfies Props;
 ShippingUpdate.Subject = "{{{HEADLINE}}}";
 ShippingUpdate.Category = "commerce";
+ShippingUpdate.Kind = "transactional" as const;
+ShippingUpdate.Stage = null;
+ShippingUpdate.When = "Send when an order's shipping status changes. Include the carrier and tracking details when available.";
 ShippingUpdate.Track = true;
 ShippingUpdate.Description = "Sent when an order's shipping status changes.";
 ShippingUpdate.Variables = [

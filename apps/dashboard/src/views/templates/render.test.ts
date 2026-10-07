@@ -58,7 +58,7 @@ describe("the same output as the server", () => {
     const library = JSON.parse(readFileSync(new URL("../../../../../packages/templates/library.json", import.meta.url), "utf8")) as {
       templates: Array<{ slug: string; subject: string; html: string; text: string; variables: never[]; sample: Record<string, unknown> }>;
     };
-    expect(library.templates.length).toBe(16);
+    expect(library.templates.length).toBe(25);
     for (const logo of ["", "https://acme.example/logo.png"]) {
       const context = {
         ...sampleContact,

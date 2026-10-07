@@ -27,7 +27,7 @@ export const update = new Command("update")
           [{ key: "value", flag: "--fallback-value", label: "Fallback value" }],
           globals,
         );
-        // The flag is text. A number property needs a number, so its type is read first.
+        // Flags are text. Read the stored type before converting a number or boolean fallback.
         const property = await unwrap<{ type?: string }>(requireClient(globals).contactProperties.get(target));
         return { id: target, fallbackValue: fallback(asked.value, property.type) };
       },

@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { h, signIn } from "../../testing";
 import { template } from "./fixtures";
 import { api, calls, list, renderAt } from "./harness";
-import { declare, patchBody, publishWarnings, TemplateEditor, testValues, toForm } from "./TemplateEditor";
+import { declare, patchBody, PublishChecks, publishRows, publishWarnings, templateChecks, TemplateEditor, testValues, toForm } from "./TemplateEditor";
+import { fill, scan } from "./render";
 
 function setup() {
   const fetch = api({
@@ -27,7 +28,8 @@ async function editHtml(value: string) {
 }
 
 function preview() {
-  return (document.querySelector("iframe")?.getAttribute("srcdoc") ?? "").replace('<meta name="referrer" content="no-referrer">', "");
+  const source = document.querySelector("iframe")?.getAttribute("srcdoc") ?? "";
+  return new DOMParser().parseFromString(source, "text/html").body.innerHTML;
 }
 
 describe("TemplateEditor", () => {
@@ -38,17 +40,41 @@ describe("TemplateEditor", () => {
     vi.unstubAllGlobals();
   });
 
-  it("fills the preview live and lists new variables with a warning", async () => {
+  it("fills the preview live and lists new variables as Required", async () => {
     setup();
     await editHtml("<p>{{{GREETING}}} {{{NAME}}} from {{{PRODUCT_NAME}}}</p>");
     expect(preview()).toBe("<p>[GREETING] [NAME] from Acme</p>");
     const table = screen.getByRole("heading", { name: "Variables" }).closest("section")!;
     const row = within(table).getByText("GREETING").closest("tr")!;
-    expect(within(row).getByLabelText("No fallback")).toBeTruthy();
+    expect(within(row).getByRole("button", { name: "Required" }).getAttribute("aria-pressed")).toBe("true");
+    expect(within(row).queryByLabelText("Fallback for GREETING")).toBeNull();
     expect(within(table).getByText(/PRODUCT_NAME/)).toBeTruthy();
 
     fireEvent.change(within(row).getByLabelText("Sample value for GREETING"), { target: { value: "Hello" } });
     expect(preview()).toBe("<p>Hello [NAME] from Acme</p>");
+  });
+
+  it("shows read-only template kind and updates it from unsaved HTML without sending a kind field", async () => {
+    const { fetch } = setup();
+    await screen.findByLabelText("HTML");
+    expect(screen.getByRole("link", { name: "Edit brand" }).getAttribute("href")).toBe("/settings/brand");
+    expect(screen.getByLabelText("Template kind")).toHaveProperty("disabled", true);
+    expect(screen.getByLabelText("Template kind")).toHaveProperty("value", "Transactional");
+    await editHtml('<a href="{{UNSUBSCRIBE_URL}}">Leave</a>');
+    expect(screen.getByLabelText("Template kind")).toHaveProperty("value", "Marketing");
+    fireEvent.keyDown(document, { key: "s", ctrlKey: true });
+    await waitFor(() => expect(calls(fetch, "PATCH /templates/tpl_1")).toHaveLength(1));
+    expect(calls(fetch, "PATCH /templates/tpl_1")[0]!.body).not.toHaveProperty("kind");
+  });
+  it("keeps a Marketing library template Marketing after its unsubscribe body is edited", async () => {
+    api({
+      "GET /templates/tpl_1": template({ kind: "marketing", html: "<p>{{{UNSUBSCRIBE_URL}}}</p>", source: { kind: "library", send_kind: "marketing" } }),
+      "GET /brand": { object: "brand", product_name: "Acme" },
+      "GET /templates/tpl_1/versions": list([]),
+    });
+    renderAt("/templates/tpl_1/editor", [{ path: "/templates/:id/editor", element: h(TemplateEditor) }]);
+    await editHtml("<p>Edited body</p>");
+    expect(screen.getByLabelText("Template kind")).toHaveProperty("value", "Marketing");
   });
 
   it("saves changed fields and the declared variables on Cmd+S", async () => {
@@ -138,6 +164,66 @@ describe("TemplateEditor", () => {
     expect(calls(fetch, "PATCH /templates/tpl_1")).toHaveLength(0);
   });
 
+  it("collects actual visual link refusal and preview, variable, and review warnings in Checks", async () => {
+    const { fetch } = setup();
+    const html = '<a href="javascript:alert(1)">{{first-name}}</a>{{{#if NAME}}}';
+    await editHtml(html);
+    const checks = screen.getByRole("list", { name: "Checks" });
+    expect(checks.querySelector('[data-check-id="source.visual"]')).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Visual" }));
+    await waitFor(() => expect(checks.querySelector('[data-check-id="source.visual"]')?.textContent)
+      .toBe("Visual mode does not open the link javascript:alert(1)."));
+    expect(checks.querySelector('[data-check-id="preview.blocks"]')?.textContent).toBe("{{{#if NAME}}} is never closed.");
+    expect(checks.querySelector('[data-check-id="variables.names"]')?.textContent)
+      .toBe("first-name cannot be a variable name. Use letters, digits, and underscores.");
+    expect(checks.querySelector('[data-check-id="preview.missing"]')?.textContent).toBe("No value for first-name.");
+    expect(checks.querySelector('[data-check-id="review.blocks"]')?.textContent)
+      .toBe("{{{#if NAME}}} is never closed. The API refuses to publish until the blocks pair up.");
+    expect(checks.querySelector('[data-check-id="review.variables"]')).toBeTruthy();
+    expect(checks.querySelector('[data-check-id="review.fallbacks"]')).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Subject"), { target: { value: "Changed" } });
+    expect(checks.querySelectorAll('[data-check-id="source.visual"]')).toHaveLength(1);
+    expect(screen.getByLabelText("HTML")).toHaveProperty("value", html);
+    expect(calls(fetch, "PATCH /templates/tpl_1")).toHaveLength(0);
+  });
+
+  it("updates preview warnings from samples without hiding the separate publish warning", async () => {
+    setup();
+    await editHtml("<p>{{{NAME}}} {{{SUPPORT_URL}}}</p>");
+    const checks = screen.getByRole("list", { name: "Checks" });
+    expect(checks.querySelector('[data-check-id="preview.missing"]')?.textContent).toBe("No value for SUPPORT_URL.");
+    expect(checks.querySelector('[data-check-id="review.fallbacks"]')?.textContent)
+      .toBe("NAME has no fallback. Sends that leave it out fail.");
+    fireEvent.change(screen.getByLabelText("Sample value for NAME"), { target: { value: "Ada" } });
+    expect(checks.querySelector('[data-check-id="review.fallbacks"]')).toBeTruthy();
+    await editHtml("<p>{{{NAME}}}</p>");
+    expect(checks.querySelector('[data-check-id="preview.missing"]')).toBeNull();
+    expect(checks.querySelector('[data-check-id="review.fallbacks"]')).toBeTruthy();
+  });
+
+  it("keeps Checks visible to a viewer without enabling editing or sending", async () => {
+    signIn("sess_viewer", ["read"]);
+    const { fetch } = setup();
+    expect(await screen.findByLabelText("HTML")).toHaveProperty("disabled", true);
+    expect(screen.getByRole("list", { name: "Checks" }).querySelector('[data-check-id="review.fallbacks"]')).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Publish" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Test email" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Visual" })).toBeNull();
+    fireEvent.keyDown(document, { key: "s", ctrlKey: true });
+    expect(calls(fetch, "PATCH /templates/tpl_1")).toHaveLength(0);
+  });
+
+  it("presents repeated publish warnings separately and retains the no-problems result", () => {
+    const { rerender } = render(h(PublishChecks, { warnings: ["Same warning.", "Same warning."] }));
+    const checks = screen.getByRole("list", { name: "Checks" });
+    expect(within(checks).getAllByText("Same warning.")).toHaveLength(2);
+    expect([...checks.querySelectorAll("[data-check-id]")].map((row) => row.getAttribute("data-check-id")))
+      .toEqual(["review.warning.0", "review.warning.1"]);
+    rerender(h(PublishChecks, { warnings: [] }));
+    expect(checks.querySelector('[data-check-id="review.clear"]')).toHaveProperty("className", "ok");
+    expect(within(checks).getByText("No problems found.")).toBeTruthy();
+  });
+
   it("saves, then renders the test send on the server from the draft", async () => {
     const { fetch } = setup();
     await editHtml("<p>Hello {{{NAME}}}, your plan is {{{PLAN}}}.</p>");
@@ -169,6 +255,28 @@ describe("TemplateEditor", () => {
 });
 
 describe("TemplateEditor helpers", () => {
+  it("preserves all six publish categories and conditional wording with stable rule identities", () => {
+    const form = { subject: "", from: "", reply_to: "", html: "{{{#if A}}}{{first-name}} {{{B}}}", text: "", variables: [] };
+    const rows = publishRows(form);
+    expect(rows.map((row) => row.id)).toEqual(["review.blocks", "review.variables", "review.fallbacks", "review.subject", "review.from"]);
+    expect(rows.every((row) => row.tone === "warn")).toBe(true);
+    expect(rows.map((row) => row.text)).toEqual(publishWarnings(form));
+    expect(rows[1]?.text).toBe("first-name is not a valid variable name. Use letters, digits, and underscores.");
+    expect(rows[2]?.text).toBe("A, B have no fallback. Sends that leave them out fail.");
+    expect(publishRows({ ...form, html: "" }).map((row) => row.id)).toEqual(["review.subject", "review.from", "review.content"]);
+    expect(publishRows({ ...form, html: "{{first-name}} {{last-name}} {{{A}}}" })[0]?.text)
+      .toBe("first-name, last-name are not valid variable names. Use letters, digits, and underscores.");
+  });
+
+  it("keeps equal text from different actual results and removes only a cleared source result", () => {
+    const form = { subject: "Hi", html: "", text: "" };
+    const preview = fill(form, {});
+    const source = { id: "source.visual" as const, tone: "warn" as const, text: "Same warning." };
+    const review = [{ id: "review.blocks", tone: "warn" as const, text: "Same warning." }];
+    expect(templateChecks(preview, scan(form.html), source, review)).toEqual([source, ...review]);
+    expect(templateChecks(preview, [], null, review)).toEqual(review);
+  });
+
   it("declares used keys, keeps configured unused ones, and drops unused defaults", () => {
     const declared = declare(
       [

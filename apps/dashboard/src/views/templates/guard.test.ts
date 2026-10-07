@@ -12,6 +12,10 @@ describe("tokens", () => {
   it("reads an escaped ampersand in a fallback as the same token", () => {
     expect(tokens('<a href="{{{URL|https://x.test/?a=1&amp;b=2}}}">')).toEqual(tokens("{{{URL|https://x.test/?a=1&b=2}}}"));
   });
+  it("does not decode literal entity-looking defaults in text", () => {
+    expect(tokens("<p>{{{NAME|&amp; &#39;}}}</p>")).toEqual(["{{{NAME|&amp; &#39;}}}"]);
+    expect(loss("<p>{{{NAME|R&D}}}</p>", "<p>{{{NAME|R&amp;D}}}</p>")).toMatch(/change the placeholder/);
+  });
 });
 
 describe("loss", () => {
@@ -122,6 +126,28 @@ describe("pick", () => {
     }
     expect(unsafePaste('<img src="blob:https://x.test/1">')).toBe(true);
     expect(unsafePaste("<p>plain</p>")).toBe(false);
+  });
+  it("treats inline defaults as literal text without hiding unsafe adjacent markup", () => {
+    const raw = `{{{NAME|<script>alert("no")</script><em>R&D &amp;</em>}}}`;
+    expect(blocked(`<p>${raw}</p>`)).toBeNull();
+    expect(loss(`<p>${raw}</p>`, `<p>${raw}</p>`)).toBeNull();
+    expect(blocked(`<p>${raw}</p><script>alert(1)</script>`)).toMatch(/script, frame, or form/);
+    expect(blocked(`<p>${raw}</p><a href="java&#x73;cript:alert(1)">x</a>`)).toMatch(/does not open the link/);
+    expect(blocked(`<p>${raw}</p><div style="position:fixed">x</div>`)).toMatch(/over the page/);
+  });
+
+  it("checks raw clipboard HTML while shielding defaults on the saved-document path", () => {
+    for (const markup of [
+      '<span style="position:fixed;z-index:99999">Overlay</span>',
+      '<a href="javascript:alert(1)">Link</a>',
+      '<img src="data:image/png;base64,AAAA">',
+      "<script>alert(1)</script>",
+    ]) {
+      const html = `<p>{{{NAME|${markup}}}}</p>`;
+      expect(blocked(html)).toBeNull();
+      expect(unsafePaste(html)).toBe(true);
+    }
+    expect(unsafePaste('<p>R&amp;D &lt;span&gt;literal&lt;/span&gt; &amp;amp;</p>')).toBe(false);
   });
 
   it("finds the editor's own container, and nothing in hand-written HTML", () => {

@@ -1,24 +1,26 @@
 import type React from "react";
 import { Link, Text } from "react-email";
-import { fontFamily, linkStyle, muted, text, type Brand } from "../_theme";
+import { linkStyle, muted, text, useTheme, type Brand } from "../_theme";
 
 export function Action({ brand, href, children }: { brand: Brand; href?: string; children: React.ReactNode }) {
   const url = href ?? "";
+  const theme = useTheme(brand);
   return (
     <>
       <table role="presentation" cellPadding={0} cellSpacing={0} border={0} style={{ margin: "8px 0 16px" }}>
         <tbody>
           <tr>
-            <td style={{ borderRadius: "6px", backgroundColor: brand.color }}>
+            <td style={{ borderRadius: theme.THEME_RADIUS, backgroundColor: theme.THEME_BUTTON_BACKGROUND }}>
               <a
                 href={url}
                 style={{
-                  backgroundColor: brand.color,
-                  borderRadius: "6px",
-                  color: brand.textColor,
+                  backgroundColor: theme.THEME_BUTTON_BACKGROUND,
+                  borderRadius: theme.THEME_RADIUS,
+                  border: theme.THEME_BUTTON_BORDER,
+                  color: theme.THEME_BUTTON_TEXT_COLOR,
                   display: "inline-block",
-                  fontFamily,
-                  fontSize: "16px",
+                  fontFamily: theme.THEME_FONT_FAMILY,
+                  fontSize: theme.THEME_FONT_SIZE,
                   lineHeight: "20px",
                   minHeight: "44px",
                   padding: "12px 20px",

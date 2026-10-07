@@ -24,6 +24,7 @@ import { useAll, useResource } from "../../hooks/useResource";
 import { useSelection } from "../../hooks/useSelection";
 import { each } from "../../lib/bulk";
 import { errorMessage } from "../../lib/client";
+import { learnLinks } from "../../lib/docs";
 import { fullName } from "../../lib/utils";
 import { useCan, useClient } from "../../shell/session";
 import type { Contact, ContactProperty, ContactStats, List, Segment, Topic } from "../../types";
@@ -118,6 +119,7 @@ export function Contacts() {
     <div className="page">
       <PageHeader
         title="Audience"
+        learn={learnLinks("audience")}
         actions={
           <>
             <button type="button" className="secondary" onClick={() => setDialog("imports")}>
@@ -187,7 +189,8 @@ export function Contacts() {
           filtered ? (
             <Empty title="No contacts found" body="No contact matches these filters." />
           ) : (
-            <Empty title="No contacts" body="Add contacts by hand, import a CSV, or create them through the API." />
+            <Empty title="No contacts" body="Add contacts by hand, import a CSV, or create them through the API."
+              action={can ? <button type="button" onClick={() => setDialog("add")}>Add your first contact</button> : null} />
           )
         }
       />
@@ -206,7 +209,7 @@ export function Contacts() {
       {dialog === "segment" ? (
         <AddToSegment
           ids={selection.ids}
-          segments={segments.data?.data ?? []}
+          segments={(segments.data?.data ?? []).filter((segment) => segment.type !== "dynamic")}
           onClose={close}
           onDone={() => {
             selection.clear();
@@ -325,7 +328,7 @@ function AddContact({ onClose, onDone }: { onClose: () => void; onDone: () => vo
         <div className="form two">
           <fieldset className="checkList">
             <legend>Segments</legend>
-            {(segments.data?.data ?? []).map((segment) => (
+            {(segments.data?.data ?? []).filter((segment) => segment.type !== "dynamic").map((segment) => (
               <label key={segment.id} className="check">
                 <input type="checkbox" checked={segmentIds.includes(segment.id)} onChange={() => setSegmentIds(toggle(segmentIds, segment.id))} />
                 {segment.name}
