@@ -198,3 +198,69 @@ button.outlineButton:hover:not(:disabled) {
   justify-items: center;
   gap: 12px;
 }
+
+/* Preference pages use pure black/white themes, independent of the dashboard. */
+.preferenceTheme,
+.preferencePage {
+  color-scheme: light;
+  --bg: #fff;
+  --surface: #fff;
+  --surface-raised: #f5f5f5;
+  --text: #111;
+  --text-muted: #555;
+  --text-dim: #666;
+  --border: #e4e4e4;
+  --border-input: #ccc;
+  --success: #237a38;
+  --danger: #b42318;
+  background: var(--bg);
+  color: var(--text);
+}
+.preferenceTheme.dark {
+  color-scheme: dark;
+  --bg: #000;
+  --surface: #000;
+  --surface-raised: #181818;
+  --text: #fff;
+  --text-muted: #bbb;
+  --text-dim: #aaa;
+  --border: #333;
+  --border-input: #555;
+  --success: #57d390;
+  --danger: #ff9085;
+}
+.publicCard .prefDescription {
+  text-align: center;
+  color: var(--text-muted);
+  margin: 0;
+}
+.prefDone .prefTitle {
+  color: var(--text);
+  margin: 0;
+}
+.prefDone p {
+  margin: 0;
+}
+.prefDone {
+  gap: 16px;
+}
+.publicCard .prefTitle,
+.publicCard p,
+.prefTopic {
+  overflow-wrap: anywhere;
+}
+@media (prefers-color-scheme: dark) {
+  .preferencePage {
+    color-scheme: dark;
+    --bg: #000;
+    --surface: #000;
+    --surface-raised: #181818;
+    --text: #fff;
+    --text-muted: #bbb;
+    --text-dim: #aaa;
+    --border: #333;
+    --border-input: #555;
+    --success: #57d390;
+    --danger: #ff9085;
+  }
+}
