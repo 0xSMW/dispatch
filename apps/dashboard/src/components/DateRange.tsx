@@ -1,3 +1,4 @@
+import { Dropdown } from "./Dropdown";
 import { useSearchParams } from "react-router-dom";
 
 /** Preset ranges: Today, Yesterday, Last 3, 7, 15, 30 days, and custom. */
@@ -78,7 +79,7 @@ export function DateRange() {
 
   return (
     <span className="inline">
-      <select
+      <Dropdown
         aria-label="Date range"
         className="filterSelect"
         value={range}
@@ -90,7 +91,7 @@ export function DateRange() {
             {preset.label}
           </option>
         ))}
-      </select>
+      </Dropdown>
       {range === "custom" ? (
         <>
           <input type="date" aria-label="From date" className="filterSelect" value={params.get("start") ?? ""} onChange={(event) => set({ start: event.target.value })} />
