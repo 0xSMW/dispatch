@@ -2,7 +2,7 @@ import { Heading, Text } from "react-email";
 import { Action, If, Layout, TextLink } from "./_components";
 import { exampleBrand, heading, text, type Brand, type EmailVariable } from "./_theme";
 
-const preview = "You have a new notification. The detail and the next step are inside.";
+const preview = "A new account notification is ready for you to review.";
 
 type Props = {
   brand?: Brand;
@@ -51,7 +51,7 @@ export default function Notification({
 Notification.Preview = preview;
 Notification.PreviewProps = {
   heading: "Your export is ready",
-  body: "The account export you asked for is ready to download.",
+  body: "Your account export is ready to download.",
   actionUrl: "https://example.com/exports/1042",
   actionLabel: "View details",
   notificationsUrl: "https://example.com/settings/notifications",
