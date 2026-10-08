@@ -112,7 +112,7 @@ export function UnsubscribePage() {
             ) : null}
             <p className="note">
               Change the logo and color in <Link to="/settings/brand">brand settings</Link>, and the topics in{" "}
-              <Link to="/audience/topics">Audience</Link>.
+              <Link to="/audience/topics">Topics</Link>.
             </p>
           </form>
         </Panel>
