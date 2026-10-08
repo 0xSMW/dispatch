@@ -2,24 +2,22 @@
 .commandTrigger span { flex: 1; text-align: left; }
 .commandTrigger kbd { font-size: 10px; white-space: nowrap; }
 .commandTrigger:hover { color: var(--text); background: var(--surface-raised); }
-.modal:has(.commandPalette) .modalBody { padding: 0; overflow: hidden; }
+.modal.commandDialog { width: 680px; max-width: calc(100vw - 32px); overflow: hidden; }
 .commandPalette { min-width: 0; }
-.commandInput { display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--border); color: var(--text-muted); }
-.commandInput input { flex: 1; min-width: 0; border: 0; background: transparent; box-shadow: none; padding: 4px 0; font-size: 15px; }
+.commandInput { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--border); color: var(--text-muted); }
+.commandInput input { flex: 1; min-width: 0; border: 0; background: transparent; box-shadow: none; padding: 4px 0; font-size: 14px; }
 .commandInput input:focus { outline: none; box-shadow: none; }
-.commandResults { max-height: min(420px, 45vh); overflow-y: auto; padding: 6px; }
-.commandGroup { padding: 12px 12px 6px; font-size: 11px; font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: .06em; }
-.commandResult { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 7px; cursor: pointer; color: var(--text-muted); }
+.commandClose { padding: 0; color: var(--text-dim); }
+.commandResults { max-height: min(320px, calc(100dvh - 160px)); overflow-y: auto; padding: 6px; }
+.commandGroup { padding: 8px 10px 4px; font-size: 11px; color: var(--text-dim); }
+.commandResult { display: flex; align-items: center; gap: 10px; min-height: 38px; padding: 7px 10px; border-radius: 6px; cursor: pointer; color: var(--text-muted); }
+.commandResult > svg { flex-shrink: 0; }
 .commandResult.selected { background: var(--primary-subtle); color: var(--text); }
-.commandText { display: grid; gap: 3px; flex: 1; min-width: 0; }
+.commandText { display: flex; align-items: center; gap: 16px; flex: 1; min-width: 0; }
 .commandText span, .commandText small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.commandText span { color: var(--text); font-size: 13px; }
-.commandText small { color: var(--text-muted); font-size: 11px; }
-.commandHint { opacity: 0; font-size: 10px; color: var(--text-dim); }
-.commandResult.selected .commandHint { opacity: 1; }
-.commandFooter { display: flex; flex-wrap: wrap; gap: 14px; padding: 10px 18px; border-top: 1px solid var(--border); color: var(--text-dim); font-size: 11px; }
-.commandFooter kbd { margin-right: 3px; font-size: 10px; }
-.commandLocation { margin-left: auto; }
-.commandEmpty, .commandStatus { padding: 18px; color: var(--text-muted); font-size: 12px; }
-.commandBack { margin: 8px 12px 0; }
-@media (max-width: 600px) { .commandTrigger { max-width: 100%; } .commandFooter { gap: 10px; } }
+.commandText span { color: var(--text); font-size: 13px; flex: 1; }
+.commandText small { color: var(--text-dim); font-size: 11px; max-width: 55%; text-align: right; }
+.commandHint { font-size: 10px; color: var(--text-dim); }
+.commandEmpty, .commandStatus { padding: 12px 16px; color: var(--text-muted); font-size: 12px; }
+.commandBack { display: flex; gap: 6px; margin: 6px 10px 0; max-width: calc(100% - 20px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 600px) { .commandText { gap: 8px; } .commandText small { max-width: 45%; } }
