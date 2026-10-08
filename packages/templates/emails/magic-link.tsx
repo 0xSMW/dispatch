@@ -2,7 +2,7 @@ import { Heading, Text } from "react-email";
 import { Action, Code, If, Layout, Notice } from "./_components";
 import { exampleBrand, heading, text, type Brand, type EmailVariable } from "./_theme";
 
-const preview = "Use this link to sign in. It expires soon and works one time.";
+const preview = "Your one-time sign-in link is ready to use.";
 
 type Props = {
   brand?: Brand;
@@ -28,17 +28,17 @@ export default function MagicLink({
         Sign in
       </Heading>
       <Text className="dm-text" style={text}>
-        Use the button below to sign in to your {brand.productName} account.
+        Sign in to your {brand.productName} account with this one-time link.
       </Text>
       <Action brand={brand} href={actionUrl}>
         Sign in
       </Action>
       <Text className="dm-text" style={text}>
-        This link expires in {expiresIn} and works one time.
+        This link expires in {expiresIn} and can be used once.
       </Text>
       <If value={code}>
         <Text className="dm-text" style={text}>
-          If you are asked for a code, enter this one. It is not a link.
+          If the page asks for a sign-in code, enter:
         </Text>
         <Code>{code}</Code>
       </If>
