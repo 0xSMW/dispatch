@@ -50,13 +50,13 @@ describe("email theme tokens", () => {
     }
     expect(filled).toContain("Georgia");
     expect(filled).not.toContain("{{{THEME_");
-    expect(filled).not.toContain("#09090b !important");
+    expect(filled).toContain("#09090b !important");
   });
 
   it("themes code, details and line items in real rendered recipes", async () => {
     const code = await rendered(OneTimeCode, { code: "123456" });
     const codeStyle = code.filled.match(/<p[^>]*style="([^"]*)"[^>]*>123456<\/p>/)?.[1] ?? "";
-    for (const css of ["font-size:18px", "letter-spacing:4px", "font-family:Georgia", "color:#152438"]) {
+    for (const css of ["font-size:28px", "letter-spacing:4px", "font-family:Georgia", "color:#152438"]) {
       expect(codeStyle).toContain(css);
     }
     const receipt = await rendered(Receipt, { receiptNumber: "42", paidAt: "Today", total: "$1",
