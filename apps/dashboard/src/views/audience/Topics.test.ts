@@ -56,6 +56,9 @@ describe("Topics", () => {
     expect(within(preview).getByText("News")).toBeTruthy();
     expect(within(preview).getByText("Monthly product news.")).toBeTruthy();
     expect(within(preview).queryByText("Internal")).toBeNull();
+    const policy = screen.getByText("Not subscribed");
+    expect(policy.classList.contains("neutral")).toBe(true);
+    expect(screen.getByRole("columnheader", { name: "Subscription default" })).toBeTruthy();
     expect((within(preview).getByRole("checkbox") as HTMLInputElement).checked).toBe(true);
   });
 
@@ -65,11 +68,13 @@ describe("Topics", () => {
     await screen.findByText("Internal");
     fireEvent.click(screen.getByRole("button", { name: "Create topic" }));
     const dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByText("This cannot change later.")).toBeTruthy();
+    expect(within(dialog).getByText("Applies when a contact has not chosen a preference. This cannot change later.")).toBeTruthy();
     fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Tips" } });
     fireEvent.change(within(dialog).getByLabelText("Description"), { target: { value: "Short tips." } });
-    fireEvent.change(within(dialog).getByLabelText("Defaults to"), { target: { value: "opt_out" } });
-    fireEvent.change(within(dialog).getByLabelText("Visibility"), { target: { value: "public" } });
+    fireEvent.click(within(dialog).getByRole("combobox", { name: "Subscription default" }));
+    fireEvent.click(screen.getByRole("option", { name: "Not subscribed" }));
+    fireEvent.click(within(dialog).getByRole("combobox", { name: "Visibility" }));
+    fireEvent.click(screen.getByRole("option", { name: "Public" }));
     fireEvent.submit(dialog.querySelector("form")!);
     await waitFor(() => expect(calls(fetch)).toContain("POST /topics"));
     expect(bodyOf(fetch, "POST /topics")).toEqual({ name: "Tips", description: "Short tips.", default_subscription: "opt_out", visibility: "public" });
