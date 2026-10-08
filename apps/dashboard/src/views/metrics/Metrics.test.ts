@@ -116,7 +116,7 @@ describe("Metrics", () => {
   it("shows an empty state when nothing happened in the range", async () => {
     api(true);
     open();
-    expect(await screen.findByText("No email activity")).toBeTruthy();
+    expect(await screen.findByText("No emails sent in this range")).toBeTruthy();
     expect(screen.queryByRole("region", { name: "Sent" })).toBeNull();
     expect(screen.getByLabelText("Goal scope")).toBeTruthy();
   });
@@ -124,7 +124,7 @@ describe("Metrics", () => {
   it("hides goal report controls when no goals exist and keeps range recovery", async () => {
     api(true, true);
     open();
-    await screen.findByText("No email activity");
+    await screen.findByText("No emails sent in this range");
     await waitFor(() => expect(screen.queryByLabelText("Goal scope")).toBeNull());
     expect(screen.queryByText("Goal conversions")).toBeNull();
     expect(screen.getByRole("group", { name: "Date range" })).toBeTruthy();
