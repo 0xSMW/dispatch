@@ -40,7 +40,7 @@ type Errors = Partial<Record<Key | "theme", string>>;
 /** Only these accept null, which clears them. The rest keep their value once set. */
 const nullable: Key[] = ["logo_url", "support_url", "privacy_url"];
 const urls: Key[] = ["product_url", "logo_url", "support_url", "privacy_url"];
-const fallbackColor = "#18181b";
+const fallbackColor = "#171717";
 
 function toForm(brand: BrandSettings | null): Form {
   const theme = resolvedTheme(brand ?? {});
