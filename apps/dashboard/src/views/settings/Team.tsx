@@ -22,14 +22,35 @@ import { useMutation } from "../../hooks/useMutation";
 import { useAll } from "../../hooks/useResource";
 import { ApiError, type Client } from "../../lib/client";
 import { listAll } from "../../lib/pages";
-import { csv } from "../../lib/utils";
 import { passwordError } from "../../shell/ChangePassword";
 import { useCan, useClient, useSession } from "../../shell/session";
-import type { AuditLog, List, Membership, Role, SessionRow, User } from "../../types";
+import type { AuditLog, Membership, Role, SessionRow, User } from "../../types";
 import { settingsTabs } from "../tabs";
 import "../../styles/settings.css";
 
 type Dialog = "invite" | "role" | null;
+
+/** /users includes its tenant membership, even when the account or role cannot sign in. */
+export type TeamPerson = User & {
+  membership_id: string | null;
+  membership_created_at: string | null;
+  role_id: string | null;
+  role: string | null;
+  role_deleted_at: string | null;
+  permissions: string[] | null;
+};
+
+export function teamAccess(person: TeamPerson): string {
+  if (person.deactivated_at) return "Account deactivated";
+  if (!person.membership_id) return "No team access";
+  if (person.role_deleted_at || !person.role) return "Role deleted";
+  return person.permissions?.some((permission) => permission === "full" || permission === "read") ? "Enabled" : "No permissions";
+}
+
+function membership(person: TeamPerson): Membership {
+  return { id: person.membership_id ?? "", user_id: person.id, email: person.email, name: person.name,
+    role_id: person.role_id ?? "", role: person.role ?? "", created_at: person.membership_created_at ?? person.created_at };
+}
 
 type Confirm = {
   title: string;
@@ -41,17 +62,17 @@ type Confirm = {
   after: () => void;
 };
 
-/** Members, users, roles, sessions, and the audit log. Ported from IdentityView. */
+/** Tenant people and their access, with role management and activity available on demand. */
 export function Team() {
   const client = useClient();
   const { session, signOut } = useSession();
   const can = useCan();
   const filters = useFilters(["action"]);
-  const members = useList<Membership>("/memberships", {}, { limit: 20 });
-  const users = useList<User>("/users", {}, { limit: 20 });
+  const users = useList<TeamPerson>("/users", {}, { limit: 20 });
   const roles = useList<Role>("/roles", {}, { limit: 20 });
   const sessions = useList<SessionRow>("/sessions", {}, { limit: 20 });
   const audit = useList<AuditLog>("/audit-logs", filters, { limit: 20 });
+  const [managingRoles, setManagingRoles] = useState(false);
   const [dialog, setDialog] = useState<Dialog>(null);
   const [changing, setChanging] = useState<Membership | null>(null);
   const [resetting, setResetting] = useState<User | null>(null);
@@ -68,92 +89,43 @@ export function Team() {
     <div className="page">
       <PageHeader
         title="Settings"
-        actions={
-          can && (members.loading || members.error || members.rows.length || members.page > 1) ? (
-            <button type="button" onClick={() => setDialog("invite")}>
-              Invite member
-            </button>
-          ) : null
-        }
+        actions={<>
+          <button type="button" className="secondary" onClick={() => setManagingRoles(true)}>Manage roles</button>
+          {can ? <button type="button" onClick={() => setDialog("invite")}>Add member</button> : null}
+        </>}
       />
       <Tabs tabs={settingsTabs} />
 
       <Section
-        title="Members"
-        list={members}
-        emptyBody="Invite someone to give them access to your team."
-        emptyAction={can ? <button type="button" onClick={() => setDialog("invite")}>Invite member</button> : null}
-        columns={[
-          { header: "Member", cell: (row) => row.email },
-          { header: "Name", cell: (row) => row.name },
-          { header: "Role", cell: (row) => <Badge value={row.role} variant="neutral" /> },
-          { header: "Added", cell: (row) => <Time value={row.created_at} /> },
-        ]}
-        menu={(row) => (
-          <Menu
-            items={[
-              { label: "Change role", onSelect: () => setChanging(row) },
-              "divider",
-              {
-                label: "Remove",
-                danger: true,
-                onSelect: () =>
-                  setConfirm({
-                    title: "Remove member",
-                    body: `${row.email} loses access to this team. Their user record stays.`,
-                    phrase: row.email,
-                    action: "Remove member",
-                    run: () => client.delete(`/memberships/${row.id}`),
-                    done: "Member removed.",
-                    after: () => void members.reload(),
-                  }),
-              },
-            ]}
-          />
-        )}
-      />
-
-      <Section
-        title="Users"
+        title="Team"
         list={users}
-        emptyBody="User accounts show up here once you add members."
+        emptyBody="Add someone to give them access to your team."
         columns={[
-          { header: "Email", cell: (row) => row.email },
-          { header: "Name", cell: (row) => row.name },
-          {
-            header: "Status",
-            cell: (row) => <Badge value={row.deactivated_at ? "disabled" : "enabled"} label={row.deactivated_at ? "deactivated" : "active"} />,
-          },
-          { header: "Created", cell: (row) => <Time value={row.created_at} /> },
+          { header: "Person", cell: (row) => <span><strong>{row.name}</strong><br />{row.email}</span> },
+          { header: "Role", cell: (row) => row.role ? <Badge value={row.role} label={row.role} variant="neutral" /> : <span className="dim">—</span> },
+          { header: "Account", cell: (row) => <Badge value={row.deactivated_at ? "disabled" : "enabled"} label={row.deactivated_at ? "Deactivated" : "Active"} /> },
+          { header: "Team access", cell: teamAccess },
+          { header: "Added", cell: (row) => <Time value={row.membership_created_at ?? row.created_at} /> },
         ]}
-        menu={(row) => (
-          <Menu
-            items={[
-              { label: "Set password", hidden: Boolean(row.deactivated_at), onSelect: () => setResetting(row) },
-              { label: "Reactivate", hidden: !row.deactivated_at, onSelect: () => void reactivate.mutate(row) },
-              {
-                label: "Deactivate",
-                danger: true,
-                hidden: Boolean(row.deactivated_at),
-                onSelect: () =>
-                  setConfirm({
-                    title: "Deactivate user",
-                    body: `${row.email} can no longer sign in. Their sessions stop working.`,
-                    phrase: row.email,
-                    action: "Deactivate user",
-                    run: () => client.delete(`/users/${row.id}`),
-                    done: "User deactivated.",
-                    after: () => {
-                      void users.reload();
-                      void members.reload();
-                    },
-                  }),
-              },
-            ]}
-          />
-        )}
+        menu={(row) => <Menu items={[
+          { label: row.membership_id ? "Change role" : "Restore team access", hidden: Boolean(row.deactivated_at), onSelect: () => setChanging(membership(row)) },
+          { label: "Set password", hidden: Boolean(row.deactivated_at), onSelect: () => setResetting(row) },
+          { label: "Reactivate account", hidden: !row.deactivated_at, onSelect: () => void reactivate.mutate(row) },
+          "divider",
+          { label: "Remove from team", danger: true, hidden: !row.membership_id, onSelect: () => setConfirm({
+            title: "Remove member", body: `${row.email} loses access to this team. Their user record stays.`,
+            phrase: row.email, action: "Remove member", run: () => client.delete(`/memberships/${row.membership_id}`),
+            done: "Member removed.", after: () => { void users.reload(); void sessions.reload(); },
+          }) },
+          { label: "Deactivate account", danger: true, hidden: Boolean(row.deactivated_at), onSelect: () => setConfirm({
+            title: "Deactivate user", body: `${row.email} can no longer sign in. Their sessions stop working.`,
+            phrase: row.email, action: "Deactivate user", run: () => client.delete(`/users/${row.id}`),
+            done: "User deactivated.", after: () => { void users.reload(); void sessions.reload(); },
+          }) },
+        ]} />}
       />
 
+      {managingRoles && !dialog && !confirm ? <Modal isOpen title="Manage roles" size="large" onClose={() => setManagingRoles(false)}>
       <Section
         title="Roles"
         list={roles}
@@ -184,7 +156,7 @@ export function Team() {
                     action: "Delete role",
                     run: () => client.delete(`/roles/${row.id}`),
                     done: "Role deleted.",
-                    after: () => void roles.reload(),
+                    after: () => { void roles.reload(); void users.reload(); },
                   }),
               },
             ]}
@@ -192,6 +164,10 @@ export function Team() {
         )}
       />
 
+      </Modal> : null}
+
+      <details>
+      <summary>Sessions</summary>
       <Section
         title="Sessions"
         list={sessions}
@@ -207,7 +183,7 @@ export function Team() {
               </span>
             ),
           },
-          { header: "Status", cell: (row) => <Badge value={row.revoked_at ? "revoked" : "enabled"} label={row.revoked_at ? "revoked" : "active"} /> },
+          { header: "Status", cell: (row) => <Badge value={row.revoked_at ? "revoked" : "enabled"} label={row.revoked_at ? "Revoked" : "Active"} /> },
           { header: "Last used", cell: (row) => <Time value={row.last_used_at} /> },
           { header: "Expires", cell: (row) => <Time value={row.expires_at} /> },
         ]}
@@ -237,6 +213,10 @@ export function Team() {
         }
       />
 
+      </details>
+
+      <details open={Boolean(filters.action)}>
+      <summary>Audit log</summary>
       <Panel title="Audit log">
         <div className="stack">
           {audit.loading || audit.error || audit.rows.length || audit.page > 1 || filters.action ? <FilterBar search="Filter by action, such as domain" searchParam="action" /> : null}
@@ -262,9 +242,11 @@ export function Team() {
         </div>
       </Panel>
 
-      {dialog === "invite" ? <Invite onClose={close} onDone={() => void Promise.all([users.reload(), members.reload()])} /> : null}
+      </details>
+
+      {dialog === "invite" ? <Invite onClose={close} onDone={() => void users.reload()} /> : null}
       {dialog === "role" ? <AddRole onClose={close} onDone={roles.reload} /> : null}
-      {changing ? <ChangeRole member={changing} onClose={() => setChanging(null)} onDone={members.reload} /> : null}
+      {changing ? <ChangeRole member={changing} onClose={() => setChanging(null)} onDone={users.reload} /> : null}
       {resetting ? <SetPassword user={resetting} onClose={() => setResetting(null)} onDone={sessions.reload} /> : null}
       {confirm ? (
         <ConfirmPhrase
@@ -353,7 +335,7 @@ export async function inviteUser(client: Client, email: string, name: string, pa
     const users = await listAll<User>(client, "/users");
     const existing = users.data.find((user) => user.email.toLowerCase() === email.toLowerCase());
     if (!existing) throw error;
-    if (existing.deactivated_at) throw new Error(`${existing.email} is deactivated. Reactivate them on the Users tab first.`);
+    if (existing.deactivated_at) throw new Error(`${existing.email} is deactivated. Reactivate their account in Team first.`);
     const members = await listAll<Membership>(client, "/memberships");
     if (members.data.some((member) => member.user_id === existing.id)) {
       throw new Error(`${existing.email} is already on the team. Use Set password to give them a new one.`);
@@ -388,14 +370,15 @@ function Invite({ onClose, onDone }: { onClose: () => void; onDone: () => void }
   return (
     <Modal
       isOpen
-      title="Invite member"
+      title="Add member"
       onClose={onClose}
       onSubmit={() => void mutate()}
-      submitLabel="Invite"
-      submitDisabled={!form.email.trim() || !form.name.trim() || !form.password || Boolean(passwordError(form.password)) || !form.role_id}
+      submitLabel="Add member"
+      submitDisabled={roles.loading || Boolean(roles.error) || Boolean(roles.data?.has_more) || !form.email.trim() || !form.name.trim() || !form.password || Boolean(passwordError(form.password)) || !form.role_id}
       submitting={isLoading}
     >
       <div className="form">
+        <RoleChoicesStatus roles={roles} />
         <Field label="Email" type="email" value={form.email} onChange={(email) => setForm({ ...form, email })} required autoFocus />
         <Field label="Name" value={form.name} onChange={(name) => setForm({ ...form, name })} required />
         <Field
@@ -404,7 +387,7 @@ function Invite({ onClose, onDone }: { onClose: () => void; onDone: () => void }
           value={form.password}
           onChange={(password) => setForm({ ...form, password })}
           error={passwordError(form.password)}
-          hint="12 to 200 characters. They sign in at /login with this email and password."
+          hint="12 to 200 characters. Share this password with them securely; no invitation email is sent. They sign in at /login and can change it from the account menu."
           required
           autoComplete="new-password"
         />
@@ -438,13 +421,14 @@ function ChangeRole({ member, onClose, onDone }: { member: Membership; onClose: 
     <Modal
       isOpen
       size="small"
-      title={`Change role for ${member.email}`}
+      title={`${member.id ? "Change role for" : "Restore team access for"} ${member.email}`}
       onClose={onClose}
       onSubmit={() => void mutate()}
-      submitDisabled={!roleId || roleId === member.role_id}
+      submitDisabled={roles.loading || Boolean(roles.error) || Boolean(roles.data?.has_more) || !roleId || (Boolean(member.id) && roleId === member.role_id)}
       submitting={isLoading}
     >
       <div className="form">
+        <RoleChoicesStatus roles={roles} />
         <Select
           label="Role"
           value={roleId}
@@ -501,7 +485,7 @@ function SetPassword({ user, onClose, onDone }: { user: User; onClose: () => voi
 function AddRole({ onClose, onDone }: { onClose: () => void; onDone: () => void }) {
   const client = useClient();
   const [form, setForm] = useState({ name: "", permissions: "full" });
-  const { mutate, isLoading } = useMutation(() => client.post("/roles", { name: form.name, permissions: csv(form.permissions) }), {
+  const { mutate, isLoading } = useMutation(() => client.post("/roles", { name: form.name, permissions: [form.permissions] }), {
     success: "Role added.",
     onSuccess: () => {
       onDone();
@@ -512,14 +496,22 @@ function AddRole({ onClose, onDone }: { onClose: () => void; onDone: () => void 
     <Modal isOpen title="Add role" onClose={onClose} onSubmit={() => void mutate()} submitLabel="Add" submitting={isLoading}>
       <div className="form">
         <Field label="Name" value={form.name} onChange={(name) => setForm({ ...form, name })} required autoFocus />
-        <Field
+        <Select
           label="Permissions"
           value={form.permissions}
           onChange={(permissions) => setForm({ ...form, permissions })}
-          hint="Separate permissions with commas."
-          mono
+          options={[{ value: "full", label: "Full access" }, { value: "read", label: "Read only" }]}
+          hint="Full access can change anything. Read only can view resources and manage their own password and sessions."
         />
       </div>
     </Modal>
   );
+}
+
+function RoleChoicesStatus({ roles }: { roles: ReturnType<typeof useAll<Role>> }) {
+  if (roles.loading) return <p role="status">Loading roles…</p>;
+  if (roles.error) return <div className="stack"><p role="alert">Could not load roles: {roles.error}</p><button type="button" className="secondary" onClick={() => void roles.reload()}>Retry roles</button></div>;
+  if (roles.data?.has_more) return <p role="alert">Not all roles could be loaded. Close this dialog and manage roles before continuing.</p>;
+  if (!roles.data?.data.length) return <p role="status">No roles yet. Close this dialog and use Manage roles to add one.</p>;
+  return null;
 }
