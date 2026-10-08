@@ -3,18 +3,18 @@ import { Layout } from "./_components";
 import { ProductAction } from "./_components/ProductAction";
 import { exampleBrand, heading, text, type Brand, type EmailVariable } from "./_theme";
 
-const preview = "It has been a while. Come back when you are ready to pick things up.";
+const preview = "Pick up where you left off when you are ready.";
 
 type Props = { brand?: Brand; firstName?: string; actionUrl?: string };
 
 export default function WeMissYou({ brand = exampleBrand, firstName = "there", actionUrl }: Props) {
   return (
-    <Layout brand={brand} preview={preview} title="Want to pick things up?"
+    <Layout brand={brand} preview={preview} title="Ready to pick things up?"
       reason="You received this email because you subscribed to product reminders." marketing>
-      <Heading as="h1" className="dm-text" style={heading}>Want to pick things up?</Heading>
+      <Heading as="h1" className="dm-text" style={heading}>Ready to pick things up?</Heading>
       <Text className="dm-text" style={text}>Hi {firstName}, it has been a while since you used {brand.productName}.</Text>
       <Text className="dm-text" style={text}>
-        If now is a good time, open your account and take a look. Tell us if something got in the way and we can help.
+        Open your account when you are ready to continue. Contact support if you need help getting back into it.
       </Text>
       <ProductAction brand={brand} href={actionUrl}>Return to {brand.productName}</ProductAction>
     </Layout>
