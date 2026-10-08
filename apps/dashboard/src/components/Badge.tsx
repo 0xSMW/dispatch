@@ -36,8 +36,20 @@ export interface BadgeProps {
   className?: string;
 }
 
+const statusLabels: Record<string, string> = {
+  ...Object.fromEntries(Object.keys(variants).map((value) => [value, value.replaceAll("_", " ").replace(/^./, (letter) => letter.toUpperCase())])),
+  public: "Public", private: "Private", active: "Active", inactive: "Inactive", production: "Production", sandbox: "Sandbox",
+  transactional: "Transactional", marketing: "Marketing", static: "Static", dynamic: "Dynamic", string: "Text", number: "Number",
+  ses: "SES", smtp: "SMTP", api: "API", http: "HTTP", ok: "OK",
+};
+
+/** Format known UI enums; leave custom names, event identifiers, and explicit labels intact. */
+export function badgeLabel(value: string | number): string {
+  return statusLabels[String(value)] ?? String(value);
+}
+
 export function Badge({ value, variant, label, className = "" }: BadgeProps) {
   const tone = variant ?? statusToVariant(value);
-  return <span className={`badge ${tone} ${className}`.trim()}>{label ?? String(value).replaceAll("_", " ")}</span>;
+  return <span className={`badge ${tone} ${className}`.trim()}>{label ?? badgeLabel(value)}</span>;
 }
 
