@@ -7,8 +7,6 @@ export interface EmailFrameProps {
    * tracking pixel cannot tell the sender that the message was opened. `allow` loads images only.
    */
   remote?: "block" | "allow";
-  /** Static, clipped card preview; the full preview remains scrollable. */
-  thumbnail?: boolean;
 }
 
 const policy = {
@@ -17,12 +15,11 @@ const policy = {
 };
 
 /** The framed document: never sends the dashboard's address as Referer, and applies `remote`. */
-export function framed(html: string, remote?: "block" | "allow", thumbnail = false): string {
+export function framed(html: string, remote?: "block" | "allow"): string {
   const csp = remote ? `<meta http-equiv="Content-Security-Policy" content="${policy[remote]}">` : "";
   // Parse the trusted head before any email content. Searching the email for a head tag could
   // match a comment or malformed markup, leaving the policy inactive or after a tracking pixel.
-  const thumbnailStyle = thumbnail ? "<style>html,body{overflow:hidden!important;scrollbar-width:none!important}::-webkit-scrollbar{display:none!important}</style>" : "";
-  return `<!doctype html><html><head><meta name="referrer" content="no-referrer">${csp}</head><body>${html}${thumbnailStyle}</body></html>`;
+  return `<!doctype html><html><head><meta name="referrer" content="no-referrer">${csp}</head><body>${html}</body></html>`;
 }
 
 /**
@@ -30,16 +27,14 @@ export function framed(html: string, remote?: "block" | "allow", thumbnail = fal
  * popups, navigation, and the dashboard origin. Never add `allow-scripts` or `allow-same-origin`,
  * and never render email HTML with `dangerouslySetInnerHTML`.
  */
-export function EmailFrame({ html, width = "desktop", remote, thumbnail = false }: EmailFrameProps) {
+export function EmailFrame({ html, width = "desktop", remote }: EmailFrameProps) {
   return (
     <iframe
       title="Email preview"
       className={width === "phone" ? "emailFrame phone" : "emailFrame"}
       sandbox=""
       referrerPolicy="no-referrer"
-      tabIndex={thumbnail ? -1 : undefined}
-      scrolling={thumbnail ? "no" : undefined}
-      srcDoc={framed(html, remote, thumbnail)}
+      srcDoc={framed(html, remote)}
     />
   );
 }
