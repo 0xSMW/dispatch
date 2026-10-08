@@ -54,9 +54,9 @@ export function Webhooks() {
       title="Webhooks"
       actions={
         <>
-          <button type="button" className="secondary" disabled={test.isLoading} onClick={() => void test.mutate()}>
+          {list.rows.length ? <button type="button" className="secondary" disabled={test.isLoading} onClick={() => void test.mutate()}>
             Send test event
-          </button>
+          </button> : null}
           <button type="button" onClick={() => setAdding(true)}>
             Add webhook
           </button>
