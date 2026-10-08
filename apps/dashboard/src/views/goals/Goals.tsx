@@ -12,6 +12,7 @@ import { contextFields, type ContextField } from "../../lib/rules";
 import { useCan, useClient } from "../../shell/session";
 import type { ContactProperty, Goal, Segment, Topic } from "../../types";
 import { blankRule, ruleIssue, type Rule } from "../automations/graph";
+import { ruleSources } from "../audience/SegmentFilter";
 import { RuleEditor } from "../automations/Steps";
 import "../../styles/audience.css";
 
@@ -121,8 +122,10 @@ function GoalForm({ goal, onClose, onDone }: { goal?: Goal; onClose: () => void;
   const [window, setWindow] = useState(String(goal?.window_days ?? 30));
   const draft: GoalDraft = { name: name.trim(), target: kind === "event" ? { event: event.trim() } : { rule }, eligibility, window_days: Number(window) };
   const sources = [properties, topics, segments];
-  const choicesIssue = sources.find((source) => source.error)?.error
-    ?? (sources.some((source) => source.loading) ? "Loading contact fields…" : sources.some((source) => source.hasMore) ? "Not all contact choices could be loaded." : null);
+  const needed = new Set([...ruleSources(kind === "rule" ? rule : null), ...ruleSources(eligibility)]);
+  const relevant = Object.entries({ properties, topics, segments }).filter(([key]) => needed.has(key)).map(([, source]) => source);
+  const choicesIssue = relevant.find((source) => source.error)?.error
+    ?? (relevant.some((source) => source.loading) ? "Loading contact fields…" : null);
   const issue = choicesIssue ?? goalDraftIssue(draft, fields);
   const save = useMutation(() => {
     if (!can || issue) throw new Error(issue ?? "Read-only access.");
@@ -136,13 +139,13 @@ function GoalForm({ goal, onClose, onDone }: { goal?: Goal; onClose: () => void;
       <Field label="Name" value={name} onChange={setName} required autoFocus disabled={disabled} />
       <Select label="Target" value={kind} onChange={setKind} disabled={disabled} options={[{ value: "event", label: "Custom event" }, { value: "rule", label: "Contact state" }]} />
       {kind === "event" ? <Field label="Event name" value={event} onChange={setEvent} required disabled={disabled} /> : <>
-        <RuleEditor rule={rule} onChange={setRule} fields={targetFields} disabled={disabled || Boolean(choicesIssue)} />
+        <RuleEditor rule={rule} onChange={setRule} fields={targetFields} disabled={disabled} />
         <p className="muted">A rule target counts entry into recorded contact state. Historical events, email engagement, topics and segment membership are not supported as rule targets. Earlier unrecorded transitions cannot be inferred.</p>
       </>}
       <Field label="Conversion window (days)" type="number" value={window} onChange={setWindow} required disabled={disabled} hint="1–365 days after the first scoped send; default 30. The window endpoint is inclusive." />
       <Select label="Eligibility" value={eligibility ? "rule" : "all"} disabled={disabled} onChange={(next) => setEligibility(next === "rule" ? blankRule() : null)}
         options={[{ value: "all", label: "All contacts" }, { value: "rule", label: "Current contact filter" }]} />
-      {eligibility ? <RuleEditor rule={eligibility} onChange={setEligibility} fields={fields} disabled={disabled || Boolean(choicesIssue)} /> : null}
+      {eligibility ? <RuleEditor rule={eligibility} onChange={setEligibility} fields={fields} disabled={disabled} /> : null}
       <p className="muted">Eligibility uses current live contact state, including current topics and static segment membership, not state at send time. Sandbox sends never count.</p>
       {issue ? <p role={sources.some((source) => source.loading) ? "status" : "alert"} className="fieldError">{issue}</p> : null}
       {sources.some((source) => source.error) ? <button type="button" className="secondary" onClick={() => { for (const source of sources) void source.reload(); }}>Retry choices</button> : null}
