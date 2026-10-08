@@ -47,6 +47,7 @@ import { Setup } from "./views/setup/Setup";
 import { Template } from "./views/templates/Template";
 import { TemplateEditor } from "./views/templates/TemplateEditor";
 import { Templates } from "./views/templates/Templates";
+import { Library } from "./views/templates/Library";
 import { Timeline } from "./views/timeline/Timeline";
 import { Webhook } from "./views/webhooks/Webhook";
 import { Webhooks } from "./views/webhooks/Webhooks";
@@ -85,7 +86,7 @@ export const routes = [
           { path: "automations/:id/editor", element: <AutomationEditor /> },
 
           { path: "templates", element: <Templates /> },
-          { path: "templates/library", element: <Navigate to="/templates#ready-made" replace /> },
+          { path: "templates/library", element: <Library /> },
           { path: "templates/:id", element: <Template /> },
           { path: "templates/:id/editor", element: <TemplateEditor /> },
 
