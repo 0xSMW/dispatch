@@ -53,11 +53,7 @@ describe("Automations", () => {
     expect(screen.getAllByText("Enabled").length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: "Start blank" })).toBeNull();
     expect(fetch.mock.calls.filter(([url]) => String(url).includes("template-library/automations"))).toHaveLength(0);
-    const learn = within(screen.getByRole("navigation", { name: "Learn more" }));
-    expect(learn.getByRole("link", { name: "Triggers" }).getAttribute("href")).toContain("automations.md#triggers");
-    expect(learn.getByRole("link", { name: "Conditions" }).getAttribute("href")).toContain("automations.md#conditions");
-    const recipes = learn.queryByRole("link", { name: "Lifecycle recipes" });
-    if (recipes) expect(recipes.getAttribute("href")).toContain("automations/README.md");
+    expect(screen.queryByRole("navigation", { name: "Learn more" })).toBeNull();
   });
   it.each([["full"], ["read"]])("offers stage discovery without setup for %s access on an empty install", async (permission) => {
     signIn("sess_test", [permission]);
