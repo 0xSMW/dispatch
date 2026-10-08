@@ -1,5 +1,58 @@
 /* Settings pages: team, usage, SMTP, brand, and the unsubscribe page. */
 
+/* Keep title, navigation, and content anchored when changing settings tabs. */
+html:has(.settingsPage) { scrollbar-gutter: stable; }
+.settingsPage {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 24px;
+}
+.settingsPage > .pageHeader { margin-bottom: 0; }
+.settingsPage .pageHeaderRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: 40px;
+  gap: 16px;
+  align-items: center;
+}
+.settingsPage > .tabs {
+  min-height: 40px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  align-items: center;
+}
+.settingsPage > .tabs .tab { flex-shrink: 0; }
+.settingsPage .panel {
+  min-width: 0;
+  gap: 16px;
+  padding: 24px;
+}
+.settingsPage section.panel:has(.empty, .emptyTable) {
+  background: var(--container-bg);
+  border-color: var(--border);
+}
+.settingsPage .panelHeader { min-height: 32px; gap: 16px; }
+.settingsPage > .stack { gap: 24px; }
+.settingsPage .usageSummary { gap: 24px; }
+.settingsPage .usageSummary > div { gap: 8px; padding: 0; border: 0; border-radius: 0; }
+.settingsPage .settingsSplit {
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: 24px;
+}
+.settingsPage .settingsSplit > :first-child { grid-column: span 7; }
+.settingsPage .settingsSplit > :last-child { grid-column: span 5; }
+.settingsPage .unsubscribeSettings { gap: 16px; }
+@media (max-width: 1100px) {
+  .settingsPage .settingsSplit > :first-child,
+  .settingsPage .settingsSplit > :last-child { grid-column: 1 / -1; }
+}
+@media (max-width: 650px) {
+  .settingsPage .panel { padding: 16px; }
+  .settingsPage .pageHeaderRow { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .settingsPage .pageHeaderText,
+  .settingsPage .pageActions { min-height: 40px; }
+  .settingsPage .pageActions { justify-content: flex-start; }
+}
+
 .integrationGrid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
@@ -13,7 +66,7 @@
   padding: 16px;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: var(--surface-raised);
+  background: var(--container-raised-bg);
 }
 
 .integrationCard h3,
@@ -53,10 +106,7 @@
   display: grid;
   justify-items: start;
   gap: 10px;
-  padding: 16px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--surface-raised);
+  padding: 0;
 }
 
 /* --brand and --brand-text carry the tenant's color, which is data rather than a theme token. */
