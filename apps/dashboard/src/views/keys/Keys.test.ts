@@ -48,7 +48,7 @@ describe("Keys", () => {
       "POST /api-keys": { object: "api_key", id: "key_9", token: "re_secret_token" },
     });
     visit(h(Keys), "/api-keys");
-    await screen.findByText("No API keys");
+    await screen.findByText("No API keys yet");
 
     fireEvent.click(screen.getByRole("button", { name: "Create API key" }));
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Mailer" } });
