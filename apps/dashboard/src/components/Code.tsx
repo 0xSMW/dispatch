@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { Copy } from "./Copy";
 
-export type CodeLanguage = "json" | "html" | "text";
+export type CodeLanguage = "json" | "html" | "javascript" | "text";
 
 export interface CodeProps {
   /** A string is shown as is. Anything else is pretty-printed as JSON. */
@@ -16,10 +16,12 @@ export interface CodeProps {
 const jsonToken = /("(?:\\.|[^"\\])*")(\s*:)?|\b(true|false|null)\b|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g;
 const htmlToken = /(<!--[\s\S]*?-->)|(<\/?[a-zA-Z][\w:-]*)|([\w:-]+)(=)("[^"]*"|'[^']*')|(\/?>)/g;
 
+const javascriptToken = /(\/\/[^\n]*|\/\*[\s\S]*?\*\/)|("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*')|\b(async|await|const|function|return|if|throw|new|true|false|null|undefined)\b|\b(\d+(?:\.\d+)?)\b/g;
+
 /** Splits code into tinted spans. Pure text nodes, never HTML injection. */
 export function tint(text: string, language: CodeLanguage): ReactNode[] {
   if (language === "text") return [text];
-  const pattern = language === "json" ? jsonToken : htmlToken;
+  const pattern = language === "json" ? jsonToken : language === "javascript" ? javascriptToken : htmlToken;
   const out: ReactNode[] = [];
   let last = 0;
   let key = 0;
@@ -30,7 +32,12 @@ export function tint(text: string, language: CodeLanguage): ReactNode[] {
   for (const match of text.matchAll(pattern)) {
     const start = match.index ?? 0;
     push(text.slice(last, start));
-    if (language === "json") {
+    if (language === "javascript") {
+      if (match[1]) push(match[1], "tokComment");
+      else if (match[2]) push(match[2], "tokString");
+      else if (match[3]) push(match[3], "tokLiteral");
+      else push(match[4], "tokNumber");
+    } else if (language === "json") {
       if (match[1]) {
         push(match[1], match[2] ? "tokKey" : "tokString");
         push(match[2] ?? "");
@@ -49,7 +56,7 @@ export function tint(text: string, language: CodeLanguage): ReactNode[] {
   return out;
 }
 
-/** Syntax-tinted, copyable block for JSON, HTML, and plain text. */
+/** Syntax-tinted, copyable block for JSON, HTML, JavaScript, and plain text. */
 export function Code({ value, language, copy = true, empty = null, className = "" }: CodeProps) {
   if (value === null || value === undefined || value === "") return <>{empty}</>;
   const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
