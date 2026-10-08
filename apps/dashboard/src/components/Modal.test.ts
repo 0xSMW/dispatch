@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { h } from "../testing";
 import { Drawer } from "./Drawer";
 import { Modal } from "./Modal";
+import { shortcuts } from "../lib/shortcuts";
 
 function Page({ onClose }: { onClose: () => void }) {
   const [open, setOpen] = useState(false);
@@ -76,6 +77,17 @@ describe("dialog focus", () => {
     expect(onClose).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.activeElement).toBe(opener);
+  });
+
+  it("shows separate platform shortcut caps and keeps modified Enter submission", () => {
+    const submit = vi.fn();
+    render(h(Modal, { isOpen: true, title: "Save changes", onClose: vi.fn(), onSubmit: submit, children: h("input", { "aria-label": "Name" }) }));
+    const save = screen.getByRole("button", { name: /^Save / });
+    const cancel = screen.getByRole("button", { name: /^Cancel / });
+    expect([...save.querySelectorAll("kbd")].map((cap) => cap.textContent)).toEqual(shortcuts.submit.keys);
+    expect([...cancel.querySelectorAll("kbd")].map((cap) => cap.textContent)).toEqual(shortcuts.dismiss.keys);
+    fireEvent.keyDown(screen.getByLabelText("Name"), { key: "Enter", ctrlKey: true });
+    expect(submit).toHaveBeenCalledTimes(1);
   });
 
   it("closes only the topmost of two open dialogs on Esc", () => {
