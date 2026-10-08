@@ -23,8 +23,8 @@ describe("Suppressions", () => {
     visit(h(Suppressions), "/emails/suppressions?origin=bounce", "/emails/suppressions");
     expect(await screen.findByText("bounced@example.com")).toBeTruthy();
     expect(requests(fetch, "GET", "/suppressions")[0].url.searchParams.get("origin")).toBe("bounce");
-    expect(screen.getAllByText("bounce").find((node) => node.classList.contains("badge"))?.className).toContain("danger");
-    expect(screen.getAllByText("manual").find((node) => node.classList.contains("badge"))?.className).toContain("neutral");
+    expect(screen.getAllByText("Bounce").find((node) => node.classList.contains("badge"))?.className).toContain("danger");
+    expect(screen.getAllByText("Manual").find((node) => node.classList.contains("badge"))?.className).toContain("neutral");
   });
 
   it("sends search and the date range", async () => {
