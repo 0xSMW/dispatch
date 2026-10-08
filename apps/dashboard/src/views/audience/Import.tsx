@@ -1,3 +1,4 @@
+import { Dropdown } from "../../components/Dropdown";
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { Badge } from "../../components/Badge";
 import { Drawer } from "../../components/Drawer";
@@ -257,7 +258,7 @@ export function ImportContacts({ onClose, onDone }: { onClose: () => void; onDon
               {(topics.data?.data ?? []).map((topic) => (
                 <div key={topic.id} className="topicRow">
                   <span>{topic.name}</span>
-                  <select
+                  <Dropdown
                     aria-label={`${topic.name} subscription`}
                     value={topicChoice[topic.id] ?? ""}
                     onChange={(event) =>
@@ -272,7 +273,7 @@ export function ImportContacts({ onClose, onDone }: { onClose: () => void; onDon
                     <option value="">Leave as is</option>
                     <option value="opt_in">Opt in</option>
                     <option value="opt_out">Opt out</option>
-                  </select>
+                  </Dropdown>
                 </div>
               ))}
               {topics.data?.data.length === 0 ? <p className="muted">No topics yet.</p> : null}
@@ -432,7 +433,7 @@ function MapColumns({
                     update({ key, ...(property ? { type: property.type } : {}) });
                   }}
                 />
-                <select
+                <Dropdown
                   aria-label={`Type for ${item.column}`}
                   value={declared?.type ?? item.type}
                   disabled={!item.include || Boolean(declared)}
@@ -442,7 +443,7 @@ function MapColumns({
                   <option value="number">Number</option>
                   <option value="boolean">True or false</option>
                   <option value="date">Date</option>
-                </select>
+                </Dropdown>
               </div>
             );
           })}
