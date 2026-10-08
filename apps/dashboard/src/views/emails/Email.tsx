@@ -198,9 +198,9 @@ export function Email() {
         ) : body === "preview" ? (
           <Preview html={row.html} />
         ) : body === "text" ? (
-          <Code value={row.text} language="text" empty={<Empty title="No plain text part" body="Add `text` when you send, for clients that do not render HTML." />} />
+          <Code value={row.text} language="text" empty={<Empty title="No plain text version" body="Add a plain text version when you send, for email apps that can't show HTML." />} />
         ) : body === "html" ? (
-          <Code value={row.html} language="html" empty={<Empty title="No HTML part" />} />
+          <Code value={row.html} language="html" empty={<Empty title="No HTML version" />} />
         ) : body === "attachments" ? (
           <Table
             compact
