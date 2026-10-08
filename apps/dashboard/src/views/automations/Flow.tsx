@@ -1,10 +1,12 @@
-import { createContext, useContext, useMemo } from "react";
-import { AlertCircle, Plus } from "lucide-react";
+import { createContext, useContext, useMemo, useState } from "react";
+import { AlertCircle, HelpCircle, Minus, Plus, Scan } from "lucide-react";
 import {
   Background,
   BackgroundVariant,
   BaseEdge,
-  Controls,
+  Panel,
+  useReactFlow,
+  useViewport,
   EdgeLabelRenderer,
   Handle,
   Position,
@@ -14,6 +16,7 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
+import { Modal } from "../../components/Modal";
 import { Badge, statusToVariant } from "../../components/Badge";
 import { Tile } from "../../components/PageHeader";
 import { describe as summary, stepLabels, triggerLabels, triggerSummary, type DisplaySources, type TriggerConfig } from "./graph";
@@ -183,6 +186,34 @@ const edgeTypes = { link: Link };
 
 export type FlowProps = Actions & { nodes: CanvasNode[]; edges: CanvasEdge[]; label: string };
 
+function CanvasHud() {
+  const { zoomIn, zoomOut, fitView } = useReactFlow();
+  const { zoom } = useViewport();
+  const [helpOpen, setHelpOpen] = useState(false);
+  return (
+    <>
+      <Panel position="bottom-right" className="canvasHud nodrag nopan" aria-label="Canvas controls">
+        <div className="canvasZoom" role="group" aria-label="Zoom">
+          <button type="button" aria-label="Zoom out" disabled={zoom <= 0.3} onClick={() => void zoomOut({ duration: 180 })}><Minus size={14} aria-hidden /></button>
+          <span className="canvasZoomValue" aria-label={`Zoom ${Math.round(zoom * 100)} percent`}>{Math.round(zoom * 100)}%</span>
+          <button type="button" aria-label="Zoom in" disabled={zoom >= 1.5} onClick={() => void zoomIn({ duration: 180 })}><Plus size={14} aria-hidden /></button>
+        </div>
+        <button type="button" className="canvasFit" aria-label="Fit canvas" onClick={() => void fitView({ padding: 0.15, maxZoom: 1, duration: 240 })}><Scan size={14} aria-hidden />Fit</button>
+        <button type="button" aria-label="Canvas shortcuts" onClick={() => setHelpOpen(true)}><HelpCircle size={15} aria-hidden /></button>
+      </Panel>
+      <Modal isOpen={helpOpen} onClose={() => setHelpOpen(false)} title="Canvas controls" size="small">
+        <dl className="canvasHelp">
+          <div><dt><kbd>Space</kbd> + drag</dt><dd>Pan the canvas</dd></div>
+          <div><dt>Scroll</dt><dd>Pan the canvas</dd></div>
+          <div><dt>Zoom − / +</dt><dd>Change the zoom level</dd></div>
+          <div><dt>Fit</dt><dd>Bring every step into view</dd></div>
+          <div><dt><kbd>Esc</kbd></dt><dd>Close the inspector when focus is outside a field or dialog</dd></div>
+        </dl>
+      </Modal>
+    </>
+  );
+}
+
 /** The canvas itself: a dot grid you can pan and zoom, with nodes placed by `layout()`. */
 export default function Flow({ nodes, edges, label, selected, adding, onSelect, onAdd, emailCounts, options, triggerConfig, triggerSources }: FlowProps) {
   const actions = useMemo(() => ({ selected, adding, onSelect, onAdd, emailCounts, options, triggerConfig, triggerSources }), [selected, adding, onSelect, onAdd, emailCounts, options, triggerConfig, triggerSources]);
@@ -190,6 +221,7 @@ export default function Flow({ nodes, edges, label, selected, adding, onSelect, 
     <FlowActions.Provider value={actions}>
       <ReactFlow<CanvasNode, CanvasEdge>
         aria-label={label}
+        proOptions={{ hideAttribution: true }}
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
@@ -205,6 +237,7 @@ export default function Flow({ nodes, edges, label, selected, adding, onSelect, 
         selectionKeyCode={null}
         multiSelectionKeyCode={null}
         panOnScroll
+        panActivationKeyCode="Space"
         zoomOnDoubleClick={false}
         minZoom={0.3}
         maxZoom={1.5}
@@ -212,7 +245,7 @@ export default function Flow({ nodes, edges, label, selected, adding, onSelect, 
         fitViewOptions={{ padding: 0.15, maxZoom: 1 }}
       >
         <Background variant={BackgroundVariant.Dots} gap={18} size={1.2} />
-        <Controls showInteractive={false} position="bottom-right" />
+        <CanvasHud />
       </ReactFlow>
     </FlowActions.Provider>
   );
