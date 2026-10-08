@@ -50,7 +50,7 @@ describe("email theme tokens", () => {
     }
     expect(filled).toContain("Georgia");
     expect(filled).not.toContain("{{{THEME_");
-    expect(filled).toContain("#09090b !important");
+    expect(filled).toContain("#0a0a0a !important");
   });
 
   it("themes code, details and line items in real rendered recipes", async () => {
@@ -74,7 +74,7 @@ describe("email theme tokens", () => {
     }));
     expect(html).not.toContain("{{{THEME_");
     expect(html).toContain("font-size:16px");
-    expect(html).toContain("background-color:#18181b");
+    expect(html).toContain("background-color:#171717");
     expect(html).toContain("color:#ffffff");
   });
 });
