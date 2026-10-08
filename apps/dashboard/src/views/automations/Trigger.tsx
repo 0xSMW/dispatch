@@ -4,7 +4,7 @@ import { TypedValue } from "../../components/TypedValue";
 import type { RuleSources } from "../../lib/rules";
 import type { Automation, PropertyType } from "../../types";
 import { EventInput, type StepOptions } from "./Steps";
-import { defaultTrigger, stepError, triggerChoices, triggerFields, triggerWarning, type TriggerConfig, type TriggerType } from "./graph";
+import { defaultTrigger, stepError, triggerChoices, triggerFields, triggerWarning, type DisplaySources, type TriggerConfig, type TriggerType } from "./graph";
 
 export type Reentry = NonNullable<Automation["reentry"]>;
 
@@ -12,8 +12,12 @@ export type Reentry = NonNullable<Automation["reentry"]>;
 export const ReentryContext = createContext<{ value: Reentry; onChange: (value: Reentry) => void } | null>(null);
 
 /** Only completed resource lists can establish that a trigger's resource was deleted. */
-export function triggerSources(options?: StepOptions): RuleSources {
+export function triggerSources(options?: StepOptions): RuleSources & Pick<DisplaySources, "topicsError" | "segmentsError" | "topicsReady" | "segmentsReady"> {
   return {
+    topicsReady: options?.topicsReady,
+    segmentsReady: options?.segmentsReady,
+    topicsError: options?.topicsError,
+    segmentsError: options?.segmentsError,
     properties: options?.propertiesReady === false ? undefined : options?.contactProperties,
     topics: options?.topicsReady === false ? undefined : options?.topics,
     segments: options?.segmentsReady === false ? undefined : options?.staticSegments ?? options?.segments,
