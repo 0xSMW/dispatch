@@ -59,7 +59,7 @@ export function Properties() {
       list={list}
       noun="properties"
       onRowClick={can ? setEditing : undefined}
-      empty={<Empty title="No properties" body="Define a property to store typed values on contacts and use them in templates." />}
+      empty={<Empty title="No properties yet" body="Add a property to save extra details on your contacts and use them in your templates." />}
       columns={[
         {
           header: "Name",
