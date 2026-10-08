@@ -27,10 +27,10 @@ describe("flow control graph", () => {
   it("uses the shared Delay, Condition, Branch, Filter and Exit names", () => {
     expect(["delay", "condition", "branch", "filter", "exit"].map((type) => stepLabels[type as keyof typeof stepLabels]))
       .toEqual(["Delay", "Condition", "Branch", "Filter", "Exit"]);
-    expect(summary({ key: "delay", type: "delay", config: { duration: "2 days" } })).toBe("2 days");
+    expect(summary({ key: "delay", type: "delay", config: { duration: "2 days" } })).toBe("Wait 2 days");
     expect(summary({ key: "filter", type: "filter", config: { rule: rule(), scope: "following" } }))
-      .toBe('contact.plan is "free" · all following steps');
-    expect(summary(branched(3).steps[0]!)).toBe("3 paths");
+      .toBe('Plan is "free" · all following steps');
+    expect(summary(branched(3).steps[0]!)).toBe("Plan 1 / Plan 2 / Plan 3 / Otherwise");
     expect(summary({ key: "exit", type: "exit", config: {} })).toBe("The run ends here");
   });
 
@@ -237,9 +237,9 @@ describe("run reasons", () => {
     const tree = { ...empty(), steps: [{ key: "guard", type: "filter" as const, config: { rule: rule("enterprise"), scope: "next" } }] };
     const failed = { ...run, exit_reason: "filter" as const, guards: [{ filter: "guard", rule: rule() }],
       steps: [{ key: "send", type: "send_email", data: { exited: "filter", filter: "guard" } }] };
-    expect(runReason(failed, tree)).toBe('Left at the Filter step: contact.plan is not "free" (guard).');
+    expect(runReason(failed, tree)).toBe('Left at the Filter step: Plan is not "free" (guard).');
     expect(runReason(failed, empty())).toBe(runReason(failed, tree));
     expect(runReason({ ...failed, guards: [], steps: [{ key: "guard", type: "filter", output: { exited: "filter" } }] }, tree))
-      .toContain('contact.plan is not "enterprise"');
+      .toContain('Plan is not "enterprise"');
   });
 });
