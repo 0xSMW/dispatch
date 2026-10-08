@@ -79,7 +79,7 @@ export function Broadcasts() {
       list={list}
       noun="broadcasts"
       rowHref={broadcastHref}
-      empty={<Empty title="No broadcasts" body="Send a marketing email to a segment, respecting contact and topic opt-outs."
+      empty={<Empty title="No broadcasts yet" body="Send a marketing email to any segment of your contacts."
         action={can ? <button type="button" onClick={() => setCreating(true)}>Create your first broadcast</button> : null} />}
       columns={[
         {
