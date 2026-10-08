@@ -43,7 +43,7 @@ describe("Received", () => {
   it("sends search and the date range as from and to", async () => {
     const fetch = api({ "/emails/receiving": list([]) });
     visit(h(Received), "/emails/receiving?q=order&range=custom&start=2026-09-01&end=2026-09-02");
-    await screen.findByText("No matching results");
+    await screen.findByText("No results");
     const url = requests(fetch, "GET", "/emails/receiving")[0].url;
     expect(url.searchParams.get("q")).toBe("order");
     expect(new Date(url.searchParams.get("from")!).getDate()).toBe(1);
@@ -54,7 +54,7 @@ describe("Received", () => {
   it("simulates an inbound email", async () => {
     const fetch = api({ "/emails/receiving": list([]), "POST /emails/receiving/simulate": { object: "email", id: "inbound_2" } });
     visit(h(Received), "/emails/receiving");
-    await screen.findByText("No received emails");
+    await screen.findByText("No received emails yet");
     fireEvent.click(screen.getByRole("button", { name: "Simulate inbound" }));
     fireEvent.change(screen.getByLabelText("From"), { target: { value: "a@example.net" } });
     fireEvent.change(screen.getByLabelText("To"), { target: { value: "inbox@acme.test, sales@acme.test" } });
