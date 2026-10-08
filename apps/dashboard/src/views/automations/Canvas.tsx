@@ -10,6 +10,7 @@ import { layout, locate, runFocus, slotId, type Slot } from "./layout";
 import { RunResult, StepForm, stepIcons, stepTones, type RunStep, type StepActions, type StepOptions } from "./Steps";
 import { TriggerForm, triggerSources } from "./Trigger";
 import "../../styles/canvas.css";
+import "../../styles/canvas-hud.css";
 
 // The canvas view of the builder and the run view. It draws the same tree
 // the list does and edits it only through the same `StepActions`, so it can never write a
@@ -38,7 +39,7 @@ export function ViewSwitch({ value, onChange }: { value: View; onChange: (view: 
 /** The step picker groups, in the order the picker shows them. */
 export const pickerGroups: Array<{ name: string; types: StepType[] }> = [
   { name: "Messages", types: ["send_email"] },
-  { name: "Flow control", types: ["delay", "wait_for_event", "condition", "branch", "filter", "exit"] },
+  { name: "Flow control", types: ["delay", "wait_for_event", "condition", "branch", "split", "filter", "exit"] },
   { name: "Audience", types: ["contact_update", "contact_delete", "add_to_segment"] },
 ];
 
@@ -64,6 +65,7 @@ export function Canvas({ tree, actions, disabled = false, errors = {}, options, 
   const editable = Boolean(actions) && !disabled && !run;
   const [selected, setSelected] = useState<string | null>(() => (run ? runFocus(tree, run) : null));
   const [adding, setAdding] = useState<Slot | null>(null);
+  const [pickerSearch, setPickerSearch] = useState("");
   const { nodes, edges } = useMemo(() => layout(tree, { editable, errors, run }), [tree, editable, errors, run]);
 
   const select = useCallback((key: string) => {
@@ -72,6 +74,7 @@ export function Canvas({ tree, actions, disabled = false, errors = {}, options, 
   }, []);
   const add = useCallback((slot: Slot) => {
     setSelected(null);
+    setPickerSearch("");
     setAdding(slot);
   }, []);
   const close = () => {
@@ -109,12 +112,19 @@ export function Canvas({ tree, actions, disabled = false, errors = {}, options, 
     section.focus();
   }, [shownPanel]);
 
+  const search = pickerSearch.trim().toLowerCase();
+  const visibleGroups = pickerGroups.map((group) => ({
+    ...group,
+    types: group.types.filter((type) => `${stepLabels[type]} ${group.name}`.toLowerCase().includes(search)),
+  })).filter((group) => group.types.length > 0);
+
   let panel: ReactNode = null;
   const found = selected && selected !== tree.trigger ? locate(tree, selected) : null;
   if (adding && editable) {
     panel = (
       <Inspector immersive={immersive} label="Add a step" header={<PanelHeader title="Add a step" onClose={close} />}>
-        {pickerGroups.map((group) => (
+        <input type="search" className="canvasPickerSearch" aria-label="Search steps" placeholder="Search steps…" value={pickerSearch} onChange={(event) => setPickerSearch(event.target.value)} />
+        {visibleGroups.map((group) => (
           <div key={group.name} className="pickerGroup" role="group" aria-label={group.name}>
             <h3>{group.name}</h3>
             {group.types.map((type) => (
@@ -125,6 +135,7 @@ export function Canvas({ tree, actions, disabled = false, errors = {}, options, 
             ))}
           </div>
         ))}
+        {visibleGroups.length === 0 ? <p className="fieldHint" role="status">No steps match your search.</p> : null}
         {listAt(tree, adding.path).slice(adding.index).some((node) => node.type !== "exit") ? <p className="fieldHint">Exit can only be added at the end of a path, so following steps are not discarded.</p> : null}
       </Inspector>
     );
@@ -214,7 +225,8 @@ export function Canvas({ tree, actions, disabled = false, errors = {}, options, 
   return (
     <div ref={viewRef} className={["canvasView", stacked ? "stacked" : "", immersive ? "immersive" : ""].filter(Boolean).join(" ")}
       onKeyDown={(event) => {
-        if (immersive && shownPanel && event.key === "Escape" && !event.defaultPrevented) {
+        const target = event.target as HTMLElement;
+        if (shownPanel && event.key === "Escape" && !event.defaultPrevented && !target.closest("input, textarea, select, [contenteditable]:not([contenteditable='false']), [role='combobox'], [role='dialog']")) {
           event.preventDefault();
           event.stopPropagation();
           close();
