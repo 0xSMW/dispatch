@@ -1,4 +1,4 @@
-import { ApiError, brandContext, unsubscribeSchema } from "@dispatchmail/core";
+import { ApiError, brandContext, brandTextColor, unsubscribeSchema } from "@dispatchmail/core";
 import {
   applyUnsubscribe,
   emit,
@@ -71,16 +71,22 @@ async function page(db: Queryable, payload: UnsubscribePayload) {
   const current = await preferences(db, payload);
   const brand = await loadBrand(db, payload.tenant_id);
   const vars = brandContext(brand.brand, { tenantName: brand.name, domain: brand.domain });
+  const color = brand.brand.unsubscribe_color ?? vars.BRAND_COLOR;
   return {
     ...current,
     brand: {
       product_name: vars.PRODUCT_NAME,
-      logo_url: vars.LOGO_URL || null,
-      color: vars.BRAND_COLOR,
-      text_color: vars.BRAND_TEXT_COLOR,
+      logo_url: brand.brand.unsubscribe_logo_url ?? (vars.LOGO_URL || null),
+      color,
+      text_color: brandTextColor(color),
       // The tenant's own heading and line for this page. Null means the page's defaults.
       title: brand.brand.unsubscribe_title ?? null,
       description: brand.brand.unsubscribe_description ?? null,
+      button_label: brand.brand.unsubscribe_button_label ?? null,
+      updated_title: brand.brand.unsubscribe_updated_title ?? null,
+      updated_description: brand.brand.unsubscribe_updated_description ?? null,
+      unsubscribed_title: brand.brand.unsubscribe_unsubscribed_title ?? null,
+      unsubscribed_description: brand.brand.unsubscribe_unsubscribed_description ?? null,
     },
   };
 }
