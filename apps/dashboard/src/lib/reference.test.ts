@@ -7,7 +7,7 @@ import { curl, go, llmsLinks, python, referenceFor, references, sdk } from "./re
 
 // The signed-in routes in main.tsx, read from the source so a new page cannot skip the reference.
 const source = readFileSync(new URL("../main.tsx", import.meta.url), "utf8");
-const publicPaths = new Set(["login", "shared", "unsubscribe", "confirm/:token", "*", "settings", "automations/events"]);
+const publicPaths = new Set(["login", "shared", "unsubscribe", "confirm/:token", "*", "settings", "automations/events", "templates/library"]);
 const routes = [...source.matchAll(/path: "([^"]+)"/g)].map((match) => match[1]!).filter((path) => !publicPaths.has(path));
 const calls = Object.keys(references).flatMap((path) => referenceFor(path.replace(/:[a-z_]+/g, "resource_123"))!.calls);
 const apiUrl = "https://api.acme.test";
@@ -129,7 +129,7 @@ describe("API reference", () => {
 
   it("prefers a static route over a param route", () => {
     expect(referenceFor("/emails/receiving")!.title).toBe("Received emails");
-    expect(referenceFor("/templates/library")!.title).toBe("Template library");
+    expect(referenceFor("/templates")!.title).toBe("Templates");
     expect(referenceFor("/emails/email_1")!.title).toBe("Email");
     expect(referenceFor("/nowhere")).toBeNull();
   });
@@ -170,7 +170,7 @@ describe("API reference", () => {
   });
 
   it("lists, previews and installs presets through the actual clients", () => {
-    const library = references["/templates/library"]!;
+    const library = references["/templates"]!;
     expect(library.calls.map((call) => call.path)).toContain("/template-library/automations");
     expect(library.calls.map((call) => call.path)).toContain("/template-library/automations/onboarding-drip");
     expect(calls.some((call) => /\/template-library\/automations\/.*\/install/.test(call.path))).toBe(true);

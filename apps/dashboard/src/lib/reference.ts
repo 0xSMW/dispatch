@@ -153,11 +153,6 @@ const pages: Record<string, Omit<Reference, "prompt">> = {
     calls: [
       get("/templates?limit=100", "List templates. Filters: q, status.", "dispatch.templates.list({ limit: 100 })"),
       post("/templates", "Create a draft template", 'dispatch.templates.create({ name: "Welcome", html: "<p>Hi {{{NAME}}}</p>" })', { name: "Welcome", html: "<p>Hi {{{NAME}}}</p>" }),
-    ],
-  },
-  "/templates/library": {
-    title: "Template library",
-    calls: [
       get("/template-library", "List the default templates", "dispatch.templates.library.list()"),
       get("/template-library/automations", "List lifecycle presets", "dispatch.templates.library.automations()"),
       get("/template-library/automations/onboarding-drip", "Preview a lifecycle preset", 'dispatch.templates.library.automation("onboarding-drip")'),
@@ -376,7 +371,6 @@ const goals: Record<string, string> = {
   Events: "Help me define and send an app event in Dispatch, including the fields its automation needs.",
   Automation: "Help me inspect an automation's graph, runs, goal conversions and split variants. Explain pause, resume and stop, and require the current paused version before selecting a split winner.",
   Templates: "Help me create a reusable Dispatch email template and declare its required variables and optional fallbacks.",
-  "Template library": "Help me choose and install a Dispatch lifecycle preset with a verified sender. Newsletter welcome requires a live tenant topic at installation; other Marketing presets may install disabled without one. Review reused emails and the disabled automation before enabling.",
   Template: "Help me inspect a Dispatch template's versions, variables, tracking, and Transactional or Marketing kind.",
   "Template editor": "Help me edit and render a Dispatch template draft with test variables before publishing it.",
   Contacts: "Help me add and inspect Dispatch contacts while preserving their consent preferences.",

@@ -11,6 +11,7 @@ const rows = [template(), template({ id: "tpl_2", name: "Reset password", alias:
 function setup(path = "/templates") {
   const fetch = api({
     "GET /templates": list(rows),
+    "GET /template-library": list([]),
     "GET /brand": { object: "brand", product_name: "Acme" },
     "POST /templates": { ...template({ id: "tpl_new", name: "Launch" }) },
     "POST /templates/tpl_1/duplicate": template({ id: "tpl_copy", name: "Welcome (Copy)" }),
@@ -45,6 +46,42 @@ describe("Templates", () => {
     expect(learn.getByRole("link", { name: "Brand" }).getAttribute("href")).toContain("templates.md#brand");
   });
 
+  it("shows both collections and refreshes account templates after installation", async () => {
+    const preset = {
+      slug: "receipt", name: "Receipt", category: "billing", kind: "transactional",
+      description: "After a payment.", variables: [], sample: {},
+    };
+    let installed = false;
+    const fetch = api({
+      "GET /templates": () => ({ body: list(installed ? [...rows, template({ id: "tpl_receipt", name: "Receipt" })] : rows) }),
+      "GET /brand": { object: "brand", product_name: "Acme" },
+      "GET /template-library": list([preset]),
+      "GET /template-library/receipt": { ...preset, rendered: { html: "<p>Receipt</p>" } },
+      "POST /template-library/receipt/install": () => {
+        installed = true;
+        return { body: { object: "template", id: "tpl_receipt" } };
+      },
+    });
+    renderAt("/templates?status=published&q=welcome", [{ path: "/templates", element: h(Templates) }]);
+    const readyMade = screen.getByRole("region", { name: "Ready-made templates" });
+    fireEvent.click(await within(readyMade).findByRole("button", { name: "Receipt" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Use template" }));
+    const own = screen.getByRole("region", { name: "Your templates" });
+    expect(await within(own).findByRole("article", { name: "Receipt" })).toBeTruthy();
+    expect(calls(fetch, "GET /templates")).toHaveLength(2);
+    expect(screen.queryByRole("tab")).toBeNull();
+    expect(screen.queryByRole("link", { name: "Browse library" })).toBeNull();
+    expect(screen.getAllByRole("button", { name: "Create template" })).toHaveLength(1);
+  });
+
+  it("keeps creation and ready-made templates visible when the account has no templates", async () => {
+    api({ "GET /templates": list([]), "GET /template-library": list([]), "GET /brand": { object: "brand" } });
+    renderAt("/templates", [{ path: "/templates", element: h(Templates) }]);
+    expect(await screen.findByText("No templates yet")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Ready-made templates" })).toBeTruthy();
+    expect(screen.getAllByRole("button", { name: "Create template" })).toHaveLength(1);
+  });
+
   it("sends search and status from the URL to the server", async () => {
     const { fetch } = setup("/templates?status=draft&q=reset");
     await screen.findByRole("article", { name: "Reset password" });
@@ -54,7 +91,7 @@ describe("Templates", () => {
   });
 
   it("says nothing matched when a filtered list is empty", async () => {
-    api({ "GET /templates": list([]), "GET /brand": { object: "brand" } });
+    api({ "GET /template-library": list([]), "GET /templates": list([]), "GET /brand": { object: "brand" } });
     renderAt("/templates?status=draft", [{ path: "/templates", element: h(Templates) }]);
     expect(await screen.findByText("No templates match")).toBeTruthy();
   });

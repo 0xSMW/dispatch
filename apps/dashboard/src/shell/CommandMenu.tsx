@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { ArrowLeft, ArrowRight, ChevronRight, Code2, FileText, GitBranch, Globe2, Keyboard, Mail, Megaphone, Moon, Search, Sun, Users, type LucideIcon } from "lucide-react";
 import { useDialog } from "../hooks/useDialog";
 import { emailCommand, rankCommands, searchRecords, type Command } from "../lib/commands";
-import { audienceTabs, emailTabs, settingsTabs, templateTabs } from "../views/tabs";
+import { audienceTabs, emailTabs, settingsTabs } from "../views/tabs";
 import { useCan, useClient, useSession } from "./session";
 import { useTheme } from "./theme";
 import "../styles/commands.css";
@@ -45,7 +45,7 @@ export function CommandMenu({ pages, onClose, onApi, onKeys }: {
       requestAnimationFrame(() => { if (button.isConnected && !button.disabled) button.click(); });
     } })) : []);
 
-  const navigation: Command[] = [...pages, ...emailTabs, ...audienceTabs, ...templateTabs, ...settingsTabs]
+  const navigation: Command[] = [...pages, ...emailTabs, ...audienceTabs, ...settingsTabs]
     .filter((page, index, all) => page.to && all.findIndex((other) => other.to === page.to) === index)
     .map((page) => ({ id: `page:${page.to}`, label: page.label, to: page.to!, detail: "Open page", group: "Pages" }));
   const utilities: Command[] = [

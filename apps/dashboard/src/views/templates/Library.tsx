@@ -1,36 +1,23 @@
 import { useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link } from "react-router-dom";
 import { AlertTriangle } from "lucide-react";
 import { Badge } from "../../components/Badge";
 import { Drawer } from "../../components/Drawer";
 import { Empty, Failed } from "../../components/Empty";
-import { Select } from "../../components/Field";
-import { PageHeader } from "../../components/PageHeader";
 import { Panel } from "../../components/Panel";
 import { Skeleton } from "../../components/Skeleton";
 import { Table } from "../../components/Table";
-import { Tabs } from "../../components/Tabs";
 import { useMutation } from "../../hooks/useMutation";
 import { useResource } from "../../hooks/useResource";
 import { useCan, useClient } from "../../shell/session";
 import { kindLabels } from "../../lib/emailKind";
 import { docsBase } from "../../lib/docs";
 import type { LibraryDetail, LibraryTemplate, List, Rendered } from "../../types";
-import { templateTabs } from "../tabs";
 import { Preview, Thumb } from "./editor";
 
 // Local until the listing contract is added to the shared dashboard types.
 export type DiscoveryTemplate = LibraryTemplate & { stage?: string | null; when?: string };
 export type LibraryTab = "transactional" | "lifecycle";
-export const stageOptions = [
-  { value: "acquisition", label: "Acquisition" },
-  { value: "onboarding", label: "Onboarding" },
-  { value: "retention", label: "Retention" },
-  { value: "reengagement", label: "Re-engagement" },
-  { value: "dunning", label: "Dunning" },
-  { value: "reactivation", label: "Reactivation" },
-];
-
 /** Stage takes precedence over kind: transactional dunning emails are lifecycle emails too. */
 export function libraryTab(entry: DiscoveryTemplate): LibraryTab {
   return entry.stage || entry.kind === "marketing" ? "lifecycle" : "transactional";
@@ -81,61 +68,44 @@ function title(category: string) {
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-/** Default template gallery. */
-export function Library() {
+/** Ready-made templates shown directly below the account's templates. */
+export function Library({ onInstalled }: { onInstalled?: () => void }) {
   const library = useResource<List<DiscoveryTemplate>>("/template-library");
   const [open, setOpen] = useState<DiscoveryTemplate | null>(null);
-  const [params, setParams] = useSearchParams();
-  const tab: LibraryTab = params.get("tab") === "lifecycle" ? "lifecycle" : "transactional";
-  const stage = stageOptions.some((option) => option.value === params.get("stage")) ? params.get("stage")! : "";
   const entries = library.data?.data ?? [];
-  const visible = visibleTemplates(entries, tab, stage);
-  const empty = !library.loading && !library.error && Boolean(library.data) && entries.length === 0;
-  function filter(name: string, value: string) {
-    setParams((current) => {
-      const next = new URLSearchParams(current);
-      if (value) next.set(name, value);
-      else next.delete(name);
-      return next;
-    });
-  }
 
   return (
-    <div className="page">
-      <PageHeader title="Templates"
-        actions={empty ? undefined : <Link className="button secondary" to="/settings/brand">Edit brand</Link>} />
-      <Tabs tabs={templateTabs} />
-      {!empty ? <Tabs label="Library templates" value={tab} onChange={(value) => filter("tab", value)}
-        tabs={[{ id: "transactional", label: "Transactional" }, { id: "lifecycle", label: "Lifecycle" }]} /> : null}
-      {!empty && tab === "lifecycle" ? (
-        <div className="stack">
-          <p className="muted">Emails for each stage of the customer lifecycle. Marketing emails respect topic opt-outs; transactional emails are always sent.</p>
-          <Select label="Stage" value={stage} onChange={(value) => filter("stage", value)} placeholder="All stages" options={stageOptions} />
-          <Link to="/automations?create=1">Browse automation recipes</Link>
-        </div>
-      ) : null}
+    <section className="stack" id="ready-made" aria-labelledby="ready-made-title">
+      <h2 id="ready-made-title">Ready-made templates</h2>
       {library.error ? (
         <Failed message={library.error} onRetry={() => void library.reload()} />
       ) : library.loading && !library.data ? (
         <Skeleton lines={6} />
       ) : entries.length === 0 ? (
-        <Empty title="No library templates" body="There are no ready-made templates here yet." action={<Link className="button" to="/templates">Create a template</Link>} />
-      ) : visible.length === 0 ? (
-        <Empty title="No templates match" body="Try another stage or tab, or reset the filters." action={<button type="button" className="secondary" onClick={() => setParams((previous) => { const next = new URLSearchParams(previous); next.delete("stage"); next.delete("tab"); return next; })}>Reset filters</button>} />
+        <Empty title="No ready-made templates" body="There are no ready-made templates here yet." />
       ) : (
-        byCategory(visible).map(([category, items]) => (
-          <section key={category} className="stack" aria-label={title(category)}>
-            <h2 className="categoryTitle">{title(category)}</h2>
-            <div className="cardGrid">
-              {items.map((entry) => (
-                <LibraryCard key={entry.slug} entry={entry} onOpen={() => setOpen(entry)} />
+        (["transactional", "lifecycle"] as const).map((group) => {
+          const items = visibleTemplates(entries, group);
+          if (!items.length) return null;
+          return (
+            <section key={group} className="stack" aria-label={title(group)}>
+              <h3>{title(group)}</h3>
+              {byCategory(items).map(([category, templates]) => (
+                <section key={category} className="stack" aria-label={title(category)}>
+                  <h4 className="categoryTitle">{title(category)}</h4>
+                  <div className="cardGrid">
+                    {templates.map((entry) => (
+                      <LibraryCard key={entry.slug} entry={entry} onOpen={() => setOpen(entry)} />
+                    ))}
+                  </div>
+                </section>
               ))}
-            </div>
-          </section>
-        ))
+            </section>
+          );
+        })
       )}
-      {open ? <LibraryPreview entry={open} onClose={() => setOpen(null)} /> : null}
-    </div>
+      {open ? <LibraryPreview entry={open} onClose={() => setOpen(null)} onInstalled={onInstalled} /> : null}
+    </section>
   );
 }
 
@@ -163,14 +133,17 @@ function LibraryCard({ entry, onOpen }: { entry: DiscoveryTemplate; onOpen: () =
   );
 }
 
-function LibraryPreview({ entry, onClose }: { entry: DiscoveryTemplate; onClose: () => void }) {
+function LibraryPreview({ entry, onClose, onInstalled }: { entry: DiscoveryTemplate; onClose: () => void; onInstalled?: () => void }) {
   const client = useClient();
   const can = useCan();
   const detail = useResource<LibraryDetail>(`/template-library/${entry.slug}`);
   const [installed, setInstalled] = useState<string | null>(null);
   const install = useMutation(() => client.post<{ object: "template"; id: string }>(`/template-library/${entry.slug}/install`), {
     success: "Template installed.",
-    onSuccess: (result) => setInstalled(result.id),
+    onSuccess: (result) => {
+      setInstalled(result.id);
+      onInstalled?.();
+    },
   });
   const rendered = renderedOf(detail.data);
 

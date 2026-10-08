@@ -46,12 +46,12 @@ export function Setup() {
             <ul>
               <li><Link to="/settings/brand">Set your brand</Link></li>
               <li><Link to="/events">Send your first event</Link></li>
-              <li><Link to="/templates/library?tab=lifecycle">Install a preset</Link></li>
+              <li><Link to="/templates#ready-made">Choose a template</Link></li>
             </ul>
           ) : (
-            <p className="muted">Ask a team member with full access to set the brand, send an event, or install a preset.</p>
+            <p className="muted">Ask a team member with full access to set the brand, send an event, or choose a template.</p>
           )}
-          <p className="muted">Presets install disabled from the Lifecycle library. Review the automation before enabling it.</p>
+          <p className="muted">Choose a ready-made template, then configure your automation. Review it before enabling it.</p>
         </div>
       </Panel>
 

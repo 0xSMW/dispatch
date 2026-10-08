@@ -1,7 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { automations } from "../../../../../packages/templates/library.json";
 import { framed } from "../../components/EmailFrame";
 import { h, signIn } from "../../testing";
 import { api, calls, list, renderAt } from "./harness";
@@ -27,13 +26,6 @@ function entry(fields: Partial<DiscoveryTemplate>): DiscoveryTemplate {
   };
 }
 
-function selectValue(control: HTMLElement, value: string) {
-  const native = control.parentElement!.querySelector("select")!;
-  const label = Array.from(native.options).find(option => option.value === value)!.textContent!;
-  fireEvent.click(control);
-  fireEvent.click(screen.getByRole("option", { name: label }));
-}
-
 const entries = [entry({}), entry({ slug: "receipt", name: "Receipt", category: "billing", description: "After a payment." })];
 
 function setup() {
@@ -44,7 +36,7 @@ function setup() {
     "GET /template-library/receipt": { ...entries[1], preview: { subject: "Your Acme receipt", html: "<p>Receipt body</p>", text: "Receipt" } },
     "POST /template-library/password-reset/install": { object: "template", id: "tpl_9" },
   });
-  renderAt("/templates/library", [{ path: "/templates/library", element: h(Library) }]);
+  renderAt("/templates", [{ path: "/templates", element: h(Library) }]);
   return fetch;
 }
 
@@ -93,10 +85,9 @@ describe("Library", () => {
     expect(within(card).getByRole("link", { name: "Better Auth recipe" }).getAttribute("href")).toMatch(/templates\/better-auth.md$/);
     const receipt = screen.getByRole("article", { name: "Receipt" });
     expect(within(receipt).getByRole("link", { name: "Stripe recipe" }).getAttribute("href")).toMatch(/templates\/stripe.md$/);
-    expect(screen.getByRole("link", { name: "Edit brand" }).getAttribute("href")).toBe("/settings/brand");
   });
 
-  it("filters lifecycle emails by stage, including transactional dunning, alongside preset discovery", async () => {
+  it("shows transactional and lifecycle groups together without tabs or stage controls", async () => {
     const lifecycle = [
       entry({ slug: "welcome", name: "Welcome", stage: "onboarding" }),
       entry({ slug: "payment-failed", name: "Payment failed", stage: "dunning", category: "billing" }),
@@ -104,41 +95,26 @@ describe("Library", () => {
     ];
     const fetch = api({
       "GET /template-library": list([...entries, ...lifecycle]),
-      "GET /template-library/automations": list(automations),
       ...Object.fromEntries([...entries, ...lifecycle].map((item) => [`GET /template-library/${item.slug}`, { ...item, rendered: { html: "<p>Preview</p>" } }])),
     });
-    renderAt("/templates/library?tab=lifecycle", [{ path: "/templates/library", element: h(Library) }]);
-    expect(await screen.findByRole("article", { name: "Payment failed" })).toBeTruthy();
-    expect(screen.queryByRole("article", { name: "Password reset" })).toBeNull();
-    expect(screen.getByRole("article", { name: "Newsletter" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Browse automation recipes" }).getAttribute("href")).toBe("/automations?create=1");
-    selectValue(screen.getByLabelText("Stage"), "dunning");
-    expect(screen.getAllByRole("article")).toHaveLength(1);
-    expect(screen.getByRole("article", { name: "Payment failed" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Install as automation" })).toBeNull();
-    selectValue(screen.getByLabelText("Stage"), "retention");
-    expect(screen.getByText("No templates match")).toBeTruthy();
-    fireEvent.click(screen.getByRole("tab", { name: "Transactional" }));
-    expect(screen.getAllByRole("article")).toHaveLength(2);
+    renderAt("/templates", [{ path: "/templates", element: h(Library) }]);
+    const lifecycleGroup = await screen.findByRole("region", { name: "Lifecycle" });
+    expect(within(lifecycleGroup).getByRole("article", { name: "Payment failed" })).toBeTruthy();
+    expect(within(lifecycleGroup).getByRole("article", { name: "Newsletter" })).toBeTruthy();
+    const transactional = screen.getByRole("region", { name: "Transactional" });
+    expect(within(transactional).getByRole("article", { name: "Password reset" })).toBeTruthy();
+    expect(screen.getAllByRole("article")).toHaveLength(5);
+    expect(screen.queryByRole("tab")).toBeNull();
     expect(screen.queryByLabelText("Stage")).toBeNull();
     expect(calls(fetch, "GET /template-library/automations")).toHaveLength(0);
   });
 
-  it.each(["transactional", "lifecycle"])("hides browsing controls when the %s library has no entries", async (tab) => {
-    const fetch = api({
-      "GET /template-library": list([]),
-      "GET /template-library/automations": list(automations),
-    });
-    renderAt(`/templates/library?tab=${tab}`, [{ path: "/templates/library", element: h(Library) }]);
-    expect(await screen.findByText("No library templates")).toBeTruthy();
-    expect(screen.getByText("There are no ready-made templates here yet.")).toBeTruthy();
-    expect(screen.queryByRole("tab", { name: "Transactional" })).toBeNull();
-    expect(screen.queryByRole("tab", { name: "Lifecycle" })).toBeNull();
-    expect(screen.queryByLabelText("Stage")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Install as automation" })).toBeNull();
-    expect(screen.getByRole("link", { name: "Templates" })).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Library" })).toBeTruthy();
-    expect(fetch.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
+  it("shows a simple empty section when no ready-made templates exist", async () => {
+    api({ "GET /template-library": list([]) });
+    renderAt("/templates", [{ path: "/templates", element: h(Library) }]);
+    expect(await screen.findByText("No ready-made templates")).toBeTruthy();
+    expect(screen.queryByRole("tab")).toBeNull();
+    expect(screen.queryByRole("link", { name: "Library" })).toBeNull();
   });
 
   it("lets viewers browse previews but does not offer installation", async () => {

@@ -17,11 +17,6 @@ export const audienceTabs: Tab[] = [
   { id: "forms", label: "Forms", to: "/audience/forms" },
 ];
 
-export const templateTabs: Tab[] = [
-  { id: "templates", label: "Templates", to: "/templates" },
-  { id: "library", label: "Library", to: "/templates/library" },
-];
-
 export const settingsTabs: Tab[] = [
   { id: "usage", label: "Usage", to: "/settings/usage" },
   { id: "general", label: "General", to: "/settings/general" },

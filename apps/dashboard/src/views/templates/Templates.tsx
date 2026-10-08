@@ -19,7 +19,7 @@ import { learnLinks } from "../../lib/docs";
 import { kindLabels, templateKind } from "../../lib/emailKind";
 import { useCan, useClient } from "../../shell/session";
 import type { Template } from "../../types";
-import { templateTabs } from "../tabs";
+import { Library } from "./Library";
 import { Thumb } from "./editor";
 import { fill, normalizeVariables } from "./render";
 import { samples, useBrand } from "./Versions";
@@ -50,87 +50,75 @@ export function Templates() {
       <PageHeader
         title="Templates"
         learn={empty ? undefined : learnLinks("templates")}
-        actions={empty ? null : (
-          <>
-            <Link className="button secondary" to="/templates/library">
-              Browse library
-            </Link>
-            {can ? (
-              <button type="button" onClick={() => setCreating(true)}>
-                Create template
-              </button>
-            ) : null}
-          </>
-        )}
+        actions={can ? <button type="button" onClick={() => setCreating(true)}>Create template</button> : null}
       />
-      <Tabs tabs={templateTabs} />
-      {!empty ? <FilterBar search="Search templates" filters={[{ param: "status", label: "Status", options: ["draft", "published"] }]} /> : null}
+      <section className="stack" aria-labelledby="your-templates-title">
+        <h2 id="your-templates-title">Your templates</h2>
+        {!empty ? <FilterBar search="Search templates" filters={[{ param: "status", label: "Status", options: ["draft", "published"] }]} /> : null}
 
-      {list.error ? (
-        <Failed message={list.error} onRetry={() => void list.reload()} />
-      ) : list.loading && list.rows.length === 0 ? (
-        <div className="cardGrid" aria-busy>
-          {Array.from({ length: 3 }, (_, index) => (
-            <div key={index} className="card">
-              <div className="cardBody">
-                <Skeleton lines={3} />
+        {list.error ? (
+          <Failed message={list.error} onRetry={() => void list.reload()} />
+        ) : list.loading && list.rows.length === 0 ? (
+          <div className="cardGrid" aria-busy>
+            {Array.from({ length: 3 }, (_, index) => (
+              <div key={index} className="card">
+                <div className="cardBody">
+                  <Skeleton lines={3} />
+                </div>
               </div>
-            </div>
-          ))}
-        </div>
-      ) : rows.length === 0 ? (
-        !filtered ? (
-          <Empty
-            title="No templates yet"
-            body="Create your own, or add a ready-made one from the library."
-            action={<>
-              {can ? <button type="button" onClick={() => setCreating(true)}>Create template</button> : null}
-              <Link className="button secondary" to="/templates/library">Browse library</Link>
-            </>}
-          />
-        ) : (
-          <Empty title="No templates match" body="Try a different search or status." action={<button type="button" className="secondary" onClick={() => setParams((previous) => { const next = new URLSearchParams(previous); next.delete("q"); next.delete("status"); return next; })}>Clear filters</button>} />
-        )
-      ) : (
-        <div className="cardGrid">
-          {rows.map((row) => (
-            <TemplateCard
-              key={row.id}
-              row={row}
-              brand={brand}
-              menu={
-                can ? (
-                  <Menu
-                    label={`Actions for ${row.name}`}
-                    items={[
-                      { label: "View details", read: true, onSelect: () => navigate(`/templates/${row.id}`) },
-                      { label: "Edit", onSelect: () => navigate(`/templates/${row.id}/editor`) },
-                      { label: "Rename", onSelect: () => setRenaming(row) },
-                      { label: "Duplicate", onSelect: () => void duplicate.mutate(row) },
-                      "divider",
-                      { label: "Delete", danger: true, onSelect: () => setDeleting(row) },
-                    ]}
-                  />
-                ) : null
-              }
-            />
-          ))}
-        </div>
-      )}
-
-      {list.page > 1 || list.hasMore ? (
-        <div className="tableFooter">
-          <span>Page {list.page}</span>
-          <div className="toolbar">
-            <button type="button" className="secondary small" disabled={list.page <= 1 || list.loading} onClick={list.previous}>
-              Previous
-            </button>
-            <button type="button" className="secondary small" disabled={!list.hasMore || list.loading} onClick={list.next}>
-              Next
-            </button>
+            ))}
           </div>
-        </div>
-      ) : null}
+        ) : rows.length === 0 ? (
+          !filtered ? (
+            <Empty
+              title="No templates yet"
+              body="Create your own, or choose a ready-made template below."
+            />
+          ) : (
+            <Empty title="No templates match" body="Try a different search or status." action={<button type="button" className="secondary" onClick={() => setParams((previous) => { const next = new URLSearchParams(previous); next.delete("q"); next.delete("status"); return next; })}>Clear filters</button>} />
+          )
+        ) : (
+          <div className="cardGrid">
+            {rows.map((row) => (
+              <TemplateCard
+                key={row.id}
+                row={row}
+                brand={brand}
+                menu={
+                  can ? (
+                    <Menu
+                      label={`Actions for ${row.name}`}
+                      items={[
+                        { label: "View details", read: true, onSelect: () => navigate(`/templates/${row.id}`) },
+                        { label: "Edit", onSelect: () => navigate(`/templates/${row.id}/editor`) },
+                        { label: "Rename", onSelect: () => setRenaming(row) },
+                        { label: "Duplicate", onSelect: () => void duplicate.mutate(row) },
+                        "divider",
+                        { label: "Delete", danger: true, onSelect: () => setDeleting(row) },
+                      ]}
+                    />
+                  ) : null
+                }
+              />
+            ))}
+          </div>
+        )}
+
+        {list.page > 1 || list.hasMore ? (
+          <div className="tableFooter">
+            <span>Page {list.page}</span>
+            <div className="toolbar">
+              <button type="button" className="secondary small" disabled={list.page <= 1 || list.loading} onClick={list.previous}>
+                Previous
+              </button>
+              <button type="button" className="secondary small" disabled={!list.hasMore || list.loading} onClick={list.next}>
+                Next
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </section>
+      <Library onInstalled={() => void list.reload()} />
 
       {creating ? <CreateTemplate onClose={() => setCreating(false)} /> : null}
       {renaming ? <Rename template={renaming} onClose={() => setRenaming(null)} onDone={() => void list.reload()} /> : null}
@@ -262,9 +250,6 @@ function CreateTemplate({ onClose }: { onClose: () => void }) {
             </>
           ) : null}
         </div>
-        <p className="muted">
-          Or start from a ready-made design in the <Link to="/templates/library">template library</Link>.
-        </p>
       </div>
     </Modal>
   );

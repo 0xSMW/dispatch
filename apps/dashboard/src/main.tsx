@@ -44,7 +44,6 @@ import { Team } from "./views/settings/Team";
 import { UnsubscribeEditor, UnsubscribePage } from "./views/settings/UnsubscribePage";
 import { Usage } from "./views/settings/Usage";
 import { Setup } from "./views/setup/Setup";
-import { Library } from "./views/templates/Library";
 import { Template } from "./views/templates/Template";
 import { TemplateEditor } from "./views/templates/TemplateEditor";
 import { Templates } from "./views/templates/Templates";
@@ -86,7 +85,7 @@ export const routes = [
           { path: "automations/:id/editor", element: <AutomationEditor /> },
 
           { path: "templates", element: <Templates /> },
-          { path: "templates/library", element: <Library /> },
+          { path: "templates/library", element: <Navigate to="/templates#ready-made" replace /> },
           { path: "templates/:id", element: <Template /> },
           { path: "templates/:id/editor", element: <TemplateEditor /> },
 

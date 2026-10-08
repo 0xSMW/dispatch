@@ -39,15 +39,15 @@ describe("ApiReference", () => {
   it("copies the canonical prompt rather than snippets or session credentials", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("navigator", { clipboard: { writeText }, platform: "MacIntel" });
-    const drawer = open("/templates/library");
+    const drawer = open("/templates");
     fireEvent.click(within(drawer).getByRole("tab", { name: "Agent" }));
-    const prompt = referenceFor("/templates/library")!.prompt;
+    const prompt = referenceFor("/templates")!.prompt;
     expect(within(drawer).getByRole("region", { name: "Agent prompt" }).textContent).toContain(prompt);
     expect(within(drawer).queryByRole("region", { name: "GET /template-library" })).toBeNull();
     fireEvent.click(within(drawer).getByRole("button", { name: "Copy prompt" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledExactlyOnceWith(prompt));
     expect(prompt).not.toContain("sess_test");
-    expect(prompt).toContain("Newsletter welcome requires a live tenant topic at installation");
+    expect(prompt).toContain("required variables");
   });
 
   it("shows an explicit cURL fallback when a flat SDK cannot render the draft", () => {
