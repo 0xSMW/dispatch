@@ -12,7 +12,10 @@ export function Shortcuts({ onClose, canvas = false }: { onClose: () => void; ca
           <h3 className="typeLabel">Canvas</h3>
           <dl className="shortcutList">
             <div className="shortcutRow"><dt>Pan canvas</dt><dd><kbd>Space</kbd> + drag</dd></div>
-            <div className="shortcutRow"><dt>Close the step inspector</dt><dd><kbd>Esc</kbd></dd></div>
+            <div className="shortcutRow"><dt>Pan with a trackpad or mouse wheel</dt><dd>Scroll</dd></div>
+            <div className="shortcutRow"><dt>Change canvas zoom</dt><dd>− / + controls</dd></div>
+            <div className="shortcutRow"><dt>Bring every step into view</dt><dd>Fit</dd></div>
+            <div className="shortcutRow"><dt>Close the step inspector outside a field or dialog</dt><dd><kbd>Esc</kbd></dd></div>
           </dl>
         </section> : null}
         {scopes.map((scope) => (
