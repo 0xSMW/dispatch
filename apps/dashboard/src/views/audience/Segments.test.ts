@@ -46,7 +46,7 @@ describe("Segments", () => {
     const fetch = api();
     show(h(Segments), "/audience/segments");
     await screen.findByText("VIP");
-    expect(screen.getByText("Static lists and live filters")).toBeTruthy();
+    expect(screen.queryByText("Static lists and live filters")).toBeNull();
     expect(screen.getByRole("columnheader", { name: "Type" })).toBeTruthy();
     expect(calls(fetch)).toContain("GET /segments?limit=40");
     expect(screen.getByText("1,200")).toBeTruthy();
