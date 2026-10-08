@@ -42,7 +42,7 @@ describe("GoalConversions", () => {
     await screen.findAllByText("12.5%");
     expect(screen.getByText("First-send day (UTC)")).toBeTruthy();
     expect(screen.getByText("Earlier unrecorded transitions cannot be inferred.")).toBeTruthy();
-    expect(screen.getByText(/No recorded contact history yet/)).toBeTruthy();
+    expect(screen.getByText(/No contact history recorded yet/)).toBeTruthy();
     expect(screen.getByText(/even after the range ends/)).toBeTruthy();
     expect(fetch.mock.calls.some(([raw]) => new URL(String(raw)).searchParams.get("after") === "goal_1")).toBe(true);
     fireEvent.change(screen.getByLabelText("Goal"), { target: { value: "goal_2" } });
@@ -73,7 +73,7 @@ describe("GoalConversions", () => {
     await screen.findByText("Metrics unavailable");
     failed = false;
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
-    await screen.findByText("No eligible contacts reached in this cohort range.");
+    await screen.findByText("No eligible contacts were reached in this date range.");
     expect(screen.getByText("0%")).toBeTruthy();
   });
 });
