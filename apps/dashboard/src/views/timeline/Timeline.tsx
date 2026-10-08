@@ -43,7 +43,6 @@ export function Timeline() {
   return (
     <ListPage
       title="Timeline"
-      description="Everything that happened in this tenant, newest first."
       list={list}
       noun="items"
       onRowClick={(row) => {
