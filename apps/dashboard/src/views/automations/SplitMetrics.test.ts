@@ -96,9 +96,9 @@ describe("SplitMetrics", () => {
   it("renders actual loading/empty states and no winner controls without a callback", () => {
     const view = render(h(SplitMetrics, { report: null, loading: true }));
     expect(screen.getByLabelText("Split comparison").getAttribute("aria-busy")).toBe("true");
-    expect(screen.queryByText("No split results in this window.")).toBeNull();
+    expect(screen.queryByText("No split results in this time period.")).toBeNull();
     view.rerender(h(SplitMetrics, { report: null }));
-    expect(screen.getByText("No split results in this window.")).toBeTruthy();
+    expect(screen.getByText("No split results in this time period.")).toBeTruthy();
     view.rerender(h(SplitMetrics, { report }));
     expect(screen.queryByRole("button")).toBeNull();
     expect(screen.getByText("Retired")).toBeTruthy();
