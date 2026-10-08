@@ -2,7 +2,7 @@ import { Heading, Text } from "react-email";
 import { Action, Code, If, Layout, Notice } from "./_components";
 import { exampleBrand, heading, text, type Brand, type EmailVariable } from "./_theme";
 
-const preview = "Confirm this address for your account. The link expires soon.";
+const preview = "Confirm your email address to finish verification.";
 
 type Props = {
   brand?: Brand;
@@ -28,7 +28,7 @@ export default function VerifyEmail({
         Confirm your email
       </Heading>
       <Text className="dm-text" style={text}>
-        Use the button below to confirm this email address for your {brand.productName} account.
+        Confirm this email address for your {brand.productName} account.
       </Text>
       <Action brand={brand} href={actionUrl}>
         Confirm email
@@ -38,7 +38,7 @@ export default function VerifyEmail({
       </Text>
       <If value={code}>
         <Text className="dm-text" style={text}>
-          If the page asks for a code, enter this one. It is not a link.
+          If the page asks for a verification code, enter:
         </Text>
         <Code>{code}</Code>
       </If>
