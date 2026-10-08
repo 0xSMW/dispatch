@@ -3,14 +3,17 @@ import { useEffect, useRef, type RefObject } from "react";
 const stack: number[] = [];
 let nextId = 1;
 
-const focusable =
-  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+const focusable = `a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]):not([aria-hidden='true']), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])`;
 
 /**
  * Shared behavior for `Modal` and `Drawer`: focus moves in on open and back out on close,
  * Tab stays inside, and Esc closes only the topmost open dialog.
  */
-export function useDialog(ref: RefObject<HTMLElement | null>, isOpen: boolean, onClose: () => void) {
+export function useDialog(
+  ref: RefObject<HTMLElement | null>,
+  isOpen: boolean,
+  onClose: () => void,
+) {
   const close = useRef(onClose);
   close.current = onClose;
 
@@ -24,7 +27,9 @@ export function useDialog(ref: RefObject<HTMLElement | null>, isOpen: boolean, o
     if (node && !node.contains(document.activeElement)) {
       const first =
         node.querySelector<HTMLElement>("[data-autofocus]") ??
-        node.querySelector<HTMLElement>("input:not([disabled]), textarea:not([disabled]), select:not([disabled])") ??
+        node.querySelector<HTMLElement>(
+          "[role=combobox]:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]):not([aria-hidden='true'])",
+        ) ??
         node;
       first.focus();
     }
