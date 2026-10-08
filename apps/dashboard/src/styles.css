@@ -1151,6 +1151,10 @@ td a {
   color: var(--text);
 }
 
+tbody tr.clickable a:hover {
+  text-decoration: none;
+}
+
 .checkCell {
   width: 44px;
   padding-right: 0;
@@ -2001,3 +2005,10 @@ button.menuItem.danger:hover:not(:disabled) {
 }
 
 .modal.wide { width: min(900px, calc(100vw - 32px)); max-width: 900px; }
+
+/* A subscription default is a choice, not a disabled control. */
+.badge.subscriptionDefault {
+  color: var(--text);
+  background: transparent;
+  border: 1px solid var(--border-input);
+}
