@@ -66,7 +66,7 @@ export function Keys() {
       list={list}
       noun="keys"
       rowHref={(row) => `/api-keys/${row.id}`}
-      empty={<Empty title="No API keys" body="Create a key to call the API from your app." />}
+      empty={<Empty title="No API keys yet" body="Create a key to let your app use the Dispatch API." />}
       columns={[
         {
           header: "Name",
