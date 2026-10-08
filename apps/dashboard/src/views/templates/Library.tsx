@@ -120,9 +120,9 @@ export function Library() {
       ) : library.loading && !library.data ? (
         <Skeleton lines={6} />
       ) : entries.length === 0 ? (
-        <Empty title="No library templates" body="The template library is empty on this install." action={<Link className="button" to="/templates">Create a template</Link>} />
+        <Empty title="No library templates" body="There are no ready-made templates here yet." action={<Link className="button" to="/templates">Create a template</Link>} />
       ) : visible.length === 0 ? (
-        <Empty title="No matching templates" body="Choose another stage or library tab." action={<button type="button" className="secondary" onClick={() => setParams((previous) => { const next = new URLSearchParams(previous); next.delete("stage"); next.delete("tab"); return next; })}>Reset library filters</button>} />
+        <Empty title="No templates match" body="Try another stage or tab, or reset the filters." action={<button type="button" className="secondary" onClick={() => setParams((previous) => { const next = new URLSearchParams(previous); next.delete("stage"); next.delete("tab"); return next; })}>Reset filters</button>} />
       ) : (
         byCategory(visible).map(([category, items]) => (
           <section key={category} className="stack" aria-label={title(category)}>
@@ -222,7 +222,7 @@ function LibraryPreview({ entry, onClose }: { entry: DiscoveryTemplate; onClose:
             compact
             rows={entry.variables}
             rowKey={(item) => item.key}
-            empty={<p className="muted">Only brand values.</p>}
+            empty={<p className="muted">This template only uses your brand values, so there's nothing to fill in.</p>}
             columns={[
               { header: "Key", cell: (item) => <span className="mono">{item.key}</span> },
               { header: "Type", cell: (item) => item.type ?? "string" },
