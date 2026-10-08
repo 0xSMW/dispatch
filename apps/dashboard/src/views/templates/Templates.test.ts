@@ -35,15 +35,15 @@ describe("Templates", () => {
     const { fetch } = setup();
     const card = await screen.findByRole("article", { name: "Welcome" });
     expect(within(card).getByText("welcome")).toBeTruthy();
-    expect(within(card).getByText("Published")).toBeTruthy();
-    expect(within(card).getByText("Unpublished changes")).toBeTruthy();
-    expect(card.querySelector("iframe")?.getAttribute("srcdoc")).toContain("your plan is Free");
+    expect(within(card).getByText("Published · Pending").className).toBe("cardStatus");
+    expect(within(card).getByTitle("Unpublished changes")).toBeTruthy();
+    expect(within(card).getByText("welcome").className).toContain("cardSlug");
+    expect(card.querySelector(".badge")).toBeNull();
+    expect(card.querySelector(".thumb")?.textContent).toContain("your plan is Free");
+    expect(card.querySelector("iframe")).toBeNull();
     expect(screen.getByRole("article", { name: "Reset password" })).toBeTruthy();
     expect(calls(fetch, "GET /templates")[0]!.url.searchParams.get("limit")).toBe("100");
-    const learn = within(screen.getByRole("navigation", { name: "Learn more" }));
-    expect(learn.getByRole("link", { name: "Variables" }).getAttribute("href")).toContain("templates.md#variables");
-    expect(learn.getByRole("link", { name: "Visual editor" }).getAttribute("href")).toContain("templates.md#visual-editor");
-    expect(learn.getByRole("link", { name: "Brand" }).getAttribute("href")).toContain("templates.md#brand");
+    expect(screen.queryByRole("navigation", { name: "Learn more" })).toBeNull();
   });
 
   it("shows both collections and refreshes account templates after installation", async () => {
