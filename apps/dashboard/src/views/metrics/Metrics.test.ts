@@ -30,13 +30,13 @@ function open(path = "/metrics") {
   return render(h(MemoryRouter, { initialEntries: [path] }, h(SessionProvider, null, h(Metrics), h(Where))));
 }
 
-function api(empty = false) {
+function api(empty = false, noGoals = false) {
   return mockFetch((raw) => {
     const url = new URL(raw);
     if (url.pathname === "/domains") {
       return { body: { object: "list", has_more: false, data: [{ id: "domain_1", name: "acme.com" }, { id: "domain_2", name: "mail.acme.com" }] } };
     }
-    if (url.pathname === "/goals") return { body: { object: "list", has_more: false, data: [{ id: "goal_1", name: "Paid", target: { event: "paid" }, window_days: 30 }] } };
+    if (url.pathname === "/goals") return { body: { object: "list", has_more: false, data: noGoals ? [] : [{ id: "goal_1", name: "Paid", target: { event: "paid" }, window_days: 30 }] } };
     if (url.pathname === "/automations" || url.pathname === "/broadcasts") return { body: { object: "list", has_more: false, data: [{ id: url.pathname === "/automations" ? "automation_1" : "broadcast_1", name: "Welcome" }] } };
     if (url.pathname === "/goals/goal_1/metrics") return { body: { contacts_reached: 8, converted: 1, rate: 0.125, data: [], history: { available_from: null, limitation: "Recorded changes only." } } };
     const dimension = url.searchParams.get("dimensions");
@@ -117,6 +117,18 @@ describe("Metrics", () => {
     api(true);
     open();
     expect(await screen.findByText("No email activity")).toBeTruthy();
+    expect(screen.queryByRole("region", { name: "Sent" })).toBeNull();
+    expect(screen.getByLabelText("Goal scope")).toBeTruthy();
+  });
+
+  it("hides goal report controls when no goals exist and keeps range recovery", async () => {
+    api(true, true);
+    open();
+    await screen.findByText("No email activity");
+    await waitFor(() => expect(screen.queryByLabelText("Goal scope")).toBeNull());
+    expect(screen.queryByText("Goal conversions")).toBeNull();
+    expect(screen.getByRole("group", { name: "Date range" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "All domains" })).toBeTruthy();
   });
 
   it("offers global, automation and broadcast goals with the shared ISO range and no domain filter", async () => {
