@@ -1,7 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { broadcastWhere, contactWhere, domainWhere, receivedWhere, runWhere, suppressionWhere, templateWhere } from "./filters.js";
+import { automationWhere, broadcastWhere, contactWhere, domainWhere, receivedWhere, runWhere, suppressionWhere, templateWhere } from "./filters.js";
 
 describe("list filters", () => {
+  it("combines automation name search with status and escapes wildcards", () => {
+    expect(automationWhere({ q: " 50%_off ", status: "enabled" })).toEqual({
+      where: "enabled and paused_at is null and name ilike $2", params: ["%50\\%\\_off%"],
+    });
+    expect(automationWhere({ status: "paused" }).where).toBe("enabled and paused_at is not null");
+    expect(automationWhere({ status: "disabled" }).where).toBe("not enabled");
+    expect(() => automationWhere({ status: "bad" })).toThrow(/status must be/);
+  });
   it("numbers parameters from $2 and escapes like wildcards", () => {
     expect(templateWhere({})).toEqual({ where: undefined, params: [] });
     expect(templateWhere({ q: "50%_off", status: "draft" })).toEqual({
