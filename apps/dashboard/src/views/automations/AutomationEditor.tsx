@@ -162,6 +162,8 @@ export function AutomationEditor() {
   const properties = useList<ContactProperty>("/contact-properties", {}, { all: true });
   const options: StepOptions = useMemo(
     () => ({
+      templatesReady: !templates.loading && !templates.error,
+      templatesError: templates.error,
       templates: templates.rows.map((item) => {
         const kind = item.kind ?? (item.html !== undefined || item.text !== undefined ? templateKind(item) : undefined);
         return { value: item.id, label: `${item.alias ? `${item.name} (${item.alias})` : item.name}${kind ? ` · ${kindLabels[kind]}` : ""}`, kind };
@@ -184,7 +186,7 @@ export function AutomationEditor() {
       ])),
       emailCounts: emailMetrics.data && !emailMetrics.error ? countsByStep(emailMetrics.data) : undefined,
     }),
-    [templates.rows, segments.rows, segments.loading, segments.error, events.rows, topics.rows, topics.loading, topics.error, properties.rows, properties.loading, properties.error, draft?.tree.event, stored?.tree.event, emailMetrics.data, emailMetrics.error],
+    [templates.rows, templates.loading, templates.error, segments.rows, segments.loading, segments.error, events.rows, topics.rows, topics.loading, topics.error, properties.rows, properties.loading, properties.error, draft?.tree.event, stored?.tree.event, emailMetrics.data, emailMetrics.error],
   );
 
   const enabled = row ? isEnabled(row) : false;
