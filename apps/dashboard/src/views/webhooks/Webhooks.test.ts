@@ -37,7 +37,7 @@ describe("Webhooks", () => {
   it("adds a webhook with searched event types and shows the signing secret once", async () => {
     const fetch = api({ "/webhooks": list([]), "POST /webhooks": hook({ id: "webhook_2" }) });
     visit(h(Webhooks), "/webhooks");
-    await screen.findByText("No webhooks");
+    await screen.findByText("No webhooks yet");
 
     fireEvent.click(screen.getByRole("button", { name: "Add webhook" }));
     const dialog = screen.getByRole("dialog", { name: "Add webhook" });
