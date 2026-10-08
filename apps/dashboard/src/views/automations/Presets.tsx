@@ -1,7 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { GitBranch } from "lucide-react";
-import { Drawer } from "../../components/Drawer";
 import { Empty, Failed } from "../../components/Empty";
 import { Field, Select } from "../../components/Field";
 import { Modal } from "../../components/Modal";
@@ -28,61 +27,51 @@ export function presetTree(preset: AutomationPreset) {
   return toTree(preset.steps, preset.connections);
 }
 
-/** Slug-based, fixed list: never feed presets to ID-cursor pagination. */
-export function Presets({ stage = "", onBlank }: { stage?: string; onBlank?: () => void }) {
+/** One creation surface: select a recipe, then configure it without stacked dialogs. */
+export function Presets({ onBlank, onClose }: { onBlank?: () => void; onClose: () => void }) {
   const presets = useResource<List<AutomationPreset>>("/template-library/automations");
   const can = useCan();
-  const [open, setOpen] = useState<AutomationPreset | null>(null);
-  return (
-    <section className="stack" aria-label="Lifecycle automations">
-      <h2 className="categoryTitle">Start with a lifecycle stage</h2>
-      {can && onBlank ? <button className="secondary" type="button" onClick={onBlank}>Start blank</button> : null}
-      {presets.error ? <Failed message={presets.error} onRetry={() => void presets.reload()} /> :
-        presets.loading && !presets.data ? <Skeleton lines={6} /> :
-        !presets.data?.data.length ? <Empty title="No presets available" body="Start from a blank automation, or add the lifecycle library for ready-made ones." icon={<GitBranch size={28} strokeWidth={1.5} />} /> :
-        <div className="cardGrid">
-          {stages.filter((item) => !stage || item.value === stage).map((item) => (
-            <section className="card" key={item.value} aria-label={item.label}>
-              <div className="cardBody">
-                <h3>{item.label}</h3>
-                {presets.data!.data.filter((preset) => preset.stage === item.value).map((preset) => (
-                  <div className="stack" key={preset.slug}>
-                    <button className="cardLink" type="button" onClick={() => setOpen(preset)}>{preset.name}</button>
-                    <p className="cardText">{preset.description}</p>
-                    <p className="cardText"><strong>When:</strong> {preset.when}</p>
-                    <button className="secondary" type="button" onClick={() => setOpen(preset)}>{can ? "Install as automation" : "Preview automation"}</button>
-                  </div>
-                ))}
-              </div>
-            </section>
-          ))}
-        </div>}
-      {open ? <PresetPreview preset={open} onClose={() => setOpen(null)} /> : null}
-    </section>
-  );
+  const [selected, setSelected] = useState<string | null>(null);
+  const [installing, setInstalling] = useState(false);
+  const [ready, setReady] = useState(false);
+  const preset = presets.data?.data.find((item) => item.slug === selected);
+  if (installing && preset) return <InstallPreset preset={preset} onClose={onClose} onBack={() => setInstalling(false)} />;
+  return <Modal isOpen size="wide" title="Create automation" onClose={onClose}
+    actions={can ? <button type="button" disabled={!preset || !ready} onClick={() => setInstalling(true)}>Use this recipe</button> : undefined}>
+    {can && onBlank ? <button type="button" className="secondary" onClick={onBlank}>Start blank</button> : null}
+    {presets.error ? <Failed message={presets.error} onRetry={() => void presets.reload()} /> :
+      presets.loading && !presets.data ? <Skeleton lines={6} /> :
+      <div className="automationChooser">
+        <nav className="automationChoices" aria-label="Starting points">
+          <p className="muted">Recipes</p>
+          {presets.data?.data.map((item) => <button key={item.slug} type="button"
+            className="automationChoice" aria-label={item.name} aria-pressed={preset?.slug === item.slug} onClick={() => { if (selected !== item.slug) { setReady(false); setSelected(item.slug); } }}>
+            <span>{item.name}</span><small>{stages.find((stage) => stage.value === item.stage)?.label}</small>
+          </button>)}
+        </nav>
+        {preset ? <PresetPreview key={preset.slug} preset={preset} onReady={setReady} /> :
+          <Empty title={presets.data?.data.length ? "Choose a starting point" : "No recipes available"} body="Select a recipe to preview its workflow, or start blank." icon={<GitBranch size={28} strokeWidth={1.5} />} />}
+      </div>}
+  </Modal>;
 }
 
-function PresetPreview({ preset, onClose }: { preset: AutomationPreset; onClose: () => void }) {
-  const can = useCan();
+function PresetPreview({ preset, onReady }: { preset: AutomationPreset; onReady: (ready: boolean) => void }) {
   const detail = useResource<AutomationPreset>(`/template-library/automations/${encodeURIComponent(preset.slug)}`);
-  const [installing, setInstalling] = useState(false);
   const graph = detail.data ? presetTree(detail.data) : null;
-  if (can && installing) return <InstallPreset preset={preset} onClose={onClose} />;
-  return (
-    <>
-      <Drawer isOpen width="wide" label="Automation preset" title={preset.name} onClose={onClose}
-        actions={can ? <button type="button" disabled={!detail.data || Boolean(detail.error) || Boolean(graph?.problem)} onClick={() => setInstalling(true)}>Install as automation</button> : null}>
-        <div className="stack">
-          <p>{preset.description}</p>
-          <p><strong>When:</strong> {preset.when}</p>
-          <p className="muted">Installs disabled. Review the automation and its emails before enabling.</p>
-          {detail.error ? <Failed message={detail.error} onRetry={() => void detail.reload()} /> :
-            graph?.problem ? <p role="alert">{graph.problem}</p> :
-            graph ? <Canvas tree={graph.tree} disabled stacked /> : <Skeleton lines={6} />}
-        </div>
-      </Drawer>
-    </>
-  );
+  useEffect(() => onReady(Boolean(detail.data) && !detail.loading && !detail.error && !graph?.problem), [detail.data, detail.loading, detail.error, graph?.problem, onReady]);
+  return <section className="automationRecipe">
+    <h3>{preset.name}</h3>
+    <p>{preset.description}</p>
+    <p className="muted">{preset.when}</p>
+    <div className="automationRecipeGraph">
+      {detail.error ? <Failed message={detail.error} onRetry={() => void detail.reload()} /> :
+        graph?.problem ? <p role="alert">{graph.problem}</p> :
+        graph ? <Canvas tree={graph.tree} disabled stacked /> : <Skeleton lines={6} />}
+    </div>
+    <div className="automationRecipeAction">
+      <p className="fieldHint">Created disabled so you can review before enabling.</p>
+    </div>
+  </section>;
 }
 
 /** Client guidance only; the server revalidates the live sender domain at installation. */
@@ -98,7 +87,7 @@ export function senderMatches(from: string, domain: string) {
   return parts.length === 2 && Boolean(parts[0]) && !/\s/.test(email) && parts[1]!.toLowerCase() === domain.toLowerCase();
 }
 
-function InstallPreset({ preset, onClose }: { preset: AutomationPreset; onClose: () => void }) {
+function InstallPreset({ preset, onClose, onBack }: { preset: AutomationPreset; onClose: () => void; onBack: () => void }) {
   const client = useClient();
   const can = useCan();
   const domains = useList<Domain>("/domains", {}, { all: true });
@@ -117,7 +106,8 @@ function InstallPreset({ preset, onClose }: { preset: AutomationPreset; onClose:
     { ...(name.trim() ? { name: name.trim() } : {}), from: from.trim(), ...(topic ? { topic_id: topic } : {}) },
   ), { onError: () => undefined });
   return (
-    <Modal isOpen title={`Install ${preset.name}`} onClose={onClose}
+    <Modal isOpen size="wide" title={`Configure ${preset.name}`} onClose={onClose}
+      actions={install.data ? undefined : <><button type="button" className="secondary" onClick={onBack} disabled={install.isLoading}>Back</button><button type="submit" disabled={!valid || install.isLoading}>{install.isLoading ? "Creating…" : "Create automation"}</button></>}
       onSubmit={install.data ? undefined : () => { if (valid && !install.isLoading) void install.mutate(); }}
       submitLabel="Install disabled" submitDisabled={!valid} submitting={install.isLoading}>
       {install.data ? <div className="stack">
@@ -131,12 +121,12 @@ function InstallPreset({ preset, onClose }: { preset: AutomationPreset; onClose:
         <Field label="From" value={from} onChange={setFrom} placeholder={domain ? `Your team <hello@${domain}>` : "Choose a verified domain first"} required
           hint="Use an address on the selected domain. Verification is checked again by the server." />
         {domains.error ? <Failed message={domains.error} onRetry={() => void domains.reload()} /> :
-          !domains.loading && !senders.length ? <p className="fieldHint"><Link to="/domains">Verify a sending domain</Link> to install.</p> : null}
+          !domains.loading && !senders.length ? <p className="fieldHint"><Link to="/domains" target="_blank" rel="noreferrer">Verify a sending domain</Link>, then <button type="button" className="secondary small" onClick={() => void domains.reload()}>Refresh domains</button>.</p> : null}
         <Select label={newsletter ? "Topic" : "Marketing topic (optional)"} value={topic} onChange={setTopic}
           placeholder={newsletter ? "Choose a topic" : "Choose later"} required={newsletter}
           options={topics.rows.map((row) => ({ value: row.id, label: row.name }))} disabled={topics.loading || Boolean(topics.error)} />
         {topics.error ? <Failed message={topics.error} onRetry={() => void topics.reload()} /> : null}
-        {newsletter && !topics.loading && !topics.error && !topics.rows.length ? <p className="fieldHint"><Link to="/audience/topics">Create a topic</Link> for newsletter subscriptions.</p> : null}
+        {newsletter && !topics.loading && !topics.error && !topics.rows.length ? <p className="fieldHint"><Link to="/audience/topics" target="_blank" rel="noreferrer">Create a topic</Link>, then <button type="button" className="secondary small" onClick={() => void topics.reload()}>Refresh topics</button>.</p> : null}
         <p className="fieldHint">Existing library copies are reused without overwriting your edits. Review all emails before enabling.</p>
         {install.error ? <p className="fieldError" role="alert">{install.error.message}</p> : null}
       </div>}
