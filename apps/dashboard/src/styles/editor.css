@@ -48,48 +48,138 @@
   box-shadow: 0 0 0 1px var(--border);
 }
 
-/* Fixed desktop composition, fitted to each card with an even inset. */
+/* Compact email covers. The whole composition fits the card without a scaled document. */
 .thumb {
-  position: relative;
+  display: grid;
   height: 240px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--container-bg);
+  text-align: left;
+}
+
+.thumbCover,
+.thumbLoading {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+  padding: 24px;
+  font-weight: 400;
+}
+
+.thumbBrand {
+  color: var(--text);
+  font-size: 10px;
+  line-height: 13px;
+  font-weight: 600;
+}
+
+.thumbCopy {
+  display: grid;
+  gap: 6px;
+  width: 100%;
+}
+
+.thumbHeading,
+.thumbLead {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
   overflow: hidden;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg);
+  overflow-wrap: anywhere;
 }
 
-.thumbDocument {
-  position: absolute;
-  top: 16px;
-  left: 50%;
-  width: 640px;
-  margin-left: -320px;
-  transform-origin: 50% 0;
-  pointer-events: none;
+.thumbHeading {
+  color: var(--text);
+  font-size: 17px;
+  line-height: 21px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
 }
 
-.thumb .emailFrame {
-  width: 640px;
-  height: 1600px;
+.thumbLead {
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 14px;
+}
+
+.thumbAction,
+.thumbCode {
+  max-width: 100%;
   min-height: 0;
-  border: 0;
-  border-radius: 0;
+  padding: 6px 10px;
+  border-radius: 5px;
+  font-size: 10px;
+  line-height: 14px;
+  font-weight: 600;
 }
 
-.thumb::after {
-  content: "";
-  position: absolute;
-  inset: auto 0 0;
-  height: 32px;
-  background: linear-gradient(transparent, var(--bg));
-  pointer-events: none;
+.thumbAction {
+  color: var(--on-primary);
+  background: var(--primary);
+}
+
+.thumbCode {
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: var(--mono);
+  letter-spacing: 3px;
+}
+
+.thumbDetails {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  font-size: 9px;
+  line-height: 12px;
+}
+
+.thumbDetails > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--text-muted);
+}
+
+.thumbDetails > div span:last-child {
+  color: var(--text);
+  text-align: right;
+}
+
+.thumbBrand,
+.thumbAction,
+.thumbCode,
+.thumbDetails span {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thumbLoading span {
+  height: 8px;
+  width: 80%;
+  border-radius: 3px;
+  background: var(--border);
+}
+
+.thumbLoading span:first-child {
+  width: 25%;
+  margin-bottom: 12px;
+}
+
+.thumbLoading span:last-child {
+  width: 60%;
 }
 
 .thumbEmpty {
   display: grid;
   place-items: center;
   height: 100%;
-  background: var(--surface-raised);
-  color: var(--text-dim);
+  color: var(--text-muted);
   font-size: 13px;
 }
 
@@ -102,36 +192,48 @@
 }
 
 .card {
-  position: relative;
   display: flex;
   flex-direction: column;
+  gap: 12px;
   min-width: 0;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  background: var(--surface);
 }
 
-.card:hover {
-  border-color: var(--border-input);
+.card > a,
+button.cardPreview {
+  display: block;
+  min-width: 0;
+}
+
+button.cardPreview {
+  width: 100%;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+}
+
+button.cardPreview:hover:not(:disabled) {
+  background: transparent;
 }
 
 .cardBody {
-  display: grid;
-  gap: 6px;
-  padding: 12px 14px 14px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 0 2px 4px;
 }
 
-.cardTitle {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
+.cardIdentity {
+  display: grid;
+  gap: 4px;
   min-width: 0;
 }
 
-.cardTitle a,
-.cardTitle button.cardLink {
+.cardIdentity a,
+.cardIdentity button.cardLink {
   min-width: 0;
   overflow: hidden;
   color: var(--text);
@@ -154,17 +256,28 @@ button.cardLink:hover:not(:disabled) {
   text-decoration: underline;
 }
 
-.cardMeta {
+.cardState {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex-wrap: wrap;
-  color: var(--text-dim);
-  font-size: 12.5px;
+  flex: none;
 }
 
-.cardMeta .mono {
+.cardSlug {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--text-muted);
+  font-size: 11px;
+}
+
+.cardStatus {
+  flex: none;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 20px;
+  white-space: nowrap;
 }
 
 .cardText {
@@ -172,11 +285,17 @@ button.cardLink:hover:not(:disabled) {
   font-size: 13px;
 }
 
+.templateCategory {
+  display: grid;
+  gap: 12px;
+  margin-top: 8px;
+}
+
 .categoryTitle {
-  color: var(--text-dim);
-  font-size: 12px;
+  color: var(--text-muted);
+  font-size: 14px;
   font-weight: 600;
-  letter-spacing: 0.04em;
+  line-height: 20px;
 }
 
 /* Notices and checklists */
@@ -400,7 +519,7 @@ textarea.sourceArea {
   padding: 16px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--surface);
+  background: var(--container-bg);
 }
 
 .stat h3 {
