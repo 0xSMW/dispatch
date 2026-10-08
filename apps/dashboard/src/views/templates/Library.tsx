@@ -102,7 +102,7 @@ export function Library() {
 
   return (
     <div className="page">
-      <PageHeader title="Templates" description="Ready-made emails rendered with your brand. Install one to send it by its alias."
+      <PageHeader title="Templates"
         actions={<Link className="button secondary" to="/settings/brand">Edit brand</Link>} />
       <Tabs tabs={templateTabs} />
       <Tabs label="Library templates" value={tab} onChange={(value) => filter("tab", value)}
