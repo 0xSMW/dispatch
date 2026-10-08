@@ -6,8 +6,11 @@ import { branchLabel, branchLabels, branchSteps, branchesOf, branching, listAt, 
 import type { RunStep } from "./Steps";
 
 // Node boxes have a fixed size so the layout needs no measuring. `styles/canvas.css` uses the same numbers.
-export const nodeWidth = 248;
-export const nodeHeight = 100;
+// 24px padding + 24px header + 8px gap + 16px summary + 2px border.
+export const nodeWidth = 272;
+export const nodeHeight = 98;
+/** The optional metrics row adds 16px content and one 8px gap. */
+export const emailNodeHeight = 122;
 export const endWidth = 132;
 export const endHeight = 54;
 /** Vertical space between a step and the next one in its list. */
@@ -48,6 +51,8 @@ export type LayoutOptions = {
   errors?: Record<string, Record<string, string>>;
   /** Run view: each step's result by key. Steps missing from it are `not_started`. */
   run?: Map<string, RunStep>;
+  /** Email cards include an additional metrics row. */
+  showEmailCounts?: boolean;
 };
 
 /** The id of the end node of the list at `path`. */
@@ -90,7 +95,7 @@ function branchName(node: Node, branch: Branch) {
  * Lays the tree out top to bottom: the trigger at the top center, each list as a column under
  * the step before it, and a branching step's lists side by side under it.
  */
-export function layout(tree: Tree, { editable, errors = {}, run }: LayoutOptions): { nodes: CanvasNode[]; edges: CanvasEdge[] } {
+export function layout(tree: Tree, { editable, errors = {}, run, showEmailCounts = false }: LayoutOptions): { nodes: CanvasNode[]; edges: CanvasEdge[] } {
   const nodes: CanvasNode[] = [];
   const edges: CanvasEdge[] = [];
   const count = (key: string) => Object.keys(errors[key] ?? {}).length;
@@ -117,13 +122,14 @@ export function layout(tree: Tree, { editable, errors = {}, run }: LayoutOptions
     let previous = from;
     for (const [index, node] of list.entries()) {
       const result = run?.get(node.key);
+      const height = node.type === "send_email" && showEmailCounts ? emailNodeHeight : nodeHeight;
       nodes.push({
         id: node.key,
         type: "step",
         position: { x: center - nodeWidth / 2, y },
         width: nodeWidth,
-        height: nodeHeight,
-        handles: node.type === "exit" ? handles(nodeWidth, nodeHeight).filter((handle) => handle.type === "target") : handles(nodeWidth, nodeHeight),
+        height,
+        handles: node.type === "exit" ? handles(nodeWidth, height).filter((handle) => handle.type === "target") : handles(nodeWidth, height),
         data: {
           node,
           path,
@@ -159,7 +165,7 @@ export function layout(tree: Tree, { editable, errors = {}, run }: LayoutOptions
       }
       if (node.type === "exit") return;
       previous = { id: node.key, name: node.key };
-      y += nodeHeight + rowGap;
+      y += height + rowGap;
     }
 
     // The list ends without a branch, so it gets an end marker: the "+" that appends to it.
