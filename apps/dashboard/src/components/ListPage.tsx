@@ -6,14 +6,13 @@ import { useCan } from "../shell/session";
 import { Empty, type EmptyProps } from "./Empty";
 import { BulkBar, type BulkAction } from "./BulkBar";
 import { FilterBar, type Filter } from "./FilterBar";
-import { PageHeader, type PageHeaderProps } from "./PageHeader";
+import { PageHeader } from "./PageHeader";
 import { Table, type Column } from "./Table";
 import { Tabs, type Tab } from "./Tabs";
 
 export interface ListPageProps<T extends { id: string }> {
   title: string;
   context?: ReactNode;
-  learn?: PageHeaderProps["learn"];
   /** Primary action on the right, such as an "Add domain" button. */
   actions?: ReactNode;
   /** Route tabs under the title, such as Contacts / Properties / Segments / Topics. */
@@ -45,7 +44,6 @@ export interface ListPageProps<T extends { id: string }> {
 export function ListPage<T extends { id: string }>({
   title,
   context,
-  learn,
   actions,
   tabs,
   search,
@@ -82,7 +80,7 @@ export function ListPage<T extends { id: string }>({
 
   return (
     <div className="page">
-      <PageHeader title={title} context={context} learn={blank ? undefined : learn} actions={can && !blank ? actions : null} />
+      <PageHeader title={title} context={context} actions={can && !blank ? actions : null} />
       {tabs ? <Tabs tabs={tabs} /> : null}
       {hasFilters && !blank ? (
         <FilterBar search={search ?? false} filters={filters}>
