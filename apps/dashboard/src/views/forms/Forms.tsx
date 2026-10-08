@@ -100,7 +100,7 @@ export function Forms() {
       list={list}
       noun="forms"
       onRowClick={setOpen}
-      empty={<Empty title="No forms" body="Create a form to collect subscribers without exposing API credentials." />}
+      empty={<Empty title="No forms yet" body="Create a form to start collecting subscribers." />}
       columns={[
         { header: "Name", cell: (form) => form.name },
         { header: "Key", cell: (form) => <span className="mono">{form.key}</span> },
