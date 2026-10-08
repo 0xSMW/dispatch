@@ -42,7 +42,7 @@ describe("Team", () => {
     vi.unstubAllGlobals();
   });
 
-  it("loads one people list with roles and collapsed activity", async () => {
+  it("loads one people list with roles and visible activity", async () => {
     const fetch = api();
     show(h(Team), "/settings/team");
     await screen.findByText("domain.create");
@@ -55,8 +55,9 @@ describe("Team", () => {
       ]),
     );
     expect(calls(fetch)).not.toContain("GET /memberships?limit=20");
-    expect(screen.getByText("sess_1 (this one)").closest("details")?.open).toBe(false);
-    expect(screen.getByText("domain.create").closest("details")?.open).toBe(false);
+    expect(screen.getByText("sess_1 (this one)").closest("details")).toBeNull();
+    expect(screen.getByRole("heading", { name: "Team" }).closest("section")?.classList.contains("panel")).toBe(false);
+    expect(screen.getByText("domain.create").closest("details")).toBeNull();
     expect(screen.queryByRole("heading", { name: "Users" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Roles" })).toBeNull();
   });
@@ -152,7 +153,6 @@ describe("Team", () => {
   it("revokes another session after typing REVOKE", async () => {
     const fetch = api();
     show(h(Team), "/settings/team");
-    fireEvent.click(screen.getByText("Sessions", { selector: "summary" }));
     const row = (await screen.findByText("sess_2")).closest("tr")!;
     fireEvent.click(within(row).getByRole("button", { name: "Actions" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Revoke" }));
