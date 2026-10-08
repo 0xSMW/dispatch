@@ -1,6 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Badge } from "../../components/Badge";
 import { ConfirmPhrase } from "../../components/ConfirmPhrase";
 import { Empty, Failed } from "../../components/Empty";
 import { Field, TextArea } from "../../components/Field";
@@ -10,13 +9,10 @@ import { Modal } from "../../components/Modal";
 import { PageHeader } from "../../components/PageHeader";
 import { Skeleton } from "../../components/Skeleton";
 import { Tabs } from "../../components/Tabs";
-import { Time } from "../../components/Time";
 import { toast } from "../../components/Toast";
 import { useFilters } from "../../hooks/useFilters";
 import { useList } from "../../hooks/useList";
 import { useMutation } from "../../hooks/useMutation";
-import { learnLinks } from "../../lib/docs";
-import { kindLabels, templateKind } from "../../lib/emailKind";
 import { useCan, useClient } from "../../shell/session";
 import type { Template } from "../../types";
 import { Library } from "./Library";
@@ -49,7 +45,6 @@ export function Templates() {
     <div className="page">
       <PageHeader
         title="Templates"
-        learn={empty ? undefined : learnLinks("templates")}
         actions={can ? <button type="button" onClick={() => setCreating(true)}>Create template</button> : null}
       />
       <section className="stack" aria-labelledby="your-templates-title">
@@ -151,20 +146,15 @@ function TemplateCard({ row, brand, menu }: { row: Template; brand: Record<strin
         <Thumb html={html} />
       </Link>
       <div className="cardBody">
-        <div className="cardTitle">
+        <div className="cardIdentity">
           <Link to={`/templates/${row.id}`}>{row.name}</Link>
-          {menu}
+          {row.alias ? <span className="cardSlug mono">{row.alias}</span> : null}
         </div>
-        <div className="cardMeta">
-          {row.alias ? <span className="mono">{row.alias}</span> : null}
-          <Badge value={row.status} />
-          <Badge value={templateKind(row)} label={kindLabels[templateKind(row)]} />
-          {row.status === "published" && row.has_unpublished_versions ? <Badge value="pending" label="Unpublished changes" /> : null}
-        </div>
-        <div className="cardMeta">
-          <span>
-            Updated <Time value={row.updated_at} />
+        <div className="cardState">
+          <span className="cardStatus" title={row.status === "published" && row.has_unpublished_versions ? "Unpublished changes" : undefined}>
+            {row.status === "published" ? "Published" : "Draft"}{row.status === "published" && row.has_unpublished_versions ? " · Pending" : ""}
           </span>
+          {menu}
         </div>
       </div>
     </article>
