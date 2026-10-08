@@ -34,7 +34,7 @@ describe("Broadcasts", () => {
   it("lists broadcasts with status badges and segment names", async () => {
     setup();
     const row = (await screen.findByText("September news")).closest("tr")!;
-    expect(within(row).getByText("sent")).toBeTruthy();
+    expect(within(row).getByText("Sent")).toBeTruthy();
     await within(row).findByText("Customers");
     expect(screen.getByRole("link", { name: "October update" }).getAttribute("href")).toBe("/broadcasts/broadcast_1/editor");
     expect(screen.getByRole("link", { name: "September news" }).getAttribute("href")).toBe("/broadcasts/broadcast_2");
@@ -57,14 +57,29 @@ describe("Broadcasts", () => {
     expect(screen.getByRole("searchbox", { name: "Search by name or subject" })).toBeTruthy();
   });
 
+  it("preserves a broadcast draft while refreshing an empty segment list", async () => {
+    let available = false;
+    api({ "GET /broadcasts": list(rows), "GET /segments": () => ({ body: list(available ? [segment] : []) }), "GET /topics": list([topic]) });
+    renderAt("/broadcasts", [{ path: "/broadcasts", element: h(Broadcasts) }]);
+    fireEvent.click(await screen.findByRole("button", { name: "Create broadcast" }));
+    const dialog = within(screen.getByRole("dialog"));
+    fireEvent.change(dialog.getByLabelText(/^Subject/), { target: { value: "Keep my subject" } });
+    await dialog.findByText("Create a segment to choose who receives this broadcast.");
+    expect(dialog.getByRole("link", { name: "Create segment" }).getAttribute("target")).toBe("_blank");
+    available = true;
+    fireEvent.click(dialog.getByRole("button", { name: "Refresh segments" }));
+    await waitFor(() => expect(dialog.queryByText("Create a segment to choose who receives this broadcast.")).toBeNull());
+    expect((dialog.getByLabelText(/^Subject/) as HTMLInputElement).value).toBe("Keep my subject");
+  });
+
   it("creates a draft and opens the editor", async () => {
     const { fetch, router } = setup();
     await screen.findByText("October update");
     fireEvent.click(screen.getByRole("button", { name: "Create broadcast" }));
     const dialog = within(screen.getByRole("dialog"));
     fireEvent.change(dialog.getByLabelText(/^From/), { target: { value: "news@acme.test" } });
-    await dialog.findByRole("option", { name: "Customers" });
-    fireEvent.change(dialog.getByLabelText(/^Segment/), { target: { value: "seg_1" } });
+    await waitFor(() => expect(dialog.getByLabelText(/^Segment/).textContent).toContain("Choose a segment"));
+    fireEvent.change(dialog.getByLabelText(/^Segment/).closest(".dropdown")!.querySelector("select")!, { target: { value: "seg_1" } });
     fireEvent.change(dialog.getByLabelText(/^Subject/), { target: { value: "Hello" } });
     fireEvent.click(dialog.getByRole("button", { name: /Create draft/ }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/broadcasts/broadcast_new/editor"));
