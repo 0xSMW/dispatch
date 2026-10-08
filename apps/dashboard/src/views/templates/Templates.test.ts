@@ -5,6 +5,7 @@ import { h, signIn } from "../../testing";
 import { template } from "./fixtures";
 import { api, calls, list, renderAt } from "./harness";
 import { createBody, Templates } from "./Templates";
+import { Library } from "./Library";
 
 const rows = [template(), template({ id: "tpl_2", name: "Reset password", alias: "password-reset", status: "draft", published_at: null })];
 
@@ -18,6 +19,7 @@ function setup(path = "/templates") {
   });
   const router = renderAt(path, [
     { path: "/templates", element: h(Templates) },
+    { path: "/templates/library", element: h(Library) },
     { path: "/templates/:id/editor", element: h("p", null, "Editor page") },
   ]);
   return { fetch, router };
@@ -44,9 +46,10 @@ describe("Templates", () => {
     expect(screen.getByRole("article", { name: "Reset password" })).toBeTruthy();
     expect(calls(fetch, "GET /templates")[0]!.url.searchParams.get("limit")).toBe("100");
     expect(screen.queryByRole("navigation", { name: "Learn more" })).toBeNull();
+    expect(calls(fetch, "GET /template-library")).toHaveLength(0);
   });
 
-  it("shows both collections and refreshes account templates after installation", async () => {
+  it("browses on demand and returns to the collection with the added template highlighted", async () => {
     const preset = {
       slug: "receipt", name: "Receipt", category: "billing", kind: "transactional",
       description: "After a payment.", variables: [], sample: {},
@@ -62,23 +65,34 @@ describe("Templates", () => {
         return { body: { object: "template", id: "tpl_receipt" } };
       },
     });
-    renderAt("/templates?status=published&q=welcome", [{ path: "/templates", element: h(Templates) }]);
-    const readyMade = screen.getByRole("region", { name: "Ready-made templates" });
-    fireEvent.click(await within(readyMade).findByRole("button", { name: "Receipt" }));
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Use template" }));
+    const router = renderAt("/templates?status=published&q=welcome", [
+      { path: "/templates", element: h(Templates) },
+      { path: "/templates/library", element: h(Library) },
+    ]);
+    await screen.findByRole("article", { name: "Welcome" });
+    expect(calls(fetch, "GET /template-library")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("link", { name: "Browse templates" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/templates/library"));
+    fireEvent.click(await screen.findByRole("button", { name: "Receipt" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Add to templates" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/templates"));
+    expect(router.state.location.search).toBe("?added=tpl_receipt");
     const own = screen.getByRole("region", { name: "Your templates" });
-    expect(await within(own).findByRole("article", { name: "Receipt" })).toBeTruthy();
+    expect((await within(own).findByRole("article", { name: "Receipt" })).className).toContain("isAdded");
     expect(calls(fetch, "GET /templates")).toHaveLength(2);
+    expect(calls(fetch, "GET /templates")[1]!.url.searchParams.has("q")).toBe(false);
+    expect(calls(fetch, "GET /templates")[1]!.url.searchParams.has("status")).toBe(false);
     expect(screen.queryByRole("tab")).toBeNull();
-    expect(screen.queryByRole("link", { name: "Browse library" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Ready-made templates" })).toBeNull();
     expect(screen.getAllByRole("button", { name: "Create template" })).toHaveLength(1);
   });
 
-  it("keeps creation and ready-made templates visible when the account has no templates", async () => {
-    api({ "GET /templates": list([]), "GET /template-library": list([]), "GET /brand": { object: "brand" } });
+  it("offers creation and browsing without loading the library when the collection is empty", async () => {
+    const fetch = api({ "GET /templates": list([]), "GET /brand": { object: "brand" } });
     renderAt("/templates", [{ path: "/templates", element: h(Templates) }]);
     expect(await screen.findByText("No templates yet")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Ready-made templates" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Browse templates" }).getAttribute("href")).toBe("/templates/library");
+    expect(calls(fetch, "GET /template-library")).toHaveLength(0);
     expect(screen.getAllByRole("button", { name: "Create template" })).toHaveLength(1);
   });
 
