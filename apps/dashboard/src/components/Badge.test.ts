@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { statusToVariant } from "./Badge";
+import { badgeLabel, statusToVariant } from "./Badge";
 
 describe("statusToVariant", () => {
   it("keeps green for confirmed outcomes and grays out `sent`", () => {
@@ -36,5 +36,20 @@ describe("statusToVariant", () => {
     expect(statusToVariant(503)).toBe("danger");
     expect(statusToVariant(302)).toBe("neutral");
     expect(statusToVariant("4xx")).toBe("danger");
+  });
+});
+
+describe("badgeLabel", () => {
+  it("uses sentence case for known statuses and preserves acronyms", () => {
+    expect(badgeLabel("subscribed")).toBe("Subscribed");
+    expect(badgeLabel("partially_failed")).toBe("Partially failed");
+    expect(badgeLabel("public")).toBe("Public");
+    expect(badgeLabel("ses")).toBe("SES");
+  });
+  it("preserves custom names and event identifiers", () => {
+    expect(badgeLabel("SMW.AI")).toBe("SMW.AI");
+    expect(badgeLabel("my_custom_name")).toBe("my_custom_name");
+    expect(badgeLabel("email.delivered")).toBe("email.delivered");
+    expect(badgeLabel(200)).toBe("200");
   });
 });
