@@ -120,7 +120,7 @@ export function Usage() {
             loading={usage.loading}
             error={usage.error}
             onRetry={() => void usage.reload()}
-            empty={<Empty compact title="No usage yet" body="Counters start with the first API call." action={<Link to="/emails/send">Test send</Link>} />}
+            empty={<Empty compact title="No usage yet" body="Your usage shows up here after your first API call." action={<Link to="/emails/send">Send a test email</Link>} />}
             page={usage.page}
             hasMore={usage.hasMore}
             onNext={usage.next}
