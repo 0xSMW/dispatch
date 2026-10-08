@@ -1,0 +1,38 @@
+/* Account identity anchors the navigation; utility actions remain in the footer. */
+.sidebar > .account { flex: none; }
+.sidebar > .account .accountButton { min-height: 48px; padding: 6px 8px; }
+.sidebar > .account .avatar { width: 32px; height: 32px; font-size: 11px; font-weight: 600; }
+.accountChevron { flex: none; margin-left: auto; color: var(--text-dim); }
+
+/* A compact sign-in form with the same monochrome palette as the application. */
+.loginPage {
+  --login-bg: #000000;
+  --login-text: #ffffff;
+  background: var(--login-bg);
+  color: var(--login-text);
+  min-height: 100svh;
+  padding: 32px 20px;
+}
+:root[data-theme="light"] .loginPage { --login-bg: #ffffff; --login-text: #000000; }
+.loginPage .loginCard {
+  max-width: 400px;
+  gap: 20px;
+  padding: 32px;
+  background: var(--login-bg);
+  border-color: var(--border);
+  border-radius: 12px;
+}
+.loginHeader { display: grid; gap: 28px; margin-bottom: 4px; }
+.loginPage .loginCard .brand { gap: 10px; color: var(--login-text); font-size: 15px; }
+.loginPage .brandMark { width: 32px; height: 32px; border-radius: 8px; overflow: hidden; }
+.loginPage .brandMark img { filter: grayscale(1) contrast(1.2); }
+:root:not([data-theme="light"]) .loginPage .brandMark img { filter: grayscale(1) contrast(1.2) invert(1); }
+.loginPage .loginCard h1 { margin: 0; font-size: 26px; line-height: 1.2; letter-spacing: -0.7px; font-weight: 600; }
+.loginPage .field { gap: 8px; }
+.loginPage .field label { color: var(--login-text); font-size: 13px; font-weight: 500; }
+.loginPage .field input { height: 40px; padding: 0 12px; background: var(--login-bg); color: var(--login-text); border-radius: 7px; }
+.loginPage .loginCard > button { min-height: 40px; margin-top: 4px; border-radius: 7px; }
+.loginPage .alert { font-size: 13px; }
+@media (max-width: 480px) {
+  .loginPage .loginCard { padding: 24px; }
+}
