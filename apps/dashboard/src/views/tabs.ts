@@ -11,9 +11,9 @@ export const emailTabs: Tab[] = [
 
 export const audienceTabs: Tab[] = [
   { id: "contacts", label: "Contacts", to: "/audience" },
+  { id: "topics", label: "Topics", to: "/audience/topics" },
   { id: "properties", label: "Properties", to: "/audience/properties" },
   { id: "segments", label: "Segments", to: "/audience/segments" },
-  { id: "topics", label: "Topics", to: "/audience/topics" },
   { id: "forms", label: "Forms", to: "/audience/forms" },
   { id: "suppressions", label: "Suppressions", to: "/emails/suppressions" },
 ];
