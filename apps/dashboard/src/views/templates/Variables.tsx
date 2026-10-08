@@ -72,7 +72,7 @@ export function VariableTable({
         compact
         rows={variables}
         rowKey={(item) => item.key}
-        empty={<p className="muted">Add a placeholder such as {"{{{FIRST_NAME}}}"} to the HTML to declare a variable.</p>}
+        empty={<p className="muted">No variables yet. Add a placeholder like {"{{{FIRST_NAME}}}"} to your HTML to create one.</p>}
         columns={[
           {
             header: "Name",
