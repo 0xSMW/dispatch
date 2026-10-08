@@ -74,8 +74,8 @@ export function Events() {
       onRowClick={can ? setEditing : undefined}
       empty={
         <Empty
-          title="No events defined"
-          body="Define an event to check incoming payloads and track activity."
+          title="No events set up yet"
+          body="Define an event so Dispatch can check what your app sends and track how often it fires."
           action={can ? <><button type="button" onClick={() => setCreating(true)}>Define your first event</button><button type="button" className="secondary" onClick={() => setSending("")}>Send test event</button></> : null}
         />
       }
@@ -143,7 +143,7 @@ export function Events() {
           onNext={fired.next}
           onPrevious={fired.previous}
           noun="events"
-          empty={<Empty title="No events fired" body="Events sent with POST /events/send or Send test event show here." />}
+          empty={<Empty title="No events yet" body="Events your app sends, or that you send with Send test event, show up here." />}
           columns={[
             { header: "Event", cell: (row) => <span className="mono">{row.name}</span> },
             { header: "Contact", cell: (row) => row.email ?? <span className="dim">No contact</span> },
