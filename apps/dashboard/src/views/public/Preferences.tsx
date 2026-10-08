@@ -1,4 +1,4 @@
-import type { CSSProperties, FormEvent } from "react";
+import { useState, type CSSProperties, type FormEvent } from "react";
 import { CheckCircle2 } from "lucide-react";
 import type { BrandSettings, Preferences } from "../../types";
 import "../../styles/public.css";
@@ -36,10 +36,10 @@ export function textColor(color: string): "#ffffff" | "#000000" {
 export function previewBrand(brand: Partial<BrandSettings> | null | undefined): PreferenceBrand {
   const color = brand?.color || "#18181b";
   return {
-    product_name: brand?.product_name || "Your product",
+    product_name: brand?.product_name || brand?.variables?.PRODUCT_NAME || "Your product",
     logo_url: brand?.logo_url || null,
     color,
-    text_color: brand?.text_color || textColor(color),
+    text_color: brand?.button_text_color || textColor(color),
   };
 }
 
@@ -59,12 +59,35 @@ export interface PreferenceCardProps {
   error?: string | null;
   title?: string;
   description?: string;
-  /** Inside a dashboard page: the heading drops to h2 and the controls do nothing. */
+  /** Inside a dashboard page: locally simulate changes without saving recipient preferences. */
   preview?: boolean;
 }
 
 /** The preference page body. The public page drives it; Topics and the settings page render it as a preview. */
-export function PreferenceCard({
+export function PreferenceCard(props: PreferenceCardProps) {
+  return props.preview ? <PreferencePreview {...props} /> : <PreferenceBody {...props} />;
+}
+
+function PreferencePreview(props: PreferenceCardProps) {
+  const [choices, setChoices] = useState<Record<string, boolean>>({});
+  const [done, setDone] = useState<Done>(null);
+  const checked = { ...props.checked, ...choices };
+  return (
+    <div className="prefPreview">
+      <PreferenceBody
+        {...props}
+        checked={checked}
+        done={done}
+        onToggle={(id) => setChoices((current) => ({ ...current, [id]: !checked[id] }))}
+        onUpdate={() => setDone("updated")}
+        onUnsubscribeAll={() => setDone("unsubscribed")}
+      />
+      {done ? <button type="button" className="ghost" onClick={() => { setChoices({}); setDone(null); }}>Reset preview</button> : null}
+    </div>
+  );
+}
+
+function PreferenceBody({
   brand,
   email,
   topics,
