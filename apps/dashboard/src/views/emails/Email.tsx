@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { Mail, Paperclip } from "lucide-react";
-import { Badge, statusToVariant } from "../../components/Badge";
+import { Badge, badgeLabel, statusToVariant } from "../../components/Badge";
 import { Checks, type CheckRow } from "../../components/Checks";
 import { Code } from "../../components/Code";
 import { ConfirmPhrase } from "../../components/ConfirmPhrase";
@@ -46,7 +46,7 @@ export function timeline(events: EmailEvent[]): TimelineEvent[] {
       : (failed?.reason ?? suppressed?.message ?? click?.link ?? (Array.isArray(data.recipients) ? `To ${(data.recipients as string[]).join(", ")}` : undefined));
     return {
       id: event.id,
-      label: event.type.replace(/^email\./, "").replaceAll("_", " ") + (simulated ? " (simulated)" : ""),
+      label: badgeLabel(event.type.replace(/^email\./, "")) + (simulated ? " (simulated)" : ""),
       status: event.type,
       time: event.created_at,
       detail: simulated ? [sandboxHint, detail].filter(Boolean).join(" ") : detail || undefined,
