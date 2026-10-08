@@ -41,7 +41,7 @@ function fillCreate(dialog: HTMLElement) {
   fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: " Signup " } });
   fireEvent.click(within(dialog).getByLabelText("News"));
   fireEvent.click(within(dialog).getByLabelText("company"));
-  fireEvent.change(within(dialog).getByLabelText("Sender"), { target: { value: "no-reply@example.com" } });
+  fireEvent.change(within(dialog).getByLabelText("Sender").closest(".dropdown")!.querySelector("select")!, { target: { value: "no-reply@example.com" } });
   fireEvent.change(within(dialog).getByLabelText("Origin 1"), { target: { value: "https://www.example.com" } });
 }
 
@@ -51,6 +51,21 @@ describe("Forms", () => {
     sessionStorage.clear();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
+  });
+
+  it("explains missing setup and preserves the draft when prerequisites are refreshed", async () => {
+    let ready = false;
+    stubApi({ ...choices, "GET /forms": list([]), "GET /topics": () => list(ready ? [{ id: "topic_news", name: "News" }] : []), "GET /domains": () => list(ready ? [domain] : []) });
+    show(h(Forms), "/audience/forms");
+    const dialog = await openCreate();
+    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Keep this draft" } });
+    expect(within(dialog).getByRole("link", { name: "Create topic" }).getAttribute("target")).toBe("_blank");
+    expect(within(dialog).getByRole("link", { name: "Verify sending domain" })).toBeTruthy();
+    expect((within(dialog).getByRole("button", { name: /^Create/ }) as HTMLButtonElement).disabled).toBe(true);
+    ready = true;
+    fireEvent.click(within(dialog).getByRole("button", { name: "Refresh setup" }));
+    await waitFor(() => expect(within(dialog).queryByRole("button", { name: "Refresh setup" })).toBeNull());
+    expect((within(dialog).getByLabelText("Name") as HTMLInputElement).value).toBe("Keep this draft");
   });
 
   it("creates with confirmation enabled and null redirect, then copies the returned public HTML", async () => {
@@ -63,7 +78,7 @@ describe("Forms", () => {
     show(h(Forms), "/audience/forms");
     const dialog = await openCreate();
     expect(within(dialog).getByRole("switch").getAttribute("aria-checked")).toBe("true");
-    expect(within(dialog).getAllByRole("option").map((option) => option.textContent)).toEqual([
+    expect(Array.from(dialog.querySelectorAll("option")).map((option) => option.textContent)).toEqual([
       "Select a verified sender", "no-reply@example.com",
     ]);
     fillCreate(dialog);
@@ -92,7 +107,7 @@ describe("Forms", () => {
     await screen.findByDisplayValue("Fresh");
     const dialog = await screen.findByRole("dialog", { name: "Edit form" });
     await waitFor(() => expect((within(dialog).getByLabelText("Name") as HTMLInputElement).disabled).toBe(false));
-    expect(within(dialog).getByRole("option", { name: "news@example.com (current sender)" })).toBeTruthy();
+    expect(within(dialog).getByLabelText("Sender").textContent).toContain("news@example.com (current sender)");
     expect(within(dialog).getByRole("switch").getAttribute("aria-checked")).toBe("false");
     fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "Edited" } });
     fireEvent.change(within(dialog).getByLabelText("Redirect URL"), { target: { value: "" } });
