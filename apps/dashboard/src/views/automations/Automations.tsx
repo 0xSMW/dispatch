@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { GitBranch } from "lucide-react";
 import { Badge } from "../../components/Badge";
 import { ConfirmPhrase } from "../../components/ConfirmPhrase";
@@ -62,7 +62,9 @@ export function Automations() {
   };
   const selection = useSelection(list.rows.map((row) => row.id));
   const [creating, setCreating] = useState(false);
-  const [choosing, setChoosing] = useState(false);
+  const [params, setParams] = useSearchParams();
+  const choosing = params.get("create") === "1";
+  const setChoosing = (open: boolean) => setParams((current) => { const next = new URLSearchParams(current); if (open) next.set("create", "1"); else next.delete("create"); return next; });
   const [stopping, setStopping] = useState<Automation | null>(null);
   const [enrolling, setEnrolling] = useState<Automation | null>(null);
   const [deleting, setDeleting] = useState<Automation[] | null>(null);
@@ -155,11 +157,8 @@ export function Automations() {
         />
       )}
     >
-      {list.loading || list.error || list.rows.length || list.page > 1 || filters.status ? <Presets onBlank={() => setCreating(true)} /> : null}
-      {choosing ? <Modal isOpen title="Choose a starting point" onClose={() => setChoosing(false)}>
-        <Presets onBlank={can ? () => { setChoosing(false); setCreating(true); } : undefined} />
-      </Modal> : null}
-      {creating && can ? <CreateAutomation onClose={() => setCreating(false)} /> : null}
+      {choosing && !creating ? <Presets onClose={() => setChoosing(false)} onBlank={can ? () => setCreating(true) : undefined} /> : null}
+      {creating && can ? <CreateAutomation onBack={() => setCreating(false)} onClose={() => { setCreating(false); setChoosing(false); }} /> : null}
       {enrolling ? <Enroll automation={enrolling} onClose={() => setEnrolling(null)} /> : null}
       {stopping ? <StopAutomation automation={stopping} onClose={() => setStopping(null)} onDone={() => void list.reload()} /> : null}
       {deleting ? (
@@ -190,7 +189,7 @@ export function Automations() {
 }
 
 /** Creates a disabled automation with only its trigger, then opens the builder. */
-function CreateAutomation({ onClose }: { onClose: () => void }) {
+function CreateAutomation({ onClose, onBack }: { onClose: () => void; onBack: () => void }) {
   const client = useClient();
   const navigate = useNavigate();
   const events = useList<EventDefinition>("/events", {}, { all: true });
@@ -237,7 +236,9 @@ function CreateAutomation({ onClose }: { onClose: () => void }) {
   return (
     <Modal
       isOpen
+      size="wide"
       title="Create automation"
+      actions={<><button type="button" className="secondary" onClick={onBack} disabled={create.isLoading}>Back</button><button type="submit" disabled={!valid || create.isLoading}>{create.isLoading ? "Creating…" : "Create automation"}</button></>}
       onClose={onClose}
       onSubmit={() => { if (valid) void create.mutate(); }}
       submitLabel="Create"
@@ -252,8 +253,11 @@ function CreateAutomation({ onClose }: { onClose: () => void }) {
           onChange={setTrigger}
           eventLabel="Trigger event"
           options={options}
+          errors={issues}
         />
         </ReentryContext.Provider>
+        {trigger.type === "topic_subscribed" ? <p className="fieldHint"><Link to="/audience/topics" target="_blank" rel="noreferrer">Manage topics</Link> · <button type="button" className="secondary small" onClick={() => void topics.reload()}>Refresh topics</button></p> : null}
+        {trigger.type === "segment_added" ? <p className="fieldHint"><Link to="/audience/segments" target="_blank" rel="noreferrer">Manage segments</Link> · <button type="button" className="secondary small" onClick={() => void segments.reload()}>Refresh segments</button></p> : null}
         <p className="fieldHint">New automations start disabled. Add steps in the builder, then start it.</p>
       </div>
     </Modal>
