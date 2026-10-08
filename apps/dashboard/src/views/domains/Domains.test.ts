@@ -22,10 +22,7 @@ describe("Domains", () => {
     expect(screen.getByText("Ireland")).toBeTruthy();
     expect(screen.getAllByText("Verified").find((node) => node.classList.contains("badge"))?.className).toContain("success");
     expect(requests(fetch, "GET", "/domains")[0].url.searchParams.get("limit")).toBe("40");
-    const learn = within(screen.getByRole("navigation", { name: "Learn more" }));
-    expect(learn.getByRole("link", { name: "DNS records" }).getAttribute("href")).toContain("domains.md#dns-records");
-    expect(learn.getByRole("link", { name: "Route 53" }).getAttribute("href")).toContain("domains.md#route-53");
-    expect(learn.getByRole("link", { name: "Deliverability" }).getAttribute("href")).toContain("deliverability/README.md");
+    expect(screen.queryByRole("navigation", { name: "Learn more" })).toBeNull();
   });
 
   it("sends search, status, and region from the URL", async () => {
