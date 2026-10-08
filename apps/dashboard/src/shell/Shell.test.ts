@@ -4,7 +4,7 @@ import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-rou
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { h, mockFetch, signIn } from "../testing";
 import { useResource } from "../hooks/useResource";
-import { SessionProvider } from "./session";
+import { SessionProvider, sessionKey } from "./session";
 import { EventsRedirect, nav, Shell } from "./Shell";
 
 function Login() {
@@ -96,6 +96,30 @@ describe("Shell keys", () => {
     expect(main.getAllByRole("link").map((link) => link.getAttribute("href"))).toEqual(nav.map((item) => item.to));
     expect(main.getByRole("link", { name: "Events" }).getAttribute("href")).toBe("/events");
     expect(main.getByRole("link", { name: "Goals" }).getAttribute("href")).toBe("/goals");
+  });
+
+  it("anchors the account above navigation, derives initials, and opens its menu downward", () => {
+    const session = JSON.parse(sessionStorage.getItem(sessionKey)!);
+    session.user.name = "Stephen Walker";
+    session.user.email = "stephen@example.com";
+    sessionStorage.setItem(sessionKey, JSON.stringify(session));
+    open("/events");
+    const account = screen.getByRole("button", { name: /Stephen Walker\s*stephen@example.com/ });
+    expect(account.querySelector(".avatar")?.textContent).toBe("SW");
+    expect(document.querySelector(".sidebar")?.firstElementChild?.className).toBe("account");
+    expect(document.querySelector(".sidebarFoot .account")).toBeNull();
+    expect(document.querySelector(".sidebarFoot .sidebarTools")).toBeTruthy();
+    vi.spyOn(account, "getBoundingClientRect").mockReturnValue({ top: 18, bottom: 66, left: 12, right: 232, width: 220, height: 48, x: 12, y: 18, toJSON: () => ({}) });
+    fireEvent.click(account);
+    expect(screen.getByRole("menu").style.top).toBe("70px");
+    expect(screen.getByRole("menu").style.bottom).toBe("");
+    expect(screen.getByRole("menuitem", { name: "Sign out" })).toBeTruthy();
+  });
+
+  it("falls back to the email initial when the account has no name", () => {
+    open("/events");
+    const account = screen.getByRole("button", { name: "ada@example.com" });
+    expect(account.querySelector(".avatar")?.textContent).toBe("A");
   });
 
   it("highlights Topics without also highlighting Audience", () => {
