@@ -71,7 +71,7 @@ afterEach(() => {
 });
 
 describe("Canvas", () => {
-  it("shows viewport zoom in the shared HUD and keeps help Escape separate from inspector Escape", async () => {
+  it("shows viewport zoom in the shared HUD and respects typing during inspector Escape", async () => {
     // d3 caches its initial pane extent; smooth zoom needs non-zero dimensions in jsdom.
     const originalRect = HTMLElement.prototype.getBoundingClientRect;
     const rectangle = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
@@ -90,11 +90,7 @@ describe("Canvas", () => {
     await waitFor(() => expect(screen.getByLabelText("Zoom 120 percent").textContent).toBe("120%"));
     fireEvent.click(screen.getByRole("button", { name: "Zoom out" }));
     await waitFor(() => expect(screen.getByLabelText("Zoom 100 percent").textContent).toBe("100%"));
-    fireEvent.click(screen.getByRole("button", { name: "Canvas shortcuts" }));
-    const help = screen.getByRole("dialog", { name: "Canvas controls" });
-    expect(within(help).getAllByText("Pan the canvas", { selector: "dd" })[0]).toBeTruthy();
-    fireEvent.keyDown(help, { key: "Escape" });
-    expect(screen.queryByRole("dialog", { name: "Canvas controls" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Canvas shortcuts" })).toBeNull();
     const inspector = screen.getByRole("region", { name: "Step pause settings" });
     const field = within(inspector).getByLabelText("Duration");
     fireEvent.keyDown(field, { key: "Escape" });
@@ -240,7 +236,7 @@ describe("Canvas", () => {
     const node = await screen.findByRole("button", { name: "Step pause" });
     expect(document.querySelector(".canvasPanel")).toBeNull();
     const controls = document.querySelector(".canvasHud")!;
-    expect(within(controls as HTMLElement).getAllByRole("button")).toHaveLength(4);
+    expect(within(controls as HTMLElement).getAllByRole("button")).toHaveLength(3);
     expect(document.querySelector(".react-flow__node.draggable")).toBeNull();
     fireEvent.click(node);
     let panel = screen.getByRole("region", { name: "Step pause settings" });
@@ -513,6 +509,11 @@ function open(path: string) {
   render(h(RouterProvider, { router }));
 }
 
+function chooseEditorView(view: "Canvas" | "List") {
+  fireEvent.click(screen.getByRole("button", { name: "Actions" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: new RegExp(`${view}$`) }));
+}
+
 describe("AutomationEditor on the canvas", () => {
   beforeEach(() => signIn());
 
@@ -522,7 +523,7 @@ describe("AutomationEditor on the canvas", () => {
     const card = await screen.findByRole("article", { name: "Step pro" });
     changeControl(within(card).getByLabelText("Type"), { target: { value: "date" } });
     changeControl(within(card).getByLabelText("Value"), { target: { value: "2026-10-04" } });
-    fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
+    chooseEditorView("Canvas");
     fireEvent.click(await screen.findByRole("button", { name: "Step pro" }));
     const condition = screen.getByRole("region", { name: "Step pro settings" });
     expect(controlValue(within(condition).getByLabelText("Type"))).toBe("date");
@@ -533,7 +534,7 @@ describe("AutomationEditor on the canvas", () => {
     fireEvent.click(within(send).getByRole("button", { name: "Add mapping" }));
     changeControl(within(send).getByLabelText("Variable name"), { target: { value: "received" } });
     changeControl(within(send).getByLabelText("Choose context field"), { target: { value: "event.received_at" } });
-    fireEvent.click(screen.getByRole("button", { name: "List" }));
+    chooseEditorView("List");
     expect(controlValue(await within(screen.getByRole("article", { name: "Step welcome" })).findByLabelText("Context field"))).toBe("event.received_at");
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
@@ -561,8 +562,11 @@ describe("AutomationEditor on the canvas", () => {
     );
     open("/automations/automation_1/editor?view=list");
     await screen.findByRole("article", { name: "Step welcome" });
-    expect(screen.getByRole("button", { name: "List" }).getAttribute("aria-pressed")).toBe("true");
-    fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
+    fireEvent.click(screen.getByRole("button", { name: "Actions" }));
+    expect(within(screen.getByRole("menuitem", { name: /List$/ })).getByRole("img", { name: "Selected" })).toBeTruthy();
+    expect(screen.queryByText("Selected")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Actions" }));
+    chooseEditorView("Canvas");
 
     fireEvent.click(await screen.findByRole("button", { name: "Add step to False branch of pro" }));
     fireEvent.click(screen.getByRole("button", { name: "Delay" }));
@@ -583,7 +587,7 @@ describe("AutomationEditor on the canvas", () => {
     ]);
 
     // Back to the list: the same draft, with the new step on its card.
-    fireEvent.click(screen.getByRole("button", { name: "List" }));
+    chooseEditorView("List");
     expect(await screen.findByRole("article", { name: "Step delay_1" })).toBeTruthy();
   });
 
@@ -602,7 +606,7 @@ describe("AutomationEditor on the canvas", () => {
   it("is read-only on the canvas once enabled", async () => {
     api((url, init) => (url.pathname === "/automations/automation_1" && !init.method ? { body: { ...automation, status: "enabled" } } : undefined));
     open("/automations/automation_1/editor?view=canvas");
-    await screen.findByText(/Enabled automations cannot be edited/);
+    await screen.findByRole("button", { name: "Pause to edit" });
     fireEvent.click(await screen.findByRole("button", { name: "Step welcome" }));
     expect(screen.queryAllByRole("button", { name: /^Add step/ })).toHaveLength(0);
     expect(within(screen.getByRole("region", { name: "Step welcome settings" })).getByLabelText(/From/)).toHaveProperty("disabled", true);
