@@ -83,7 +83,7 @@ export function Topics() {
                 </span>
               ),
             },
-            { header: <span title="Applies when a contact has not chosen a preference for this topic.">Subscription default</span>, key: "default", cell: (row) => <Badge value={row.default_subscription} variant="neutral" label={defaultLabel(row.default_subscription)} /> },
+            { header: <span title="Applies when a contact has not chosen a preference for this topic.">Subscription default</span>, key: "default", cell: (row) => <Badge value={row.default_subscription} variant="neutral" className="subscriptionDefault" label={defaultLabel(row.default_subscription)} /> },
             { header: "Visibility", cell: (row) => <Badge value={row.visibility} variant={row.visibility === "public" ? "info" : "neutral"} /> },
             { header: "Created", cell: (row) => <Time value={row.created_at} /> },
           ]}
