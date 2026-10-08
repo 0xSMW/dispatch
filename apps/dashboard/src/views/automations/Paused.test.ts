@@ -1,3 +1,4 @@
+import { changeControl, controlValue } from "../../testingControls";
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter, Outlet, RouterProvider } from "react-router-dom";
@@ -75,7 +76,7 @@ describe("Paused automation editing", () => {
       : screen.getByRole("article", { name: "Step wait" });
     expect(within(card).getByLabelText("Duration")).toHaveProperty("disabled", false);
     expect(within(card).getByRole("button", { name: "Remove step" })).toBeTruthy();
-    fireEvent.change(within(card).getByLabelText("Duration"), { target: { value: "3 days" } });
+    changeControl(within(card).getByLabelText("Duration"), { target: { value: "3 days" } });
     expect(screen.getByText("Unsaved changes")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Save" })).toHaveProperty("disabled", false);
   });
@@ -130,10 +131,10 @@ describe("Paused automation editing", () => {
     expect(body(saves(fetch)[0]!).status).toBe(action === "Resume" ? "enabled" : undefined);
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     if (action === "Resume") {
-      expect(await screen.findByText("enabled")).toBeTruthy();
+      expect(await screen.findByText("Enabled")).toBeTruthy();
       expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
     } else {
-      expect(screen.getByText("paused")).toBeTruthy();
+      expect(screen.getByText("Paused")).toBeTruthy();
       expect(screen.getByText("Saved")).toBeTruthy();
     }
   });
@@ -142,7 +143,7 @@ describe("Paused automation editing", () => {
     const fetch = api();
     open();
     const card = await screen.findByRole("article", { name: "Step wait" });
-    fireEvent.change(within(card).getByLabelText("Duration"), { target: { value: "4 days" } });
+    changeControl(within(card).getByLabelText("Duration"), { target: { value: "4 days" } });
     fireEvent.click(screen.getByRole("button", { name: action }));
     await waitFor(() => expect(writes(fetch)).toHaveLength(2));
     expect(new URL(String(writes(fetch)[0]![0])).searchParams.get("dry_run")).toBe("true");
@@ -183,7 +184,7 @@ describe("Paused automation editing", () => {
   it("cancels the stranded-run confirmation without saving", async () => {
     const fetch = api((url) => url.searchParams.has("dry_run") ? { body: { stranded_runs: 3, by_step: { wait: 3 } } } : undefined);
     open();
-    fireEvent.change(await screen.findByLabelText("Name"), { target: { value: "New name" } });
+    changeControl(await screen.findByLabelText("Name"), { target: { value: "New name" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     const dialog = await screen.findByRole("dialog");
     fireEvent.click(within(dialog).getByRole("button", { name: /^Cancel/ }));
@@ -198,26 +199,26 @@ describe("Paused automation editing", () => {
     const fetch = api((url) => url.searchParams.has("dry_run") ? pending : undefined);
     open();
     const name = await screen.findByLabelText("Name");
-    fireEvent.change(name, { target: { value: "First draft" } });
+    changeControl(name, { target: { value: "First draft" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(writes(fetch)).toHaveLength(1));
-    fireEvent.change(name, { target: { value: "Newer draft" } });
+    changeControl(name, { target: { value: "Newer draft" } });
     release({ body: { stranded_runs: count, by_step: count ? { wait: count } : {} } });
     await waitFor(() => expect(screen.getByRole("button", { name: "Save" })).toHaveProperty("disabled", false));
     expect(saves(fetch)).toHaveLength(0);
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(name).toHaveProperty("value", "Newer draft");
+    expect(controlValue(name)).toBe("Newer draft");
   });
 
   it.each(["name", "step", "reentry"])("invalidates an open confirmation when the %s changes", async (field) => {
     const fetch = api((url) => url.searchParams.has("dry_run") ? { body: { stranded_runs: 3, by_step: { wait: 3 } } } : undefined);
     open();
-    fireEvent.change(await screen.findByLabelText("Name"), { target: { value: "First draft" } });
+    changeControl(await screen.findByLabelText("Name"), { target: { value: "First draft" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await screen.findByRole("dialog");
     const control = field === "name" ? screen.getByLabelText("Name")
       : field === "step" ? screen.getByLabelText("Duration") : screen.getByLabelText("Run for each contact");
-    fireEvent.change(control, { target: { value: field === "name" ? "Newer draft" : field === "step" ? "5 days" : "once" } });
+    changeControl(control, { target: { value: field === "name" ? "Newer draft" : field === "step" ? "5 days" : "once" } });
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(saves(fetch)).toHaveLength(0);
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -231,7 +232,7 @@ describe("Paused automation editing", () => {
     const fetch = api((url, init) => init.method === "PATCH" && url.searchParams.has("dry_run") === (phase === "preview")
       ? { status: 409, body: { name: "conflict", statusCode: 409, message } } : undefined);
     open();
-    fireEvent.change(await screen.findByLabelText("Name"), { target: { value: "New name" } });
+    changeControl(await screen.findByLabelText("Name"), { target: { value: "New name" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", message);
     expect(saves(fetch)).toHaveLength(phase === "preview" ? 0 : 1);
