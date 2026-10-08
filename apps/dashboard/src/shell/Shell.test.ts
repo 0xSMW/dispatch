@@ -79,11 +79,11 @@ describe("Shell keys", () => {
   it.each([
     { role: "full", width: 1440 }, { role: "viewer", width: 1440 },
     { role: "full", width: 390 }, { role: "viewer", width: 390 },
-  ])("shares one flat original-order menu for $role at $width", ({ role, width }) => {
+  ])("shares one flat menu with Metrics below Emails for $role at $width", ({ role, width }) => {
     vi.stubGlobal("innerWidth", width);
     if (role === "viewer") signIn("viewer", ["read"]);
     open("/events");
-    const labels = ["Emails", "Broadcasts", "Automations", "Templates", "Audience", "Metrics", "Goals", "Domains",
+    const labels = ["Emails", "Metrics", "Broadcasts", "Automations", "Templates", "Audience", "Goals", "Domains",
       "Logs", "API keys", "Webhooks", "Timeline", "Events", "Settings"];
     expect(nav.map((item) => item.label)).toEqual(labels);
     const menu = screen.getByRole("navigation", { name: "Main" });
