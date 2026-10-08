@@ -25,7 +25,7 @@ export function ApiReference({ apiUrl, onClose }: { apiUrl: string; onClose: () 
   return (
     <Drawer isOpen width="wide" label="API reference" title={reference?.title ?? "This page"} onClose={onClose}>
       {!reference ? (
-        <p className="muted">No API calls are listed for this page.</p>
+        <p className="muted">This page has no API calls.</p>
       ) : (
         <div className="stack">
           <p className="muted">
