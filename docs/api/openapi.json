@@ -17284,11 +17284,74 @@
             ],
             "description": "An https URL. The default templates link it from their footer."
           },
+          "unsubscribe_button_label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 80,
+            "description": "The primary action label on the public unsubscribe page. Null uses the default."
+          },
+          "unsubscribe_updated_title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 120,
+            "description": "The heading after preferences are saved. Null uses the default."
+          },
+          "unsubscribe_updated_description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "The description after preferences are saved. Null uses the default."
+          },
+          "unsubscribe_unsubscribed_title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 120,
+            "description": "The heading after unsubscribing from all emails. Null uses the default."
+          },
+          "unsubscribe_unsubscribed_description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "The description after unsubscribing from all emails. Null uses the default."
+          },
+          "unsubscribe_logo_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri",
+            "pattern": "^https://",
+            "description": "An HTTPS logo URL for the public unsubscribe page only. Null inherits the global brand logo."
+          },
+          "unsubscribe_color": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "description": "The public unsubscribe page button color only. Null inherits the global brand color; button text contrast is computed from the resolved color."
+          },
           "unsubscribe_title": {
             "type": [
               "string",
               "null"
             ],
+            "minLength": 1,
             "maxLength": 120,
             "description": "The heading of the public unsubscribe page. Null uses the default."
           },
@@ -17297,6 +17360,7 @@
               "string",
               "null"
             ],
+            "minLength": 1,
             "maxLength": 500,
             "description": "The line above the topics on the public unsubscribe page. Null uses the default."
           },
@@ -17381,11 +17445,74 @@
             ],
             "description": "An https URL. The default templates link it from their footer."
           },
+          "unsubscribe_button_label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 80,
+            "description": "The primary action label on the public unsubscribe page. Null uses the default."
+          },
+          "unsubscribe_updated_title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 120,
+            "description": "The heading after preferences are saved. Null uses the default."
+          },
+          "unsubscribe_updated_description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "The description after preferences are saved. Null uses the default."
+          },
+          "unsubscribe_unsubscribed_title": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 120,
+            "description": "The heading after unsubscribing from all emails. Null uses the default."
+          },
+          "unsubscribe_unsubscribed_description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "The description after unsubscribing from all emails. Null uses the default."
+          },
+          "unsubscribe_logo_url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uri",
+            "pattern": "^https://",
+            "description": "An HTTPS logo URL for the public unsubscribe page only. Null inherits the global brand logo."
+          },
+          "unsubscribe_color": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^#[0-9a-fA-F]{6}$",
+            "description": "The public unsubscribe page button color only. Null inherits the global brand color; button text contrast is computed from the resolved color."
+          },
           "unsubscribe_title": {
             "type": [
               "string",
               "null"
             ],
+            "minLength": 1,
             "maxLength": 120,
             "description": "The heading of the public unsubscribe page. Null uses the default."
           },
@@ -17394,6 +17521,7 @@
               "string",
               "null"
             ],
+            "minLength": 1,
             "maxLength": 500,
             "description": "The line above the topics on the public unsubscribe page. Null uses the default."
           }
@@ -20711,23 +20839,78 @@
               "product_name",
               "logo_url",
               "color",
-              "text_color"
+              "text_color",
+              "title",
+              "description",
+              "button_label",
+              "updated_title",
+              "updated_description",
+              "unsubscribed_title",
+              "unsubscribed_description"
             ],
             "properties": {
               "product_name": {
                 "type": "string"
               },
               "logo_url": {
+                "description": "Resolved unsubscribe page logo URL, falling back to the global brand logo. Null means no logo.",
                 "type": [
                   "string",
                   "null"
                 ]
               },
               "color": {
+                "description": "Resolved unsubscribe page color, falling back to the global brand color.",
                 "type": "string"
               },
               "text_color": {
+                "description": "Computed black or white button text for the resolved page color.",
                 "type": "string"
+              },
+              "button_label": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "minLength": 1,
+                "maxLength": 80,
+                "description": "The primary action label on the public unsubscribe page. Null uses the default."
+              },
+              "updated_title": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "minLength": 1,
+                "maxLength": 120,
+                "description": "The heading after preferences are saved. Null uses the default."
+              },
+              "updated_description": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "minLength": 1,
+                "maxLength": 500,
+                "description": "The description after preferences are saved. Null uses the default."
+              },
+              "unsubscribed_title": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "minLength": 1,
+                "maxLength": 120,
+                "description": "The heading after unsubscribing from all emails. Null uses the default."
+              },
+              "unsubscribed_description": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "minLength": 1,
+                "maxLength": 500,
+                "description": "The description after unsubscribing from all emails. Null uses the default."
               },
               "title": {
                 "type": [
