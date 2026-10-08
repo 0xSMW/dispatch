@@ -3,24 +3,42 @@
  * monochrome: the primary action is white on black (black on white in light). Color is kept
  * for status only, as a tinted fill with matching text, following the Radix Colors scales.
  */
+/* One achromatic Neutral ramp for all application chrome. Semantic status and tenant
+ * brand colors remain independent. Components consume role tokens, never gray literals. */
+:root {
+  --neutral-0: #ffffff;
+  --neutral-50: #fafafa;
+  --neutral-100: #f5f5f5;
+  --neutral-200: #e5e5e5;
+  --neutral-300: #d4d4d4;
+  --neutral-400: #a3a3a3;
+  --neutral-500: #737373;
+  --neutral-600: #525252;
+  --neutral-700: #404040;
+  --neutral-800: #262626;
+  --neutral-900: #171717;
+  --neutral-950: #0a0a0a;
+  --neutral-1000: #000000;
+}
+
 :root,
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #000000;
-  --surface: #0a0b0c;
-  --surface-raised: #141517;
-  --border: #212629;
-  --border-input: #293034;
-  --border-light: #191b1e;
-  --text: #f0f0f0;
-  --text-muted: #a1a4a5;
-  --text-dim: #878d8f;
-  --focus: #5c6266;
-  --primary: #ffffff;
-  --primary-hover: #e4e4e4;
-  --primary-subtle: #191b1e;
-  --primary-border: #293034;
-  --on-primary: #000000;
+  --bg: var(--neutral-950);
+  --surface: var(--neutral-900);
+  --surface-raised: var(--neutral-800);
+  --border: var(--neutral-800);
+  --border-input: var(--neutral-700);
+  --border-light: var(--neutral-900);
+  --text: var(--neutral-50);
+  --text-muted: var(--neutral-400);
+  --text-dim: var(--neutral-400);
+  --focus: var(--neutral-400);
+  --primary: var(--neutral-0);
+  --primary-hover: var(--neutral-200);
+  --primary-subtle: var(--selected);
+  --primary-border: var(--neutral-700);
+  --on-primary: var(--neutral-1000);
   --success: #3ad389;
   --success-subtle: rgba(34, 255, 153, 0.12);
   --success-border: rgba(68, 255, 170, 0.29);
@@ -39,32 +57,35 @@
   --accent: #baa7ff;
   --accent-subtle: rgba(131, 84, 254, 0.21);
   --accent-border: rgba(143, 108, 253, 0.43);
-  --neutral-subtle: #191b1e;
-  --disabled-bg: #141517;
-  --disabled-border: #212629;
-  --disabled-text: #878d8f;
+  --neutral-subtle: var(--selected);
+  --disabled-bg: var(--neutral-800);
+  --disabled-border: var(--neutral-800);
+  --disabled-text: var(--neutral-400);
   --overlay: rgba(0, 0, 0, 0.7);
   --shadow: 0 12px 32px rgba(0, 0, 0, 0.6);
   --glow: 0 0 4px rgba(255, 255, 255, 0.06), 0 1px 14px rgba(255, 255, 255, 0.12), 0 3px 32px rgba(255, 255, 255, 0.18);
+  --popover: var(--neutral-900);
+  --hover: var(--neutral-800);
+  --selected: var(--neutral-800);
 }
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --bg: #fdfdfd;
-  --surface: #ffffff;
-  --surface-raised: #f4f4f4;
-  --border: #e4e4e4;
-  --border-input: #d7d7d7;
-  --border-light: #eeeeee;
-  --text: #191919;
-  --text-muted: #4d4d4d;
-  --text-dim: #656565;
-  --focus: #656b70;
-  --primary: #000000;
-  --primary-hover: #262626;
-  --primary-subtle: #f0f0f0;
-  --primary-border: #d7d7d7;
-  --on-primary: #ffffff;
+  --bg: var(--neutral-50);
+  --surface: var(--neutral-0);
+  --surface-raised: var(--neutral-100);
+  --border: var(--neutral-200);
+  --border-input: var(--neutral-400);
+  --border-light: var(--neutral-100);
+  --text: var(--neutral-900);
+  --text-muted: var(--neutral-600);
+  --text-dim: var(--neutral-600);
+  --focus: var(--neutral-600);
+  --primary: var(--neutral-900);
+  --primary-hover: var(--neutral-800);
+  --primary-subtle: var(--selected);
+  --primary-border: var(--neutral-300);
+  --on-primary: var(--neutral-0);
   --success: #2a7e3b;
   --success-subtle: rgba(0, 151, 0, 0.09);
   --success-border: rgba(0, 143, 10, 0.3);
@@ -83,13 +104,16 @@
   --accent: #6550b9;
   --accent-subtle: rgba(68, 0, 238, 0.06);
   --accent-border: rgba(49, 0, 251, 0.21);
-  --neutral-subtle: #f0f0f0;
-  --disabled-bg: #eeeeee;
-  --disabled-border: #d7d7d7;
-  --disabled-text: #656565;
+  --neutral-subtle: var(--selected);
+  --disabled-bg: var(--neutral-100);
+  --disabled-border: var(--neutral-200);
+  --disabled-text: var(--neutral-500);
   --overlay: rgba(0, 0, 0, 0.4);
   --shadow: 0 12px 32px rgba(0, 0, 0, 0.12);
   --glow: none;
+  --popover: var(--neutral-0);
+  --hover: var(--neutral-100);
+  --selected: var(--neutral-200);
 }
 
 :root {
@@ -229,7 +253,7 @@ button.secondary,
 
 button.secondary:hover:not(:disabled),
 .button.secondary:hover {
-  background: var(--surface-raised);
+  background: var(--hover);
   border-color: var(--border-input);
   box-shadow: none;
 }
@@ -243,7 +267,7 @@ button.ghost,
 
 button.ghost:hover:not(:disabled),
 .button.ghost:hover {
-  background: var(--surface-raised);
+  background: var(--hover);
   border-color: transparent;
   box-shadow: none;
   color: var(--text);
@@ -584,13 +608,13 @@ button.switch.on {
 }
 
 .navItem:hover {
-  background: var(--surface-raised);
+  background: var(--hover);
   color: var(--text);
   text-decoration: none;
 }
 
 .navItem.active {
-  background: var(--primary-subtle);
+  background: var(--selected);
   color: var(--text);
 }
 
@@ -685,7 +709,7 @@ button.switch.on {
 }
 
 .accountButton:hover:not(:disabled) {
-  background: var(--surface-raised);
+  background: var(--hover);
   border-color: transparent;
   box-shadow: none;
 }
@@ -796,7 +820,7 @@ button.switch.on {
   text-decoration: none;
 }
 .learnChip:hover {
-  background: var(--surface-raised);
+  background: var(--hover);
   color: var(--text);
 }
 
@@ -1011,7 +1035,7 @@ button.tab:hover:not(:disabled) {
 .tab.active,
 button.tab.active,
 button.tab.active:hover:not(:disabled) {
-  background: var(--primary-subtle);
+  background: var(--selected);
   color: var(--text);
 }
 
@@ -1118,9 +1142,12 @@ tr.clickable {
   cursor: pointer;
 }
 
-tr.clickable:hover td,
+tr.clickable:hover td {
+  background: var(--hover);
+}
+
 tr.selected td {
-  background: var(--surface-raised);
+  background: var(--selected);
 }
 
 td a {
@@ -1617,7 +1644,7 @@ td a {
   padding: 4px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--surface-raised);
+  background: var(--popover);
   box-shadow: var(--shadow);
 }
 
@@ -1646,7 +1673,7 @@ button.menuItem span {
 
 button.menuItem:hover:not(:disabled),
 button.menuItem:focus-visible {
-  background: var(--neutral-subtle);
+  background: var(--hover);
   border-color: transparent;
   box-shadow: none;
   outline: none;
