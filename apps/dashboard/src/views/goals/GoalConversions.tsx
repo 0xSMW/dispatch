@@ -54,7 +54,7 @@ export function GoalConversions(scope: GoalConversionsProps) {
         <Select label="Goal" value={goal?.id ?? ""} onChange={setPicked} options={rows.map((row) => ({ value: row.id, label: row.name }))} />
         {goal ? <p className="muted">{"event" in goal.target ? `Event: ${goal.target.event}` : "Recorded contact-state entry"} · {goal.window_days}-day conversion window</p> : null}
         {issue ? <p role="alert">{issue}</p> : path ? <ConversionResults key={path} path={path} /> : null}
-      </> : <Empty title="No goals" body="Create a goal to measure conversions from your sends." action={<Link className="button secondary" to="/goals">View goals</Link>} />}
+      </> : <Empty title="No goals yet" body="Create a goal to see how many people convert after your emails." action={<Link className="button secondary" to="/goals">Go to goals</Link>} />}
       {rows.length ? <p className="muted">The date range selects first-send cohorts: start inclusive, end exclusive. Conversion can happen through the inclusive window after that first scoped send, even after the range ends. Days are UTC. Eligibility uses current contact state. Sandbox sends are excluded; later sandbox activity does not replace prior real-send attribution.</p> : null}
     </div>
   </Panel>;
@@ -71,14 +71,14 @@ function ConversionResults({ path }: { path: string }) {
       <div className="stat"><dt>Converted</dt><dd>{data.converted.toLocaleString()}</dd></div>
       <div className="stat"><dt>Conversion rate</dt><dd>{conversionRate(data.rate)}</dd></div>
     </dl>
-    {!data.contacts_reached ? <p className="muted">No eligible contacts reached in this cohort range.</p> : null}
-    <Table rows={data.data} rowKey={(row) => row.date} empty={<p className="muted">No first-send cohorts in this range.</p>} columns={[
+    {!data.contacts_reached ? <p className="muted">No eligible contacts were reached in this date range.</p> : null}
+    <Table rows={data.data} rowKey={(row) => row.date} empty={<p className="muted">No first sends in this date range.</p>} columns={[
       { header: "First-send day (UTC)", cell: (row) => row.date },
       { header: "Contacts reached", cell: (row) => row.contacts_reached.toLocaleString() },
       { header: "Converted", cell: (row) => row.converted.toLocaleString() },
       { header: "Conversion rate", cell: (row) => conversionRate(row.rate) },
     ]} />
     <p className="muted">{data.history.limitation}</p>
-    <p className="muted">Contact history available from: {data.history.available_from ?? "No recorded contact history yet"}</p>
+    <p className="muted">{data.history.available_from ? `Contact history starts on ${data.history.available_from}.` : "No contact history recorded yet."}</p>
   </div>;
 }
