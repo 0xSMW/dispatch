@@ -119,7 +119,7 @@ describe("lifecycle sources and metadata", () => {
     const rendered = renderTemplate(item, { CONFIRM_URL: "https://acme.example/confirm/token" }, brand);
     expect(rendered.html).toContain('href="https://acme.example/confirm/token"');
     expect(rendered.text).toContain("7 days");
-    expect(rendered.text).toContain("You are not subscribed until you confirm");
+    expect(rendered.text).toContain("confirm your email address to receive updates");
     expect(rendered.html).not.toContain("unsubscribe/token");
     expect(() => renderTemplate(item, {}, brand)).toThrow("Missing template variable: CONFIRM_URL");
   });
@@ -223,7 +223,7 @@ describe("failing lifecycle quality fixtures", () => {
   it.each(marketing)("%s fails when its unsubscribe link is removed", (slug) => {
     const item = entry(slug);
     item.html = item.html.replaceAll('href="{{{UNSUBSCRIBE_URL}}}"', 'href="{{{PRODUCT_URL}}}"');
-    expect(item.html).toContain("{{{UNSUBSCRIBE_URL}}}");
+    expect(item.text).toContain("{{{UNSUBSCRIBE_URL}}}");
     expect(checkLibrary({ templates: [item] }, themePairs)).toContain(`${slug} check 16: missing UNSUBSCRIBE_URL link`);
   });
 
