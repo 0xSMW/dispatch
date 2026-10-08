@@ -156,7 +156,7 @@ export function Brand() {
   const sample = { "--brand": color, "--brand-text": textColor(color) } as CSSProperties;
 
   return (
-    <div className="page">
+    <div className="page settingsPage">
       <PageHeader title="Settings" />
       <Tabs tabs={settingsTabs} />
       {brand.error ? <Failed message={brand.error} onRetry={brand.reload} /> : null}
