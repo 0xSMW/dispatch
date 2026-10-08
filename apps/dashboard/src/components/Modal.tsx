@@ -17,7 +17,7 @@ export interface ModalProps {
   /** Shows a spinner in the submit button and disables it. */
   submitting?: boolean;
   danger?: boolean;
-  size?: "small" | "medium" | "large";
+  size?: "small" | "medium" | "large" | "wide";
 }
 
 /** Centered dialog with focus trap, Esc to close, and key hints on its buttons. */
