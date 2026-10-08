@@ -49,7 +49,7 @@ a.fileChip:hover {
 }
 
 .segmented button.active {
-  background: var(--surface);
+  background: var(--selected);
   border-color: var(--border);
   color: var(--text);
 }
