@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { h, signIn, wrapper } from "../../testing";
 import { Onboarding } from "../../shell/Onboarding";
-import { bodyOf, calls, list, show, stubApi } from "../audience/stub";
+import { calls, list, show, stubApi } from "../audience/stub";
 import { Setup } from "./Setup";
 
 describe("Setup", () => {
@@ -13,7 +13,7 @@ describe("Setup", () => {
     vi.unstubAllGlobals();
   });
 
-  it("shows the three steps with their state and sends a test email", async () => {
+  it("shows the three steps with their state and visible optional steps", async () => {
     const fetch = stubApi({
       "GET /setup": {
         object: "setup",
@@ -32,26 +32,16 @@ describe("Setup", () => {
     expect(screen.getByText("Send an email").closest("li")?.className).toBe("");
     expect(screen.getAllByRole("listitem")).toHaveLength(6);
     expect(screen.getByText("Verify a domain").closest("ol")?.children).toHaveLength(3);
-    const optional = screen.getByText("Lifecycle email (optional)").closest("details")!;
-    expect(optional.hasAttribute("open")).toBe(false);
+    const optional = screen.getByText("Lifecycle email (optional)").closest("section")!;
+    expect(optional.closest("details")).toBeNull();
     expect(within(optional).getByRole("link", { name: "Set your brand" }).getAttribute("href")).toBe("/settings/brand");
     expect(within(optional).getByRole("link", { name: "Send your first event" }).getAttribute("href")).toBe("/events");
     expect(within(optional).getByRole("link", { name: "Install a preset" }).getAttribute("href")).toBe("/templates/library?tab=lifecycle");
     expect(within(optional).getByText("Presets install disabled from the Lifecycle library. Review the automation before enabling it.")).toBeTruthy();
     expect(within(optional).queryByText(/when it ships/)).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Send a test email" }));
-    const dialog = await screen.findByRole("dialog");
-    expect((within(dialog).getByLabelText("From") as HTMLInputElement).value).toBe("hello@acme.com");
-    expect((within(dialog).getByLabelText("To") as HTMLInputElement).value).toBe("ada@acme.com");
-    fireEvent.submit(dialog.querySelector("form")!);
-    await waitFor(() => expect(calls(fetch)).toContain("POST /emails"));
-    expect(bodyOf(fetch, "POST /emails")).toEqual({
-      from: "hello@acme.com",
-      to: "ada@acme.com",
-      subject: "Dispatch test",
-      text: "Sent from the Dispatch dashboard.",
-    });
+    expect(screen.queryByRole("button", { name: "Send a test email" })).toBeNull();
+    expect(calls(fetch).some((call) => call.startsWith("POST"))).toBe(false);
   });
 
   it("keeps the required banner complete regardless of the untouched optional block", async () => {
@@ -65,7 +55,7 @@ describe("Setup", () => {
     await waitFor(() => expect(screen.getByText("Send an email").closest("li")?.className).toBe("done"));
     expect(screen.getByText("Verify a domain").closest("ol")?.children).toHaveLength(3);
     expect(screen.queryByText(/Finish setting up Dispatch/)).toBeNull();
-    expect(screen.getByText("Lifecycle email (optional)").closest("details")?.hasAttribute("open")).toBe(false);
+    expect(screen.getByText("Lifecycle email (optional)").closest("details")).toBeNull();
     expect(calls(fetch).every((call) => call.startsWith("GET /setup") || call.startsWith("GET /emails"))).toBe(true);
   });
 
@@ -75,8 +65,8 @@ describe("Setup", () => {
     render(h(Setup), { wrapper });
     await waitFor(() => expect(calls(fetch)).toContain("GET /setup"));
     expect(screen.queryByRole("button", { name: "Send a test email" })).toBeNull();
-    const optional = screen.getByText("Lifecycle email (optional)").closest("details")!;
-    expect(optional.hasAttribute("open")).toBe(false);
+    const optional = screen.getByText("Lifecycle email (optional)").closest("section")!;
+    expect(optional.closest("details")).toBeNull();
     expect(within(optional).queryAllByRole("link")).toHaveLength(0);
     expect(within(optional).getByText(/Ask a team member with full access/)).toBeTruthy();
     expect(screen.getByText("Verify a domain").closest("ol")?.children).toHaveLength(3);
