@@ -10,7 +10,7 @@ import { Empty } from "../../components/Empty";
 export function Preview({ html, untrusted = false }: { html: string | null | undefined; untrusted?: boolean }) {
   const [width, setWidth] = useState<"desktop" | "phone">("desktop");
   const [images, setImages] = useState(false);
-  if (!html) return <Empty title="No HTML part" body="This email has only plain text. Open the Plain text tab." />;
+  if (!html) return <Empty title="No HTML version" body="This email is plain text only. Open the Plain text tab to view." />;
   return (
     <div className="stack">
       <div className="segmented" role="group" aria-label="Preview width">
