@@ -9,3 +9,5 @@ Use the cleanest, simplest naming structure, Rails-style: prefer clear conventio
 Internal docs (plans, specs, competitor research) stay local: list each one in `.git/info/exclude` and never commit it.
 
 Do not hide UI tables or page sections inside toggles, accordions, or disclosure controls unless the user explicitly requests that behavior. Keep tables and their headings visible directly on the page. Do not introduce collapsible sections as a way to simplify a busy interface.
+
+Gray-on-gray nested containers and gray-on-gray badges are banned. Do not wrap cards in additional card containers; use spacing and typography to establish hierarchy. Template grid items use one preview surface with unboxed name, slug, and status underneath.
