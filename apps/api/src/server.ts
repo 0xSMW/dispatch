@@ -2082,12 +2082,12 @@ async function renderBrand(tenantId: string, from?: string | null) {
   return brandContext(brand.brand, { tenantName: brand.name, domain: brand.domain, from });
 }
 
-// A preview has no sender and a new tenant has no brand yet. A real send always has both, so the
-// preview fills the two values a send would supply with samples instead of failing.
+// Resolve the tenant identity for previews. Support links require an explicitly configured
+// address, just as they do when sending, rather than an invented mailbox.
 async function previewBrand(tenantId: string) {
   const brand = await loadBrand(db, tenantId);
   const domain = brand.domain ?? "example.com";
-  return brandContext(brand.brand, { tenantName: brand.name, domain, from: `support@${domain}` });
+  return brandContext(brand.brand, { tenantName: brand.name, domain });
 }
 
 export async function flushTelemetry() {
