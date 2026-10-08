@@ -46,14 +46,15 @@ export function Contacts() {
   const can = useCan();
   const navigate = useNavigate();
   const [, setParams] = useSearchParams();
-  const filters = useFilters(["q", "subscribed", "segment_id"]);
+  const filters = useFilters(["q", "subscribed", "topic_id", "segment_id"]);
   const list = useList<Contact>("/contacts", filters);
   const segments = useAll<Segment>("/segments");
+  const topics = useAll<Topic>("/topics");
   const stats = useResource<ContactStats>("/contacts/stats");
   const [dialog, setDialog] = useState<Dialog>(null);
   const [deleting, setDeleting] = useState<Contact | null>(null);
   const close = () => setDialog(null);
-  const filtered = Boolean(filters.q || filters.subscribed || filters.segment_id);
+  const filtered = Boolean(filters.q || filters.subscribed || filters.topic_id || filters.segment_id);
   const emptyAccount = !list.loading && !list.error && list.page === 1 && list.rows.length === 0
     && !filtered && !stats.loading && !stats.error && stats.data?.all === 0;
 
@@ -100,12 +101,23 @@ export function Contacts() {
     },
     { header: "Name", cell: (row) => fullName(row) || <span className="dim">—</span> },
     {
+      header: <span title="Topics this contact is subscribed to. Global unsubscribe still takes precedence.">Topics</span>,
+      key: "topics",
+      cell: (row) => {
+        const subscribed = row.topics?.filter((topic) => topic.subscription === "opt_in") ?? [];
+        return subscribed.length ? <span className="chips">
+          {subscribed.slice(0, 2).map((topic) => <Link key={topic.id} to="/audience/topics"><Badge value={topic.name} label={topic.name} variant="neutral" /></Link>)}
+          {subscribed.length > 2 ? <span className="dim" title={subscribed.slice(2).map((topic) => topic.name).join(", ")}>+{subscribed.length - 2}</span> : null}
+        </span> : <span className="dim">—</span>;
+      },
+    },
+    {
       header: "Segments",
       cell: (row) =>
         row.segments?.length ? (
           <span className="chips">
             {row.segments.slice(0, 3).map((segment) => (
-              <Badge key={segment.id} value={segment.name} variant="neutral" />
+              <Badge key={segment.id} value={segment.name} label={segment.name} variant="neutral" />
             ))}
             {row.segments.length > 3 ? <span className="dim">+{row.segments.length - 3}</span> : null}
           </span>
@@ -146,6 +158,11 @@ export function Contacts() {
       {!emptyAccount ? <FilterBar
         search="Search by email or name"
         filters={[
+          {
+            param: "topic_id",
+            label: "Topics",
+            options: (topics.data?.data ?? []).map((topic) => ({ value: topic.id, label: topic.name })),
+          },
           {
             param: "segment_id",
             label: "Segments",
@@ -193,7 +210,7 @@ export function Contacts() {
             <Empty title="No contacts match" body="Try different filters, or clear them to see everyone."
               action={<button type="button" className="secondary" onClick={() => setParams((current) => {
                 const next = new URLSearchParams(current);
-                for (const key of ["q", "subscribed", "segment_id"]) next.delete(key);
+                for (const key of ["q", "subscribed", "topic_id", "segment_id"]) next.delete(key);
                 return next;
               })}>Clear filters</button>} />
           ) : (
@@ -339,6 +356,7 @@ function AddContact({ onClose, onDone }: { onClose: () => void; onDone: () => vo
         <div className="form two">
           <fieldset className="checkList">
             <legend>Segments</legend>
+            <p className="muted">Groups for targeting; adding a contact does not subscribe them to a topic.</p>
             {(segments.data?.data ?? []).filter((segment) => segment.type !== "dynamic").map((segment) => (
               <label key={segment.id} className="check">
                 <input type="checkbox" checked={segmentIds.includes(segment.id)} onChange={() => setSegmentIds(toggle(segmentIds, segment.id))} />
@@ -349,6 +367,7 @@ function AddContact({ onClose, onDone }: { onClose: () => void; onDone: () => vo
           </fieldset>
           <fieldset className="checkList">
             <legend>Topics</legend>
+            <p className="muted">Email subscriptions. Select only topics this contact has agreed to receive.</p>
             {(topics.data?.data ?? []).map((topic) => (
               <label key={topic.id} className="check">
                 <input type="checkbox" checked={topicIds.includes(topic.id)} onChange={() => setTopicIds(toggle(topicIds, topic.id))} />
@@ -421,6 +440,7 @@ function AddToSegment({
     >
       <fieldset className="checkList">
         <legend>Segments</legend>
+            <p className="muted">Groups for targeting; adding a contact does not subscribe them to a topic.</p>
         {segments.map((segment) => (
           <label key={segment.id} className="check">
             <input type="checkbox" checked={chosen.includes(segment.id)} onChange={() => toggle(segment.id)} />
