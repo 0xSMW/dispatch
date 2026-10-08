@@ -499,10 +499,11 @@ describe("automation routes", () => {
 
   it("lists automations with a run count and filters by status", async () => {
     const { app, query } = harness(() => ({ rows: [{ ...stored(), run_count: 3 }] }));
-    const response = await app.inject({ method: "GET", url: "/automations?status=enabled" });
+    const response = await app.inject({ method: "GET", url: "/automations?status=enabled&q=Welcome" });
     expect(response.json().data[0]).toMatchObject({ status: "enabled", run_count: 3 });
     expect(query.mock.calls[0]![0]).toContain("as run_count");
-    expect(query.mock.calls[0]![0]).toContain("enabled and paused_at is null");
+    expect(query.mock.calls[0]![0]).toContain("enabled and paused_at is null and name ilike $2");
+    expect(query.mock.calls[0]![1]).toContain("%Welcome%");
   });
 
   it("lists runs with a status filter and reads one run on the nested path", async () => {
