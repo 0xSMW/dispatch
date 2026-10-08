@@ -7,6 +7,13 @@ import { SessionProvider } from "../../shell/session";
 import { h, mockFetch, signIn } from "../../testing";
 import { automationCsv, Automations } from "./Automations";
 
+function selectValue(control: HTMLElement, value: string) {
+  const native = control.parentElement!.querySelector("select")!;
+  const label = Array.from(native.options).find(option => option.value === value)!.textContent!;
+  fireEvent.click(control);
+  fireEvent.click(screen.getByRole("option", { name: label }));
+}
+
 const rows = [
   { id: "automation_1", name: "Welcome", status: "enabled", trigger: "user.created", run_count: 1204, created_at: "2026-09-01T00:00:00.000Z" },
   { id: "automation_2", name: "Win back", status: "disabled", trigger: "user.idle", run_count: 0, created_at: "2026-09-02T00:00:00.000Z" },
@@ -43,10 +50,9 @@ describe("Automations", () => {
     expect(String(fetch.mock.calls.find(([url]) => new URL(String(url)).pathname === "/automations")![0])).toBe("http://localhost:3100/automations?status=enabled&limit=40");
     expect(screen.getByText("1,204")).toBeTruthy();
     expect(screen.getByText("user.idle")).toBeTruthy();
-    expect(screen.getAllByText("enabled").length).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: "Start blank" })).toBeTruthy();
-    await screen.findByRole("button", { name: automations[0]!.name });
-    expect(screen.getAllByRole("button", { name: "Install as automation" })).toHaveLength(6);
+    expect(screen.getAllByText("Enabled").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: "Start blank" })).toBeNull();
+    expect(fetch.mock.calls.filter(([url]) => String(url).includes("template-library/automations"))).toHaveLength(0);
     const learn = within(screen.getByRole("navigation", { name: "Learn more" }));
     expect(learn.getByRole("link", { name: "Triggers" }).getAttribute("href")).toContain("automations.md#triggers");
     expect(learn.getByRole("link", { name: "Conditions" }).getAttribute("href")).toContain("automations.md#conditions");
@@ -63,7 +69,7 @@ describe("Automations", () => {
     fireEvent.click(screen.getByRole("button", { name: permission === "full" ? "Choose a starting point" : "Browse presets" }));
     await screen.findByRole("button", { name: automations[0]!.name });
     for (const name of ["Acquisition", "Onboarding", "Retention", "Re-engagement", "Dunning", "Reactivation"]) {
-      expect(screen.getByRole("region", { name })).toBeTruthy();
+      expect(screen.getByText(name)).toBeTruthy();
     }
     if (permission === "full") {
       const chooser = within(screen.getByRole("dialog"));
@@ -72,7 +78,7 @@ describe("Automations", () => {
       expect(within(screen.getByRole("dialog")).getByLabelText("Name")).toBeTruthy();
     } else {
       expect(screen.queryByRole("button", { name: "Choose a starting point" })).toBeNull();
-      expect(screen.getAllByRole("button", { name: "Preview automation" })).toHaveLength(6);
+      expect(screen.queryByRole("button", { name: "Use this recipe" })).toBeNull();
     }
     expect(fetch.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
   });
@@ -84,8 +90,9 @@ describe("Automations", () => {
     open("/automations?status=paused");
     expect(await screen.findByText("Welcome")).toBeTruthy();
     const row = screen.getByText("Welcome").closest("tr")!;
-    expect(within(row).getByText("paused")).toBeTruthy();
-    expect(screen.getByRole("option", { name: "paused" })).toBeTruthy();
+    expect(within(row).getByText("Paused")).toBeTruthy();
+    fireEvent.click(screen.getByRole("combobox", { name: "Status" }));
+    expect(screen.getByRole("option", { name: /^paused$/i })).toBeTruthy();
     expect(String(fetch.mock.calls.find(([url]) => new URL(String(url)).pathname === "/automations")![0])).toContain("status=paused");
     expect(automationCsv.find((column) => column.header === "status")!.value(paused)).toBe("paused");
   });
@@ -165,14 +172,14 @@ describe("Automations", () => {
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Start blank" }));
     const dialog = within(screen.getByRole("dialog"));
     fireEvent.change(dialog.getByLabelText("Name"), { target: { value: "Lifecycle" } });
-    fireEvent.change(dialog.getByLabelText("Trigger"), { target: { value: config.type } });
-    if ("topic_id" in config) {
-      await dialog.findByRole("option", { name: "News" });
-      fireEvent.change(dialog.getByLabelText("Topic"), { target: { value: config.topic_id } });
+    selectValue(dialog.getByLabelText("Trigger"), config.type);
+    if ("topic_id" in config && config.topic_id) {
+      await waitFor(() => expect(document.querySelector('option[value="topic_1"]')).toBeTruthy());
+      selectValue(dialog.getByLabelText("Topic"), config.topic_id);
     }
-    if ("segment_id" in config) {
-      await dialog.findByRole("option", { name: "Trials" });
-      fireEvent.change(dialog.getByLabelText("Segment"), { target: { value: config.segment_id } });
+    if ("segment_id" in config && config.segment_id) {
+      await waitFor(() => expect(document.querySelector('option[value="seg_1"]')).toBeTruthy());
+      selectValue(dialog.getByLabelText("Segment"), config.segment_id);
     }
     expect(dialog.queryByLabelText("Trigger event")).toBeNull();
     fireEvent.click(dialog.getByRole("button", { name: /^Create/ }));
@@ -209,12 +216,12 @@ describe("Automations", () => {
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Start blank" }));
     const dialog = within(screen.getByRole("dialog"));
     fireEvent.change(dialog.getByLabelText("Name"), { target: { value: "Lifecycle" } });
-    expect(dialog.getByLabelText("Run for each contact")).toHaveProperty("value", "every_time");
-    fireEvent.change(dialog.getByLabelText("Trigger"), { target: { value: "contact_created" } });
-    expect(dialog.getByLabelText("Run for each contact")).toHaveProperty("value", "once");
-    fireEvent.change(dialog.getByLabelText("Run for each contact"), { target: { value: "every_time" } });
-    fireEvent.change(dialog.getByLabelText("Trigger"), { target: { value: "contact_updated" } });
-    expect(dialog.getByLabelText("Run for each contact")).toHaveProperty("value", "every_time");
+    expect(dialog.getByLabelText("Run for each contact").parentElement!.querySelector("select")).toHaveProperty("value", "every_time");
+    selectValue(dialog.getByLabelText("Trigger"), "contact_created");
+    expect(dialog.getByLabelText("Run for each contact").parentElement!.querySelector("select")).toHaveProperty("value", "once");
+    selectValue(dialog.getByLabelText("Run for each contact"), "every_time");
+    selectValue(dialog.getByLabelText("Trigger"), "contact_updated");
+    expect(dialog.getByLabelText("Run for each contact").parentElement!.querySelector("select")).toHaveProperty("value", "every_time");
     fireEvent.click(dialog.getByRole("button", { name: /^Create/ }));
     await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "POST")).toBe(true));
     expect(JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "POST")![1]!.body))).toMatchObject({
