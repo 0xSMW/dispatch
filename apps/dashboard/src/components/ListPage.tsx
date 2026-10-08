@@ -11,7 +11,7 @@ import { Tabs, type Tab } from "./Tabs";
 
 export interface ListPageProps<T extends { id: string }> {
   title: string;
-  description?: ReactNode;
+  context?: ReactNode;
   learn?: PageHeaderProps["learn"];
   /** Primary action on the right, such as an "Add domain" button. */
   actions?: ReactNode;
@@ -43,7 +43,7 @@ export interface ListPageProps<T extends { id: string }> {
  */
 export function ListPage<T extends { id: string }>({
   title,
-  description,
+  context,
   learn,
   actions,
   tabs,
@@ -68,7 +68,7 @@ export function ListPage<T extends { id: string }>({
 
   return (
     <div className="page">
-      <PageHeader title={title} description={description} learn={learn} actions={can ? actions : null} />
+      <PageHeader title={title} context={context} learn={learn} actions={can ? actions : null} />
       {tabs ? <Tabs tabs={tabs} /> : null}
       {hasFilters ? (
         <FilterBar search={search ?? false} filters={filters}>
