@@ -10,7 +10,7 @@ function Page() { const location = useLocation(); return h("p", { "data-testid":
 function open() {
   render(h(MemoryRouter, { initialEntries: ["/timeline"] }, h(SessionProvider, null, h(Routes, null, h(Route, { element: h(Shell) }, h(Route, { path: "*", element: h(Page) }))))));
 }
-function palette() { fireEvent.click(screen.getByRole("button", { name: "Search or jump" })); return screen.getByRole("combobox"); }
+function palette() { fireEvent.keyDown(document, { key: "k", metaKey: true }); return screen.getByRole("combobox"); }
 function query(input: HTMLElement, value: string) { fireEvent.change(input, { target: { value } }); }
 beforeEach(() => { signIn(); mockFetch(() => ({ body: { data: [] } })); });
 afterEach(() => { cleanup(); sessionStorage.clear(); vi.unstubAllGlobals(); });
@@ -30,7 +30,7 @@ describe("Command K", () => {
     expect(screen.getByTestId("location").textContent).toBe("/emails?range=today&status=bounced");
   });
   it("does not show write commands to viewers and restores focus on Escape", () => {
-    signIn("viewer", ["read"]); open(); const trigger = screen.getByRole("button", { name: "Search or jump" }); trigger.focus();
+    signIn("viewer", ["read"]); open(); const trigger = screen.getByRole("button", { name: "Keyboard shortcuts" }); trigger.focus();
     const input = palette(); expect(screen.queryByText("Send email", { selector: ".commandText span" })).toBeNull();
     fireEvent.keyDown(input, { key: "Escape" }); expect(screen.queryByRole("dialog")).toBeNull(); expect(document.activeElement).toBe(trigger);
   });
