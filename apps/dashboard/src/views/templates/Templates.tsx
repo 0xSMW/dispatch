@@ -81,15 +81,15 @@ export function Templates() {
       ) : rows.length === 0 ? (
         !filtered ? (
           <Empty
-            title="No templates"
-            body="Create one, or install a ready-made template from the library."
+            title="No templates yet"
+            body="Create your own, or add a ready-made one from the library."
             action={<>
               {can ? <button type="button" onClick={() => setCreating(true)}>Create template</button> : null}
               <Link className="button secondary" to="/templates/library">Browse library</Link>
             </>}
           />
         ) : (
-          <Empty title="No matching templates" body="Try another search or status." action={<button type="button" className="secondary" onClick={() => setParams((previous) => { const next = new URLSearchParams(previous); next.delete("q"); next.delete("status"); return next; })}>Clear filters</button>} />
+          <Empty title="No templates match" body="Try a different search or status." action={<button type="button" className="secondary" onClick={() => setParams((previous) => { const next = new URLSearchParams(previous); next.delete("q"); next.delete("status"); return next; })}>Clear filters</button>} />
         )
       ) : (
         <div className="cardGrid">
