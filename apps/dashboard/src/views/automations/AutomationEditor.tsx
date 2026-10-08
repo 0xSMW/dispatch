@@ -1,7 +1,7 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { BookOpen, ChevronLeft, Code2, Zap } from "lucide-react";
-import { Badge } from "../../components/Badge";
+import { BookOpen, Check, ChevronLeft, CircleCheck, Code2, LoaderCircle, Zap } from "lucide-react";
+import { badgeLabel } from "../../components/Badge";
 import { Code } from "../../components/Code";
 import { DateRange } from "../../components/DateRange";
 import { ConfirmPhrase } from "../../components/ConfirmPhrase";
@@ -50,7 +50,7 @@ import { RunMetrics } from "./RunMetrics";
 import { Runs } from "./Runs";
 import { StepList, type StepActions, type StepOptions } from "./Steps";
 import { ReentryContext, TriggerForm, triggerLoading, triggerSources, type Reentry } from "./Trigger";
-import { Canvas, ViewSwitch } from "./Canvas";
+import { Canvas } from "./Canvas";
 import { StopAutomation, isEnabled } from "./Stop";
 import { countsByStep, useEmailMetrics } from "./EmailMetrics";
 import { Enroll, canEnroll } from "./Enroll";
@@ -87,6 +87,7 @@ export function AutomationEditor() {
     setParams((previous) => {
       const params = new URLSearchParams(previous);
       params.set("view", next);
+      params.delete("tab");
       return params;
     });
   const setTab = (next: string) => setParams((previous) => {
@@ -115,49 +116,13 @@ export function AutomationEditor() {
   const [winnerBusy, setWinnerBusy] = useState(false);
   const winnerLock = useRef(false);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
-  const workspaceRef = useRef<HTMLDivElement>(null);
-  const controlsRef = useRef<HTMLDivElement>(null);
-  const builderHudRef = useRef<HTMLDivElement>(null);
-  const immersive = tab === "builder" && view === "canvas" && !problem;
-
-  useLayoutEffect(() => {
-    const workspace = workspaceRef.current;
-    const controls = controlsRef.current;
-    if (!immersive || !workspace || !controls) return;
-    // Includes wrapped controls and visible notices, including their scroll-constrained height.
-    // Keep this on the workspace so the mounted Canvas inherits it without resetting selection.
-    const measure = () => {
-      const bottom = Math.max(0, controls.getBoundingClientRect().bottom - workspace.getBoundingClientRect().top);
-      workspace.style.setProperty("--canvas-controls-bottom", `${bottom}px`);
-    };
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(controls);
-    observer.observe(workspace);
-    window.addEventListener("resize", measure);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", measure);
-      workspace.style.removeProperty("--canvas-controls-bottom");
-    };
-  }, [immersive, automation.error]);
-
-  useLayoutEffect(() => {
-    const workspace = workspaceRef.current;
-    const hud = builderHudRef.current;
-    if (!workspace || !hud) return;
-    // Custom dates wrap. Reserve their actual height for the zoom HUD and inspector.
-    const measure = () => workspace.style.setProperty("--builder-control-height", `${hud.getBoundingClientRect().height}px`);
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(hud);
-    window.addEventListener("resize", measure);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", measure);
-      workspace.style.removeProperty("--builder-control-height");
-    };
-  }, [Boolean(draft), tab, problem, automation.error]);
+  const [countsOpen, setCountsOpen] = useState(false);
+  const [saveNotice, setSaveNotice] = useState(0);
+  useEffect(() => {
+    if (!saveNotice) return;
+    const timer = window.setTimeout(() => setSaveNotice(0), 2200);
+    return () => window.clearTimeout(timer);
+  }, [saveNotice]);
 
   // What the API has stored, for the run drawer. The draft may hold unsaved edits.
   const stored = useMemo(() => (row ? toTree(row.steps ?? [], row.connections ?? []) : null), [row]);
@@ -169,6 +134,7 @@ export function AutomationEditor() {
     // it: that replaced whatever was typed while the request was in flight.
     if (loaded.current === row.id) return;
     loaded.current = row.id;
+    setSaveNotice(0);
     const next: Draft = { name: row.name, tree: stored.tree, reentry: row.reentry ?? "every_time" };
     setDraft(next);
     setSaved(snapshot(next));
@@ -229,6 +195,7 @@ export function AutomationEditor() {
   current.current = { draft, id: row?.id, paused, can };
 
   function failedSave(error: Error, request: SaveRequest) {
+    setSaveNotice(0);
     const message = saveError(error);
     const issues = error instanceof ApiError ? error.issues : [];
     if (issues.length) {
@@ -253,7 +220,10 @@ export function AutomationEditor() {
         setChecked(false);
         setConfirmation(null);
         // Saved is what was sent. Anything typed since stays in the draft and shows as unsaved.
-        if (request.draft) setSaved(snapshot(request.draft));
+        if (request.draft) {
+          setSaved(snapshot(request.draft));
+          setSaveNotice(Date.now());
+        }
         automation.setData(result);
       },
       onError: failedSave,
@@ -345,6 +315,7 @@ export function AutomationEditor() {
 
   const edit = (change: (tree: Tree) => Tree) => {
     if (locked || winnerBusy) return;
+    setSaveNotice(0);
     setConfirmation(null);
     setApiIssues({});
     setDraft((current) => (current ? { ...current, tree: change(current.tree) } : current));
@@ -360,25 +331,36 @@ export function AutomationEditor() {
 
   if (automation.error) return <Failed message={automation.error} onRetry={() => void automation.reload()} />;
 
-  const headerActions = row ? (
+  const lifecycleActions = row ? (
     <>
-      {draft ? <span className="dim saveState" role="status">{save.isLoading ? "Saving…" : preview.isLoading ? "Checking changes…" : dirty ? "Unsaved changes" : "Saved"}</span> : null}
+      {draft && !save.isLoading && (preview.isLoading || dirty) ? <span className="dim saveState" role="status">{preview.isLoading ? "Checking changes…" : "Unsaved changes"}</span> : null}
       {!locked ? <button type="button" className="secondary" disabled={!dirty || busy || Boolean(confirmation)} onClick={() => submit(false)}>Save</button> : null}
       {can ? enabled ? (
         <button type="button" disabled={busy} aria-busy={pause.isLoading} onClick={() => void pause.mutate()}>Pause to edit</button>
       ) : (
         <button type="button" disabled={busy || Boolean(confirmation) || !draft || triggerPending || Boolean(resourceWarning)} aria-busy={busy} onClick={() => submit(true)}>{paused ? "Resume" : "Start"}</button>
       ) : null}
-      {can ? <Menu items={[
-        { label: "Enroll contacts", hidden: !canEnroll(row), disabled: busy, onSelect: () => setEnrolling(true) },
-        { label: "Duplicate", disabled: busy || duplicate.isLoading, onSelect: () => void duplicate.mutate() },
-        { label: "Stop and cancel runs", hidden: !enabled && !paused, disabled: busy, onSelect: () => setStopping(true) },
-        "divider",
-        { label: "Delete automation", danger: true, disabled: busy, onSelect: () => setDeleting(true) },
-      ]} /> : null}
+    </>
+  ) : null;
+  const headerActions = row ? (
+    <>
+      <Menu items={[
+        { label: "Canvas", hidden: Boolean(problem), icon: view === "canvas" ? <Check size={14} role="img" aria-label="Selected" /> : undefined, read: true, onSelect: () => setView("canvas") },
+        { label: "List", hidden: Boolean(problem), icon: view === "list" ? <Check size={14} role="img" aria-label="Selected" /> : undefined, read: true, onSelect: () => setView("list") },
+        { label: "Counts date range", read: true, onSelect: () => setCountsOpen(true) },
+        ...(can ? ["divider" as const] : []),
+        { label: "Enroll contacts", hidden: !can || !canEnroll(row), disabled: busy, onSelect: () => setEnrolling(true) },
+        { label: "Duplicate", hidden: !can, disabled: busy || duplicate.isLoading, onSelect: () => void duplicate.mutate() },
+        { label: "Stop and cancel runs", hidden: !can || (!enabled && !paused), disabled: busy, onSelect: () => setStopping(true) },
+        ...(can ? ["divider" as const] : []),
+        { label: "Delete automation", hidden: !can, danger: true, disabled: busy, onSelect: () => setDeleting(true) },
+      ]} />
       <Menu label="Help" trigger={<><BookOpen size={14} aria-hidden /> Help</>} triggerClassName="ghost small" items={[
         { label: "API", icon: <Code2 size={14} aria-hidden />, onSelect: () => {
           if (!dialogOpen()) document.dispatchEvent(new KeyboardEvent("keydown", { key: shortcuts.api.combo, bubbles: true }));
+        } },
+        { label: "Keyboard shortcuts", onSelect: () => {
+          if (!dialogOpen()) document.dispatchEvent(new KeyboardEvent("keydown", { key: shortcuts.help.combo, bubbles: true }));
         } },
         ...learnLinks("automations").map(({ label, href }) => ({ label, onSelect: () => { window.open(href, "_blank", "noopener,noreferrer"); } })),
       ]} />
@@ -386,8 +368,6 @@ export function AutomationEditor() {
   ) : null;
   const notices = (
     <>
-      {enabled ? <div className="automationStatus" role="status">Enabled automations cannot be edited. Runs are active. Pause to edit while keeping runs.</div> : null}
-      {paused ? <div className="automationStatus" role="status">Paused. Runs hold their place. New triggers are not started.</div> : null}
       {problem ? (
         <div className="notice warning" role="status">
           <span>
@@ -412,6 +392,7 @@ export function AutomationEditor() {
       value={draft.name}
       onChange={(name) => {
         if (locked) return;
+        setSaveNotice(0);
         setConfirmation(null);
         setDraft({ ...draft, name });
       }}
@@ -422,19 +403,29 @@ export function AutomationEditor() {
   ) : <Skeleton width="medium" />;
 
   return (
-    <div ref={workspaceRef} className={`page automationEditor immersive automationWorkspaceEditor ${tab === "builder" && view === "canvas" && !problem ? "canvasWorkspace" : "scrollWorkspace"}`}>
-      <div ref={controlsRef} className="automationControls">
+    <div className={`page automationEditor immersive automationWorkspaceEditor ${tab === "builder" && view === "canvas" && !problem ? "canvasWorkspace" : "scrollWorkspace"}`}>
+      <div className="automationControls">
         <header className="automationHeader">
-          <Link className="backLink" to="/automations" aria-label="Back to automations"><ChevronLeft size={16} /></Link>
-          <h1 className="automationTitle">{draft?.name ?? row?.name ?? "Automation"}</h1>
-          {nameField}
-          {row ? <Badge value={row.status ?? (row.enabled ? "enabled" : "disabled")} /> : null}
+          <div className="automationLeading automationActions">
+            <Link className="backLink" to="/automations" aria-label="Back to automations"><ChevronLeft size={16} /></Link>
           <Tabs label="Automation views" tabs={[
             { id: "builder", label: "Builder" },
             { id: "runs", label: "Runs" },
             { id: "metrics", label: "Metrics" },
           ]} value={tab} onChange={setTab} />
-          <div className="toolbar automationActions">{headerActions}</div>
+          </div>
+          <div className="automationIdentity">
+            <h1 className="automationTitle">{draft?.name ?? row?.name ?? "Automation"}</h1>
+            {row ? <span key={saveNotice} className={`automationStatusIcon${save.isLoading ? " saving" : saveNotice && !dirty ? " savedFeedback" : ""}`} tabIndex={0} role="img"
+              aria-label={save.isLoading ? "Saving" : saveNotice && !dirty ? "Saved" : badgeLabel(row.status ?? (row.enabled ? "enabled" : "disabled"))}>
+              {save.isLoading ? <LoaderCircle size={16} className="savingSpinner" aria-hidden /> : <CircleCheck size={16} aria-hidden />}
+              <span className="automationStatusTooltip" role="tooltip">{badgeLabel(row.status ?? (row.enabled ? "enabled" : "disabled"))}</span>
+            </span> : null}
+            {nameField}
+          </div>
+          <div className="automationTrailing">
+          <div className="toolbar automationActions">{headerActions}{lifecycleActions}</div>
+          </div>
         </header>
         {draft && row ? notices : null}
       </div>
@@ -445,6 +436,7 @@ export function AutomationEditor() {
       {!draft || !row ? (tab === "builder" ? <Skeleton lines={6} /> : null) : (
         <ReentryContext.Provider value={{ value: draft.reentry, onChange: (reentry) => {
           if (locked) return;
+          setSaveNotice(0);
           setConfirmation(null);
           setApiError(null);
           setDraft((current) => current ? { ...current, reentry } : current);
@@ -480,12 +472,11 @@ export function AutomationEditor() {
         </ReentryContext.Provider>
       )}
 
-      {tab === "builder" && draft && !problem ? <div ref={builderHudRef} className="automationBuilderHud" aria-label="Builder controls">
-        <ViewSwitch value={view} onChange={setView} />
-        <span className="automationCountsLabel">Counts</span>
-        <DateRange />
-      </div> : null}
       </div>
+      {countsOpen ? <Modal isOpen title="Counts date range" size="small" onClose={() => setCountsOpen(false)}
+        actions={<button type="button" onClick={() => setCountsOpen(false)}>Done</button>}>
+        <div className="automationCountDates"><DateRange /></div>
+      </Modal> : null}
 
       <LeaveGuard when={dirty && !locked} />
       {confirmation && confirmation.draft === draft && paused && can ? (
