@@ -18,7 +18,7 @@ const reserved = [
 
 const reservedNames = new Set<string>(reservedVariables);
 
-const actionKeys = new Set(["ACTION_URL", "SECURE_ACCOUNT_URL", "REVOKE_URL", "CONFIRM_URL"]);
+const actionKeys = new Set(["ACTION_URL", "SECURE_ACCOUNT_URL", "REVOKE_URL", "CONFIRM_URL", "HELP_URL"]);
 
 export type ThemePair = {
   name?: string;
@@ -279,7 +279,7 @@ export function checkLibrary(library: { templates: Entry[] }, pairs: readonly Th
     const textContent = visibleText(html);
     for (const match of html.matchAll(/\bhref\s*=\s*(["'])(.*?)\1/gi)) {
       const href = match[2] ?? "";
-      if (href && !textContent.includes(href)) fail(entry.slug, 14, `href is not visible text: ${href}`);
+      if (href && !text.includes(href.replace(/^mailto:/, ""))) fail(entry.slug, 14, `href is missing from plain text: ${href}`);
     }
 
     // Authentication emails carry one-time links. Click tracking would route those through a redirect.
