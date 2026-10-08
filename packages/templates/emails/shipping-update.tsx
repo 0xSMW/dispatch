@@ -19,7 +19,7 @@ function LineItemBlock({ items }: { items: LineItem[] }) {
   return <LineItems items={items} />;
 }
 
-const preview = "Your order has a shipping update, with the carrier and tracking.";
+const preview = "The latest shipping details for your order.";
 
 type Props = {
   brand?: Brand;
@@ -53,26 +53,26 @@ export default function ShippingUpdate({
         {headline}
       </Heading>
       <Text className="dm-text" style={text}>
-        An update for order {orderName}.
+        Here are the latest shipping details for order {orderName}.
       </Text>
       <If value={carrier}>
         <Text className="dm-text" style={text}>
-          Carrier {carrier}.
+          Carrier: {carrier}.
         </Text>
       </If>
       <If value={trackingNumber}>
         <Text className="dm-text" style={text}>
-          Tracking number {trackingNumber}.
+          Tracking number: {trackingNumber}.
         </Text>
       </If>
       <If value={estimatedDelivery}>
         <Text className="dm-text" style={text}>
-          Estimated delivery {estimatedDelivery}.
+          Estimated delivery: {estimatedDelivery}.
         </Text>
       </If>
       <If value={trackingUrl}>
         <TextLink brand={brand} href={trackingUrl}>
-          Track the shipment
+          Track shipment
         </TextLink>
       </If>
       <LineItemBlock items={lineItems} />
