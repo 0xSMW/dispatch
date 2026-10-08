@@ -1,7 +1,8 @@
+import { Link } from "react-router-dom";
 import { useEffect, useState, type CSSProperties, type FormEvent } from "react";
 import { assertBrandContrast, brandSchema, emailFonts, resolvedTheme, themeContext, themeDefaults } from "../../../../../packages/core/src/brand";
 import { EmailFrame } from "../../components/EmailFrame";
-import { Failed } from "../../components/Empty";
+import { Empty, Failed } from "../../components/Empty";
 import { Field, Select, TextArea } from "../../components/Field";
 import { metaKey } from "../../components/Kbd";
 import { PageHeader } from "../../components/PageHeader";
@@ -318,16 +319,16 @@ function TemplatePreview({ version }: { version: number }) {
     <Panel
       title="Preview"
       actions={
-        <button type="button" className="ghost small" onClick={() => setWidth(width === "desktop" ? "phone" : "desktop")}>
+        html ? <button type="button" className="ghost small" onClick={() => setWidth(width === "desktop" ? "phone" : "desktop")}>
           {width === "desktop" ? "Phone width" : "Desktop width"}
-        </button>
+        </button> : null
       }
     >
       <div className="previewFrame">
         {library.error || entry.error ? (
-          <p className="note">The template library is not available, so there is no preview. {library.error ?? entry.error}</p>
+          <Empty compact title="Preview unavailable" body={<>The template library is not available. {library.error ?? entry.error}</>} action={<Link to="/templates/library">Browse library</Link>} />
         ) : library.data && !slug ? (
-          <p className="note">The template library is empty.</p>
+          <Empty compact title="No library preview" body="The template library is empty." action={<Link to="/templates/library">Browse library</Link>} />
         ) : html ? (
           <>
             <div className="previewHead">
