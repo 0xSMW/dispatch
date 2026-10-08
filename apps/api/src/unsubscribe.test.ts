@@ -1,6 +1,7 @@
 import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
-import { unsubscribeToken, type Db } from "@dispatchmail/db";
+import { brandContext, type BrandRecord } from "@dispatchmail/core";
+import { clearBrandCache, unsubscribeToken, type Db } from "@dispatchmail/db";
 import { registerUnsubscribe, unsubscribeAction } from "./unsubscribe.js";
 
 const secret = "test-secret";
@@ -22,7 +23,7 @@ describe("unsubscribeAction", () => {
   });
 });
 
-function fakeDb(topicId: string | null, options: { deadlocks?: number; topicStatus?: string } = {}) {
+function fakeDb(topicId: string | null, options: { deadlocks?: number; topicStatus?: string; brand?: BrandRecord } = {}) {
   const queries: Array<{ sql: string; params: unknown[] }> = [];
   let contact = {
     id: "contact_1", email: "ada@example.com", first_name: "Ada", last_name: null, properties: {},
@@ -62,7 +63,7 @@ function fakeDb(topicId: string | null, options: { deadlocks?: number; topicStat
       return { rows: [{ id: "event_1", tenant_id: "tenant_1", request_id: params[2], email_id: null, type: params[5], data: {} }] };
     }
     if (sql.includes("insert into contact_changes")) committed.history.push(params.slice(3, 6));
-    if (sql.includes("from tenants")) return { rows: [{ name: "Acme", brand: { color: "#ffffff" } }] };
+    if (sql.includes("from tenants")) return { rows: [{ name: "Acme", brand: options.brand ?? { color: "#ffffff" } }] };
     return { rows: [] };
   });
   const release = vi.fn();
@@ -72,6 +73,7 @@ function fakeDb(topicId: string | null, options: { deadlocks?: number; topicStat
 }
 
 async function app(db: Db) {
+  clearBrandCache("tenant_1");
   const server = Fastify({ maxParamLength: 1024 });
   server.addHook("onRequest", async (request) => {
     request.request_id = "req_test";
@@ -127,8 +129,46 @@ describe("unsubscribe routes", () => {
       unsubscribed: false,
       topics: [{ id: "topic_news", name: "News", description: "Weekly", subscription: "opt_in" }],
       // The page's own heading and line are null until the tenant sets them, and the page then shows its defaults.
-      brand: { product_name: "Acme", logo_url: null, color: "#ffffff", text_color: "#000000", title: null, description: null },
+      brand: { product_name: "Acme", logo_url: null, color: "#ffffff", text_color: "#000000", title: null, description: null, button_label: null, updated_title: null, updated_description: null, unsubscribed_title: null, unsubscribed_description: null },
     });
+  });
+
+  it("resolves page overrides without changing email brand styling", async () => {
+    const brand: BrandRecord = {
+      color: "#ffffff", logo_url: "https://example.com/global.png", text_color: "#112233",
+      unsubscribe_color: "#18181b", unsubscribe_logo_url: "https://example.com/page.png",
+      unsubscribe_title: "Your subscriptions", unsubscribe_description: "Choose your news",
+      unsubscribe_button_label: "Save choices", unsubscribe_updated_title: "Saved",
+      unsubscribe_updated_description: "Your choices are saved", unsubscribe_unsubscribed_title: "All done",
+      unsubscribe_unsubscribed_description: "You have unsubscribed",
+    };
+    const { db } = fakeDb(null, { brand });
+    const server = await app(db);
+    const expected = {
+      product_name: "Acme", logo_url: brand.unsubscribe_logo_url, color: "#18181b", text_color: "#ffffff",
+      title: "Your subscriptions", description: "Choose your news", button_label: "Save choices",
+      updated_title: "Saved", updated_description: "Your choices are saved",
+      unsubscribed_title: "All done", unsubscribed_description: "You have unsubscribed",
+    };
+    expect((await server.inject({ method: "GET", url: `/unsubscribe/${token}` })).json().brand).toEqual(expected);
+    expect((await server.inject({ method: "POST", url: `/unsubscribe/${token}`, payload: { unsubscribe_all: true } })).json().brand).toEqual(expected);
+    expect(brandContext(brand, { tenantName: "Acme" })).toMatchObject({
+      LOGO_URL: "https://example.com/global.png", BRAND_COLOR: "#ffffff", BRAND_TEXT_COLOR: "#000000",
+      THEME_TEXT_COLOR: "#112233", THEME_BUTTON_BACKGROUND: "#ffffff", THEME_BUTTON_TEXT_COLOR: "#000000",
+    });
+    await server.close();
+  });
+
+  it("inherits global logo and color when page overrides are null", async () => {
+    const { db } = fakeDb(null, { brand: {
+      logo_url: "https://example.com/global.png", color: "#ffffff",
+      unsubscribe_logo_url: null, unsubscribe_color: null, unsubscribe_button_label: null,
+    } });
+    const server = await app(db);
+    expect((await server.inject({ method: "GET", url: `/unsubscribe/${token}` })).json().brand).toMatchObject({
+      logo_url: "https://example.com/global.png", color: "#ffffff", text_color: "#000000", button_label: null,
+    });
+    await server.close();
   });
 
   it("returns 404 for a bad token", async () => {
