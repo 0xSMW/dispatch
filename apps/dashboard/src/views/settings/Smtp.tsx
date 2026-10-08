@@ -38,13 +38,13 @@ export function Smtp() {
   const { host, guessed, port, tlsPort } = relay(system.data?.smtp, session?.apiUrl);
 
   return (
-    <div className="page">
+    <div className="page settingsPage">
       <PageHeader title="Settings" />
       <Tabs tabs={settingsTabs} />
       {!system.loading && !system.error && !system.data?.smtp ? (
-        <Empty title="SMTP isn't available here" body="Send your emails through the API instead."
+        <Panel title="SMTP"><Empty title="SMTP isn't available here" body="Send your emails through the API instead."
           // action={<Link className="button secondary" to="/emails/send">Send a test email</Link>}
-        />
+        /></Panel>
       ) : <Panel title="SMTP">
         <div className="stack">
           {system.loading ? (
