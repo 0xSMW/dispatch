@@ -11,7 +11,7 @@ export interface PageHeaderProps {
   /** Icon in a rounded tile, colored by `tone`. Detail pages pass one; list pages usually do not. */
   icon?: ReactNode;
   tone?: BadgeVariant;
-  /** Buttons on the right: the primary action first. */
+  /** Buttons on the right: secondary actions first, primary action last. */
   actions?: ReactNode;
   /** Back link above the title, such as { to: "/domains", label: "Domains" }. */
   back?: { to: string; label: string };
@@ -39,7 +39,6 @@ export function PageHeader({ title, label, icon, tone = "neutral", actions, back
           {context ? <p className="muted">{context}</p> : null}
         </div>
         <div className="toolbar pageActions">
-          {actions}
           <button
             type="button"
             className="ghost small"
@@ -52,6 +51,7 @@ export function PageHeader({ title, label, icon, tone = "neutral", actions, back
             <Code2 size={14} aria-hidden />
             API
           </button>
+          {actions}
         </div>
       </div>
       {learn?.length ? (
