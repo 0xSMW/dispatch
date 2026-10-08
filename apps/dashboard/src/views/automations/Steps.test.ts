@@ -1,3 +1,4 @@
+import { changeControl, controlValue } from "../../testingControls";
 // @vitest-environment jsdom
 import { useState } from "react";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
@@ -39,21 +40,21 @@ function Form({ initial, disabled = false }: { initial: Node; disabled?: boolean
 }
 const ruleValue = () => JSON.parse(screen.getByTestId("rule").textContent!);
 const config = () => JSON.parse(screen.getByTestId("graph").textContent!).steps[1].config;
-const choose = (field: string) => fireEvent.change(screen.getByLabelText("Choose field"), { target: { value: field } });
+const choose = (field: string) => changeControl(screen.getByLabelText("Choose field"), { target: { value: field } });
 afterEach(cleanup);
 
 describe("RuleEditor", () => {
   it("groups the shared context picker and stores native boolean and number values", () => {
     render(h(Rules));
     const picker = screen.getByLabelText("Choose field");
-    expect([...picker.querySelectorAll("optgroup")].map((group) => group.label)).toEqual(["Event", "Contact", "Topics", "Segments"]);
+    expect([...picker.parentElement!.querySelectorAll("optgroup")].map((group) => group.label)).toEqual(["Event", "Contact", "Topics", "Segments"]);
     choose("event.paid");
     expect(screen.getByLabelText("Type")).toHaveProperty("disabled", true);
-    expect([...screen.getByLabelText("Operator").querySelectorAll("option")].map((option) => option.value)).toEqual(["eq", "neq", "exists", "is_empty"]);
-    fireEvent.change(screen.getByLabelText("Value"), { target: { value: "true" } });
+    expect([...screen.getByLabelText("Operator").parentElement!.querySelectorAll("option")].map((option) => option.value)).toEqual(["eq", "neq", "exists", "is_empty"]);
+    changeControl(screen.getByLabelText("Value"), { target: { value: "true" } });
     expect(ruleValue().value).toBe(true);
     choose("event.seats");
-    fireEvent.change(screen.getByLabelText("Value"), { target: { value: "2.5" } });
+    changeControl(screen.getByLabelText("Value"), { target: { value: "2.5" } });
     expect(ruleValue().value).toBe(2.5);
     expect(screen.getByLabelText("Value").getAttribute("step")).toBe("any");
   });
@@ -62,52 +63,56 @@ describe("RuleEditor", () => {
     render(h(Rules));
     choose("event.expires");
     expect(screen.getByLabelText("Value")).toHaveProperty("type", "date");
-    fireEvent.change(screen.getByLabelText("Value"), { target: { value: "2026-10-04" } });
+    changeControl(screen.getByLabelText("Value"), { target: { value: "2026-10-04" } });
     expect(ruleValue().value).toBe("2026-10-04");
-    fireEvent.change(screen.getByLabelText("Value format"), { target: { value: "datetime-local" } });
-    fireEvent.change(screen.getByLabelText("Value"), { target: { value: "2026-10-04T12:30:15" } });
+    changeControl(screen.getByLabelText("Value format"), { target: { value: "datetime-local" } });
+    changeControl(screen.getByLabelText("Value"), { target: { value: "2026-10-04T12:30:15" } });
     expect(ruleValue().value).toBe(new Date("2026-10-04T12:30:15").toISOString());
-    fireEvent.change(screen.getByLabelText("Operator"), { target: { value: "within" } });
+    changeControl(screen.getByLabelText("Operator"), { target: { value: "within" } });
     expect(ruleValue().value).toBe("1 day");
-    fireEvent.change(screen.getByLabelText("Duration"), { target: { value: "7 days" } });
-    fireEvent.change(screen.getByLabelText("Operator"), { target: { value: "not_within" } });
+    changeControl(screen.getByLabelText("Duration"), { target: { value: "7 days" } });
+    changeControl(screen.getByLabelText("Operator"), { target: { value: "not_within" } });
     expect(ruleValue().value).toBe("7 days");
-    fireEvent.change(screen.getByLabelText("Operator"), { target: { value: "exists" } });
+    changeControl(screen.getByLabelText("Operator"), { target: { value: "exists" } });
     expect(ruleValue()).not.toHaveProperty("value");
   });
 
   it("uses topic and segment names for membership IDs, without losing missing legacy IDs", () => {
     render(h(Rules));
     choose("contact.topics");
-    expect([...screen.getByLabelText("Operator").querySelectorAll("option")].map((option) => option.value)).toEqual(["contains", "not_contains", "exists", "is_empty"]);
-    fireEvent.change(screen.getByLabelText("Value"), { target: { value: "topic_news" } });
+    expect([...screen.getByLabelText("Operator").parentElement!.querySelectorAll("option")].map((option) => option.value)).toEqual(["contains", "not_contains", "exists", "is_empty"]);
+    changeControl(screen.getByLabelText("Value"), { target: { value: "topic_news" } });
     expect(ruleValue()).toMatchObject({ field: "contact.topics", operator: "contains", value: "topic_news" });
-    expect(within(screen.getByLabelText("Value")).getByRole("option", { name: "News" })).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Value"));
+    expect(screen.getByRole("option", { name: "News" })).toBeTruthy();
+    fireEvent.keyDown(screen.getByLabelText("Value"), { key: "Escape" });
     choose("contact.segments");
     expect(ruleValue().value).toBe("topic_news");
-    expect(within(screen.getByLabelText("Value")).getByRole("option", { name: "topic_news" })).toBeTruthy();
-    fireEvent.change(screen.getByLabelText("Value"), { target: { value: "seg_vip" } });
+    fireEvent.click(screen.getByLabelText("Value"));
+    expect(screen.getByRole("option", { name: "topic_news" })).toBeTruthy();
+    fireEvent.keyDown(screen.getByLabelText("Value"), { key: "Escape" });
+    changeControl(screen.getByLabelText("Value"), { target: { value: "seg_vip" } });
     expect(ruleValue().value).toBe("seg_vip");
   });
 
   it("preserves manual unknown event fields and value types", () => {
     render(h(Rules, { rule: { type: "rule", field: "event.custom", operator: "eq", value: "" } }));
-    fireEvent.change(screen.getByLabelText("Type"), { target: { value: "date" } });
-    fireEvent.change(screen.getByLabelText("Field"), { target: { value: "event.nested.custom_date" } });
-    expect(screen.getByLabelText("Type")).toHaveProperty("value", "date");
-    fireEvent.change(screen.getByLabelText("Value"), { target: { value: "2026-10-04" } });
+    changeControl(screen.getByLabelText("Type"), { target: { value: "date" } });
+    changeControl(screen.getByLabelText("Field"), { target: { value: "event.nested.custom_date" } });
+    expect(controlValue(screen.getByLabelText("Type"))).toBe("date");
+    changeControl(screen.getByLabelText("Value"), { target: { value: "2026-10-04" } });
     expect(ruleValue().value).toBe("2026-10-04");
-    fireEvent.change(screen.getByLabelText("Type"), { target: { value: "boolean" } });
-    fireEvent.change(screen.getByLabelText("Value"), { target: { value: "false" } });
+    changeControl(screen.getByLabelText("Type"), { target: { value: "boolean" } });
+    changeControl(screen.getByLabelText("Value"), { target: { value: "false" } });
     expect(ruleValue().value).toBe(false);
   });
 
   it("does not mask legacy declared membership keys with set controls", () => {
     render(h(Rules, { rows: contextFields({ properties: [{ key: "topics", type: "boolean" }, { key: "segments", type: "date" }] }) }));
     choose("contact.topics");
-    expect(screen.getByLabelText("Type")).toHaveProperty("value", "boolean");
+    expect(controlValue(screen.getByLabelText("Type"))).toBe("boolean");
     expect(screen.queryByRole("option", { name: "News" })).toBeNull();
-    fireEvent.change(screen.getByLabelText("Value"), { target: { value: "false" } });
+    changeControl(screen.getByLabelText("Value"), { target: { value: "false" } });
     expect(ruleValue().value).toBe(false);
     choose("contact.segments");
     expect(screen.getByLabelText("Value")).toHaveProperty("type", "date");
@@ -127,31 +132,31 @@ describe("StepForm", () => {
       { type: "rule", field: "event.custom", operator: "eq", value: "" },
       { type: "rule", field: "event.other", operator: "gt", value: 10 },
     ] } } }));
-    fireEvent.change(screen.getAllByLabelText("Type")[0]!, { target: { value: "boolean" } });
+    changeControl(screen.getAllByLabelText("Type")[0]!, { target: { value: "boolean" } });
     fireEvent.click(screen.getAllByRole("button", { name: "Remove rule" })[0]!);
-    expect(screen.getByLabelText("Type")).toHaveProperty("value", "number");
-    expect(screen.getByLabelText("Value")).toHaveProperty("value", "10");
+    expect(controlValue(screen.getByLabelText("Type"))).toBe("number");
+    expect(controlValue(screen.getByLabelText("Value"))).toBe("10");
     expect(config().rules[0].value).toBe(10);
   });
 
   it("retains manual types across form remounts, grouping and sibling removal, but never sends them", () => {
     render(h(Form, { initial: { key: "condition", type: "condition", config: { type: "rule", field: "event.custom", operator: "eq", value: "" } } }));
-    fireEvent.change(screen.getByLabelText("Type"), { target: { value: "date" } });
-    fireEvent.change(screen.getByLabelText("Value format"), { target: { value: "text" } });
-    fireEvent.change(screen.getByLabelText("Value"), { target: { value: "tomorrow" } });
+    changeControl(screen.getByLabelText("Type"), { target: { value: "date" } });
+    changeControl(screen.getByLabelText("Value format"), { target: { value: "text" } });
+    changeControl(screen.getByLabelText("Value"), { target: { value: "tomorrow" } });
     expect(screen.getAllByText(/Use an ISO date/)).toHaveLength(2); // Inline error and save-blocking step error.
     fireEvent.click(screen.getByRole("button", { name: "Toggle form" }));
     fireEvent.click(screen.getByRole("button", { name: "Toggle form" }));
-    expect(screen.getByLabelText("Type")).toHaveProperty("value", "date");
-    expect(screen.getByLabelText("Value")).toHaveProperty("value", "tomorrow");
-    fireEvent.change(screen.getByLabelText("Condition"), { target: { value: "and" } });
+    expect(controlValue(screen.getByLabelText("Type"))).toBe("date");
+    expect(controlValue(screen.getByLabelText("Value"))).toBe("tomorrow");
+    changeControl(screen.getByLabelText("Condition"), { target: { value: "and" } });
     fireEvent.click(screen.getByRole("button", { name: "Add rule" }));
-    fireEvent.change(screen.getAllByLabelText("Field")[1]!, { target: { value: "event.other" } });
-    fireEvent.change(screen.getAllByLabelText("Type")[1]!, { target: { value: "boolean" } });
+    changeControl(screen.getAllByLabelText("Field")[1]!, { target: { value: "event.other" } });
+    changeControl(screen.getAllByLabelText("Type")[1]!, { target: { value: "boolean" } });
     fireEvent.click(screen.getAllByRole("button", { name: "Remove rule" })[0]!);
-    expect(screen.getByLabelText("Type")).toHaveProperty("value", "boolean");
+    expect(controlValue(screen.getByLabelText("Type"))).toBe("boolean");
     expect(JSON.parse(screen.getByTestId("node").textContent!).ruleTypes).toEqual({ "0": "boolean" });
-    fireEvent.change(screen.getByLabelText("Condition"), { target: { value: "rule" } });
+    changeControl(screen.getByLabelText("Condition"), { target: { value: "rule" } });
     expect(JSON.parse(screen.getByTestId("node").textContent!).ruleTypes).toEqual({ "": "boolean" });
     expect(config()).toEqual({ type: "rule", field: "event.other", operator: "eq", value: false });
     expect(screen.getByTestId("graph").textContent).not.toContain("ruleTypes");
@@ -159,9 +164,11 @@ describe("StepForm", () => {
 
   it("uses the waited event definition for filters, not the triggering event", () => {
     render(h(Form, { initial: { key: "wait", type: "wait_for_event", config: { event_name: "purchase", filter_rule: { type: "rule", field: "event.total", operator: "gt", value: 10 } } } }));
-    expect(within(screen.getByLabelText("Choose field")).getByRole("option", { name: "total (number)" })).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("Choose field"));
+    expect(screen.getByRole("option", { name: "total (number)" })).toBeTruthy();
     expect(screen.queryByRole("option", { name: "seats (number)" })).toBeNull();
-    fireEvent.change(screen.getByLabelText("Value"), { target: { value: "25" } });
+    fireEvent.keyDown(screen.getByLabelText("Choose field"), { key: "Escape" });
+    changeControl(screen.getByLabelText("Value"), { target: { value: "25" } });
     expect(config().filter_rule.value).toBe(25);
   });
 
@@ -169,16 +176,16 @@ describe("StepForm", () => {
     const literals = { plan: "event.plan", flag: false, nested: { total: 2 }, received_at: "literal" };
     render(h(Form, { initial: { key: "send", type: "send_email", config: { template: { id: "tpl_1", variables: literals } } } }));
     fireEvent.click(screen.getByRole("button", { name: "Add mapping" }));
-    fireEvent.change(screen.getByLabelText("Variable name"), { target: { value: "plan" } });
-    fireEvent.change(screen.getByLabelText("Choose context field"), { target: { value: "event.plan" } });
+    changeControl(screen.getByLabelText("Variable name"), { target: { value: "plan" } });
+    changeControl(screen.getByLabelText("Choose context field"), { target: { value: "event.plan" } });
     expect(config().variable_mapping).toEqual({ plan: "event.plan" });
     expect(config().template.variables).toEqual(literals);
-    expect([...screen.getByLabelText("Choose context field").querySelectorAll("optgroup")].map((group) => group.label)).toEqual(["Event", "Contact", "Topics", "Segments"]);
+    expect([...screen.getByLabelText("Choose context field").parentElement!.querySelectorAll("optgroup")].map((group) => group.label)).toEqual(["Event", "Contact", "Topics", "Segments"]);
     fireEvent.click(screen.getByRole("button", { name: "Add mapping" }));
     const group = screen.getByRole("group", { name: "Variable mappings" });
     const names = within(group).getAllByLabelText("Variable name");
-    fireEvent.change(names[1]!, { target: { value: "paid" } });
-    fireEvent.change(within(group).getAllByLabelText("Context field")[1]!, { target: { value: "contact.unsubscribed" } });
+    changeControl(names[1]!, { target: { value: "paid" } });
+    changeControl(within(group).getAllByLabelText("Context field")[1]!, { target: { value: "contact.unsubscribed" } });
     expect(config().variable_mapping).toEqual({ plan: "event.plan", paid: "contact.unsubscribed" });
     fireEvent.click(screen.getByRole("button", { name: "Remove mapping plan" }));
     expect(config().variable_mapping).toEqual({ paid: "contact.unsubscribed" });
