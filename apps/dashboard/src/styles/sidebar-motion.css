@@ -6,7 +6,6 @@
 .navIcon > * {
   transform-box: view-box;
   transform-origin: 12px 12px;
-  vector-effect: non-scaling-stroke;
 }
 
 :is(.navItem:hover, .navItem:focus-visible, .sidebarTools button:hover, .sidebarTools button:focus-visible) .navIcon > * {
