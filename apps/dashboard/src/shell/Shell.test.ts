@@ -98,6 +98,12 @@ describe("Shell keys", () => {
     expect(main.getByRole("link", { name: "Goals" }).getAttribute("href")).toBe("/goals");
   });
 
+  it("opens the unsubscribe editor without dashboard chrome", () => {
+    open("/settings/unsubscribe-page/edit");
+    expect(screen.getByLabelText("Page field")).toBeTruthy();
+    expect(screen.queryByRole("navigation", { name: "Main" })).toBeNull();
+  });
+
   it("anchors the account above navigation, derives initials, and opens its menu downward", () => {
     const session = JSON.parse(sessionStorage.getItem(sessionKey)!);
     session.user.name = "Stephen Walker";
