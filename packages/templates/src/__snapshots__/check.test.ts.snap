@@ -8,51 +8,24 @@ exports[`sample renders > card-update-reminder matches its snapshot 1`] = `
 Acme
 
 
+
 UPDATE YOUR PAYMENT METHOD
 
-We still could not collect $49.00 for your Acme subscription.
+Your Acme subscription has an outstanding balance of $49.00.
 
 
 
-Invoice INV-1042 needs attention.
+Invoice: INV-1042.
 
 
 
-Review the payment details and update your payment method to resolve the balance.
+Review your payment details and update the payment method to resolve this balance.
 
 Update payment method https://example.com/billing/payment
 
-https://example.com/billing/payment
-
-Acme, Inc.
-
-
-
-Acme https://acme.example
-
-https://acme.example
-
-
-
-Contact support https://acme.example/support
-
-https://acme.example/support
-
-
-
-Support email support@acme.example
-
-
-
-Privacy policy https://acme.example/privacy
-
-https://acme.example/privacy
-
-
-
 You received this email because a subscription payment is still outstanding.
 
-© 2026 Acme, Inc.",
+Acme https://acme.example · Support https://acme.example/support · Privacy https://acme.example/privacy",
 }
 `;
 
@@ -64,59 +37,29 @@ exports[`sample renders > come-back-offer matches its snapshot 1`] = `
 Acme
 
 
+
 A FRESH START
 
 Hi Ada, would you like to give Acme another try?
 
 Explore the current plans and find one that fits your next project.
 
-No pressure. You can review the options before you decide.
+Review the details before you decide to return.
 
 
 
 See your options https://example.com/plans
 
-https://example.com/plans
-
-
-
-Acme, Inc.
-
-
-
-Acme https://acme.example
-
-https://acme.example
-
-
-
-Contact support https://acme.example/support
-
-https://acme.example/support
-
-
-
-Support email support@acme.example
-
-
-
-Privacy policy https://acme.example/privacy
-
-https://acme.example/privacy
-
 
 
 You received this email because you subscribed to product offers.
 
+Acme, Inc.
 1 Main Street, Springfield
 
-Unsubscribe https://acme.example/unsubscribe/token
+Unsubscribe or manage preferences https://acme.example/unsubscribe/token
 
-Manage preferences https://acme.example/unsubscribe/token
-
-https://acme.example/unsubscribe/token
-
-© 2026 Acme, Inc.",
+Acme https://acme.example · Support https://acme.example/support · Privacy https://acme.example/privacy",
 }
 `;
 
@@ -128,47 +71,21 @@ exports[`sample renders > confirm-subscription matches its snapshot 1`] = `
 Acme
 
 
+
 CONFIRM YOUR SUBSCRIPTION
 
-Confirm that you want to receive emails from Acme. You are not subscribed until you confirm.
+One more step: confirm your email address to receive updates from Acme.
 
 Confirm subscription https://example.com/confirm/token
 
-https://example.com/confirm/token
-
 This link expires in 7 days.
 
-If you did not request this subscription, ignore this email. We will not subscribe you.
-
-Acme, Inc.
-
-
-
-Acme https://acme.example
-
-https://acme.example
-
-
-
-Contact support https://acme.example/support
-
-https://acme.example/support
-
-
-
-Support email support@acme.example
-
-
-
-Privacy policy https://acme.example/privacy
-
-https://acme.example/privacy
-
-
+If you did not request this subscription, ignore this email.
+We will not subscribe you.
 
 You received this email because this address was submitted on a signup form.
 
-© 2026 Acme, Inc.",
+Acme https://acme.example · Support https://acme.example/support · Privacy https://acme.example/privacy",
 }
 `;
 
@@ -180,57 +97,27 @@ exports[`sample renders > feature-tips matches its snapshot 1`] = `
 Acme
 
 
-A TIP FOR GETTING STARTED
 
-Hi Ada, here is a way to get more from Acme.
+ONE TIP TO GET STARTED
+
+Hi Ada, try this in Acme:
 
 Save a reusable template for a message you send often.
 
 
 
-Try it in your account https://example.com/templates
-
-https://example.com/templates
-
-
-
-Acme, Inc.
-
-
-
-Acme https://acme.example
-
-https://acme.example
-
-
-
-Contact support https://acme.example/support
-
-https://acme.example/support
-
-
-
-Support email support@acme.example
-
-
-
-Privacy policy https://acme.example/privacy
-
-https://acme.example/privacy
+Try this tip https://example.com/templates
 
 
 
 You received this email because you signed up for product tips.
 
+Acme, Inc.
 1 Main Street, Springfield
 
-Unsubscribe https://acme.example/unsubscribe/token
+Unsubscribe or manage preferences https://acme.example/unsubscribe/token
 
-Manage preferences https://acme.example/unsubscribe/token
-
-https://acme.example/unsubscribe/token
-
-© 2026 Acme, Inc.",
+Acme https://acme.example · Support https://acme.example/support · Privacy https://acme.example/privacy",
 }
 `;
 
@@ -242,57 +129,30 @@ exports[`sample renders > invitation matches its snapshot 1`] = `
 Acme
 
 
+
 YOU ARE INVITED
 
 Ada Lovelace invited you to join North team on Acme.
 
 
 
-The role on the invitation is Editor.
+Invited role: Editor.
 
 
 
-They wrote: "Come work on the launch notes with us."
+A message from Ada Lovelace: "Come work on the launch notes with us."
 
 
 
 Accept invitation https://example.com/invite/abc123
 
-https://example.com/invite/abc123
-
 This invitation expires in 7 days.
 
 If you were not expecting an invitation, you can ignore this email.
 
-Acme, Inc.
-
-
-
-Acme https://acme.example
-
-https://acme.example
-
-
-
-Contact support https://acme.example/support
-
-https://acme.example/support
-
-
-
-Support email support@acme.example
-
-
-
-Privacy policy https://acme.example/privacy
-
-https://acme.example/privacy
-
-
-
 You received this email because someone invited you to a team.
 
-© 2026 Acme, Inc.",
+Acme https://acme.example · Support https://acme.example/support · Privacy https://acme.example/privacy",
 }
 `;
 
@@ -304,73 +164,44 @@ exports[`sample renders > invoice matches its snapshot 1`] = `
 Acme
 
 
-INVOICE
+
+YOUR INVOICE
 
 Acme, Inc. issued invoice INV-1042 for Acme.
 
-InvoiceINV-1042Issued atMarch 2, 2026, 3:04 PM UTCDue dateMarch 16, 2026Amount due$49.00
+InvoiceINV-1042Issue dateMarch 2, 2026, 3:04 PM UTCDue dateMarch 16, 2026Amount due$49.00
 
-DescriptionQuantityAmountField notebook1$49.00
-
-
-
-Subtotal $49.00
+DescriptionQtyAmountField notebook1$49.00
 
 
 
-Tax $0.00
+Subtotal$49.00
 
 
 
-Tax id 12-3456789
+Tax$0.00
 
 
 
-Billing address 123 Example Street, Springfield
+Tax ID12-3456789
+
+
+
+Billing address123 Example Street, Springfield
 
 
 
 Pay invoice https://example.com/invoices/1042/pay
 
-https://example.com/invoices/1042/pay
 
 
-
-Download the PDF https://example.com/invoices/1042.pdf
-
-https://example.com/invoices/1042.pdf
-
-
-
-Acme, Inc.
-
-
-
-Acme https://acme.example
-
-https://acme.example
-
-
-
-Contact support https://acme.example/support
-
-https://acme.example/support
-
-
-
-Support email support@acme.example
-
-
-
-Privacy policy https://acme.example/privacy
-
-https://acme.example/privacy
+Download invoice PDF https://example.com/invoices/1042.pdf
 
 
 
 You received this email because an invoice was issued.
 
-© 2026 Acme, Inc.",
+Acme https://acme.example · Support https://acme.example/support · Privacy https://acme.example/privacy",
 }
 `;
 
@@ -382,19 +213,18 @@ exports[`sample renders > magic-link matches its snapshot 1`] = `
 Acme
 
 
+
 SIGN IN
 
-Use the button below to sign in to your Acme account.
+Sign in to your Acme account with this one-time link.
 
 Sign in https://example.com/sign-in/abc123
 
-https://example.com/sign-in/abc123
-
-This link expires in 1 hour and works one time.
+This link expires in 1 hour and can be used once.
 
 
 
-If you are asked for a code, enter this one. It is not a link.
+If the page asks for a sign-in code, enter:
 
 482913
 
@@ -402,35 +232,9 @@ If you are asked for a code, enter this one. It is not a link.
 
 If you did not try to sign in, you can ignore this email.
 
-Acme, Inc.
-
-
-
-Acme https://acme.example
-
-https://acme.example
-
-
-
-Contact support https://acme.example/support
-
-https://acme.example/support
-
-
-
-Support email support@acme.example
-
-
-
-Privacy policy https://acme.example/privacy
-
-https://acme.example/privacy
-
-
-
 You received this email because a sign-in link was requested for your account.
 
-© 2026 Acme, Inc.",
+Acme https://acme.example · Support https://acme.example/support · Privacy https://acme.example/privacy",
 }
 `;
 
@@ -442,9 +246,10 @@ exports[`sample renders > new-sign-in matches its snapshot 1`] = `
 Acme
 
 
+
 NEW SIGN-IN
 
-A new sign-in to your Acme account was recorded at March 2, 2026, 3:04 PM UTC.
+Your Acme account was signed in to at March 2, 2026, 3:04 PM UTC. If this was not you, revoke the sign-in below.
 
 
 
@@ -470,39 +275,11 @@ LocationPortland, Oregon
 
 Revoke this sign-in https://example.com/account/sessions/revoke
 
-https://example.com/account/sessions/revoke
-
 If this was you, no action is needed.
-
-Acme, Inc.
-
-
-
-Acme https://acme.example
-
-https://acme.example
-
-
-
-Contact support https://acme.example/support
-
-https://acme.example/support
-
-
-
-Support email support@acme.example
-
-
-
-Privacy policy https://acme.example/privacy
-
-https://acme.example/privacy
-
-
 
 You received this email because your account was used to sign in.
 
-© 2026 Acme, Inc.",
+Acme https://acme.example · Support https://acme.example/support · Privacy https://acme.example/privacy",
 }
 `;
 
@@ -512,6 +289,7 @@ exports[`sample renders > newsletter matches its snapshot 1`] = `
   "text": "
 
 Acme
+
 
 
 LATEST FROM Acme
@@ -528,8 +306,6 @@ The editor now keeps the toolbar out of the way until you ask for it.
 
 Read about the editor https://example.com/notes/editor
 
-https://example.com/notes/editor
-
 
 
 Exports
@@ -538,53 +314,20 @@ Account exports now include the attachments as well as the text.
 
 Read about exports https://example.com/notes/exports
 
-https://example.com/notes/exports
 
 
-
-View this email in a browser https://example.com/newsletters/march
-
-https://example.com/newsletters/march
-
-
-
-Acme, Inc.
-
-
-
-Acme https://acme.example
-
-https://acme.example
-
-
-
-Contact support https://acme.example/support
-
-https://acme.example/support
-
-
-
-Support email support@acme.example
-
-
-
-Privacy policy https://acme.example/privacy
-
-https://acme.example/privacy
+Read in your browser https://example.com/newsletters/march
 
 
 
 You received this email because you subscribed to notes from the product.
 
+Acme, Inc.
 1 Main Street, Springfield
 
-Unsubscribe https://acme.example/unsubscribe/token
+Unsubscribe or manage preferences https://acme.example/unsubscribe/token
 
-Manage preferences https://acme.example/unsubscribe/token
-
-https://acme.example/unsubscribe/token
-
-© 2026 Acme, Inc.",
+Acme https://acme.example · Support https://acme.example/support · Privacy https://acme.example/privacy",
 }
 `;
 
@@ -596,57 +339,27 @@ exports[`sample renders > newsletter-welcome matches its snapshot 1`] = `
 Acme
 
 
+
 THANKS FOR SUBSCRIBING
 
-Hi Ada, welcome to the Acme newsletter.
+Hi Ada, you are subscribed to the Acme newsletter.
 
-We will share product news and practical tips. You can change your preferences or unsubscribe below.
+Expect product news and practical tips. Manage your preferences or unsubscribe any time below.
 
 
 
 Explore Acme https://example.com/start
 
-https://example.com/start
-
-
-
-Acme, Inc.
-
-
-
-Acme https://acme.example
-
-https://acme.example
-
-
-
-Contact support https://acme.example/support
-
-https://acme.example/support
-
-
-
-Support email support@acme.example
-
-
-
-Privacy policy https://acme.example/privacy
-
-https://acme.example/privacy
-
 
 
 You received this email because you subscribed to our product notes.
 
+Acme, Inc.
 1 Main Street, Springfield
 
-Unsubscribe https://acme.example/unsubscribe/token
+Unsubscribe or manage preferences https://acme.example/unsubscribe/token
 
-Manage preferences https://acme.example/unsubscribe/token
-
-https://acme.example/unsubscribe/token
-
-© 2026 Acme, Inc.",
+Acme https://acme.example · Support https://acme.example/support · Privacy https://acme.example/privacy",
 }
 `;
 
@@ -658,53 +371,24 @@ exports[`sample renders > notification matches its snapshot 1`] = `
 Acme
 
 
+
 Your export is ready
 
-The account export you asked for is ready to download.
+Your account export is ready to download.
 
 
 
 View details https://example.com/exports/1042
 
-https://example.com/exports/1042
-
 
 
 Notification settings https://example.com/settings/notifications
-
-https://example.com/settings/notifications
-
-
-
-Acme, Inc.
-
-
-
-Acme https://acme.example
-
-https://acme.example
-
-
-
-Contact support https://acme.example/support
-
-https://acme.example/support
-
-
-
-Support email support@acme.example
-
-
-
-Privacy policy https://acme.example/privacy
-
-https://acme.example/privacy
 
 
 
 You received this email because your account has a new notification.
 
-© 2026 Acme, Inc.",
+Acme https://acme.example · Support https://acme.example/support · Privacy https://acme.example/privacy",
 }
 `;
 
@@ -714,6 +398,7 @@ exports[`sample renders > one-time-code matches its snapshot 1`] = `
   "text": "
 
 Acme
+
 
 
 YOUR SIGN-IN CODE
@@ -726,45 +411,19 @@ This code expires in 10 minutes.
 
 
 
-The request came from Portland, Oregon.
+Request location: Portland, Oregon.
 
 
 
-The device was iPhone.
+Device: iPhone.
 
 
 
 If you did not try to sign in, you can ignore this email.
 
-Acme, Inc.
-
-
-
-Acme https://acme.example
-
-https://acme.example
-
-
-
-Contact support https://acme.example/support
-
-https://acme.example/support
-
-
-
-Support email support@acme.example
-
-
-
-Privacy policy https://acme.example/privacy
-
-https://acme.example/privacy
-
-
-
 You received this email because a sign-in code was requested for your account.
 
-© 2026 Acme, Inc.",
+Acme https://acme.example · Support https://acme.example/support · Privacy https://acme.example/privacy",
 }
 `;
 
@@ -776,79 +435,52 @@ exports[`sample renders > order-confirmation matches its snapshot 1`] = `
 Acme
 
 
+
 ORDER CONFIRMED
 
-We received order 1042. This email confirms the items and the amount paid.
+We received your order 1042. Here are your order details.
 
-DescriptionQuantityAmountField notebook1$28.00Ink2$21.00
-
-
-
-Subtotal $49.00
+DescriptionQtyAmountField notebook1$28.00Ink2$21.00
 
 
 
-Discount $0.00
+Subtotal$49.00
 
 
 
-Shipping $0.00
+Discount$0.00
 
 
 
-Tax $0.00
+Shipping$0.00
 
 
 
-Total $49.00
+Tax$0.00
 
 
 
-Shipping address 123 Example Street, Springfield
+Total$49.00
 
 
 
-Billing address 123 Example Street, Springfield
+Shipping address123 Example Street, Springfield
 
 
 
-Payment method Card ending in 4242
+Billing address123 Example Street, Springfield
+
+
+
+Payment methodCard ending in 4242
 
 
 
 View order status https://example.com/orders/1042
 
-https://example.com/orders/1042
-
-Acme, Inc.
-
-
-
-Acme https://acme.example
-
-https://acme.example
-
-
-
-Contact support https://acme.example/support
-
-https://acme.example/support
-
-
-
-Support email support@acme.example
-
-
-
-Privacy policy https://acme.example/privacy
-
-https://acme.example/privacy
-
-
-
 You received this email because you placed an order.
 
-© 2026 Acme, Inc.",
+Acme https://acme.example · Support https://acme.example/support · Privacy https://acme.example/privacy",
 }
 `;
 
@@ -860,57 +492,30 @@ exports[`sample renders > password-reset matches its snapshot 1`] = `
 Acme
 
 
+
 RESET YOUR PASSWORD
 
-Hi Ada, we received a request to reset the password for your Acme account.
+Hi Ada, use this link to reset your Acme password.
 
 Reset password https://example.com/reset/abc123
 
-https://example.com/reset/abc123
-
-This link expires in 1 hour. After that, ask for a new one.
+This link expires in 1 hour. Request a new link if it expires.
 
 
 
-The request came from Chrome.
+Browser: Chrome.
 
 
 
-The operating system was macOS.
+Operating system: macOS.
 
 
 
 If you did not ask for this, ignore this email. Your password will not change.
 
-Acme, Inc.
-
-
-
-Acme https://acme.example
-
-https://acme.example
-
-
-
-Contact support https://acme.example/support
-
-https://acme.example/support
-
-
-
-Support email support@acme.example
-
-
-
-Privacy policy https://acme.example/privacy
-
-https://acme.example/privacy
-
-
-
 You received this email because a password reset was requested for your account.
 
-© 2026 Acme, Inc.",
+Acme https://acme.example · Support https://acme.example/support · Privacy https://acme.example/privacy",
 }
 `;
 
@@ -922,13 +527,14 @@ exports[`sample renders > payment-failed matches its snapshot 1`] = `
 Acme
 
 
-PAYMENT FAILED
+
+YOUR PAYMENT NEEDS ATTENTION
 
 We could not collect $49.00 for your Acme subscription.
 
 
 
-The card on file was card ending in 4242.
+Payment method: card ending in 4242.
 
 
 
@@ -942,45 +548,15 @@ Service ends on March 9, 2026 if the payment is not updated.
 
 Update payment method https://example.com/billing/payment
 
-https://example.com/billing/payment
 
 
-
-View the invoice https://example.com/invoices/1042
-
-https://example.com/invoices/1042
-
-
-
-Acme, Inc.
-
-
-
-Acme https://acme.example
-
-https://acme.example
-
-
-
-Contact support https://acme.example/support
-
-https://acme.example/support
-
-
-
-Support email support@acme.example
-
-
-
-Privacy policy https://acme.example/privacy
-
-https://acme.example/privacy
+View invoice https://example.com/invoices/1042
 
 
 
 You received this email because a payment failed.
 
-© 2026 Acme, Inc.",
+Acme https://acme.example · Support https://acme.example/support · Privacy https://acme.example/privacy",
 }
 `;
 
@@ -992,33 +568,34 @@ exports[`sample renders > receipt matches its snapshot 1`] = `
 Acme
 
 
+
 RECEIPT
 
-We received your payment for Acme. This email is the receipt.
+Your payment for Acme was received.
 
-Receipt1042Paid atMarch 2, 2026, 3:04 PM UTC
+Receipt1042Payment dateMarch 2, 2026, 3:04 PM UTC
 
-DescriptionQuantityAmountField notebook1$28.00Ink2$21.00
-
-
-
-Subtotal $49.00
+DescriptionQtyAmountField notebook1$28.00Ink2$21.00
 
 
 
-Discount $0.00
+Subtotal$49.00
 
 
 
-Tax $0.00
+Discount$0.00
 
 
 
-Tax id 12-3456789
+Tax$0.00
 
 
 
-Total $49.00
+Tax ID12-3456789
+
+
+
+Total$49.00
 
 
 
@@ -1026,45 +603,17 @@ Paid with Card ending in 4242.
 
 
 
-Billing address 123 Example Street, Springfield
+Billing address123 Example Street, Springfield
 
 
 
 View receipt https://example.com/receipts/1042
 
-https://example.com/receipts/1042
-
-
-
-Acme, Inc.
-
-
-
-Acme https://acme.example
-
-https://acme.example
-
-
-
-Contact support https://acme.example/support
-
-https://acme.example/support
-
-
-
-Support email support@acme.example
-
-
-
-Privacy policy https://acme.example/privacy
-
-https://acme.example/privacy
-
 
 
 You received this email because a payment was made.
 
-© 2026 Acme, Inc.",
+Acme https://acme.example · Support https://acme.example/support · Privacy https://acme.example/privacy",
 }
 `;
 
@@ -1076,59 +625,32 @@ exports[`sample renders > security-notice matches its snapshot 1`] = `
 Acme
 
 
+
 Your password was changed
 
-This change was saved on your Acme account.
+This change was made to your Acme account. If you did not make it, secure your account below.
 
 
 
-Changed at March 2, 2026, 3:04 PM UTC.
+Changed: March 2, 2026, 3:04 PM UTC.
 
 
 
-Location Portland, Oregon.
+Location: Portland, Oregon.
 
 
 
-Device Mac.
+Device: Mac.
 
 
 
 Secure your account https://example.com/account/security
 
-https://example.com/account/security
-
 If you made this change, no action is needed.
-
-Acme, Inc.
-
-
-
-Acme https://acme.example
-
-https://acme.example
-
-
-
-Contact support https://acme.example/support
-
-https://acme.example/support
-
-
-
-Support email support@acme.example
-
-
-
-Privacy policy https://acme.example/privacy
-
-https://acme.example/privacy
-
-
 
 You received this email because a security setting on your account changed.
 
-© 2026 Acme, Inc.",
+Acme https://acme.example · Support https://acme.example/support · Privacy https://acme.example/privacy",
 }
 `;
 
@@ -1140,57 +662,27 @@ exports[`sample renders > setup-reminder matches its snapshot 1`] = `
 Acme
 
 
-READY FOR YOUR NEXT STEP?
 
-Hi Ada, a little time in Acme can help you get started.
+CONTINUE YOUR SETUP
 
-Open your account and finish the next setup step. If you get stuck, contact support and we can help.
+Hi Ada, ready to continue setting up Acme?
+
+Pick up where you left off. If you need a hand, contact support.
 
 
 
 Continue setup https://example.com/setup
 
-https://example.com/setup
-
-
-
-Acme, Inc.
-
-
-
-Acme https://acme.example
-
-https://acme.example
-
-
-
-Contact support https://acme.example/support
-
-https://acme.example/support
-
-
-
-Support email support@acme.example
-
-
-
-Privacy policy https://acme.example/privacy
-
-https://acme.example/privacy
-
 
 
 You received this email because you signed up for tips on getting started.
 
+Acme, Inc.
 1 Main Street, Springfield
 
-Unsubscribe https://acme.example/unsubscribe/token
+Unsubscribe or manage preferences https://acme.example/unsubscribe/token
 
-Manage preferences https://acme.example/unsubscribe/token
-
-https://acme.example/unsubscribe/token
-
-© 2026 Acme, Inc.",
+Acme https://acme.example · Support https://acme.example/support · Privacy https://acme.example/privacy",
 }
 `;
 
@@ -1202,63 +694,36 @@ exports[`sample renders > shipping-update matches its snapshot 1`] = `
 Acme
 
 
+
 Your order is on its way
 
-An update for order 1042.
+Here are the latest shipping details for order 1042.
 
 
 
-Carrier Parcel Post.
+Carrier: Parcel Post.
 
 
 
-Tracking number 1Z999.
+Tracking number: 1Z999.
 
 
 
-Estimated delivery March 8, 2026.
+Estimated delivery: March 8, 2026.
 
 
 
-Track the shipment https://example.com/track/1Z999
-
-https://example.com/track/1Z999
+Track shipment https://example.com/track/1Z999
 
 
 
-DescriptionQuantityAmountField notebook1$28.00
-
-
-
-Acme, Inc.
-
-
-
-Acme https://acme.example
-
-https://acme.example
-
-
-
-Contact support https://acme.example/support
-
-https://acme.example/support
-
-
-
-Support email support@acme.example
-
-
-
-Privacy policy https://acme.example/privacy
-
-https://acme.example/privacy
+DescriptionQtyAmountField notebook1$28.00
 
 
 
 You received this email because an order you placed has a shipping update.
 
-© 2026 Acme, Inc.",
+Acme https://acme.example · Support https://acme.example/support · Privacy https://acme.example/privacy",
 }
 `;
 
@@ -1270,51 +735,24 @@ exports[`sample renders > subscription-canceled matches its snapshot 1`] = `
 Acme
 
 
+
 YOUR SUBSCRIPTION WAS CANCELED
 
 Your Acme subscription was canceled because payment was not completed.
 
 
 
-The outstanding invoice is INV-1042.
+Outstanding invoice: INV-1042.
 
 
 
-Review your billing details if you would like to resolve the payment. Contact support if you need help with your account.
+Review billing to resolve the outstanding payment. Contact support if you need help with your account.
 
 Review billing https://example.com/billing/payment
 
-https://example.com/billing/payment
-
-Acme, Inc.
-
-
-
-Acme https://acme.example
-
-https://acme.example
-
-
-
-Contact support https://acme.example/support
-
-https://acme.example/support
-
-
-
-Support email support@acme.example
-
-
-
-Privacy policy https://acme.example/privacy
-
-https://acme.example/privacy
-
-
-
 You received this email because your subscription was canceled after an unpaid invoice.
 
-© 2026 Acme, Inc.",
+Acme https://acme.example · Support https://acme.example/support · Privacy https://acme.example/privacy",
 }
 `;
 
@@ -1326,57 +764,26 @@ exports[`sample renders > trial-ending matches its snapshot 1`] = `
 Acme
 
 
+
 YOUR TRIAL IS ENDING
 
-Your Acme trial ends on March 16, 2026. Choose a plan if you want to keep the account.
+Your Acme trial ends on March 16, 2026. Choose a plan to continue using the product after your trial.
 
 Choose a plan https://example.com/billing/plan
-
-https://example.com/billing/plan
 
 
 
 Cancel before the trial ends https://example.com/billing/cancel
 
-https://example.com/billing/cancel
-
 
 
 Export your data https://example.com/account/export
-
-https://example.com/account/export
-
-
-
-Acme, Inc.
-
-
-
-Acme https://acme.example
-
-https://acme.example
-
-
-
-Contact support https://acme.example/support
-
-https://acme.example/support
-
-
-
-Support email support@acme.example
-
-
-
-Privacy policy https://acme.example/privacy
-
-https://acme.example/privacy
 
 
 
 You received this email because your trial is close to its end.
 
-© 2026 Acme, Inc.",
+Acme https://acme.example · Support https://acme.example/support · Privacy https://acme.example/privacy",
 }
 `;
 
@@ -1388,57 +795,27 @@ exports[`sample renders > upgrade-invite matches its snapshot 1`] = `
 Acme
 
 
-ROOM FOR YOUR NEXT STEP
 
-Hi Ada, is your current Acme plan still a good fit?
+FIND THE RIGHT PLAN
 
-If you need more room, compare the available plans. Pick the one that fits your work, or stay on your current plan.
+Hi Ada, need more capacity in Acme?
+
+Compare the available plans and choose what fits your work. You can also keep your current plan.
 
 
 
 Compare plans https://example.com/plans
 
-https://example.com/plans
-
-
-
-Acme, Inc.
-
-
-
-Acme https://acme.example
-
-https://acme.example
-
-
-
-Contact support https://acme.example/support
-
-https://acme.example/support
-
-
-
-Support email support@acme.example
-
-
-
-Privacy policy https://acme.example/privacy
-
-https://acme.example/privacy
-
 
 
 You received this email because you subscribed to product recommendations.
 
+Acme, Inc.
 1 Main Street, Springfield
 
-Unsubscribe https://acme.example/unsubscribe/token
+Unsubscribe or manage preferences https://acme.example/unsubscribe/token
 
-Manage preferences https://acme.example/unsubscribe/token
-
-https://acme.example/unsubscribe/token
-
-© 2026 Acme, Inc.",
+Acme https://acme.example · Support https://acme.example/support · Privacy https://acme.example/privacy",
 }
 `;
 
@@ -1450,19 +827,18 @@ exports[`sample renders > verify-email matches its snapshot 1`] = `
 Acme
 
 
+
 CONFIRM YOUR EMAIL
 
-Use the button below to confirm this email address for your Acme account.
+Confirm this email address for your Acme account.
 
 Confirm email https://example.com/verify/abc123
-
-https://example.com/verify/abc123
 
 This link expires in 24 hours.
 
 
 
-If the page asks for a code, enter this one. It is not a link.
+If the page asks for a verification code, enter:
 
 482913
 
@@ -1470,35 +846,9 @@ If the page asks for a code, enter this one. It is not a link.
 
 If you did not create an account, you can ignore this email.
 
-Acme, Inc.
-
-
-
-Acme https://acme.example
-
-https://acme.example
-
-
-
-Contact support https://acme.example/support
-
-https://acme.example/support
-
-
-
-Support email support@acme.example
-
-
-
-Privacy policy https://acme.example/privacy
-
-https://acme.example/privacy
-
-
-
 You received this email because an address needed to be confirmed for your account.
 
-© 2026 Acme, Inc.",
+Acme https://acme.example · Support https://acme.example/support · Privacy https://acme.example/privacy",
 }
 `;
 
@@ -1510,57 +860,27 @@ exports[`sample renders > we-miss-you matches its snapshot 1`] = `
 Acme
 
 
-WANT TO PICK THINGS UP?
+
+READY TO PICK THINGS UP?
 
 Hi Ada, it has been a while since you used Acme.
 
-If now is a good time, open your account and take a look. Tell us if something got in the way and we can help.
+Open your account when you are ready to continue. Contact support if you need help getting back into it.
 
 
 
 Return to Acme https://example.com/account
 
-https://example.com/account
-
-
-
-Acme, Inc.
-
-
-
-Acme https://acme.example
-
-https://acme.example
-
-
-
-Contact support https://acme.example/support
-
-https://acme.example/support
-
-
-
-Support email support@acme.example
-
-
-
-Privacy policy https://acme.example/privacy
-
-https://acme.example/privacy
-
 
 
 You received this email because you subscribed to product reminders.
 
+Acme, Inc.
 1 Main Street, Springfield
 
-Unsubscribe https://acme.example/unsubscribe/token
+Unsubscribe or manage preferences https://acme.example/unsubscribe/token
 
-Manage preferences https://acme.example/unsubscribe/token
-
-https://acme.example/unsubscribe/token
-
-© 2026 Acme, Inc.",
+Acme https://acme.example · Support https://acme.example/support · Privacy https://acme.example/privacy",
 }
 `;
 
@@ -1572,52 +892,25 @@ exports[`sample renders > welcome matches its snapshot 1`] = `
 Acme
 
 
+
 WELCOME
 
-Hi Ada, your Acme account is ready.
+Hi Ada, welcome to Acme. Your account is ready.
 
 
 
 Get started https://example.com/start
 
-https://example.com/start
+
+
+Help getting started https://example.com/help
 
 
 
-Help reference https://example.com/help
-
-
-
-If you did not expect an account, contact support and we can close it.
-
-Acme, Inc.
-
-
-
-Acme https://acme.example
-
-https://acme.example
-
-
-
-Contact support https://acme.example/support
-
-https://acme.example/support
-
-
-
-Support email support@acme.example
-
-
-
-Privacy policy https://acme.example/privacy
-
-https://acme.example/privacy
-
-
+If you did not expect this account, contact support to request its closure.
 
 You received this email because an account was created for you.
 
-© 2026 Acme, Inc.",
+Acme https://acme.example · Support https://acme.example/support · Privacy https://acme.example/privacy",
 }
 `;
