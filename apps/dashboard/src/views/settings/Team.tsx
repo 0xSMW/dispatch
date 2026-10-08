@@ -86,7 +86,7 @@ export function Team() {
   });
 
   return (
-    <div className="page">
+    <div className="page settingsPage">
       <PageHeader
         title="Settings"
         actions={<>
@@ -98,7 +98,6 @@ export function Team() {
 
       <Section
         title="Team"
-        plain
         list={users}
         emptyBody="Add someone to give them access to your team."
         columns={[
@@ -281,7 +280,6 @@ export function Team() {
 
 function Section<T extends { id: string }>({
   title,
-  plain = false,
   list,
   columns,
   action,
@@ -290,7 +288,6 @@ function Section<T extends { id: string }>({
   menu,
 }: {
   title: string;
-  plain?: boolean;
   list: ListState<T>;
   columns: Array<Column<T>>;
   action?: ReactNode;
@@ -315,15 +312,7 @@ function Section<T extends { id: string }>({
       />
   );
   const actions = list.loading || list.error || list.rows.length || list.page > 1 ? action : null;
-  return plain ? (
-    <section>
-      <div className="panelHeader">
-        <h2>{title}</h2>
-        {actions ? <div className="toolbar">{actions}</div> : null}
-      </div>
-      {table}
-    </section>
-  ) : <Panel title={title} actions={actions}>{table}</Panel>;
+  return <Panel title={title} actions={actions}>{table}</Panel>;
 }
 
 /**
