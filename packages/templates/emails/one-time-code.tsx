@@ -2,7 +2,7 @@ import { Heading, Text } from "react-email";
 import { Code, If, Layout, Notice } from "./_components";
 import { exampleBrand, heading, muted, text, type Brand, type EmailVariable } from "./_theme";
 
-const preview = (code: string) => `${code} is your sign-in code. It expires soon. Do not share it.`;
+const preview = (code: string) => `${code} is your sign-in code. Do not share it.`;
 
 type Props = {
   brand?: Brand;
@@ -38,12 +38,12 @@ export default function OneTimeCode({
       </Text>
       <If value={location}>
         <Text className="dm-muted" style={muted}>
-          The request came from {location}.
+          Request location: {location}.
         </Text>
       </If>
       <If value={device}>
         <Text className="dm-muted" style={muted}>
-          The device was {device}.
+          Device: {device}.
         </Text>
       </If>
       <Notice>If you did not try to sign in, you can ignore this email.</Notice>
