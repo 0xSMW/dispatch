@@ -1,3 +1,4 @@
+import { Dropdown } from "../../components/Dropdown";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Activity, ChevronDown, CircleHelp, RefreshCw } from "lucide-react";
@@ -204,7 +205,7 @@ export function Metrics() {
             </label>
           </div>
         ) : null}
-        <select
+        <Dropdown
           className="filterSelect"
           aria-label="Group by"
           value={filters.granularity ?? ""}
@@ -216,7 +217,7 @@ export function Metrics() {
               {groupLabels[value]}
             </option>
           ))}
-        </select>
+        </Dropdown>
       </div>
 
       {span.error ? (
