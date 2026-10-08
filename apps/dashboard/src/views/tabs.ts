@@ -6,7 +6,7 @@ export const emailTabs: Tab[] = [
   { id: "sending", label: "Sending", to: "/emails" },
   { id: "receiving", label: "Receiving", to: "/emails/receiving" },
   { id: "suppressions", label: "Suppressions", to: "/emails/suppressions" },
-  { id: "send", label: "Test send", to: "/emails/send" },
+  // { id: "send", label: "Test send", to: "/emails/send" },
 ];
 
 export const audienceTabs: Tab[] = [
@@ -15,7 +15,6 @@ export const audienceTabs: Tab[] = [
   { id: "properties", label: "Properties", to: "/audience/properties" },
   { id: "segments", label: "Segments", to: "/audience/segments" },
   { id: "forms", label: "Forms", to: "/audience/forms" },
-  { id: "suppressions", label: "Suppressions", to: "/emails/suppressions" },
 ];
 
 export const templateTabs: Tab[] = [
@@ -24,9 +23,9 @@ export const templateTabs: Tab[] = [
 ];
 
 export const settingsTabs: Tab[] = [
+  { id: "usage", label: "Usage", to: "/settings/usage" },
   { id: "general", label: "General", to: "/settings/general" },
   { id: "team", label: "Team", to: "/settings/team" },
-  { id: "usage", label: "Usage", to: "/settings/usage" },
   { id: "smtp", label: "SMTP", to: "/settings/smtp" },
   { id: "integrations", label: "Integrations", to: "/settings/integrations" },
   { id: "brand", label: "Brand", to: "/settings/brand" },
