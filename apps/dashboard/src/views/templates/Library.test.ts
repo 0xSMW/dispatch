@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { framed } from "../../components/EmailFrame";
 import { h, signIn } from "../../testing";
 import { api, calls, list, renderAt } from "./harness";
-import { byCategory, Library, libraryTab, recipeLinks, renderedOf, visibleTemplates, type DiscoveryTemplate } from "./Library";
+import { Library, recipeLinks, renderedOf, type DiscoveryTemplate } from "./Library";
 
 function entry(fields: Partial<DiscoveryTemplate>): DiscoveryTemplate {
   return {
@@ -28,7 +28,7 @@ function entry(fields: Partial<DiscoveryTemplate>): DiscoveryTemplate {
 
 const entries = [entry({}), entry({ slug: "receipt", name: "Receipt", category: "billing", description: "After a payment." })];
 
-function setup() {
+function setup(path = "/templates/library") {
   const fetch = api({
     "GET /template-library": list(entries),
     "GET /template-library/password-reset": { ...entries[0], rendered: { subject: "Reset your Acme password", html: "<p>Reset it here</p>", text: "Reset" } },
@@ -36,8 +36,11 @@ function setup() {
     "GET /template-library/receipt": { ...entries[1], preview: { subject: "Your Acme receipt", html: "<p>Receipt body</p>", text: "Receipt" } },
     "POST /template-library/password-reset/install": { object: "template", id: "tpl_9" },
   });
-  renderAt("/templates", [{ path: "/templates", element: h(Library) }]);
-  return fetch;
+  const router = renderAt(path, [
+    { path: "/templates/library", element: h(Library) },
+    { path: "/templates", element: h("p", null, "Your templates") },
+  ]);
+  return { fetch, router };
 }
 
 describe("Library", () => {
@@ -48,22 +51,21 @@ describe("Library", () => {
     vi.unstubAllGlobals();
   });
 
-  it("groups cards by category with compact email covers", async () => {
+  it("shows one flat grid with compact covers and unboxed name and slug", async () => {
     setup();
-    const auth = await screen.findByRole("region", { name: "Authentication" });
-    expect(within(auth).getByRole("article", { name: "Password reset" })).toBeTruthy();
-    expect(within(auth).getByText("Ready to use")).toBeTruthy();
-    const billing = screen.getByRole("region", { name: "Billing" });
-    const card = within(billing).getByRole("article", { name: "Receipt" });
+    await screen.findByRole("article", { name: "Password reset" });
+    const card = screen.getByRole("article", { name: "Receipt" });
     await waitFor(() => expect(within(card).getByText("Receipt body")).toBeTruthy());
     expect(card.querySelector("iframe")).toBeNull();
     expect(within(card).getByText("receipt").className).toContain("cardSlug");
-    expect(within(card).getByText("Ready to use").className).toBe("cardStatus");
+    expect(screen.queryByText("Ready to use")).toBeNull();
+    expect(screen.getAllByRole("heading").map((heading) => heading.textContent)).toEqual(["Browse templates"]);
+    expect(screen.getByRole("link", { name: "Templates" }).getAttribute("href")).toBe("/templates");
     expect(card.querySelector(".badge")).toBeNull();
   });
 
   it("previews a template with its variables and installs it", async () => {
-    const fetch = setup();
+    const { fetch, router } = setup();
     fireEvent.click(await screen.findByRole("button", { name: "Password reset" }));
     const drawer = await screen.findByRole("dialog");
     expect(within(drawer).getByText("Transactional")).toBeTruthy();
@@ -75,9 +77,10 @@ describe("Library", () => {
     expect(within(drawer).getByText("Send after a password reset request.")).toBeTruthy();
     expect(within(drawer).getByRole("link", { name: "Edit brand" }).getAttribute("href")).toBe("/settings/brand");
 
-    fireEvent.click(within(drawer).getByRole("button", { name: "Use template" }));
-    const link = await within(drawer).findByRole("link", { name: "Open template" });
-    expect(link.getAttribute("href")).toBe("/templates/tpl_9");
+    fireEvent.click(within(drawer).getByRole("button", { name: "Add to templates" }));
+    await waitFor(() => expect(router.state.location.pathname).toBe("/templates"));
+    expect(router.state.location.search).toBe("?added=tpl_9");
+    expect(screen.queryByRole("dialog")).toBeNull();
     expect(calls(fetch, "POST /template-library/password-reset/install")).toHaveLength(1);
   });
 
@@ -93,7 +96,7 @@ describe("Library", () => {
     expect(drawer.getByRole("link", { name: "Edit brand" }).getAttribute("href")).toBe("/settings/brand");
   });
 
-  it("shows one category heading beneath ready-made templates, preserving manifest order", async () => {
+  it("preserves manifest order without group headings", async () => {
     const lifecycle = [
       entry({ slug: "welcome", name: "Welcome", stage: "onboarding" }),
       entry({ slug: "payment-failed", name: "Payment failed", stage: "dunning", category: "billing" }),
@@ -103,38 +106,49 @@ describe("Library", () => {
       "GET /template-library": list([...entries, ...lifecycle]),
       ...Object.fromEntries([...entries, ...lifecycle].map((item) => [`GET /template-library/${item.slug}`, { ...item, rendered: { html: "<p>Preview</p>" } }])),
     });
-    renderAt("/templates", [{ path: "/templates", element: h(Library) }]);
-    const auth = await screen.findByRole("region", { name: "Authentication" });
-    expect(within(auth).getByRole("article", { name: "Password reset" })).toBeTruthy();
-    expect(within(auth).getByRole("article", { name: "Newsletter" })).toBeTruthy();
-    const billing = screen.getByRole("region", { name: "Billing" });
-    expect(within(billing).getByRole("article", { name: "Payment failed" })).toBeTruthy();
-    expect(screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent)).toEqual(["Authentication", "Billing"]);
-    expect(screen.getByRole("heading", { level: 2, name: "Ready-made templates" })).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: "Transactional" })).toBeNull();
-    expect(screen.queryByRole("heading", { name: "Lifecycle" })).toBeNull();
-    expect(screen.queryByRole("heading", { level: 4 })).toBeNull();
-    expect(screen.getAllByRole("article")).toHaveLength(5);
+    renderAt("/templates/library", [{ path: "/templates/library", element: h(Library) }]);
+    await screen.findByRole("article", { name: "Password reset" });
+    expect(screen.getAllByRole("article").map((card) => card.getAttribute("aria-label"))).toEqual([
+      "Password reset", "Receipt", "Welcome", "Payment failed", "Newsletter",
+    ]);
+    expect(screen.queryByRole("heading", { level: 2 })).toBeNull();
+    expect(screen.queryByRole("heading", { level: 3 })).toBeNull();
     expect(screen.queryByRole("tab")).toBeNull();
     expect(screen.queryByLabelText("Stage")).toBeNull();
     expect(calls(fetch, "GET /template-library/automations")).toHaveLength(0);
   });
 
-  it("shows a simple empty section when no ready-made templates exist", async () => {
+  it("combines category and search filters and lets an empty result be cleared", async () => {
+    const { router } = setup("/templates/library?category=billing&q=receipt");
+    await screen.findByRole("article", { name: "Receipt" });
+    expect(screen.queryByRole("article", { name: "Password reset" })).toBeNull();
+    fireEvent.click(screen.getByRole("combobox", { name: "Category" }));
+    fireEvent.click(screen.getByRole("option", { name: "Authentication" }));
+    expect(await screen.findByText("No templates match")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Clear filters" }));
+    await screen.findByRole("article", { name: "Password reset" });
+    expect(screen.getByRole("article", { name: "Receipt" })).toBeTruthy();
+    expect(router.state.location.search).toBe("");
+    fireEvent.change(screen.getByRole("searchbox", { name: "Search templates" }), { target: { value: "RESET" } });
+    await waitFor(() => expect(screen.queryByRole("article", { name: "Receipt" })).toBeNull());
+    expect(screen.getByRole("article", { name: "Password reset" })).toBeTruthy();
+  });
+
+  it("shows a simple empty page when the library is empty", async () => {
     api({ "GET /template-library": list([]) });
-    renderAt("/templates", [{ path: "/templates", element: h(Library) }]);
-    expect(await screen.findByText("No ready-made templates")).toBeTruthy();
+    renderAt("/templates/library", [{ path: "/templates/library", element: h(Library) }]);
+    expect(await screen.findByText("No library templates")).toBeTruthy();
     expect(screen.queryByRole("tab")).toBeNull();
     expect(screen.queryByRole("link", { name: "Library" })).toBeNull();
   });
 
   it("lets viewers browse previews but does not offer installation", async () => {
     signIn("sess_test", ["read"]);
-    const fetch = setup();
+    const { fetch } = setup();
     fireEvent.click(await screen.findByRole("button", { name: "Password reset" }));
     const drawer = await screen.findByRole("dialog");
     expect(await within(drawer).findByText("Reset your Acme password")).toBeTruthy();
-    expect(within(drawer).queryByRole("button", { name: "Use template" })).toBeNull();
+    expect(within(drawer).queryByRole("button", { name: "Add to templates" })).toBeNull();
     expect(calls(fetch, "POST /template-library/password-reset/install")).toHaveLength(0);
   });
 });
@@ -145,29 +159,6 @@ describe("Library helpers", () => {
     expect(renderedOf({ ...entries[0]!, preview: { html: "b" } })).toEqual({ html: "b" });
     expect(renderedOf({ ...entries[0]!, preview: "a text teaser" })).toBeNull();
     expect(renderedOf(null)).toBeNull();
-  });
-
-  it("keeps manifest order within and across categories", () => {
-    const groups = byCategory([entries[0]!, entries[1]!, entry({ slug: "otp", name: "Code" })]);
-    expect(groups.map(([category, items]) => [category, items.map((item) => item.slug)])).toEqual([
-      ["authentication", ["password-reset", "otp"]],
-      ["billing", ["receipt"]],
-    ]);
-  });
-
-  it("partitions every shipped template exactly once using stage and kind metadata", async () => {
-    const { templates } = await import("../../../../../packages/templates/library.json");
-    const items = templates as DiscoveryTemplate[];
-    const transactional = visibleTemplates(items, "transactional");
-    const lifecycle = visibleTemplates(items, "lifecycle");
-    expect(transactional.length + lifecycle.length).toBe(items.length);
-    expect(new Set([...transactional, ...lifecycle].map((item) => item.slug)).size).toBe(items.length);
-    expect(transactional.every((item) => !item.stage && item.kind === "transactional")).toBe(true);
-    expect(libraryTab(items.find((item) => item.slug === "payment-failed")!)).toBe("lifecycle");
-    expect(visibleTemplates(items, "lifecycle", "dunning").map((item) => item.slug)).toEqual(
-      items.filter((item) => item.stage === "dunning").map((item) => item.slug),
-    );
-    expect(items.every((item) => Boolean(item.when?.trim()))).toBe(true);
   });
 
   it("links only billing and authentication to existing public recipes", () => {
