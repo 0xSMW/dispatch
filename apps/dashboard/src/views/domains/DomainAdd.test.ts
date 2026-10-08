@@ -1,3 +1,4 @@
+import { changeControl } from "../../testingControls";
 // @vitest-environment jsdom
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -18,9 +19,9 @@ describe("DomainAdd", () => {
     const fetch = api({ "POST /domains": domain(), "/domains/domain_1": domain() });
     visit(h(DomainAdd), "/domains/add");
 
-    fireEvent.change(screen.getByLabelText("Name"), { target: { value: " send.acme.test " } });
-    fireEvent.change(screen.getByLabelText("Region"), { target: { value: "eu-west-1" } });
-    fireEvent.change(screen.getByLabelText("Custom return path"), { target: { value: "bounce" } });
+    changeControl(screen.getByLabelText("Name"), { target: { value: " send.acme.test " } });
+    changeControl(screen.getByLabelText("Region"), { target: { value: "eu-west-1" } });
+    changeControl(screen.getByLabelText("Custom return path"), { target: { value: "bounce" } });
     fireEvent.click(screen.getByRole("button", { name: "Add domain" }));
 
     await waitFor(() => expect(requests(fetch, "POST", "/domains")).toHaveLength(1));
