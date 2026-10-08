@@ -43,8 +43,8 @@ describe("FormFields", () => {
     for (const name of ["News", "First name", "old-topic", "old-property"]) {
       expect((screen.getByLabelText(name) as HTMLInputElement).checked).toBe(true);
     }
-    expect((screen.getByLabelText("Sender") as HTMLSelectElement).value).toBe(input.value.from_email);
-    expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual(["Verified newsletter sender"]);
+    expect((screen.getByLabelText("Sender").closest(".dropdown")!.querySelector("select")!).value).toBe(input.value.from_email);
+    expect(Array.from(document.querySelectorAll("option")).map((option) => option.textContent)).toEqual(["Verified newsletter sender"]);
     view.rerender(createElement(FormFields, { ...input, value: { ...input.value, double_opt_in: true } }));
     expect(screen.getByRole("switch").getAttribute("aria-checked")).toBe("true");
     expect(input.onChange).not.toHaveBeenCalled();
@@ -64,7 +64,7 @@ describe("FormFields", () => {
       [() => fireEvent.click(screen.getByLabelText("News")), { topic_ids: ["old-topic"] }],
       [() => fireEvent.click(screen.getByLabelText("Company")), { properties: ["first_name", "old-property", "company"] }],
       [() => fireEvent.click(screen.getByLabelText("old-property")), { properties: ["first_name"] }],
-      [() => fireEvent.change(screen.getByLabelText("Sender"), { target: { value: "news@example.com" } }), { from_email: "news@example.com" }],
+      [() => fireEvent.change(screen.getByLabelText("Sender").closest(".dropdown")!.querySelector("select")!, { target: { value: "news@example.com" } }), { from_email: "news@example.com" }],
       [() => fireEvent.click(screen.getByRole("switch")), { double_opt_in: true }],
       [() => fireEvent.change(screen.getByLabelText("Origin 1"), { target: { value: "https://new.example" } }), { allowed_origins: ["https://new.example", "https://other.example"] }],
       [() => fireEvent.click(screen.getByRole("button", { name: "Add origin" })), { allowed_origins: [...original.allowed_origins, ""] }],
@@ -88,10 +88,10 @@ describe("FormFields", () => {
   it("uses only supplied sender choices plus a retained current selection, without choosing a default", () => {
     const input = props({ value: { ...draft(), from_email: "old@example.com" } });
     const view = render(createElement(FormFields, input));
-    expect((screen.getByLabelText("Sender") as HTMLSelectElement).value).toBe("old@example.com");
+    expect((screen.getByLabelText("Sender").closest(".dropdown")!.querySelector("select")!).value).toBe("old@example.com");
     expect(screen.getByText(/not in the supplied verified senders/)).toBeTruthy();
     view.rerender(createElement(FormFields, { ...input, value: { ...input.value, from_email: "" } }));
-    expect((screen.getByLabelText("Sender") as HTMLSelectElement).value).toBe("");
+    expect((screen.getByLabelText("Sender").closest(".dropdown")!.querySelector("select")!).value).toBe("");
     expect(input.onChange).not.toHaveBeenCalled();
   });
 
@@ -104,7 +104,7 @@ describe("FormFields", () => {
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Blocked" } });
     fireEvent.change(screen.getByLabelText("Origin 1"), { target: { value: "Blocked" } });
     fireEvent.change(screen.getByLabelText("Redirect URL"), { target: { value: "https://blocked.example" } });
-    fireEvent.change(screen.getByLabelText("Sender"), { target: { value: "" } });
+    fireEvent.change(screen.getByLabelText("Sender").closest(".dropdown")!.querySelector("select")!, { target: { value: "" } });
     fireEvent.click(screen.getByLabelText("Tips"));
     fireEvent.click(screen.getByRole("switch"));
     fireEvent.click(screen.getByRole("button", { name: "Add origin" }));
