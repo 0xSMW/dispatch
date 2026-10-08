@@ -1,0 +1,65 @@
+.modal:has(.formSnippets) .modalBody {
+  min-width: 0;
+  overflow-x: hidden;
+}
+
+.formSnippets {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.formSnippets p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  line-height: 1.6;
+}
+
+.formSnippetsName {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.formSnippetsToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding-top: 4px;
+}
+
+.formSnippetsToolbar .tabs {
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.formSnippetsToolbar > button {
+  flex-shrink: 0;
+}
+
+.formSnippetsCode {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.formSnippetsCode pre {
+  max-width: 100%;
+  max-height: min(460px, 50vh);
+  padding: 18px;
+  overflow: auto;
+  white-space: pre;
+  word-break: normal;
+  overflow-wrap: normal;
+  line-height: 1.65;
+  font-size: 12px;
+  tab-size: 2;
+}
+
+@media (max-width: 480px) {
+  .formSnippetsToolbar { gap: 6px; }
+  .formSnippetsToolbar .tab { padding-inline: 10px; }
+  .formSnippetsCode pre { padding: 12px; }
+}
