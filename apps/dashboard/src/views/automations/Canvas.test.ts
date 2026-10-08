@@ -1,3 +1,4 @@
+import { changeControl, controlValue } from "../../testingControls";
 // @vitest-environment jsdom
 import { readFileSync } from "node:fs";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -176,7 +177,7 @@ describe("Canvas", () => {
     expect(document.querySelector(".react-flow__node.draggable")).toBeNull();
     fireEvent.click(node);
     let panel = screen.getByRole("region", { name: "Step pause settings" });
-    fireEvent.change(within(panel).getByLabelText("Duration"), { target: { value: "3 hours" } });
+    changeControl(within(panel).getByLabelText("Duration"), { target: { value: "3 hours" } });
     const change = actions.change.mock.calls[0]![1] as (node: Tree["steps"][number]) => Tree["steps"][number];
     const edited = updateNode(tree, "pause", change);
     view.rerender(h(SessionProvider, null, h(Canvas, { tree: edited, immersive: true, actions })));
@@ -188,7 +189,7 @@ describe("Canvas", () => {
     expect(document.querySelector(".react-flow__controls")).toBe(controls);
     fireEvent.click(node);
     panel = screen.getByRole("region", { name: "Step pause settings" });
-    expect(within(panel).getByLabelText("Duration")).toHaveProperty("value", "3 hours");
+    expect(controlValue(within(panel).getByLabelText("Duration"))).toBe("3 hours");
     fireEvent.keyDown(within(panel).getByLabelText("Duration"), { key: "Escape" });
     expect(document.querySelector(".canvasPanel")).toBeNull();
     expect(document.activeElement).toBe(node);
@@ -199,7 +200,7 @@ describe("Canvas", () => {
     view.rerender(h(SessionProvider, null, h(Canvas, { tree: insertStep(edited, [], 1, "branch", "branch_1"), immersive: true, actions })));
     const branch = screen.getByRole("region", { name: "Step branch_1 settings" });
     expect(within(branch).getAllByLabelText("Path label")).toHaveLength(2);
-    fireEvent.change(within(branch).getAllByLabelText("Path label")[0]!, { target: { value: "Paid" } });
+    changeControl(within(branch).getAllByLabelText("Path label")[0]!, { target: { value: "Paid" } });
     expect(actions.change).toHaveBeenLastCalledWith("branch_1", expect.any(Function));
     expect(within(branch).getByRole("button", { name: "Add path" })).toBeTruthy();
   });
@@ -256,7 +257,7 @@ describe("Canvas", () => {
     view.rerender(h(SessionProvider, null, h(Canvas, { tree: insertStep(tree, [], 1, "delay", "delay_1"), actions })));
     const panel = await screen.findByRole("region", { name: "Step delay_1 settings" });
     expect(within(panel).getByText('Examples: "2 days", "1 hour". Up to 30 days.')).toBeTruthy();
-    expect(within(panel).getByLabelText(/Duration/)).toHaveProperty("value", "1 hour");
+    expect(controlValue(within(panel).getByLabelText(/Duration/))).toBe("1 hour");
   });
 
   it("inserts into a branch from its end marker", async () => {
@@ -274,7 +275,7 @@ describe("Canvas", () => {
     expect(delay.className).toContain("nopan");
     fireEvent.click(delay);
     const panel = screen.getByRole("region", { name: "Step pause settings" });
-    fireEvent.change(within(panel).getByLabelText(/Duration/), { target: { value: "2 hours" } });
+    changeControl(within(panel).getByLabelText(/Duration/), { target: { value: "2 hours" } });
     expect(actions.change).toHaveBeenCalledWith("pause", expect.any(Function));
     const change = actions.change.mock.calls[0]![1] as (node: Tree["steps"][number]) => Tree["steps"][number];
     expect(change(tree.steps[1]!).config.duration).toBe("2 hours");
@@ -300,7 +301,7 @@ describe("Canvas", () => {
     fireEvent.click(trigger);
     const panel = screen.getByRole("region", { name: "Trigger settings" });
     expect(within(panel).getByText("Enter the event that starts this automation.")).toBeTruthy();
-    fireEvent.change(within(panel).getByLabelText("Event"), { target: { value: "user.signed_up" } });
+    changeControl(within(panel).getByLabelText("Event"), { target: { value: "user.signed_up" } });
     expect(onEvent).toHaveBeenCalledWith("user.signed_up");
   });
 
@@ -333,7 +334,7 @@ describe("Canvas", () => {
     fireEvent.click(trigger);
     const panel = within(screen.getByRole("region", { name: "Trigger settings" }));
     expect(panel.getByText(label)).toBeTruthy();
-    fireEvent.change(panel.getByLabelText("Trigger"), { target: { value: "contact_created" } });
+    changeControl(panel.getByLabelText("Trigger"), { target: { value: "contact_created" } });
     expect(onTrigger).toHaveBeenCalledWith({ type: "contact_created" });
   });
 
@@ -351,11 +352,11 @@ describe("Canvas", () => {
     ).tree;
     show({ tree: nested, actions: spies() });
     fireEvent.click(await screen.findByRole("button", { name: "Step big" }));
-    expect(within(screen.getByRole("region", { name: "Step big settings" })).getByLabelText("Value")).toHaveProperty("value", "5");
+    expect(controlValue(within(screen.getByRole("region", { name: "Step big settings" })).getByLabelText("Value"))).toBe("5");
     // The panel is rebuilt for the next step. It used to keep the first one's number in the field.
     fireEvent.click(screen.getByRole("button", { name: "Step huge" }));
     const panel = screen.getByRole("region", { name: "Step huge settings" });
-    expect(within(panel).getByLabelText("Value")).toHaveProperty("value", "100");
+    expect(controlValue(within(panel).getByLabelText("Value"))).toBe("100");
     await waitFor(() => expect(document.activeElement).toBe(panel));
   });
 
@@ -451,21 +452,21 @@ describe("AutomationEditor on the canvas", () => {
     const fetch = api((url, init) => init.method === "PATCH" ? { body: { ...automation, ...JSON.parse(String(init.body)) } } : undefined);
     open("/automations/automation_1/editor?view=list");
     const card = await screen.findByRole("article", { name: "Step pro" });
-    fireEvent.change(within(card).getByLabelText("Type"), { target: { value: "date" } });
-    fireEvent.change(within(card).getByLabelText("Value"), { target: { value: "2026-10-04" } });
+    changeControl(within(card).getByLabelText("Type"), { target: { value: "date" } });
+    changeControl(within(card).getByLabelText("Value"), { target: { value: "2026-10-04" } });
     fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
     fireEvent.click(await screen.findByRole("button", { name: "Step pro" }));
     const condition = screen.getByRole("region", { name: "Step pro settings" });
-    expect(within(condition).getByLabelText("Type")).toHaveProperty("value", "date");
-    fireEvent.change(within(condition).getByLabelText("Operator"), { target: { value: "within" } });
-    fireEvent.change(within(condition).getByLabelText("Duration"), { target: { value: "2 days" } });
+    expect(controlValue(within(condition).getByLabelText("Type"))).toBe("date");
+    changeControl(within(condition).getByLabelText("Operator"), { target: { value: "within" } });
+    changeControl(within(condition).getByLabelText("Duration"), { target: { value: "2 days" } });
     fireEvent.click(screen.getByRole("button", { name: "Step welcome" }));
     const send = screen.getByRole("region", { name: "Step welcome settings" });
     fireEvent.click(within(send).getByRole("button", { name: "Add mapping" }));
-    fireEvent.change(within(send).getByLabelText("Variable name"), { target: { value: "received" } });
-    fireEvent.change(within(send).getByLabelText("Choose context field"), { target: { value: "event.received_at" } });
+    changeControl(within(send).getByLabelText("Variable name"), { target: { value: "received" } });
+    changeControl(within(send).getByLabelText("Choose context field"), { target: { value: "event.received_at" } });
     fireEvent.click(screen.getByRole("button", { name: "List" }));
-    expect(await within(screen.getByRole("article", { name: "Step welcome" })).findByLabelText("Context field")).toHaveProperty("value", "event.received_at");
+    expect(controlValue(await within(screen.getByRole("article", { name: "Step welcome" })).findByLabelText("Context field"))).toBe("event.received_at");
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
     const body = JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "PATCH")![1]!.body));
@@ -523,7 +524,7 @@ describe("AutomationEditor on the canvas", () => {
     open("/automations/automation_1/editor?view=canvas");
     fireEvent.click(await screen.findByRole("button", { name: "Step welcome" }));
     const panel = screen.getByRole("region", { name: "Step welcome settings" });
-    fireEvent.change(within(panel).getByLabelText(/From/), { target: { value: "not an address" } });
+    changeControl(within(panel).getByLabelText(/From/), { target: { value: "not an address" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(await within(panel).findByText("Use email@domain or Name <email@domain>.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Step welcome" }).getAttribute("aria-invalid")).toBe("true");
