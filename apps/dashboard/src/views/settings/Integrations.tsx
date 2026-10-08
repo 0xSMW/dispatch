@@ -55,10 +55,17 @@ export function Integrations() {
     void list.reload();
   };
 
+  const empty = !list.loading && !list.error && list.page === 1 && !list.rows.length;
+
   return (
     <div className="page">
       <PageHeader title="Settings" />
       <Tabs tabs={settingsTabs} />
+      {empty ? <Empty
+        title="No integrations"
+        body="Connect Stripe, Clerk, Supabase, or Standard Webhooks to update contacts and start automations."
+        action={<>{can ? <button type="button" onClick={() => { setCredentials(null); setAdding("stripe"); }}>Connect integration</button> : <span className="muted">An administrator can connect an integration.</span>}<a href={setupGuide("stripe")} target="_blank" rel="noreferrer">Stripe setup guide</a></>}
+      /> : <>
       <Panel title="Integration setup">
         <div className="integrationGrid">
           {providers.map((provider) => <div key={provider.value} className="integrationCard">
@@ -121,6 +128,7 @@ export function Integrations() {
           </div> : null}
         </div>
       </Panel>
+      </>}
       {can && adding ? <IntegrationForm provider={adding} onClose={() => setAdding(null)} onCreated={(result) => { setAdding(null); reveal(result); }} onSaved={() => void list.reload()} /> : null}
       {can && editing ? <IntegrationForm integration={editing} onClose={() => setEditing(null)} onCreated={reveal}
         onSaved={() => { setEditing(null); void list.reload(); }} /> : null}
