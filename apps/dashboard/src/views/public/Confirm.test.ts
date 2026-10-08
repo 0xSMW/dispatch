@@ -15,17 +15,17 @@ describe("ConfirmCard", () => {
     vi.unstubAllGlobals();
   });
 
-  it("renders escaped names and shared brand styles without callbacks on mount or updates", () => {
+  it("renders escaped brand names and hides internal form names without callbacks on mount or updates", () => {
     const onConfirm = vi.fn();
     const nextCallback = vi.fn();
     const { container, rerender } = render(createElement(ConfirmCard, { brand, formName, onConfirm }));
-    expect(screen.getByRole("heading", { name: formName }).tagName).toBe("H1");
+    expect(screen.getByRole("heading", { name: "Confirm your subscription" }).tagName).toBe("H1");
     expect(screen.getByText("<Acme>")).toBeTruthy();
     expect(container.querySelector("script")).toBeNull();
-    expect(container.querySelector("form")?.style.getPropertyValue("--brand")).toBe("#ff0055");
-    expect(container.querySelector("form")?.style.getPropertyValue("--brand-text")).toBe("#ffffff");
+    expect(container.querySelector("form")?.style.getPropertyValue("--brand")).toBe("");
+    expect(container.querySelector("form")?.style.getPropertyValue("--brand-text")).toBe("");
     rerender(createElement(ConfirmCard, { brand, formName: "Updated", onConfirm: nextCallback, error: "Try again" }));
-    expect(screen.getByRole("alert").textContent).toBe("Try again");
+    expect(screen.getByRole("alert").textContent).toBe("We couldn't confirm your subscription. Please try again.");
     expect(onConfirm).not.toHaveBeenCalled();
     expect(nextCallback).not.toHaveBeenCalled();
   });
@@ -33,7 +33,7 @@ describe("ConfirmCard", () => {
   it("invokes exactly once for deliberate button activation and prevents submission navigation", () => {
     const onConfirm = vi.fn();
     const { container } = render(createElement(ConfirmCard, { brand, formName, onConfirm }));
-    fireEvent.click(screen.getByRole("button", { name: "Confirm" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm subscription" }));
     expect(onConfirm).toHaveBeenCalledTimes(1);
     const event = new Event("submit", { bubbles: true, cancelable: true });
     container.querySelector("form")!.dispatchEvent(event);
@@ -49,7 +49,7 @@ describe("ConfirmCard", () => {
       if (state === "missing callback") delete props.onConfirm;
       else props[state] = true;
       const { container } = render(createElement(ConfirmCard, props));
-      const button = screen.queryByRole("button", { name: "Confirm" }) as HTMLButtonElement | null;
+      const button = screen.queryByRole("button", { name: "Confirm subscription" }) as HTMLButtonElement | null;
       if (button) {
         expect(button.disabled).toBe(true);
         fireEvent.click(button);
@@ -67,11 +67,11 @@ describe("ConfirmCard", () => {
     const logo = screen.getByRole("img", { name: "<Acme>" });
     expect(logo.getAttribute("referrerpolicy")).toBe("no-referrer");
     expect(screen.getByRole("status").textContent).toBe("Confirming…");
-    expect(screen.getByRole("alert").textContent).toBe("Please retry");
+    expect(screen.getByRole("alert").textContent).toBe("We couldn't confirm your subscription. Please try again.");
     rerender(createElement(ConfirmCard, { ...input, preview: true }));
     expect(screen.getByRole("heading").tagName).toBe("H2");
     rerender(createElement(ConfirmCard, { ...input, done: true }));
-    expect(screen.getByRole("status").textContent).toBe("Thank you! Your subscription is confirmed.");
+    expect(screen.getByRole("status").textContent).toBe("Subscription active");
     expect(screen.queryByRole("button")).toBeNull();
     expect(input.onConfirm).not.toHaveBeenCalled();
   });
