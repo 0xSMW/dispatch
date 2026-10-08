@@ -30,17 +30,16 @@ export function Setup() {
             </li>
           ))}
         </ol>
-        {can ? (
+        {/* {can ? (
           <div className="toolbar">
             <button type="button" onClick={() => setSending(true)}>
               Send a test email
             </button>
           </div>
-        ) : null}
+        ) : null} */}
       </Panel>
 
-      <details className="panel">
-        <summary>Lifecycle email (optional)</summary>
+      <Panel title="Lifecycle email (optional)">
         <div className="stack">
           <p className="muted">Explore lifecycle email when you are ready. These optional steps do not affect setup completion.</p>
           {can ? (
@@ -54,7 +53,7 @@ export function Setup() {
           )}
           <p className="muted">Presets install disabled from the Lifecycle library. Review the automation before enabling it.</p>
         </div>
-      </details>
+      </Panel>
 
       <div className="grid">
         <Panel title="Tenant">
