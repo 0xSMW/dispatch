@@ -47,10 +47,6 @@
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
-.canvasHelp { display: grid; gap: 16px; margin: 0; }
-.canvasHelp > div { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 12px; }
-.canvasHelp dt { font-weight: 500; }
-.canvasHelp dd { margin: 0; color: var(--text-dim); }
 .canvasPanel .canvasPickerSearch { width: 100%; min-width: 0; }
 @media (max-width: 620px) {
   .canvas .canvasHud { gap: 6px; }
@@ -62,6 +58,6 @@
 @media (max-width: 620px) {
   .automationWorkspace .canvasView.immersive .canvasHud {
     right: 8px;
-    bottom: calc(var(--builder-control-height, 44px) + 16px);
+    bottom: 8px;
   }
 }
