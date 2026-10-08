@@ -2,7 +2,7 @@ import { Heading, Text } from "react-email";
 import { Action, If, Layout, Notice } from "./_components";
 import { exampleBrand, heading, muted, text, type Brand, type EmailVariable } from "./_theme";
 
-const preview = "A security change was saved on your account. Review it if it was not you.";
+const preview = "Review a security change to your account.";
 
 type Props = {
   brand?: Brand;
@@ -32,21 +32,21 @@ export default function SecurityNotice({
         {change}
       </Heading>
       <Text className="dm-text" style={text}>
-        This change was saved on your {brand.productName} account.
+        This change was made to your {brand.productName} account. If you did not make it, secure your account below.
       </Text>
       <If value={changedAt}>
         <Text className="dm-muted" style={muted}>
-          Changed at {changedAt}.
+          Changed: {changedAt}.
         </Text>
       </If>
       <If value={location}>
         <Text className="dm-muted" style={muted}>
-          Location {location}.
+          Location: {location}.
         </Text>
       </If>
       <If value={device}>
         <Text className="dm-muted" style={muted}>
-          Device {device}.
+          Device: {device}.
         </Text>
       </If>
       <Action brand={brand} href={secureAccountUrl}>
