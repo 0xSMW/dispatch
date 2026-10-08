@@ -55,7 +55,7 @@ describe("Library", () => {
     expect(within(auth).getByText("Transactional")).toBeTruthy();
     const billing = screen.getByRole("region", { name: "Billing" });
     const card = within(billing).getByRole("article", { name: "Receipt" });
-    await waitFor(() => expect(card.querySelector("iframe")?.getAttribute("srcdoc")).toBe(framed("<p>Receipt body</p>")));
+    await waitFor(() => expect(card.querySelector("iframe")?.getAttribute("srcdoc")).toBe(framed("<p>Receipt body</p>", undefined, true)));
   });
 
   it("previews a template with its variables and installs it", async () => {
