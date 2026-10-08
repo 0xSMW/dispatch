@@ -218,7 +218,7 @@ describe("Integrations", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Delete Billing" }));
     fireEvent.change(screen.getByLabelText("Confirmation phrase"), { target: { value: "DELETE" } });
     fireEvent.click(screen.getByRole("button", { name: /Delete integration/ }));
-    expect(await screen.findByText("No integrations")).toBeTruthy();
+    expect(await screen.findByText("No integrations yet")).toBeTruthy();
     expect(calls(fetch)).toContain("DELETE /integrations/int_1");
     expect(calls(fetch).filter((call) => call === "GET /integrations?limit=40")).toHaveLength(2);
   });
