@@ -80,9 +80,9 @@ export function Runs({ automationId, tree, options }: { automationId: string; tr
         noun="runs"
         empty={
           filtered ? (
-            <Empty title="No runs" body="No runs match these filters." action={<button type="button" className="secondary" onClick={resetFilters}>Clear filters</button>} />
+            <Empty title="No runs match" body="Try different filters, or clear them to see all runs." action={<button type="button" className="secondary" onClick={resetFilters}>Clear filters</button>} />
           ) : (
-            <Empty title="No runs yet" body="A run starts each time the trigger event fires while the automation is enabled." icon={<Zap size={28} strokeWidth={1.5} />} action={<Link className="button secondary" to="/events">View events</Link>} />
+            <Empty title="No runs yet" body="The automation runs each time its trigger event happens, as long as it's turned on." icon={<Zap size={28} strokeWidth={1.5} />} action={<Link className="button secondary" to="/events">View events</Link>} />
           )
         }
         columns={[
