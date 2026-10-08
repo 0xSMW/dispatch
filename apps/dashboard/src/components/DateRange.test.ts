@@ -30,7 +30,8 @@ describe("dateRange", () => {
   it("shows date inputs only for a custom range", () => {
     render(h(MemoryRouter, { initialEntries: ["/emails"] }, h(DateRange)));
     expect(screen.queryByLabelText("From date")).toBeNull();
-    fireEvent.change(screen.getByLabelText("Date range"), { target: { value: "custom" } });
+    fireEvent.click(screen.getByRole("combobox", { name: "Date range" }));
+    fireEvent.click(screen.getByRole("option", { name: "Custom" }));
     expect(screen.getByLabelText("From date")).toBeTruthy();
     expect(screen.getByLabelText("To date")).toBeTruthy();
   });
