@@ -11,7 +11,8 @@ export function setupSteps(setup: Setup | null, sent: boolean): Step[] {
   return [
     { label: "Verify a domain", done: setup?.domain?.status === "verified", to: "/domains" },
     { label: "Create an API key", done: Boolean(setup?.api_key), to: "/api-keys" },
-    { label: "Send an email", done: sent, to: "/emails/send" },
+    // { label: "Send an email", done: sent, to: "/emails/send" },
+    { label: "Send an email", done: sent, to: "/emails" },
   ];
 }
 
