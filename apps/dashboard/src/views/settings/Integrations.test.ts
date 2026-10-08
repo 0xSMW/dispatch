@@ -52,10 +52,13 @@ describe("Integrations", () => {
     ["clerk", "Clerk", { delete_contact: false }],
     ["supabase", "Supabase", { secret_header: "x-webhook-secret" }],
     ["webhook", "Standard Webhooks", {}],
-  ])("opens %s setup tiles with provider-specific fields and a working create payload", async (provider, label, settings) => {
+  ])("connects %s from the empty state with provider-specific fields and a working create payload", async (provider, _label, settings) => {
     const fetch = stubApi({ "GET /integrations": list([]), "POST /integrations": { ...created, provider } });
     show(h(Integrations), "/settings/integrations");
-    fireEvent.click(screen.getByRole("button", { name: `Connect ${label}` }));
+    fireEvent.click(await screen.findByRole("button", { name: "Connect integration" }));
+    expect(screen.queryByRole("heading", { name: "Integration setup" })).toBeNull();
+    expect(screen.queryByRole("table")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Provider"), { target: { value: provider } });
     expect(screen.getByLabelText("Provider")).toHaveProperty("value", provider);
     expect(screen.getByRole("link", { name: "Open provider setup guide" }).getAttribute("href")).toMatch(new RegExp(`templates/${provider}.md#receiver-setup$`));
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "New integration" } });
@@ -119,7 +122,7 @@ describe("Integrations", () => {
   it("creates and shows URL and token once, then clears them on dismissal", async () => {
     const fetch = stubApi({ "GET /integrations": list([]), "POST /integrations": created });
     show(h(Integrations), "/settings/integrations");
-    fireEvent.click(screen.getByRole("button", { name: "Add integration" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Connect integration" }));
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Billing" } });
     fireEvent.change(screen.getByLabelText("Signing secret"), { target: { value: "whsec_test" } });
     fireEvent.click(screen.getByRole("button", { name: /Create integration/ }));
@@ -163,7 +166,7 @@ describe("Integrations", () => {
     const pending = new Promise<Reply>((resolve) => { complete = resolve; });
     const fetch = mockFetch((_url, init) => init.method === "POST" ? pending : { body: list([]) });
     show(h(Integrations), "/settings/integrations");
-    fireEvent.click(screen.getByRole("button", { name: "Add integration" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Connect integration" }));
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Billing" } });
     fireEvent.change(screen.getByLabelText("Signing secret"), { target: { value: "whsec_test" } });
     fireEvent.click(screen.getByRole("button", { name: /Create integration/ }));
