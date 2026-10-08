@@ -3,11 +3,18 @@ import { scopes, shortcuts, type Shortcut } from "../lib/shortcuts";
 import "../styles/shell.css";
 
 /** The `?` dialog: every shortcut from lib/shortcuts.ts, grouped by where it works. */
-export function Shortcuts({ onClose }: { onClose: () => void }) {
+export function Shortcuts({ onClose, canvas = false }: { onClose: () => void; canvas?: boolean }) {
   const all: Shortcut[] = Object.values(shortcuts);
   return (
     <Modal isOpen title="Keyboard shortcuts" onClose={onClose} size="small">
       <div className="stack">
+        {canvas ? <section aria-label="Canvas">
+          <h3 className="typeLabel">Canvas</h3>
+          <dl className="shortcutList">
+            <div className="shortcutRow"><dt>Pan canvas</dt><dd><kbd>Space</kbd> + drag</dd></div>
+            <div className="shortcutRow"><dt>Close the step inspector</dt><dd><kbd>Esc</kbd></dd></div>
+          </dl>
+        </section> : null}
         {scopes.map((scope) => (
           <section key={scope} aria-label={scope}>
             <h3 className="typeLabel">{scope}</h3>
