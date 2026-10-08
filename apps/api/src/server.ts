@@ -2076,7 +2076,7 @@ async function tenantBrand(tenantId: string) {
 }
 
 function presentBrand(brand: BrandRecord) {
-  return { object: "brand" as const, ...brand, ...resolvedTheme(brand), button_text_color: brandTextColor(brand.color || "#18181b") };
+  return { object: "brand" as const, ...brand, ...resolvedTheme(brand), button_text_color: brandTextColor(brand.color || "#171717") };
 }
 
 async function renderBrand(tenantId: string, from?: string | null) {
