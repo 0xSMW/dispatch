@@ -1,3 +1,4 @@
+import { changeControl, controlValue } from "../../testingControls";
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -45,7 +46,7 @@ describe("GoalConversions", () => {
     expect(screen.getByText(/No contact history recorded yet/)).toBeTruthy();
     expect(screen.getByText(/even after the range ends/)).toBeTruthy();
     expect(fetch.mock.calls.some(([raw]) => new URL(String(raw)).searchParams.get("after") === "goal_1")).toBe(true);
-    fireEvent.change(screen.getByLabelText("Goal"), { target: { value: "goal_2" } });
+    changeControl(screen.getByLabelText("Goal"), { target: { value: "goal_2" } });
     await waitFor(() => expect(fetch.mock.calls.some(([raw]) => new URL(String(raw)).pathname === "/goals/goal_2/metrics")).toBe(true));
     const query = new URL(String(fetch.mock.calls.at(-1)![0])).searchParams;
     expect(query.get("automation_id")).toBe("automation_1");
