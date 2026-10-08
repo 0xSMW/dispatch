@@ -1,6 +1,6 @@
 import { Link } from "react-router-dom";
 import { Code } from "../../components/Code";
-import { Failed } from "../../components/Empty";
+import { Empty, Failed } from "../../components/Empty";
 import { Facts } from "../../components/Facts";
 import { PageHeader } from "../../components/PageHeader";
 import { Panel } from "../../components/Panel";
@@ -48,10 +48,7 @@ export function Smtp() {
           ) : system.error ? (
             <Failed message={system.error} onRetry={system.reload} />
           ) : !system.data?.smtp ? (
-            <>
-              <p>SMTP is unavailable on this deployment.</p>
-              <p className="muted">Send messages through the HTTP API. <Link to="/emails/send">Test send</Link>.</p>
-            </>
+            <Empty compact title="SMTP is unavailable on this deployment." body="Send messages through the HTTP API." action={<Link className="button secondary" to="/emails/send">Test send</Link>} />
           ) : (
             <>
               <p className="muted">Send through Dispatch from anything that speaks SMTP. Messages take the same path as the API.</p>
