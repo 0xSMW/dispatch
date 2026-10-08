@@ -1,3 +1,4 @@
+import { Link } from "react-router-dom";
 import { useState } from "react";
 import { Empty, Failed } from "../../components/Empty";
 import { Select } from "../../components/Field";
@@ -53,8 +54,8 @@ export function GoalConversions(scope: GoalConversionsProps) {
         <Select label="Goal" value={goal?.id ?? ""} onChange={setPicked} options={rows.map((row) => ({ value: row.id, label: row.name }))} />
         {goal ? <p className="muted">{"event" in goal.target ? `Event: ${goal.target.event}` : "Recorded contact-state entry"} · {goal.window_days}-day conversion window</p> : null}
         {issue ? <p role="alert">{issue}</p> : path ? <ConversionResults key={path} path={path} /> : null}
-      </> : <Empty title="No goals" body="Create a goal on the Goals page to measure conversions from earlier sends." />}
-      <p className="muted">The date range selects first-send cohorts: start inclusive, end exclusive. Conversion can happen through the inclusive window after that first scoped send, even after the range ends. Days are UTC. Eligibility uses current contact state. Sandbox sends are excluded; later sandbox activity does not replace prior real-send attribution.</p>
+      </> : <Empty title="No goals" body="Create a goal to measure conversions from your sends." action={<Link className="button secondary" to="/goals">View goals</Link>} />}
+      {rows.length ? <p className="muted">The date range selects first-send cohorts: start inclusive, end exclusive. Conversion can happen through the inclusive window after that first scoped send, even after the range ends. Days are UTC. Eligibility uses current contact state. Sandbox sends are excluded; later sandbox activity does not replace prior real-send attribution.</p> : null}
     </div>
   </Panel>;
 }
