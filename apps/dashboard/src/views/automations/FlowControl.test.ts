@@ -258,7 +258,7 @@ describe("flow control editor and run integration", () => {
     render(h(SessionProvider, null, h(MemoryRouter, null, h(RunDrawer, {
       automationId: "automation", runId: "run", tree: initial(), onClose: () => undefined, options,
     }))));
-    expect(await screen.findByText("Left at the Filter step: contact.activated is not false (audience).")).toBeTruthy();
+    expect(await screen.findByText("Left at the Filter step: Activated is not false (audience).")).toBeTruthy();
     expect(screen.getByText("Took the Paid path.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
     fireEvent.click(await screen.findByRole("button", { name: "Step split" }));
