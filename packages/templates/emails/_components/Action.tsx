@@ -1,18 +1,19 @@
 import type React from "react";
 import { Link, Text } from "react-email";
-import { linkStyle, muted, text, useTheme, type Brand } from "../_theme";
+import { linkStyle, text, useTheme, type Brand } from "../_theme";
 
 export function Action({ brand, href, children }: { brand: Brand; href?: string; children: React.ReactNode }) {
   const url = href ?? "";
   const theme = useTheme(brand);
   return (
     <>
-      <table role="presentation" cellPadding={0} cellSpacing={0} border={0} style={{ margin: "8px 0 16px" }}>
+      <table role="presentation" cellPadding={0} cellSpacing={0} border={0} style={{ margin: "24px 0" }}>
         <tbody>
           <tr>
-            <td style={{ borderRadius: theme.THEME_RADIUS, backgroundColor: theme.THEME_BUTTON_BACKGROUND }}>
+            <td className="dm-button" style={{ borderRadius: theme.THEME_RADIUS, backgroundColor: theme.THEME_BUTTON_BACKGROUND }}>
               <a
                 href={url}
+                className="dm-button"
                 style={{
                   backgroundColor: theme.THEME_BUTTON_BACKGROUND,
                   borderRadius: theme.THEME_RADIUS,
@@ -22,8 +23,8 @@ export function Action({ brand, href, children }: { brand: Brand; href?: string;
                   fontFamily: theme.THEME_FONT_FAMILY,
                   fontSize: theme.THEME_FONT_SIZE,
                   lineHeight: "20px",
-                  minHeight: "44px",
-                  padding: "12px 20px",
+                  fontWeight: "600",
+                  padding: "11px 20px",
                   textDecoration: "none",
                 }}
               >
@@ -33,9 +34,6 @@ export function Action({ brand, href, children }: { brand: Brand; href?: string;
           </tr>
         </tbody>
       </table>
-      <Text className="dm-muted" style={muted}>
-        {url}
-      </Text>
     </>
   );
 }
@@ -56,9 +54,6 @@ export function TextLink({
         <Link className="dm-link" href={url} style={linkStyle(brand.color)}>
           {children}
         </Link>
-      </Text>
-      <Text className="dm-muted" style={muted}>
-        {url}
       </Text>
     </>
   );
