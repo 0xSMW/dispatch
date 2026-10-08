@@ -303,6 +303,8 @@ export type Contact = {
   updated_at: string;
   /** On list rows only. */
   segments?: Array<{ id: string; name: string }>;
+  /** Effective preferences, including topic defaults. Global unsubscribe remains separate. */
+  topics?: Array<{ id: string; name: string; subscription: "opt_in" | "opt_out" | "pending" }>;
 };
 
 export type PropertyType = "string" | "number" | "boolean" | "date";
@@ -716,6 +718,7 @@ export type Goal = import("@dispatchmail/core").Goal;
 export type GoalMetrics = import("@dispatchmail/core").GoalMetrics;
 export type LibraryUpdates = import("@dispatchmail/core").LibraryUpdates;
 export type BrandSettings = Partial<import("@dispatchmail/core").ThemeTokens> & {
+  variables?: Record<string, string>;
   object: "brand";
   product_name?: string;
   product_url?: string;
