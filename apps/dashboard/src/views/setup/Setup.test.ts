@@ -36,7 +36,7 @@ describe("Setup", () => {
     expect(optional.closest("details")).toBeNull();
     expect(within(optional).getByRole("link", { name: "Set your brand" }).getAttribute("href")).toBe("/settings/brand");
     expect(within(optional).getByRole("link", { name: "Send your first event" }).getAttribute("href")).toBe("/events");
-    expect(within(optional).getByRole("link", { name: "Choose a template" }).getAttribute("href")).toBe("/templates#ready-made");
+    expect(within(optional).getByRole("link", { name: "Choose a template" }).getAttribute("href")).toBe("/templates/library");
     expect(within(optional).getByText("Choose a ready-made template, then configure your automation. Review it before enabling it.")).toBeTruthy();
     expect(within(optional).queryByText(/when it ships/)).toBeNull();
 
