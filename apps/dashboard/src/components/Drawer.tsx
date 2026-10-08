@@ -1,4 +1,4 @@
-import { useId, useRef, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { useDialog } from "../hooks/useDialog";
 
@@ -17,15 +17,39 @@ export interface DrawerProps {
 export function Drawer({ isOpen, onClose, title, label, children, actions, width = "medium" }: DrawerProps) {
   const ref = useRef<HTMLElement>(null);
   const titleId = useId();
-  useDialog(ref, isOpen, onClose);
+  const [closing, setClosing] = useState(false);
+  const closingRef = useRef(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const closeCallback = useRef(onClose);
+  closeCallback.current = onClose;
+  useEffect(() => {
+    if (!isOpen) {
+      if (timer.current) clearTimeout(timer.current);
+      closingRef.current = false;
+      setClosing(false);
+    }
+  }, [isOpen]);
+  useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+  function close() {
+    if (closingRef.current) return;
+    if (!window.matchMedia || window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      closeCallback.current();
+      return;
+    }
+    closingRef.current = true;
+    setClosing(true);
+    // Keep conditionally mounted panels alive until their exit transition finishes.
+    timer.current = setTimeout(() => closeCallback.current(), 220);
+  }
+  useDialog(ref, isOpen, close);
   if (!isOpen) return null;
 
   return (
     <div
-      className="overlay drawerOverlay"
+      className={`overlay drawerOverlay${closing ? " closing" : ""}`}
       role="presentation"
       onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
+        if (event.target === event.currentTarget) close();
       }}
     >
       <aside ref={ref} role="dialog" aria-modal="true" aria-labelledby={titleId} className={`drawer ${width}`} tabIndex={-1}>
@@ -36,7 +60,7 @@ export function Drawer({ isOpen, onClose, title, label, children, actions, width
           </div>
           <div className="toolbar">
             {actions}
-            <button type="button" className="ghost icon small" onClick={onClose} aria-label="Close panel">
+            <button type="button" className="ghost icon small" onClick={close} aria-label="Close panel">
               <X size={16} />
             </button>
           </div>
