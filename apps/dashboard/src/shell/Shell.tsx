@@ -17,7 +17,6 @@ import {
   Moon,
   Rocket,
   ScrollText,
-  Search,
   Settings,
   Sun,
   Target,
@@ -26,7 +25,6 @@ import {
   Zap,
 } from "lucide-react";
 import { CommandMenu } from "./CommandMenu";
-import { metaKey } from "../components/Kbd";
 import { Menu } from "../components/Menu";
 import { useHotkey } from "../hooks/useHotkey";
 import { dialogOpen, shortcuts } from "../lib/shortcuts";
@@ -91,9 +89,6 @@ export function Shell() {
           </span>
           <span>Dispatch</span>
         </div>
-        <button type="button" className="commandTrigger" onClick={open("commands")} aria-label="Search or jump" aria-keyshortcuts="Meta+K Control+K">
-          <Search size={15} aria-hidden /><span>Search or jump...</span><kbd>{metaKey.trim()} K</kbd>
-        </button>
         <nav aria-label="Main">
           {nav.map(({ to, label, icon: Icon }) => (
             <NavLink key={to} to={to} className={({ isActive }) => (isActive ? "navItem active" : "navItem")}>
