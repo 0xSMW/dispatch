@@ -38,8 +38,10 @@ describe("Smtp", () => {
   it.each([null, undefined])("hides relay details when SMTP is unavailable (%s)", async (smtp) => {
     stubApi({ "GET /system": system(smtp) });
     show(h(Smtp), "/settings/smtp");
-    expect(await screen.findByText("SMTP isn't available here")).toBeTruthy();
-    expect(screen.getByRole("link", { name: "Send a test email" }).getAttribute("href")).toBe("/emails/send");
+    const empty = (await screen.findByText("SMTP isn't available here")).closest(".empty");
+    expect(empty?.parentElement?.className).toBe("page");
+    expect(empty?.classList.contains("compact")).toBe(false);
+    expect(screen.queryByRole("link", { name: "Send a test email" })).toBeNull();
     expect(screen.queryByText("Host")).toBeNull();
     expect(screen.queryByText("587")).toBeNull();
     expect(screen.queryByText("465")).toBeNull();
