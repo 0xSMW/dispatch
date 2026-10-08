@@ -94,7 +94,8 @@ describe("Variable table saves", () => {
   it("clears the fallback when changing an Optional scalar to a list", async () => {
     setup();
     await screen.findByLabelText("HTML");
-    fireEvent.change(screen.getByLabelText("Type of PLAN"), { target: { value: "list" } });
+    fireEvent.click(screen.getByRole("combobox", { name: "Type of PLAN" }));
+    fireEvent.click(screen.getByRole("option", { name: "list" }));
     const control = within(screen.getByRole("group", { name: "Requirement for PLAN" }));
     expect((control.getByRole("button", { name: "Required" }) as HTMLButtonElement).disabled).toBe(true);
     expect(control.queryByRole("button", { name: "Optional" })).toBeNull();
