@@ -1,3 +1,4 @@
+import { changeControl, controlValue } from "../../testingControls";
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { createMemoryRouter, Outlet, RouterProvider, useLocation } from "react-router-dom";
@@ -166,7 +167,7 @@ describe("AutomationEditor", () => {
     expect(document.querySelector(".builderName")).toBeNull();
     expect(document.querySelector(".canvasView.immersive")).toBeTruthy();
     expect(document.querySelector(".canvasPanel")).toBeNull();
-    expect(screen.getByLabelText("Name")).toHaveProperty("value", "Welcome");
+    expect(controlValue(screen.getByLabelText("Name"))).toBe("Welcome");
     expect(screen.getByLabelText("Name")).toHaveProperty("disabled", role === "viewer");
     expect(screen.getByRole("button", { name: "API" })).toBeTruthy();
     expect(screen.getByRole("navigation", { name: "Learn more" })).toBeTruthy();
@@ -193,13 +194,13 @@ describe("AutomationEditor", () => {
     const router = open("/automations/automation_1/editor?range=7d");
     fireEvent.click(await screen.findByRole("button", { name: "Step welcome" }));
     const panel = screen.getByRole("region", { name: "Step welcome settings" });
-    fireEvent.change(within(panel).getByLabelText("Subject"), { target: { value: "Draft subject" } });
-    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Draft name" } });
+    changeControl(within(panel).getByLabelText("Subject"), { target: { value: "Draft subject" } });
+    changeControl(screen.getByLabelText("Name"), { target: { value: "Draft name" } });
     fireEvent.click(screen.getByRole("button", { name: "List" }));
     expect(new URLSearchParams(router.state.location.search).get("view")).toBe("list");
     const card = screen.getByRole("article", { name: "Step welcome" });
-    expect(within(card).getByLabelText("Subject")).toHaveProperty("value", "Draft subject");
-    fireEvent.change(within(card).getByLabelText("Subject"), { target: { value: "Newer draft" } });
+    expect(controlValue(within(card).getByLabelText("Subject"))).toBe("Draft subject");
+    changeControl(within(card).getByLabelText("Subject"), { target: { value: "Newer draft" } });
     if (choice === "canvas") fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
     for (const tab of ["Runs", "Metrics"]) {
       fireEvent.click(screen.getByRole("tab", { name: tab }));
@@ -210,20 +211,20 @@ describe("AutomationEditor", () => {
       expect(screen.queryByRole("region", { name: "Step welcome settings" })).toBeNull();
       fireEvent.click(screen.getByRole("tab", { name: "Builder" }));
       expect(screen.getByRole("button", { name: choice === "canvas" ? "Canvas" : "List" }).getAttribute("aria-pressed")).toBe("true");
-      expect(screen.getByLabelText("Name")).toHaveProperty("value", "Draft name");
+      expect(controlValue(screen.getByLabelText("Name"))).toBe("Draft name");
       expect(screen.getByText("Unsaved changes")).toBeTruthy();
       expect(screen.getByRole("button", { name: "Save" })).toHaveProperty("disabled", false);
       const selected = screen.getByRole(choice === "canvas" ? "region" : "article", {
         name: choice === "canvas" ? "Step welcome settings" : "Step welcome",
       });
-      expect(within(selected).getByLabelText("Subject")).toHaveProperty("value", "Newer draft");
+      expect(controlValue(within(selected).getByLabelText("Subject"))).toBe("Newer draft");
     }
     if (choice === "list") fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
     expect(screen.getByRole("region", { name: "Step welcome settings" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Step welcome" }).getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(screen.getByRole("button", { name: "Close panel" }));
     fireEvent.click(screen.getByRole("button", { name: "Step welcome" }));
-    expect(within(screen.getByRole("region", { name: "Step welcome settings" })).getByLabelText("Subject")).toHaveProperty("value", "Newer draft");
+    expect(controlValue(within(screen.getByRole("region", { name: "Step welcome settings" })).getByLabelText("Subject"))).toBe("Newer draft");
     expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
     void router.navigate("/automations");
     expect(await screen.findByText("Leave without saving?")).toBeTruthy();
@@ -235,15 +236,15 @@ describe("AutomationEditor", () => {
     const fetch = api((url, init) => init.method === "PATCH" ? { body: { ...automation, ...JSON.parse(String(init.body)) } } : undefined);
     open("/automations/automation_1/editor");
     const name = await screen.findByLabelText("Name");
-    fireEvent.change(name, { target: { value: " " } });
+    changeControl(name, { target: { value: " " } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(await screen.findByText("Enter a name.")).toBeTruthy();
     expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
-    fireEvent.change(name, { target: { value: "  Renamed  " } });
+    changeControl(name, { target: { value: "  Renamed  " } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await screen.findByText("Saved");
     expect(JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "PATCH")![1]!.body)).name).toBe("Renamed");
-    expect(screen.getByLabelText("Name")).toHaveProperty("value", "  Renamed  ");
+    expect(controlValue(screen.getByLabelText("Name"))).toBe("  Renamed  ");
   });
 
   it("uses a status-only update when resuming a clean paused graph", async () => {
@@ -317,9 +318,9 @@ describe("AutomationEditor", () => {
     api();
     open();
     expect(await screen.findByRole("article", { name: "Step welcome" })).toBeTruthy();
-    expect(screen.getByLabelText("Event")).toHaveProperty("value", "user.created");
+    expect(controlValue(screen.getByLabelText("Event"))).toBe("user.created");
     const card = screen.getByRole("article", { name: "Step pro" });
-    expect(within(card).getByLabelText("Field")).toHaveProperty("value", "event.plan");
+    expect(controlValue(within(card).getByLabelText("Field"))).toBe("event.plan");
     expect(screen.getByRole("region", { name: "True branch of pro" })).toBeTruthy();
     expect(screen.getByRole("region", { name: "False branch of pro" })).toBeTruthy();
     expect(screen.getByText("Saved")).toBeTruthy();
@@ -336,10 +337,10 @@ describe("AutomationEditor", () => {
     open();
     const card = within(await screen.findByRole("article", { name: "Trigger" }));
     expect(card.getByText("Contact changes")).toBeTruthy();
-    expect(card.getByLabelText("From")).toHaveProperty("value", "false");
-    expect(card.getByLabelText("To")).toHaveProperty("value", "true");
+    expect(controlValue(card.getByLabelText("From"))).toBe("false");
+    expect(controlValue(card.getByLabelText("To"))).toBe("true");
     expect(card.queryByLabelText("Event")).toBeNull();
-    fireEvent.change(card.getByLabelText("To"), { target: { value: "false" } });
+    changeControl(card.getByLabelText("To"), { target: { value: "false" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
     expect(JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "PATCH")![1]!.body)).steps).toEqual([
@@ -355,9 +356,9 @@ describe("AutomationEditor", () => {
     } } : undefined);
     open();
     const selector = await screen.findByLabelText("Run for each contact");
-    expect(selector).toHaveProperty("value", reentry);
-    fireEvent.change(screen.getByRole("combobox", { name: "Trigger" }), { target: { value: "contact_created" } });
-    expect(selector).toHaveProperty("value", reentry);
+    expect(controlValue(selector)).toBe(reentry);
+    changeControl(screen.getByRole("combobox", { name: "Trigger" }), { target: { value: "contact_created" } });
+    expect(controlValue(selector)).toBe(reentry);
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
     expect(JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "PATCH")![1]!.body))).toMatchObject({
@@ -375,16 +376,16 @@ describe("AutomationEditor", () => {
     });
     open();
     const selector = await screen.findByLabelText("Run for each contact");
-    fireEvent.change(selector, { target: { value: "once" } });
+    changeControl(selector, { target: { value: "once" } });
     expect(screen.getByText("Unsaved changes")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
     const body = JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "PATCH")![1]!.body));
     expect(body.reentry).toBe("once");
-    fireEvent.change(selector, { target: { value: "every_time" } });
+    changeControl(selector, { target: { value: "every_time" } });
     release({ body: { ...automation, ...body } });
     await screen.findByText("Unsaved changes");
-    expect(selector).toHaveProperty("value", "every_time");
+    expect(controlValue(selector)).toBe("every_time");
   });
 
   it("edits the same re-entry value in the canvas trigger panel and saves it", async () => {
@@ -396,8 +397,8 @@ describe("AutomationEditor", () => {
     open("/automations/automation_1/editor?view=canvas");
     fireEvent.click(await screen.findByRole("button", { name: "Trigger" }));
     const panel = within(screen.getByRole("region", { name: "Trigger settings" }));
-    expect(panel.getByLabelText("Run for each contact")).toHaveProperty("value", "once");
-    fireEvent.change(panel.getByLabelText("Run for each contact"), { target: { value: "every_time" } });
+    expect(controlValue(panel.getByLabelText("Run for each contact"))).toBe("once");
+    changeControl(panel.getByLabelText("Run for each contact"), { target: { value: "every_time" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
     expect(JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "PATCH")![1]!.body)).reentry).toBe("every_time");
@@ -421,7 +422,7 @@ describe("AutomationEditor", () => {
     expect(start).toHaveProperty("disabled", true);
     fireEvent.click(start);
     expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
-    fireEvent.change(screen.getByLabelText(config.type === "topic_subscribed" ? "Topic" : "Segment"), {
+    changeControl(screen.getByLabelText(config.type === "topic_subscribed" ? "Topic" : "Segment"), {
       target: { value: config.type === "topic_subscribed" ? "topic_1" : "seg_1" },
     });
     await waitFor(() => expect(start).toHaveProperty("disabled", false));
@@ -455,15 +456,17 @@ describe("AutomationEditor", () => {
     });
     open();
     const rule = await screen.findByRole("article", { name: "Step pro" });
-    await within(rule).findByRole("option", { name: "renewed (date)" });
-    expect(within(rule).getByRole("option", { name: "active (boolean)" })).toBeTruthy();
-    fireEvent.change(within(rule).getByLabelText("Choose field"), { target: { value: "event.active" } });
-    fireEvent.change(within(rule).getByLabelText("Value"), { target: { value: "true" } });
+    fireEvent.click(within(rule).getByRole("combobox", { name: "Choose field" }));
+    await screen.findByRole("option", { name: "renewed (date)" });
+    expect(screen.getByRole("option", { name: "active (boolean)" })).toBeTruthy();
+    fireEvent.keyDown(within(rule).getByRole("combobox", { name: "Choose field" }), { key: "Escape" });
+    changeControl(within(rule).getByLabelText("Choose field"), { target: { value: "event.active" } });
+    changeControl(within(rule).getByLabelText("Value"), { target: { value: "true" } });
     const send = screen.getByRole("article", { name: "Step welcome" });
     fireEvent.click(within(send).getByRole("button", { name: "Add mapping" }));
-    fireEvent.change(within(send).getByLabelText("Variable name"), { target: { value: "plan" } });
-    fireEvent.change(within(send).getByLabelText("Choose context field"), { target: { value: "event.plan" } });
-    fireEvent.change(within(send).getByLabelText("Variables"), { target: { value: '{"plan":"literal","paid":false}' } });
+    changeControl(within(send).getByLabelText("Variable name"), { target: { value: "plan" } });
+    changeControl(within(send).getByLabelText("Choose context field"), { target: { value: "event.plan" } });
+    changeControl(within(send).getByLabelText("Variables"), { target: { value: '{"plan":"literal","paid":false}' } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
     const body = JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "PATCH")![1]!.body));
@@ -493,7 +496,7 @@ describe("AutomationEditor", () => {
     expect(requests()).toHaveLength(1);
     expect(new URL(String(requests()[0]![0])).searchParams.get("automation_id")).toBe("automation_1");
     expect(new URL(String(requests()[0]![0])).searchParams.get("start_date")).toBe("1970-01-01T00:00:00.000Z");
-    fireEvent.change(screen.getByLabelText("Date range"), { target: { value: "7d" } });
+    changeControl(screen.getByLabelText("Date range"), { target: { value: "7d" } });
     await waitFor(() => expect(requests()).toHaveLength(2));
   });
 
@@ -507,7 +510,7 @@ describe("AutomationEditor", () => {
     const card = await screen.findByRole("article", { name: "Step welcome" });
     fireEvent.click(within(card).getByRole("radio", { name: "Marketing" }));
     const topic = within(card).getByLabelText("Topic");
-    fireEvent.change(topic, { target: { value: "topic_1" } });
+    changeControl(topic, { target: { value: "topic_1" } });
     expect(await within(card).findByText(/This email has no unsubscribe link/)).toBeTruthy();
     fireEvent.click(within(card).getByRole("radio", { name: "Transactional" }));
     await waitFor(() => expect(within(card).queryByText(/This email has no unsubscribe link/)).toBeNull());
@@ -525,7 +528,7 @@ describe("AutomationEditor", () => {
     open();
     const card = await screen.findByRole("article", { name: "Step welcome" });
     fireEvent.click(within(card).getByRole("radio", { name: "Marketing" }));
-    fireEvent.change(within(card).getByLabelText("Topic"), { target: { value: "topic_1" } });
+    changeControl(within(card).getByLabelText("Topic"), { target: { value: "topic_1" } });
     expect(await within(card).findByText(/This email has no unsubscribe link/)).toBeTruthy();
   });
 
@@ -563,7 +566,7 @@ describe("AutomationEditor", () => {
     const fetch = api();
     open();
     const card = await screen.findByRole("article", { name: "Step welcome" });
-    fireEvent.change(within(card).getByLabelText(/From/), { target: { value: "not an address" } });
+    changeControl(within(card).getByLabelText(/From/), { target: { value: "not an address" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(await within(card).findByText("Use email@domain or Name <email@domain>.")).toBeTruthy();
     expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
@@ -582,11 +585,11 @@ describe("AutomationEditor", () => {
     });
     const router = open();
     const card = await screen.findByRole("article", { name: "Step welcome" });
-    fireEvent.change(within(card).getByLabelText("Subject"), { target: { value: "Hello" } });
+    changeControl(within(card).getByLabelText("Subject"), { target: { value: "Hello" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
     // Typed after the request left. The response holds the older subject.
-    fireEvent.change(within(card).getByLabelText("Subject"), { target: { value: "Hello again" } });
+    changeControl(within(card).getByLabelText("Subject"), { target: { value: "Hello again" } });
     const stored = { ...automation, steps: automation.steps.map((step) => (step.key === "welcome" ? { ...step, config: { ...step.config, subject: "Hello" } } : step)) };
     release({ body: stored });
     await screen.findByText("Unsaved changes");
@@ -606,7 +609,7 @@ describe("AutomationEditor", () => {
     );
     open();
     const card = await screen.findByRole("article", { name: "Step welcome" });
-    fireEvent.change(within(card).getByLabelText("Subject"), { target: { value: "Hello" } });
+    changeControl(within(card).getByLabelText("Subject"), { target: { value: "Hello" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     const alert = await screen.findByText(/Pause it first to keep its runs, or duplicate it/, { selector: ".alert" });
     expect(alert).toBeTruthy();
@@ -634,7 +637,7 @@ describe("AutomationEditor", () => {
     );
     open();
     const card = await screen.findByRole("article", { name: "Step welcome" });
-    fireEvent.change(within(card).getByLabelText("Subject"), { target: { value: "Hello" } });
+    changeControl(within(card).getByLabelText("Subject"), { target: { value: "Hello" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     expect(await within(card).findByText("Template not found")).toBeTruthy();
     expect(within(card).getByText("headers: Too many headers")).toBeTruthy();
@@ -681,7 +684,7 @@ describe("AutomationEditor", () => {
     expect(patches()[0].steps[1].config.kind).toBe("marketing");
     expect(patches()[0].steps[1].config).not.toHaveProperty("topic_id");
     expect(patches()[0]).not.toHaveProperty("status");
-    fireEvent.change(panel.getByLabelText("Topic"), { target: { value: "topic_1" } });
+    changeControl(panel.getByLabelText("Topic"), { target: { value: "topic_1" } });
     fireEvent.click(screen.getByRole("button", { name: "Start" }));
     await waitFor(() => expect(patches()).toHaveLength(2));
     expect(patches()[1].status).toBe("enabled");
