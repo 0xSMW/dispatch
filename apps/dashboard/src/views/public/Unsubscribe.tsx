@@ -63,7 +63,7 @@ export function Unsubscribe() {
 
   if (state.status === "loading") {
     return (
-      <div className="publicPage">
+      <div className="publicPage preferencePage">
         <div className="publicCard" aria-busy>
           <Skeleton lines={4} />
         </div>
@@ -73,7 +73,7 @@ export function Unsubscribe() {
 
   if (state.status !== "ready") {
     return (
-      <div className="publicPage">
+      <div className="publicPage preferencePage">
         <div className="publicCard">
           <h1>{state.status === "missing" ? "This link is not valid" : "Something went wrong"}</h1>
           <p className="center muted">
@@ -88,7 +88,7 @@ export function Unsubscribe() {
 
   const { data } = state;
   return (
-    <div className="publicPage">
+    <div className="publicPage preferencePage">
       <PreferenceCard
         brand={data.brand}
         title={data.brand.title ?? undefined}
