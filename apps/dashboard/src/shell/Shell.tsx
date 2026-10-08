@@ -20,6 +20,7 @@ import {
   Settings,
   Sun,
   Target,
+  Tag,
   Users,
   Webhook,
   Zap,
@@ -52,6 +53,7 @@ export const nav = [
   { to: "/automations", label: "Automations", icon: GitBranch },
   { to: "/templates", label: "Templates", icon: FileText },
   { to: "/audience", label: "Audience", icon: Users },
+  { to: "/audience/topics", label: "Topics", icon: Tag },
   { to: "/goals", label: "Goals", icon: Target },
   { to: "/domains", label: "Domains", icon: Globe2 },
   { to: "/logs", label: "Logs", icon: ScrollText },
@@ -100,7 +102,7 @@ export function Shell() {
         </div>
         <nav aria-label="Main">
           {nav.map(({ to, label, icon: Icon }) => (
-            <NavLink key={to} to={to} className={({ isActive }) => (isActive ? "navItem active" : "navItem")}>
+            <NavLink key={to} to={to} end={to === "/audience" && location.pathname.startsWith("/audience/topics")} className={({ isActive }) => (isActive ? "navItem active" : "navItem")}>
               <NavIcon icon={Icon} motion={iconMotion[to]} />
               <span>{label}</span>
             </NavLink>
