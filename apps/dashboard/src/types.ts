@@ -732,6 +732,13 @@ export type BrandSettings = Partial<import("@dispatchmail/core").ThemeTokens> & 
   /** The public unsubscribe page's heading and the line under it. Null or absent means the default. */
   unsubscribe_title?: string | null;
   unsubscribe_description?: string | null;
+  unsubscribe_button_label?: string | null;
+  unsubscribe_updated_title?: string | null;
+  unsubscribe_updated_description?: string | null;
+  unsubscribe_unsubscribed_title?: string | null;
+  unsubscribe_unsubscribed_description?: string | null;
+  unsubscribe_logo_url?: string | null;
+  unsubscribe_color?: string | null;
   button_text_color?: string;
 };
 
@@ -740,7 +747,12 @@ export type Preferences = {
   email: string;
   unsubscribed: boolean;
   topics: Array<{ id: string; name: string; description: string | null; subscription: "opt_in" | "opt_out" | "pending" }>;
-  brand: { product_name: string; logo_url: string | null; color: string; text_color: string; title?: string | null; description?: string | null };
+  brand: {
+    product_name: string; logo_url: string | null; color: string; text_color: string;
+    title?: string | null; description?: string | null; button_label?: string | null;
+    updated_title?: string | null; updated_description?: string | null;
+    unsubscribed_title?: string | null; unsubscribed_description?: string | null;
+  };
 };
 
 export type SharedEmail = {
