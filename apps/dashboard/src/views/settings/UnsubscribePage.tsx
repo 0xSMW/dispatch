@@ -166,10 +166,10 @@ export function UnsubscribePage() {
   const [width, setWidth] = useState<"desktop" | "mobile">("desktop");
   const [theme, setTheme] = useState<"light" | "dark">("light");
   return (
-    <div className="page">
+    <div className="page settingsPage">
       <PageHeader title="Settings" />
       <Tabs tabs={settingsTabs} />
-      <section className="unsubscribeSettings">
+      <section className="panel unsubscribeSettings">
         <div className="unsubscribeHeading">
           <div>
             <h2>Unsubscribe page</h2>
