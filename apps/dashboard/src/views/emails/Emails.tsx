@@ -52,11 +52,11 @@ export function Emails() {
   return (
     <ListPage
       title="Emails"
-      actions={
-        <Link className="button" to="/emails/send">
-          Send email
-        </Link>
-      }
+      // actions={
+      //   <Link className="button" to="/emails/send">
+      //     Send email
+      //   </Link>
+      // }
       tabs={emailTabs}
       search="Search by recipient or subject"
       filters={[
