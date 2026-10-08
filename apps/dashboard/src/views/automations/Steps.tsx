@@ -41,6 +41,8 @@ import "../../styles/automations.css";
 // The structured list for the automation builder and its run view.
 
 export type StepOptions = {
+  templatesReady?: boolean;
+  templatesError?: string | null;
   templates: Array<Option & { kind?: SendKind }>; segments: Option[]; events: string[]; topics?: Option[];
   staticSegments?: Option[];
   eventDefinitions?: EventDefinition[];
@@ -231,7 +233,7 @@ function StepCard({
         <div className="stepTitle">
           <strong>{stepLabels[node.type]}</strong>
           {node.type === "send_email" ? <Badge value={sendKind(node.config)} label={kindLabels[sendKind(node.config)]} /> : null}
-          <span className="mono dim">{node.key}</span>
+          <span className="dim">{describe(node, options)}</span>
         </div>
         {status ? <Badge value={status} /> : null}
         {actions ? (
@@ -261,7 +263,7 @@ function StepCard({
         ) : null}
       </header>
       {run ? (
-        <RunResult node={node} result={result} />
+        <RunResult node={node} result={result} options={options} />
       ) : (
         <StepForm node={node} path={path} index={index} actions={actions} disabled={disabled || !actions} errors={errors} options={options} />
       )}
@@ -275,11 +277,11 @@ function StepCard({
   );
 }
 
-export function RunResult({ node, result }: { node: Node; result?: RunStep }) {
+export function RunResult({ node, result, options }: { node: Node; result?: RunStep; options?: StepOptions }) {
   const output = result?.output as { exited?: string; filter?: string; path?: string; variant?: string; passed?: boolean } | undefined;
   return (
     <div className="stack">
-      <p className="muted">{describe(node)}</p>
+      <p className="muted">{describe(node, options)}</p>
       {node.type === "send_email" ? <p className="fieldHint">{sendSemantics[sendKind(node.config)]}</p> : null}
       {result ? (
         <dl className="stepTimes">
@@ -307,7 +309,7 @@ export function RunResult({ node, result }: { node: Node; result?: RunStep }) {
       {output?.exited === "filter" ? <p role="status">Left at the Filter step{output.filter ? ` (${output.filter})` : ""}. No further steps ran.</p> : null}
       {node.type === "filter" && output?.passed === true ? <p role="status">Filter matched{node.config.scope === "following" ? "; it will be checked before every following step" : ""}.</p> : null}
       {node.type === "branch" && output?.path ? <p role="status">Took the {branchLabel(node, output.path)} path.</p> : null}
-      {node.type === "split" && output?.variant ? <p role="status">Assigned variant {output.variant}.</p> : null}
+      {node.type === "split" && output?.variant ? <p role="status">Assigned variant {branchLabel(node, output.variant)}.</p> : null}
       {result && result.output && Object.keys(result.output as object).length ? <Code value={result.output} /> : null}
     </div>
   );
@@ -338,6 +340,7 @@ type FormProps = {
 /** A step's config form. The list card and the canvas side panel both render it. */
 export function StepForm({ node, path, index, actions, disabled, errors, options }: FormProps) {
   const config = node.config;
+  const otherContact = node.contactTarget === "other" || Boolean(config.email);
   const fields = contextFields({
     events: options?.eventDefinitions, properties: options?.contactProperties, topics: options?.topics, segments: options?.segments,
   }, node.type === "wait_for_event" ? String(config.event_name ?? "") : options?.eventName);
@@ -562,11 +565,17 @@ export function StepForm({ node, path, index, actions, disabled, errors, options
     case "add_to_segment": {
       const segments = options?.staticSegments ?? options?.segments ?? [];
       const id = text("segment_id");
-      const choices = id && !segments.some((option) => option.value === id) ? [{ value: id, label: id }, ...segments] : segments;
+      const choices = id && !segments.some((option) => option.value === id) ? [{ value: id, label: options?.segmentsReady === false ? "Loading segment…" : "Segment unavailable" }, ...segments] : segments;
       return (
         <div className="form two">
           <Select label="Segment" value={id} onChange={(value) => set("segment_id", value)} options={choices} placeholder="Choose a segment" error={errors.segment_id} disabled={disabled} required />
-          <Field label="Email" value={text("email")} onChange={(value) => set("email", value)} hint="Leave blank for the contact who fired the event." error={errors.email} disabled={disabled} />
+          <Select label="Contact" value={otherContact || Boolean(config.email) ? "other" : "person"} onChange={(value) => {
+            actions?.change(node.key, (current) => ({
+              ...current, contactTarget: value === "other" ? "other" : undefined,
+              config: value === "person" ? { ...current.config, email: undefined } : current.config,
+            }));
+          }} options={[{ value: "person", label: "Person in this automation" }, { value: "other", label: "Another email" }]} disabled={disabled} />
+          {otherContact || Boolean(config.email) ? <Field label="Email" value={text("email")} onChange={(value) => set("email", value)} hint="Email address of the contact to add to this segment." error={errors.email} disabled={disabled} required /> : null}
         </div>
       );
     }
