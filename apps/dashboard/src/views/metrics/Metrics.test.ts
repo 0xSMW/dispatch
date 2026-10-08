@@ -142,10 +142,12 @@ describe("Metrics", () => {
     expect(query.get("domain_id")).toBeNull();
     expect(query.get("start_date")).toBe(metricCalls(fetch)[0]!.searchParams.get("start_date"));
     expect(query.get("end_date")).toBe(metricCalls(fetch)[0]!.searchParams.get("end_date"));
-    fireEvent.change(screen.getByLabelText("Goal scope"), { target: { value: "automation" } });
+    fireEvent.click(screen.getByRole("combobox", { name: "Goal scope" }));
+    fireEvent.click(screen.getByRole("option", { name: "Automation" }));
     await screen.findByLabelText("Goal automation");
     await waitFor(() => expect(goalCalls().at(-1)!.searchParams.get("automation_id")).toBe("automation_1"));
-    fireEvent.change(screen.getByLabelText("Goal scope"), { target: { value: "broadcast" } });
+    fireEvent.click(screen.getByRole("combobox", { name: "Goal scope" }));
+    fireEvent.click(screen.getByRole("option", { name: "Broadcast" }));
     await screen.findByLabelText("Goal broadcast");
     await waitFor(() => expect(goalCalls().at(-1)!.searchParams.get("broadcast_id")).toBe("broadcast_1"));
     query = goalCalls().at(-1)!.searchParams;
