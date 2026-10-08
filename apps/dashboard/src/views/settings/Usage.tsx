@@ -1,5 +1,6 @@
+import { useState } from "react";
 import { Link } from "react-router-dom";
-import { Badge } from "../../components/Badge";
+import { Badge, badgeLabel } from "../../components/Badge";
 import { Empty, Failed } from "../../components/Empty";
 import { Facts } from "../../components/Facts";
 import { PageHeader } from "../../components/PageHeader";
@@ -14,6 +15,7 @@ import type { Sending, System, UsageCounter } from "../../types";
 import { Region } from "../domains/Domains";
 import { settingsTabs } from "../tabs";
 import "../../styles/settings.css";
+import "../../styles/usage.css";
 
 /** State counts such as `{ queued: 3, sent: 40 }` as badges. */
 function Counts({ value }: { value: Record<string, unknown> | undefined }) {
@@ -22,7 +24,7 @@ function Counts({ value }: { value: Record<string, unknown> | undefined }) {
   return (
     <span className="counts">
       {entries.map(([state, count]) => (
-        <Badge key={state} value={state} label={`${state.replaceAll("_", " ")} ${Number(count).toLocaleString()}`} />
+        <Badge key={state} value={state} label={`${badgeLabel(state)} ${Number(count).toLocaleString()}`} />
       ))}
     </span>
   );
@@ -31,7 +33,7 @@ function Counts({ value }: { value: Record<string, unknown> | undefined }) {
 /** Share of the 24-hour quota used, from 0 to 100. */
 export function quotaShare(sending: Pick<Sending, "max_24_hour" | "sent_24_hour">) {
   if (sending.max_24_hour <= 0) return 0;
-  return Math.min(100, Math.round((sending.sent_24_hour / sending.max_24_hour) * 1000) / 10);
+  return Math.max(0, Math.min(100, (sending.sent_24_hour / sending.max_24_hour) * 100));
 }
 
 function Quota({ sending }: { sending: Sending | null }) {
@@ -61,9 +63,11 @@ function Quota({ sending }: { sending: Sending | null }) {
         aria-valuemin={0}
         aria-valuemax={100}
         aria-valuenow={share}
+        aria-valuetext={`${quotaLabel(share)} of the 24-hour quota used`}
       >
-        <span style={{ width: `${share}%` }} />
+        <span style={{ width: `${share}%`, minWidth: share > 0 ? 2 : 0 }} />
       </div>
+      <p className="note">{quotaLabel(share)} of the 24-hour quota used.</p>
       {sending.sandbox ? (
         <p className="note">In the sandbox, the provider sends only to verified addresses. Request production access to send to anyone.</p>
       ) : null}
@@ -71,8 +75,48 @@ function Quota({ sending }: { sending: Sending | null }) {
   );
 }
 
-/** Sending quota, usage counters, and system state. */
+export function estimateLabel(value: number) {
+  return value > 0 && value < 0.01 ? "<$0.01" : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(value);
+}
+
+export function quotaLabel(share: number) {
+  return share > 0 && share < 0.1 ? "<0.1%" : `${Math.round(share * 10) / 10}%`;
+}
+
+type UsageSummary = {
+  month: string; recipients: number; ses_recipients: number; api_requests: number;
+  unmeasured_sends: number; ses_estimate_usd: number; ses_rate_per_1000_usd: number;
+  days: Array<{ date: string; recipients: number; api_requests: number }>;
+};
+
+function MonthlyUsage({ data }: { data: UsageSummary }) {
+  const max = Math.max(1, ...data.days.map((day) => day.recipients));
+  return <div className="stack">
+    <div className="usageSummary">
+      <div><span>Recipients sent</span><strong>{data.recipients.toLocaleString()}</strong></div>
+      <div><span>API requests</span><strong>{data.api_requests.toLocaleString()}</strong></div>
+      <div><span>SES base estimate</span><strong>{estimateLabel(data.ses_estimate_usd)}</strong></div>
+    </div>
+    <p className="note">{data.ses_recipients.toLocaleString()} SES recipient sends × ${data.ses_rate_per_1000_usd.toFixed(2)} per 1,000. Excludes data transfer, attachments, add-ons, taxes and credits. <a href="https://aws.amazon.com/ses/pricing/" target="_blank" rel="noreferrer">SES pricing</a></p>
+    {data.unmeasured_sends > 0 ? <p className="note">{data.unmeasured_sends.toLocaleString()} older sends have no recorded recipient count and are excluded from the recipient total and estimate.</p> : null}
+    <figure className="usageActivity">
+      <figcaption>Daily recipient sends <span className="dim">UTC</span></figcaption>
+      <div className="usageBars" style={{ gridTemplateColumns: `repeat(${data.days.length}, minmax(0, 1fr))` }}>
+        {data.days.map((day) => <div key={day.date} tabIndex={0} aria-label={`${day.date}: ${day.recipients.toLocaleString()} recipients, ${day.api_requests.toLocaleString()} API requests`} title={`${day.date}: ${day.recipients.toLocaleString()} recipients · ${day.api_requests.toLocaleString()} API requests`}>
+          <span style={{ height: `${day.recipients / max * 100}%`, minHeight: day.recipients > 0 ? 2 : 0 }} />
+        </div>)}
+      </div>
+      <div className="usageAxis"><span>{data.days[0]?.date}</span><span>{data.days.at(-1)?.date}</span></div>
+      {data.recipients === 0 ? <p className="note">No recorded recipient sends this month.</p> : null}
+    </figure>
+    <details><summary>Daily totals</summary><div className="usageDaily"><table><thead><tr><th>Date (UTC)</th><th>Recipients</th><th>API requests</th></tr></thead><tbody>{data.days.map((day) => <tr key={day.date}><td>{day.date}</td><td>{day.recipients.toLocaleString()}</td><td>{day.api_requests.toLocaleString()}</td></tr>)}</tbody></table></div></details>
+  </div>;
+}
+
+/** Tenant calendar-month activity and the independent AWS account sending limits. */
 export function Usage() {
+  const [month, setMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const monthly = useResource<UsageSummary>(`/usage/summary?month=${month}`);
   const usage = useList<UsageCounter>("/usage", {}, { limit: 100 });
   const system = useResource<System>("/system");
   const data = system.data;
@@ -82,10 +126,16 @@ export function Usage() {
       <PageHeader title="Settings" />
       <Tabs tabs={settingsTabs} />
 
-      <Panel title="Sending quota">
-        {system.error ? null : !data ? <Skeleton lines={2} /> : <Quota sending={data.sending ?? null} />}
+      <Panel title="Monthly usage" actions={<label className="usageMonth">Month (UTC)<input aria-label="Month (UTC)" type="month" value={month} max={new Date().toISOString().slice(0, 7)} onChange={(event) => { if (/^\d{4}-(0[1-9]|1[0-2])$/.test(event.target.value)) setMonth(event.target.value); }} /></label>}>
+        {monthly.loading ? <Skeleton lines={3} /> : monthly.error ? <Failed message={monthly.error} onRetry={monthly.reload} /> : monthly.data ? <MonthlyUsage data={monthly.data} /> : null}
       </Panel>
 
+      <Panel title="AWS account sending quota">
+        <p className="note">Regional AWS account usage over the last 24 hours, across all applications and tenants using that account. Separate from this tenant's selected calendar month.</p>
+        {system.error ? <Failed message={system.error} onRetry={system.reload} /> : !data ? <Skeleton lines={2} /> : <Quota sending={data.sending ?? null} />}
+      </Panel>
+
+      <details><summary>System details</summary>
       <Panel title="System">
         {system.error ? (
           <Failed message={system.error} onRetry={system.reload} />
@@ -111,6 +161,8 @@ export function Usage() {
         )}
       </Panel>
 
+      </details>
+      <details><summary>Raw usage counters</summary>
       <Panel title="Usage">
         <div className="stack">
           {usage.loading || usage.error || usage.rows.length || usage.page > 1 ? <p className="note">Counters for this tenant.</p> : null}
@@ -134,6 +186,7 @@ export function Usage() {
           />
         </div>
       </Panel>
+      </details>
     </div>
   );
 }
