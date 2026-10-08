@@ -14,6 +14,7 @@ export type Shortcut = {
 };
 
 export const shortcuts = {
+  commands: { combo: "mod+k", keys: [metaKey.trim(), "K"], label: "Search or jump", scope: "Anywhere" },
   api: { combo: "a", keys: ["A"], label: "Open the API reference for this page", scope: "Anywhere" },
   theme: { combo: "m", keys: ["M"], label: "Switch between dark and light", scope: "Anywhere" },
   help: { combo: "?", keys: ["?"], label: "Show keyboard shortcuts", scope: "Anywhere" },
