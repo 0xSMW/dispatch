@@ -149,3 +149,44 @@ button.outlineButton:hover:not(:disabled) {
     padding: 20px 16px;
   }
 }
+
+/* Public confirmation follows the visitor's system appearance, independently of dashboard preferences. */
+.confirmPage {
+  color-scheme: light;
+  --bg: #ffffff;
+  --surface: #ffffff;
+  --border: #e4e4e4;
+  --text: #191919;
+  --text-muted: #4d4d4d;
+  --primary: #000000;
+  --on-primary: #ffffff;
+  --success: #2a7e3b;
+  --success-subtle: rgba(0, 151, 0, 0.09);
+  background: var(--bg);
+  color: var(--text);
+  min-height: 100svh;
+}
+.confirmCard { padding: 32px; gap: 24px; border-radius: var(--radius); }
+.confirmBrand { height: 32px; display: flex; align-items: center; font-weight: 600; }
+.confirmBrand .prefLogo { margin: 0; max-height: 32px; }
+.confirmBrandPlaceholder { width: 72px; height: 16px; border-radius: 4px; background: var(--border); }
+.confirmCopy { display: grid; grid-template-rows: minmax(64px, auto) minmax(48px, auto); gap: 12px; animation: confirmFade 180ms ease-in-out; }
+.confirmCard .prefTitle { font-size: 26px; line-height: 32px; font-weight: 600; text-align: left; margin: 0; letter-spacing: -0.025em; }
+.confirmCopy p { margin: 0; font-size: 15px; line-height: 24px; color: var(--text-muted); }
+.confirmAction { min-height: 44px; }
+.confirmAction button, .confirmComplete, .confirmUnavailable { width: 100%; min-height: 44px; display: flex; justify-content: center; align-items: center; gap: 8px; font-size: 14px; line-height: 20px; border-radius: 8px; padding: 12px; }
+.confirmAction button { background: var(--primary); color: var(--on-primary); border: 0; box-shadow: none; }
+.confirmAction button:hover:not(:disabled) { background: var(--primary); color: var(--on-primary); opacity: 0.85; box-shadow: none; }
+.confirmAction button:disabled { background: var(--primary); color: var(--on-primary); opacity: 0.65; }
+.confirmAction button:focus-visible { outline: 2px solid var(--text-muted); outline-offset: 4px; }
+.confirmComplete { color: var(--success); background: var(--success-subtle); animation: confirmFade 180ms ease-in-out; }
+.confirmUnavailable { color: var(--text-muted); font-size: 13px; padding-inline: 0; justify-content: flex-start; }
+.confirmHelper { min-height: 20px; margin: 0; font-size: 13px; line-height: 20px; color: var(--text-muted); text-align: center; }
+.confirmSpinner { animation: confirmSpin 900ms linear infinite; }
+@keyframes confirmSpin { to { transform: rotate(360deg); } }
+@keyframes confirmFade { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-color-scheme: dark) {
+  .confirmPage { color-scheme: dark; --bg: #000000; --surface: #0a0b0c; --border: #212629; --text: #f0f0f0; --text-muted: #a1a4a5; --primary: #ffffff; --on-primary: #000000; --success: #3ad389; --success-subtle: rgba(34, 255, 153, 0.12); }
+}
+@media (max-width: 480px) { .confirmCard { padding: 24px; } }
+@media (prefers-reduced-motion: reduce) { .confirmCopy, .confirmComplete, .confirmSpinner { animation: none; } }
