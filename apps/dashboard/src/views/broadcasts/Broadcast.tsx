@@ -105,19 +105,9 @@ export function Broadcast() {
         actions={
           row && can ? (
             <>
-              {row.status === "draft" ? (
-                <Link className="button" to={`/broadcasts/${row.id}/editor`}>
-                  Edit
-                </Link>
-              ) : null}
               {queued && !row.paused ? (
                 <button type="button" className="secondary" disabled={pause.isLoading} onClick={() => void pause.mutate()}>
                   Pause
-                </button>
-              ) : null}
-              {queued && row.paused ? (
-                <button type="button" disabled={resume.isLoading} onClick={() => void resume.mutate()}>
-                  Resume
                 </button>
               ) : null}
               {queued || row.status === "scheduled" ? (
@@ -131,6 +121,16 @@ export function Broadcast() {
                   { label: "Delete", danger: true, hidden: !deletable(row.status), onSelect: () => setConfirm("delete") },
                 ]}
               />
+              {row.status === "draft" ? (
+                <Link className="button" to={`/broadcasts/${row.id}/editor`}>
+                  Edit
+                </Link>
+              ) : null}
+              {queued && row.paused ? (
+                <button type="button" disabled={resume.isLoading} onClick={() => void resume.mutate()}>
+                  Resume
+                </button>
+              ) : null}
             </>
           ) : null
         }
