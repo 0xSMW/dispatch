@@ -72,7 +72,7 @@ export function Emails() {
       list={list}
       noun="emails"
       rowHref={(row) => `/emails/${row.id}`}
-      empty={<Empty title="No emails yet" body="Send your first email through Dispatch." />}
+      empty={<Empty title="No emails yet" body="Emails you send through Dispatch show up here." />}
       columns={[
         {
           header: "To",
