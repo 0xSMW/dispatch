@@ -1,3 +1,4 @@
+import { changeControl, controlValue } from "../../testingControls";
 // @vitest-environment jsdom
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
@@ -111,7 +112,7 @@ describe("Domain", () => {
     await waitFor(() => expect(requests(fetch, "PATCH", "/domains/domain_1")[0]?.body).toEqual({ click_tracking: true }));
     await waitFor(() => expect(screen.getByRole("switch", { name: /Click tracking/ }).getAttribute("aria-checked")).toBe("true"));
 
-    fireEvent.change(screen.getByLabelText("TLS"), { target: { value: "enforced" } });
+    changeControl(screen.getByLabelText("TLS"), { target: { value: "enforced" } });
     await waitFor(() => expect(requests(fetch, "PATCH", "/domains/domain_1")[1]?.body).toEqual({ tls: "enforced" }));
 
     fireEvent.click(screen.getByRole("switch", { name: /Receiving/ }));
@@ -125,7 +126,7 @@ describe("Domain", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Domain actions" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Delete domain" }));
-    fireEvent.change(screen.getByLabelText("Confirmation phrase"), { target: { value: "send.acme.test" } });
+    changeControl(screen.getByLabelText("Confirmation phrase"), { target: { value: "send.acme.test" } });
     fireEvent.click(screen.getByRole("button", { name: /^Delete domain/ }));
 
     expect((await screen.findByTestId("location")).textContent).toBe("/domains");
