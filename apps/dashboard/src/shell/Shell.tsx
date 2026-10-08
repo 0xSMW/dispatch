@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState, type ReactNode } from "react";
 import { Navigate, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   Activity,
@@ -120,18 +120,12 @@ function Tools({ apiUrl, onApi, onKeys }: { apiUrl: string; onApi: () => void; o
   const docs = import.meta.env.VITE_DOCS_URL as string | undefined;
   return (
     <div className="sidebarTools">
-      <button
-        type="button"
-        className="ghost icon small"
-        onClick={onApi}
-        aria-label="API reference"
-        title={`API reference for this page (${shortcuts.api.keys[0]}) · ${new URL(apiUrl).host}`}
-      >
-        <Code2 size={15} />
-      </button>
-      <button type="button" className="ghost icon small" onClick={onKeys} aria-label="Keyboard shortcuts" title="Keyboard shortcuts (?)">
-        <Keyboard size={15} />
-      </button>
+      <Tool label="API reference" hint={shortcuts.api.keys[0]} detail={new URL(apiUrl).host} onClick={onApi}>
+        <Code2 size={15} aria-hidden />
+      </Tool>
+      <Tool label="Keyboard shortcuts" hint="?" onClick={onKeys}>
+        <Keyboard size={15} aria-hidden />
+      </Tool>
       <span className="spacer" />
       {docs ? (
         <a className="button ghost icon small" href={docs} target="_blank" rel="noreferrer" aria-label="Docs" title="Docs">
@@ -140,6 +134,24 @@ function Tools({ apiUrl, onApi, onKeys }: { apiUrl: string; onApi: () => void; o
       ) : null}
     </div>
   );
+}
+
+/** Hover and focus share a tooltip; clicking or Escape dismisses it. */
+function Tool({ label, hint, detail, onClick, children }: {
+  label: string; hint: string; detail?: string; onClick: () => void; children: ReactNode;
+}) {
+  const id = useId();
+  const [visible, setVisible] = useState(false);
+  useHotkey("escape", () => setVisible(false), { enabled: visible });
+  return <span className="sidebarTool" onMouseEnter={() => setVisible(true)} onMouseLeave={() => setVisible(false)}
+    onFocus={() => setVisible(true)} onBlur={() => setVisible(false)}>
+    <button type="button" className="ghost icon small" aria-label={label} aria-describedby={visible ? id : undefined}
+      onClick={() => { setVisible(false); onClick(); }}>{children}</button>
+    <span id={id} role="tooltip" className={`sidebarTooltip${visible ? " visible" : ""}`}>
+      <span className="sidebarTooltipRow"><span>{label}</span><kbd>{hint}</kbd></span>
+      {detail ? <small>{detail}</small> : null}
+    </span>
+  </span>;
 }
 
 function Account() {
