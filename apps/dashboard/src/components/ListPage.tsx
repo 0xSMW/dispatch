@@ -70,7 +70,7 @@ export function ListPage<T extends { id: string }>({
   const emptyContent = blank && isValidElement<EmptyProps>(empty) && empty.type === Empty
     ? cloneElement(empty, { action: empty.props.action ?? (canActions(actions)) })
     : filtered && !list.rows.length && !list.loading && !list.error
-      ? <Empty title="No matching results" body="Try another search or clear the filters." action={<button type="button" className="secondary" onClick={() => setParams((previous) => { const next = new URLSearchParams(previous); for (const key of [...next.keys()]) if (!["tab", "view"].includes(key)) next.delete(key); return next; })}>Clear filters</button>} />
+      ? <Empty title="No results" body="Try a different search, or clear your filters." action={<button type="button" className="secondary" onClick={() => setParams((previous) => { const next = new URLSearchParams(previous); for (const key of [...next.keys()]) if (!["tab", "view"].includes(key)) next.delete(key); return next; })}>Clear filters</button>} />
       : empty;
   function canActions(value: ReactNode) {
     if (!can) return null;
