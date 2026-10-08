@@ -56,7 +56,7 @@ export function Logs() {
       list={list}
       noun="logs"
       rowHref={(row) => `/logs/${row.id}`}
-      empty={<Empty title="No logs" body="Every API request shows here. Clear the filters to see them all." />}
+      empty={<Empty title="No logs found" body="Every API request shows up here. Clear your filters to see all of them." />}
       columns={[
         {
           header: "Endpoint",
