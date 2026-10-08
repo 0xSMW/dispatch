@@ -23,7 +23,7 @@ import { Email } from "./views/emails/Email";
 import { Emails } from "./views/emails/Emails";
 import { Received } from "./views/emails/Received";
 import { ReceivedEmail } from "./views/emails/ReceivedEmail";
-import { Send } from "./views/emails/Send";
+// import { Send } from "./views/emails/Send";
 import { Suppressions } from "./views/emails/Suppressions";
 import { Key } from "./views/keys/Key";
 import { Keys } from "./views/keys/Keys";
@@ -74,7 +74,7 @@ export const routes = [
           { path: "emails/receiving", element: <Received /> },
           { path: "emails/receiving/:id", element: <ReceivedEmail /> },
           { path: "emails/suppressions", element: <Suppressions /> },
-          { path: "emails/send", element: <Send /> },
+          // { path: "emails/send", element: <Send /> },
 
           { path: "broadcasts", element: <Broadcasts /> },
           { path: "broadcasts/:id", element: <Broadcast /> },
@@ -113,7 +113,7 @@ export const routes = [
           { path: "webhooks", element: <Webhooks /> },
           { path: "webhooks/:id", element: <Webhook /> },
 
-          { path: "settings", element: <Navigate to="/settings/general" replace /> },
+          { path: "settings", element: <Navigate to="/settings/usage" replace /> },
           { path: "settings/usage", element: <Usage /> },
           { path: "settings/general", element: <General /> },
           { path: "settings/team", element: <Team /> },
