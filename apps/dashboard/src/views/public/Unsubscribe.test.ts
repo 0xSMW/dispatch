@@ -10,7 +10,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { callAt, h, mockFetch } from "../../testing";
 import type { Preferences } from "../../types";
-import { previewBrand, textColor } from "./Preferences";
+import { brandStyle, previewBrand, textColor } from "./Preferences";
 import { Unsubscribe } from "./Unsubscribe";
 
 const page: Preferences = {
@@ -165,5 +165,19 @@ describe("previewBrand", () => {
       previewBrand({ color: "#18181b", button_text_color: "#eeeeee" })
         .text_color,
     ).toBe("#ffffff");
+  });
+});
+
+
+describe("preference button theme", () => {
+  it("uses theme-aware primary colors for current and legacy neutral defaults", () => {
+    for (const color of ["#18181b", "#18181B", "#171717"]) {
+      expect(brandStyle({ color, text_color: "#ffffff" })).toEqual({});
+    }
+  });
+  it("preserves an explicit brand accent and its readable foreground", () => {
+    expect(brandStyle({ color: "#ffcc00", text_color: "#000000" })).toEqual({
+      "--brand": "#ffcc00", "--brand-text": "#000000",
+    });
   });
 });
