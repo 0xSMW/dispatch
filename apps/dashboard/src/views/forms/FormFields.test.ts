@@ -122,7 +122,7 @@ describe("FormFields", () => {
     );
     expect(screen.getByText("No topics available.")).toBeTruthy();
     expect(screen.getByText("No properties available.")).toBeTruthy();
-    expect(screen.getByText("No verified senders available.")).toBeTruthy();
+    expect(screen.getByText("No verified senders yet.")).toBeTruthy();
     expect(screen.queryAllByRole("checkbox")).toHaveLength(0);
     expect(input.onChange).not.toHaveBeenCalled();
   });
