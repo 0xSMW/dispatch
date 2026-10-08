@@ -2,7 +2,7 @@ import { Heading, Text } from "react-email";
 import { Action, If, Layout, Notice } from "./_components";
 import { exampleBrand, heading, text, type Brand, type EmailVariable } from "./_theme";
 
-const preview = "A teammate invited you to join a team. The invitation expires soon.";
+const preview = "A team invitation is waiting for your response.";
 
 type Props = {
   brand?: Brand;
@@ -39,12 +39,12 @@ export default function Invitation({
       </Text>
       <If value={role}>
         <Text className="dm-text" style={text}>
-          The role on the invitation is {role}.
+          Invited role: {role}.
         </Text>
       </If>
       <If value={message}>
         <Text className="dm-text" style={text}>
-          They wrote: "{message}"
+          A message from {inviterName}: "{message}"
         </Text>
       </If>
       <Action brand={brand} href={actionUrl}>
