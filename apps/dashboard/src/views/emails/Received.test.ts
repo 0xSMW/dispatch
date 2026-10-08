@@ -43,7 +43,7 @@ describe("Received", () => {
   it("sends search and the date range as from and to", async () => {
     const fetch = api({ "/emails/receiving": list([]) });
     visit(h(Received), "/emails/receiving?q=order&range=custom&start=2026-09-01&end=2026-09-02");
-    await screen.findByText("No received emails");
+    await screen.findByText("No matching results");
     const url = requests(fetch, "GET", "/emails/receiving")[0].url;
     expect(url.searchParams.get("q")).toBe("order");
     expect(new Date(url.searchParams.get("from")!).getDate()).toBe(1);
