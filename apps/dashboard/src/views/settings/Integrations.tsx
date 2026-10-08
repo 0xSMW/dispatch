@@ -62,8 +62,8 @@ export function Integrations() {
       <PageHeader title="Settings" />
       <Tabs tabs={settingsTabs} />
       {empty ? <Empty
-        title="No integrations"
-        body="Connect Stripe, Clerk, Supabase, or Standard Webhooks to update contacts and start automations."
+        title="No integrations yet"
+        body="Connect Stripe, Clerk, Supabase, or Standard Webhooks to update your contacts and start automations."
         action={<>{can ? <button type="button" onClick={() => { setCredentials(null); setAdding("stripe"); }}>Connect integration</button> : <span className="muted">An administrator can connect an integration.</span>}<a href={setupGuide("stripe")} target="_blank" rel="noreferrer">Stripe setup guide</a></>}
       /> : <>
       <Panel title="Integration setup">
@@ -106,7 +106,7 @@ export function Integrations() {
           <p className="muted">Receive provider events to update contacts and start automations. Signing secrets and receiver URLs are never available through inspection.</p>
           {!can ? <p className="note">Read-only access. An administrator can create or change integrations.</p> : null}
           {list.loading ? <Skeleton lines={3} /> : list.error ? <Failed message={list.error} onRetry={list.reload} />
-            : !list.rows.length ? <Empty title="No integrations" body="Connect Stripe, Clerk, Supabase, or Standard Webhooks." />
+            : !list.rows.length ? <Empty title="No integrations yet" body="Connect Stripe, Clerk, Supabase, or Standard Webhooks to update your contacts and start automations." />
               : <table><thead><tr><th>Name</th><th>Provider</th><th>Last received</th><th>Actions</th></tr></thead><tbody>
                 {list.rows.map((row) => <tr key={row.id}>
                   <td>{row.name}</td><td>{providers.find((provider) => provider.value === row.provider)?.label}</td>
@@ -218,7 +218,7 @@ function IntegrationDetail({ id, onClose }: { id: string; onClose: () => void })
       <h3>Last 20 deliveries</h3>
       <button type="button" className="secondary" disabled={deliveries.loading} onClick={() => void deliveries.reload()}>Refresh deliveries</button>
       {deliveries.loading ? <Skeleton lines={3} /> : deliveries.error ? <Failed message={deliveries.error} onRetry={deliveries.reload} />
-        : !deliveries.data?.data.length ? <p className="muted">No deliveries yet.</p>
+        : !deliveries.data?.data.length ? <p className="muted">No deliveries yet. Events received from this integration show up here.</p>
           : <table><thead><tr><th>Received</th><th>Status</th><th>Event</th><th>Contact</th><th>Result</th></tr></thead><tbody>
             {deliveries.data.data.slice(0, 20).map((delivery) => <tr key={delivery.id}>
               <td><Time value={delivery.created_at} /></td><td><Badge value={delivery.status} /></td>
