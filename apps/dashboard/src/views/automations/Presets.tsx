@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
+import { GitBranch } from "lucide-react";
 import { Drawer } from "../../components/Drawer";
 import { Empty, Failed } from "../../components/Empty";
 import { Field, Select } from "../../components/Field";
@@ -38,7 +39,7 @@ export function Presets({ stage = "", onBlank }: { stage?: string; onBlank?: () 
       {can && onBlank ? <button className="secondary" type="button" onClick={onBlank}>Start blank</button> : null}
       {presets.error ? <Failed message={presets.error} onRetry={() => void presets.reload()} /> :
         presets.loading && !presets.data ? <Skeleton lines={6} /> :
-        !presets.data?.data.length ? <Empty title="No automation presets" body="Start blank or add the lifecycle library to this install." /> :
+        !presets.data?.data.length ? <Empty title="No presets available" body="Start from a blank automation, or add the lifecycle library for ready-made ones." icon={<GitBranch size={28} strokeWidth={1.5} />} /> :
         <div className="cardGrid">
           {stages.filter((item) => !stage || item.value === stage).map((item) => (
             <section className="card" key={item.value} aria-label={item.label}>
