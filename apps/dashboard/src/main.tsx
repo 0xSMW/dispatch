@@ -41,7 +41,7 @@ import { General } from "./views/settings/General";
 import { Smtp } from "./views/settings/Smtp";
 import { Integrations } from "./views/settings/Integrations";
 import { Team } from "./views/settings/Team";
-import { UnsubscribePage } from "./views/settings/UnsubscribePage";
+import { UnsubscribeEditor, UnsubscribePage } from "./views/settings/UnsubscribePage";
 import { Usage } from "./views/settings/Usage";
 import { Setup } from "./views/setup/Setup";
 import { Library } from "./views/templates/Library";
@@ -121,6 +121,7 @@ export const routes = [
           { path: "settings/integrations", element: <Integrations /> },
           { path: "settings/brand", element: <Brand /> },
           { path: "settings/unsubscribe-page", element: <UnsubscribePage /> },
+          { path: "settings/unsubscribe-page/edit", element: <UnsubscribeEditor /> },
 
           { path: "timeline", element: <Timeline /> },
           { path: "*", element: <NotFound /> },
