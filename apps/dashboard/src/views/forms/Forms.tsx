@@ -1,4 +1,7 @@
 import { useState } from "react";
+import { Copy as CopyIcon } from "lucide-react";
+import "../../styles/snippets.css";
+import { Code } from "../../components/Code";
 import { Badge } from "../../components/Badge";
 import { ConfirmPhrase } from "../../components/ConfirmPhrase";
 import { copyText } from "../../components/Copy";
@@ -227,18 +230,21 @@ function Snippets({ form, publicUrl, onClose }: { form: Form; publicUrl: string;
   try {
     snippets = formSnippets({ publicUrl, key: form.key, properties: form.properties });
   } catch (error) {
-    return <Modal isOpen title={form.name} onClose={onClose}><p role="alert">{error instanceof Error ? error.message : "Could not generate snippets."}</p></Modal>;
+    return <Modal isOpen title="Embed form" onClose={onClose}><p role="alert">{error instanceof Error ? error.message : "Could not generate snippets."}</p></Modal>;
   }
-  return <Modal isOpen title={form.name} onClose={onClose} size="large">
-    <div className="stack">
+  return <Modal isOpen title="Embed form" onClose={onClose} size="wide">
+    <div className="formSnippets">
+      <p className="formSnippetsName">{form.name}</p>
       <p className="muted">Use this on an allowed origin: {form.allowed_origins.join(", ")}. Submissions are limited to 16 KB. Never add an API key.</p>
       <p className="muted">The HTML form submits directly and displays the API's JSON response. Use fetch to show the thank-you message on your own page.</p>
-      <Tabs tabs={[{ id: "html", label: "HTML" }, { id: "fetch", label: "Fetch" }]} value={tab} onChange={setTab} label="Form snippets" />
-      <button type="button" className="secondary" onClick={async () => {
-        if (await copyText(snippets[tab])) toast.success("Snippet copied.");
-        else toast.error("Could not copy. Select the snippet and copy it manually.");
-      }}>Copy {tab === "html" ? "HTML" : "fetch"} snippet</button>
-      <pre><code>{snippets[tab]}</code></pre>
+      <div className="formSnippetsToolbar">
+        <Tabs tabs={[{ id: "html", label: "HTML" }, { id: "fetch", label: "JavaScript" }]} value={tab} onChange={setTab} label="Form snippets" />
+        <button type="button" className="secondary small" aria-label={`Copy ${tab === "html" ? "HTML" : "JavaScript"} snippet`} onClick={async () => {
+          if (await copyText(snippets[tab])) toast.success("Snippet copied.");
+          else toast.error("Could not copy. Select the snippet and copy it manually.");
+        }}><CopyIcon size={14} aria-hidden />Copy</button>
+      </div>
+      <Code value={snippets[tab]} language={tab === "html" ? "html" : "javascript"} copy={false} className="formSnippetsCode" />
     </div>
   </Modal>;
 }
