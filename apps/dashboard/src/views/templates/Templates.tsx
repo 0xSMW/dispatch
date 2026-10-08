@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { ConfirmPhrase } from "../../components/ConfirmPhrase";
 import { Empty, Failed } from "../../components/Empty";
@@ -15,14 +15,13 @@ import { useList } from "../../hooks/useList";
 import { useMutation } from "../../hooks/useMutation";
 import { useCan, useClient } from "../../shell/session";
 import type { Template } from "../../types";
-import { Library } from "./Library";
 import { Thumb } from "./editor";
 import { fill, normalizeVariables } from "./render";
 import { samples, useBrand } from "./Versions";
 
 /** Template grid: cards with a thumbnail, name, alias, and status. */
 export function Templates() {
-  const [, setParams] = useSearchParams();
+  const [params, setParams] = useSearchParams();
   const client = useClient();
   const can = useCan();
   const navigate = useNavigate();
@@ -33,8 +32,20 @@ export function Templates() {
   const [renaming, setRenaming] = useState<Template | null>(null);
   const [deleting, setDeleting] = useState<Template | null>(null);
   const rows = list.rows;
+  const added = params.get("added");
+  const addedVisible = rows.some((row) => row.id === added);
   const filtered = Boolean(filters.q || filters.status);
   const empty = !list.loading && !list.error && list.page === 1 && rows.length === 0 && !filtered;
+
+  useEffect(() => {
+    if (!added || !addedVisible) return;
+    const timer = window.setTimeout(() => setParams((previous) => {
+      const next = new URLSearchParams(previous);
+      next.delete("added");
+      return next;
+    }, { replace: true }), 4000);
+    return () => window.clearTimeout(timer);
+  }, [added, addedVisible, setParams]);
 
   const duplicate = useMutation((row: Template) => client.post<Template>(`/templates/${row.id}/duplicate`), {
     success: "Template duplicated.",
@@ -45,10 +56,12 @@ export function Templates() {
     <div className="page">
       <PageHeader
         title="Templates"
-        actions={can ? <button type="button" onClick={() => setCreating(true)}>Create template</button> : null}
+        actions={<>
+          <Link className="button secondary" to="/templates/library">Browse templates</Link>
+          {can ? <button type="button" onClick={() => setCreating(true)}>Create template</button> : null}
+        </>}
       />
-      <section className="stack" aria-labelledby="your-templates-title">
-        <h2 id="your-templates-title">Your templates</h2>
+      <section className="stack" aria-label="Your templates">
         {!empty ? <FilterBar search="Search templates" filters={[{ param: "status", label: "Status", options: ["draft", "published"] }]} /> : null}
 
         {list.error ? (
@@ -67,7 +80,7 @@ export function Templates() {
           !filtered ? (
             <Empty
               title="No templates yet"
-              body="Create your own, or choose a ready-made template below."
+              body="Create a template or browse the library to add one."
             />
           ) : (
             <Empty title="No templates match" body="Try a different search or status." action={<button type="button" className="secondary" onClick={() => setParams((previous) => { const next = new URLSearchParams(previous); next.delete("q"); next.delete("status"); return next; })}>Clear filters</button>} />
@@ -78,6 +91,7 @@ export function Templates() {
               <TemplateCard
                 key={row.id}
                 row={row}
+                highlighted={row.id === added}
                 brand={brand}
                 menu={
                   can ? (
@@ -113,7 +127,6 @@ export function Templates() {
           </div>
         ) : null}
       </section>
-      <Library onInstalled={() => void list.reload()} />
 
       {creating ? <CreateTemplate onClose={() => setCreating(false)} /> : null}
       {renaming ? <Rename template={renaming} onClose={() => setRenaming(null)} onDone={() => void list.reload()} /> : null}
@@ -135,13 +148,13 @@ export function Templates() {
   );
 }
 
-function TemplateCard({ row, brand, menu }: { row: Template; brand: Record<string, unknown>; menu: ReactNode }) {
+function TemplateCard({ row, brand, menu, highlighted }: { row: Template; brand: Record<string, unknown>; menu: ReactNode; highlighted: boolean }) {
   const html = useMemo(() => {
     const variables = normalizeVariables(row.variables);
     return row.html ? fill(row, { ...brand, ...samples(variables) }, variables).html : null;
   }, [row, brand]);
   return (
-    <article className="card" aria-label={row.name}>
+    <article className={`card${highlighted ? " isAdded" : ""}`} aria-label={row.name}>
       <Link to={`/templates/${row.id}`} tabIndex={-1} aria-hidden>
         <Thumb html={html} />
       </Link>
