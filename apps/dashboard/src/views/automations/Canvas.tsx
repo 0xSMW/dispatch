@@ -66,7 +66,7 @@ export function Canvas({ tree, actions, disabled = false, errors = {}, options, 
   const [selected, setSelected] = useState<string | null>(() => (run ? runFocus(tree, run) : null));
   const [adding, setAdding] = useState<Slot | null>(null);
   const [pickerSearch, setPickerSearch] = useState("");
-  const { nodes, edges } = useMemo(() => layout(tree, { editable, errors, run }), [tree, editable, errors, run]);
+  const { nodes, edges } = useMemo(() => layout(tree, { editable, errors, run, showEmailCounts: Boolean(options?.emailCounts) }), [tree, editable, errors, run, options?.emailCounts]);
 
   const select = useCallback((key: string) => {
     setAdding(null);
