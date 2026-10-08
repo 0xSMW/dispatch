@@ -67,6 +67,17 @@ describe("Goals", () => {
   beforeEach(() => signIn());
   afterEach(() => { cleanup(); sessionStorage.clear(); vi.unstubAllGlobals(); });
 
+  it("can create an event goal for all contacts when unrelated choices fail", async () => {
+    mockFetch((raw) => new URL(raw).pathname === "/goals" ? { body: { object: "list", data: [goal], has_more: false } } : { status: 500, body: { message: "Unavailable" } });
+    render(h(Goals), { wrapper });
+    fireEvent.click(await screen.findByRole("button", { name: "Create goal" }));
+    const dialog = within(screen.getByRole("dialog"));
+    fireEvent.change(dialog.getByLabelText("Name"), { target: { value: "Activation" } });
+    fireEvent.change(dialog.getByLabelText("Event name"), { target: { value: "activated" } });
+    await screen.findByRole("button", { name: "Retry choices" });
+    expect((dialog.getByRole("button", { name: /^Create/ }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it("creates with the default window, edits via PATCH, and deletes with confirmation", async () => {
     const fetch = api();
     render(h(Goals), { wrapper });
@@ -117,15 +128,15 @@ describe("Goals", () => {
     fireEvent.click(screen.getByRole("button", { name: "Create goal" }));
     const dialog = within(screen.getByRole("dialog"));
     fireEvent.change(dialog.getByLabelText("Name"), { target: { value: "Big purchase" } });
-    fireEvent.change(dialog.getByLabelText("Target"), { target: { value: "rule" } });
+    fireEvent.change(dialog.getByLabelText("Target").closest(".dropdown")!.querySelector("select")!, { target: { value: "rule" } });
     await dialog.findByText(/recorded contact scalars|A rule target counts/);
     expect(dialog.getByLabelText("Operator")).toBeTruthy();
     expect((dialog.getByRole("button", { name: /^Create/ }) as HTMLButtonElement).disabled).toBe(true);
     await waitFor(() => expect((dialog.getByLabelText("Choose field") as HTMLSelectElement).disabled).toBe(false));
     fireEvent.change(dialog.getByLabelText("Field"), { target: { value: "event.amount" } });
     expect((dialog.getByRole("button", { name: /^Create/ }) as HTMLButtonElement).disabled).toBe(true);
-    fireEvent.change(dialog.getByLabelText("Choose field"), { target: { value: "contact.amount" } });
-    fireEvent.change(dialog.getByLabelText("Operator"), { target: { value: "gte" } });
+    fireEvent.change((dialog.getByLabelText("Choose field").closest(".dropdown")?.querySelector("select") ?? dialog.getByLabelText("Choose field")), { target: { value: "contact.amount" } });
+    fireEvent.change(dialog.getByLabelText("Operator").closest(".dropdown")!.querySelector("select")!, { target: { value: "gte" } });
     fireEvent.change(dialog.getByLabelText("Value"), { target: { value: "10" } });
     await waitFor(() => expect((dialog.getByRole("button", { name: /^Create/ }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(dialog.getByRole("button", { name: /^Create/ }));
