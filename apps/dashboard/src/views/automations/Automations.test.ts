@@ -60,12 +60,12 @@ describe("Automations", () => {
     open();
     await screen.findByText("No automations");
     expect(screen.getByText("Start with a lifecycle stage or build your own automation.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: permission === "full" ? "Choose a starting point" : "Browse presets" }));
     await screen.findByRole("button", { name: automations[0]!.name });
     for (const name of ["Acquisition", "Onboarding", "Retention", "Re-engagement", "Dunning", "Reactivation"]) {
       expect(screen.getByRole("region", { name })).toBeTruthy();
     }
     if (permission === "full") {
-      fireEvent.click(screen.getByRole("button", { name: "Choose a starting point" }));
       const chooser = within(screen.getByRole("dialog"));
       await chooser.findByRole("button", { name: automations[0]!.name });
       fireEvent.click(chooser.getByRole("button", { name: "Start blank" }));
@@ -205,7 +205,7 @@ describe("Automations", () => {
   it("keeps an explicit creation re-entry choice when the trigger changes", async () => {
     const fetch = mockFetch((_raw, init) => init.method === "POST" ? { body: { id: "automation_3" } } : { body: { object: "list", has_more: false, data: [] } });
     open();
-    fireEvent.click(await screen.findByRole("button", { name: "Create automation" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Choose a starting point" }));
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Start blank" }));
     const dialog = within(screen.getByRole("dialog"));
     fireEvent.change(dialog.getByLabelText("Name"), { target: { value: "Lifecycle" } });
