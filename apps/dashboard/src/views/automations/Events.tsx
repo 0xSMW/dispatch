@@ -43,6 +43,8 @@ export function Events() {
   const can = useCan();
   const definitions = useList<EventDefinition>("/events");
   const fired = useList<FiredEvent>("/fired-events", {}, { limit: 20 });
+  const empty = !definitions.loading && !definitions.error && definitions.page === 1 && definitions.rows.length === 0
+    && !fired.loading && !fired.error && fired.page === 1 && fired.rows.length === 0;
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<EventDefinition | null>(null);
   const [deleting, setDeleting] = useState<EventDefinition | null>(null);
@@ -74,7 +76,7 @@ export function Events() {
         <Empty
           title="No events defined"
           body="Define an event to check incoming payloads and track activity."
-          action={can ? <button type="button" onClick={() => setCreating(true)}>Define your first event</button> : null}
+          action={can ? <><button type="button" onClick={() => setCreating(true)}>Define your first event</button><button type="button" className="secondary" onClick={() => setSending("")}>Send test event</button></> : null}
         />
       }
       columns={[
@@ -120,7 +122,7 @@ export function Events() {
         />
       )}
     >
-      <Panel
+      {!empty ? <Panel
         title="Fired events"
         actions={
           <button type="button" className="secondary small" onClick={reload} disabled={fired.loading}>
@@ -149,7 +151,7 @@ export function Events() {
             { header: "Sent", cell: (row) => <Time value={row.created_at} /> },
           ]}
         />
-      </Panel>
+      </Panel> : null}
 
       {creating ? <DefinitionForm onClose={() => setCreating(false)} onDone={() => void definitions.reload()} /> : null}
       {editing ? <DefinitionForm definition={editing} onClose={() => setEditing(null)} onDone={() => void definitions.reload()} /> : null}
