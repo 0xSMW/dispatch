@@ -56,7 +56,7 @@ describe("Templates", () => {
   it("says nothing matched when a filtered list is empty", async () => {
     api({ "GET /templates": list([]), "GET /brand": { object: "brand" } });
     renderAt("/templates?status=draft", [{ path: "/templates", element: h(Templates) }]);
-    expect(await screen.findByText("No matching templates")).toBeTruthy();
+    expect(await screen.findByText("No templates match")).toBeTruthy();
   });
 
   it("creates a draft and opens the editor", async () => {
