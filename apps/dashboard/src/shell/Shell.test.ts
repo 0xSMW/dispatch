@@ -83,7 +83,7 @@ describe("Shell keys", () => {
     vi.stubGlobal("innerWidth", width);
     if (role === "viewer") signIn("viewer", ["read"]);
     open("/events");
-    const labels = ["Emails", "Metrics", "Broadcasts", "Automations", "Templates", "Audience", "Goals", "Domains",
+    const labels = ["Emails", "Metrics", "Broadcasts", "Automations", "Templates", "Audience", "Topics", "Goals", "Domains",
       "Logs", "API keys", "Webhooks", "Timeline", "Events", "Settings"];
     expect(nav.map((item) => item.label)).toEqual(labels);
     const menu = screen.getByRole("navigation", { name: "Main" });
@@ -96,6 +96,13 @@ describe("Shell keys", () => {
     expect(main.getAllByRole("link").map((link) => link.getAttribute("href"))).toEqual(nav.map((item) => item.to));
     expect(main.getByRole("link", { name: "Events" }).getAttribute("href")).toBe("/events");
     expect(main.getByRole("link", { name: "Goals" }).getAttribute("href")).toBe("/goals");
+  });
+
+  it("highlights Topics without also highlighting Audience", () => {
+    open("/audience/topics");
+    const menu = within(screen.getByRole("navigation", { name: "Main" }));
+    expect(menu.getByRole("link", { name: "Topics" }).getAttribute("aria-current")).toBe("page");
+    expect(menu.getByRole("link", { name: "Audience" }).getAttribute("aria-current")).toBeNull();
   });
 
   it.each([
