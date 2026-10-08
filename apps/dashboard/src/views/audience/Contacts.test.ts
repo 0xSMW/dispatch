@@ -57,10 +57,7 @@ describe("Contacts", () => {
     fireEvent.click(screen.getByRole("combobox", { name: "Segments" }));
     expect(screen.getByRole("option", { name: "VIP" })).toBeTruthy();
     fireEvent.keyDown(screen.getByRole("combobox", { name: "Segments" }), { key: "Escape" });
-    const learn = within(screen.getByRole("navigation", { name: "Learn more" }));
-    expect(learn.getByRole("link", { name: "Properties" }).getAttribute("href")).toContain("audience.md#properties");
-    expect(learn.getByRole("link", { name: "Segments" }).getAttribute("href")).toContain("audience.md#segments");
-    expect(learn.getByRole("link", { name: "Topics" }).getAttribute("href")).toContain("audience.md#topics");
+    expect(screen.queryByRole("navigation", { name: "Learn more" })).toBeNull();
   });
 
   it("offers an add-contact action in the unfiltered empty state", async () => {
