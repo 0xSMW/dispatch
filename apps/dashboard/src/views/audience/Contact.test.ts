@@ -145,7 +145,9 @@ describe("Contact", () => {
   it("saves properties, sending cleared values as null", async () => {
     const fetch = api();
     open();
-    const seats = (await screen.findByLabelText("seats")) as HTMLInputElement;
+    // Definitions load after the contact and can reorder the property controls.
+    await screen.findByLabelText("plan");
+    const seats = screen.getByLabelText("seats") as HTMLInputElement;
     changeControl(seats, { target: { value: "8" } });
     changeControl(screen.getByLabelText("legacy"), { target: { value: "" } });
     changeControl(screen.getByLabelText("Last name"), { target: { value: "Lovelace" } });
