@@ -1,4 +1,5 @@
 import { readFile } from "node:fs/promises";
+import bundledLibrary from "../../../packages/templates/library.json" with { type: "json" };
 import { ApiError, automationInstallSchema, renderTemplate, type Connection, type EventInput, type PropertyInput, type Step, type TriggerConfig } from "@dispatchmail/core";
 import { installAutomation, installLibrary, tx, type Db, type LibraryInstallEntry, type Queryable } from "@dispatchmail/db";
 import type { FastifyInstance } from "fastify";
@@ -54,11 +55,10 @@ export type LibraryFile = {
 
 const cache = new Map<string, LibraryFile>();
 
-export function libraryFile() {
-  return new URL("../../../packages/templates/library.json", import.meta.url);
-}
-
-export async function loadLibrary(file = libraryFile()) {
+// A static import keeps the built-in catalog inside the server bundle. Repository
+// paths relative to import.meta.url are unavailable in a serverless deployment.
+export async function loadLibrary(file?: URL) {
+  if (!file) return bundledLibrary as unknown as LibraryFile;
   const key = file.href;
   const hit = cache.get(key);
   if (hit) return hit;
