@@ -1,13 +1,16 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { AlertTriangle } from "lucide-react";
 import { Badge } from "../../components/Badge";
 import { Drawer } from "../../components/Drawer";
 import { Empty, Failed } from "../../components/Empty";
+import { FilterBar } from "../../components/FilterBar";
+import { PageHeader } from "../../components/PageHeader";
 import { Panel } from "../../components/Panel";
 import { Skeleton } from "../../components/Skeleton";
 import { Table } from "../../components/Table";
 import { useMutation } from "../../hooks/useMutation";
+import { useFilters } from "../../hooks/useFilters";
 import { useResource } from "../../hooks/useResource";
 import { useCan, useClient } from "../../shell/session";
 import { kindLabels } from "../../lib/emailKind";
@@ -17,16 +20,6 @@ import { Preview, Thumb } from "./editor";
 
 // Local until the listing contract is added to the shared dashboard types.
 export type DiscoveryTemplate = LibraryTemplate & { stage?: string | null; when?: string };
-export type LibraryTab = "transactional" | "lifecycle";
-/** Stage takes precedence over kind: transactional dunning emails are lifecycle emails too. */
-export function libraryTab(entry: DiscoveryTemplate): LibraryTab {
-  return entry.stage || entry.kind === "marketing" ? "lifecycle" : "transactional";
-}
-
-export function visibleTemplates(entries: DiscoveryTemplate[], tab: LibraryTab, stage = "") {
-  return entries.filter((entry) => libraryTab(entry) === tab && (tab !== "lifecycle" || !stage || entry.stage === stage));
-}
-
 // Only link to public recipes actually bundled with the dashboard.
 const recipes = import.meta.glob<string>("../../../../../docs/templates/{stripe,authjs,better-auth}.md", {
   query: "?raw", import: "default", eager: true,
@@ -56,47 +49,51 @@ export function renderedOf(data: LibraryDetail | null | undefined): Rendered | n
   return data.preview && typeof data.preview === "object" ? data.preview : null;
 }
 
-/** Entries grouped by category, in the order the manifest lists them. */
-export function byCategory(entries: LibraryTemplate[]) {
-  const groups = new Map<string, LibraryTemplate[]>();
-  for (const entry of entries) groups.set(entry.category, [...(groups.get(entry.category) ?? []), entry]);
-  return [...groups.entries()];
-}
-
 function title(category: string) {
   const text = category.replaceAll("_", " ").replaceAll("-", " ");
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-/** Ready-made templates shown directly below the account's templates. */
-export function Library({ onInstalled }: { onInstalled?: () => void }) {
+/** An explicit browse view, separate from the account's template collection. */
+export function Library() {
   const library = useResource<List<DiscoveryTemplate>>("/template-library");
   const [open, setOpen] = useState<DiscoveryTemplate | null>(null);
+  const [, setParams] = useSearchParams();
+  const filters = useFilters(["q", "category"]);
   const entries = library.data?.data ?? [];
+  const query = filters.q?.trim().toLowerCase() ?? "";
+  const visible = entries.filter((entry) =>
+    (!filters.category || entry.category === filters.category) &&
+    (!query || `${entry.name} ${entry.slug} ${entry.description}`.toLowerCase().includes(query)),
+  );
+  const categories = [...new Set(entries.map((entry) => entry.category))];
 
   return (
-    <section className="stack" id="ready-made" aria-labelledby="ready-made-title">
-      <h2 id="ready-made-title">Ready-made templates</h2>
+    <div className="page">
+      <PageHeader title="Browse templates" back={{ to: "/templates", label: "Templates" }} />
+      <FilterBar search="Search templates" filters={[{
+        param: "category", label: "Category", all: "All categories",
+        options: categories.map((category) => ({ value: category, label: title(category) })),
+      }]} />
       {library.error ? (
         <Failed message={library.error} onRetry={() => void library.reload()} />
       ) : library.loading && !library.data ? (
         <Skeleton lines={6} />
       ) : entries.length === 0 ? (
-        <Empty title="No ready-made templates" body="There are no ready-made templates here yet." />
+        <Empty title="No library templates" body="There are no templates in the library yet." />
+      ) : visible.length === 0 ? (
+        <Empty title="No templates match" body="Try a different search or category." action={
+          <button type="button" className="secondary" onClick={() => setParams({})}>Clear filters</button>
+        } />
       ) : (
-        byCategory(entries).map(([category, templates]) => (
-          <section key={category} className="templateCategory" aria-label={title(category)}>
-            <h3 className="categoryTitle">{title(category)}</h3>
-            <div className="cardGrid">
-              {templates.map((entry) => (
-                <LibraryCard key={entry.slug} entry={entry} onOpen={() => setOpen(entry)} />
-              ))}
-            </div>
-          </section>
-        ))
+        <div className="cardGrid">
+          {visible.map((entry) => (
+            <LibraryCard key={entry.slug} entry={entry} onOpen={() => setOpen(entry)} />
+          ))}
+        </div>
       )}
-      {open ? <LibraryPreview entry={open} onClose={() => setOpen(null)} onInstalled={onInstalled} /> : null}
-    </section>
+      {open ? <LibraryPreview entry={open} onClose={() => setOpen(null)} /> : null}
+    </div>
   );
 }
 
@@ -115,23 +112,19 @@ function LibraryCard({ entry, onOpen }: { entry: DiscoveryTemplate; onOpen: () =
           </button>
           <span className="cardSlug mono">{entry.slug}</span>
         </div>
-        <span className="cardStatus">Ready to use</span>
       </div>
     </article>
   );
 }
 
-function LibraryPreview({ entry, onClose, onInstalled }: { entry: DiscoveryTemplate; onClose: () => void; onInstalled?: () => void }) {
+function LibraryPreview({ entry, onClose }: { entry: DiscoveryTemplate; onClose: () => void }) {
   const client = useClient();
   const can = useCan();
+  const navigate = useNavigate();
   const detail = useResource<LibraryDetail>(`/template-library/${entry.slug}`);
-  const [installed, setInstalled] = useState<string | null>(null);
   const install = useMutation(() => client.post<{ object: "template"; id: string }>(`/template-library/${entry.slug}/install`), {
-    success: "Template installed.",
-    onSuccess: (result) => {
-      setInstalled(result.id);
-      onInstalled?.();
-    },
+    success: "Template added.",
+    onSuccess: (result) => navigate(`/templates?added=${encodeURIComponent(result.id)}`),
   });
   const rendered = renderedOf(detail.data);
 
@@ -143,14 +136,10 @@ function LibraryPreview({ entry, onClose, onInstalled }: { entry: DiscoveryTempl
       title={entry.name}
       onClose={onClose}
       actions={
-        installed ? (
-          <Link className="button" to={`/templates/${installed}`}>
-            Open template
-          </Link>
-        ) : can ? (
+        can ? (
           <button type="button" disabled={install.isLoading} aria-busy={install.isLoading} onClick={() => void install.mutate()}>
             {install.isLoading ? <span className="spinner" aria-hidden /> : null}
-            Use template
+            Add to templates
           </button>
         ) : null
       }
@@ -160,11 +149,6 @@ function LibraryPreview({ entry, onClose, onInstalled }: { entry: DiscoveryTempl
         <p className="muted">{entry.description}</p>
         <Guidance entry={entry} />
         <Link to="/settings/brand">Edit brand</Link>
-        {installed ? (
-          <p className="notice" role="status">
-            Installed as <span className="mono">{entry.slug}</span>. Send it with <span className="mono">{`template: { id: "${entry.slug}" }`}</span>.
-          </p>
-        ) : null}
         {detail.error ? (
           <Failed message={detail.error} onRetry={() => void detail.reload()} />
         ) : rendered ? (
