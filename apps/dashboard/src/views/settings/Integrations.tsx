@@ -58,14 +58,14 @@ export function Integrations() {
   const empty = !list.loading && !list.error && list.page === 1 && !list.rows.length;
 
   return (
-    <div className="page">
+    <div className="page settingsPage">
       <PageHeader title="Settings" />
       <Tabs tabs={settingsTabs} />
-      {empty ? <Empty
+      {empty ? <Panel title="Integrations"><Empty
         title="No integrations yet"
         body="Connect Stripe, Clerk, Supabase, or Standard Webhooks to update your contacts and start automations."
         action={<>{can ? <button type="button" onClick={() => { setCredentials(null); setAdding("stripe"); }}>Connect integration</button> : <span className="muted">An administrator can connect an integration.</span>}<a href={setupGuide("stripe")} target="_blank" rel="noreferrer">Stripe setup guide</a></>}
-      /> : <>
+      /></Panel> : <>
       <Panel title="Integrations" actions={can ? <button type="button" onClick={() => { setCredentials(null); setAdding("stripe"); }}>Add integration</button> : null}>
         <div className="stack">
           <p className="muted">Receive provider events to update contacts and start automations. Signing secrets and receiver URLs are never available through inspection.</p>
