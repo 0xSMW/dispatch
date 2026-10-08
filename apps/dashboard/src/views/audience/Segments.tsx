@@ -48,7 +48,6 @@ export function Segments() {
   return (
     <ListPage
       title="Audience"
-      description="Static lists and live filters"
       tabs={audienceTabs}
       actions={
         can ? <button type="button" onClick={() => setCreating(true)}>
