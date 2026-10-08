@@ -90,8 +90,10 @@ describe("AutomationEditor", () => {
     // Synthetic rectangles validate measurement wiring, NOT rendered geometry or responsive fit.
     // Real wrapped-toolbar/short-viewport/scroll evidence must come from supervisor Chrome.
     let controlsBottom = 160;
+    let hudHeight = 44;
     let workspaceTop = 40;
     vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+      if (this.classList.contains("automationBuilderHud")) return new DOMRect(8, 400, width - 16, hudHeight);
       if (this.classList.contains("automationControls")) return new DOMRect(12, workspaceTop + 12, width - 24, controlsBottom - workspaceTop - 12);
       if (this.classList.contains("automationEditor")) return new DOMRect(0, workspaceTop, width, 480);
       return new DOMRect();
@@ -118,6 +120,15 @@ describe("AutomationEditor", () => {
     const controls = document.querySelector(".automationControls")!;
     const observer = observers.find((item) => item.targets.has(controls))!;
     expect(observer.targets.has(workspace)).toBe(true);
+    const hud = document.querySelector(".automationBuilderHud")!;
+    const hudObserver = observers.find((item) => item.targets.has(hud))!;
+    expect(workspace.style.getPropertyValue("--builder-control-height")).toBe("44px");
+    hudHeight = 88; // Custom date inputs wrap into another row.
+    hudObserver.notify();
+    expect(workspace.style.getPropertyValue("--builder-control-height")).toBe("88px");
+    hudHeight = 132;
+    fireEvent(window, new Event("resize"));
+    expect(workspace.style.getPropertyValue("--builder-control-height")).toBe("132px");
     expect(controls.textContent).toContain("Paused. Runs hold their place.");
     expect(workspace.style.getPropertyValue("--canvas-controls-bottom")).toBe("120px");
     fireEvent.click(screen.getByRole("button", { name: "Step delay" }));
@@ -169,8 +180,10 @@ describe("AutomationEditor", () => {
     expect(document.querySelector(".canvasPanel")).toBeNull();
     expect(controlValue(screen.getByLabelText("Name"))).toBe("Welcome");
     expect(screen.getByLabelText("Name")).toHaveProperty("disabled", role === "viewer");
-    expect(screen.getByRole("button", { name: "API" })).toBeTruthy();
-    expect(screen.getByRole("navigation", { name: "Learn more" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Help" }));
+    expect(screen.getByRole("menuitem", { name: "API" })).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    expect(document.querySelector(".automationBuilderHud")).toBeTruthy();
     expect(screen.getByLabelText("Date range")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Step welcome" }));
     const panel = screen.getByRole("region", { name: "Step welcome settings" });
@@ -205,7 +218,7 @@ describe("AutomationEditor", () => {
     for (const tab of ["Runs", "Metrics"]) {
       fireEvent.click(screen.getByRole("tab", { name: tab }));
       await (tab === "Runs" ? screen.findByText("No runs match") : screen.findByLabelText("Runs by status"));
-      expect(document.querySelector(".automationEditor.immersive")).toBeNull();
+      expect(document.querySelector(".automationEditor.immersive")).toBeTruthy();
       expect(new URLSearchParams(router.state.location.search).get("view")).toBe(choice);
       expect(new URLSearchParams(router.state.location.search).get("range")).toBe("7d");
       expect(screen.queryByRole("region", { name: "Step welcome settings" })).toBeNull();
@@ -294,7 +307,8 @@ describe("AutomationEditor", () => {
       steps: [{ key: "trigger", type: "trigger", config }], connections: [],
     } } : undefined);
     open(`/automations/automation_1/editor${query}`);
-    fireEvent.click(await screen.findByRole("button", { name: "Enroll contacts" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Enroll contacts" }));
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).getByLabelText("Audience")).toBeTruthy();
     expect(within(dialog).getByText("This can send emails immediately.")).toBeTruthy();
@@ -656,7 +670,9 @@ describe("AutomationEditor", () => {
     await waitFor(() => expect(patch()).toBeTruthy());
     expect(JSON.parse(String(patch()![1]!.body)).status).toBe("enabled");
     expect(await screen.findByText(/Enabled automations cannot be edited/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Stop and cancel runs" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menuitem", { name: "Stop and cancel runs" })).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
     expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
     expect(screen.getByLabelText("Event")).toHaveProperty("disabled", true);
   });
