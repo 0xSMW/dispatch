@@ -53,8 +53,9 @@ describe("Emails", () => {
     expect(query.get("to")).toBeNull();
     expect(query.get("limit")).toBe("40");
 
-    expect(screen.getAllByText("bounced").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Bounced").length).toBeGreaterThan(0);
     expect(screen.getByText("Welcome, Ada")).toBeTruthy();
+    fireEvent.click(screen.getByRole("combobox", { name: "API keys" }));
     expect(await screen.findByRole("option", { name: "Production" })).toBeTruthy();
   });
 
@@ -93,11 +94,11 @@ describe("Emails", () => {
     visit(h(Emails), "/emails");
     const sandbox = (await screen.findByText("ada@example.com")).closest("tr")!;
     const real = screen.getByText("bob@acme.com").closest("tr")!;
-    expect(within(sandbox).getByText(status)).toBeTruthy();
+    expect(within(sandbox).getByText(status[0]!.toUpperCase() + status.slice(1))).toBeTruthy();
     expect(within(sandbox).getByText("Sandbox")).toBeTruthy();
     expect(within(sandbox).getByTitle("Sandbox delivery is simulated. No email is sent externally.")).toBeTruthy();
     expect(within(real).queryByText("Sandbox")).toBeNull();
-    expect(within(real).getByText(status)).toBeTruthy();
+    expect(within(real).getByText(status[0]!.toUpperCase() + status.slice(1))).toBeTruthy();
   });
 
   it("exports the page as CSV with quoted fields", () => {
