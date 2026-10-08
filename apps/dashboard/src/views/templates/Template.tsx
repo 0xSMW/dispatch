@@ -94,9 +94,6 @@ export function Template() {
                   Publish
                 </button>
               ) : null}
-              <Link className="button" to={`/templates/${row.id}/editor`}>
-                {can ? "Edit" : "View source"}
-              </Link>
               {can ? (
                 <Menu
                   items={[
@@ -107,6 +104,9 @@ export function Template() {
                   ]}
                 />
               ) : null}
+              <Link className="button" to={`/templates/${row.id}/editor`}>
+                {can ? "Edit" : "View source"}
+              </Link>
             </>
           ) : null
         }
