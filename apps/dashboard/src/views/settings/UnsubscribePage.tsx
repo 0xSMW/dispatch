@@ -61,7 +61,7 @@ function validation(key: Key, value: string): string | null {
   if (key === "color")
     return !text || /^#[0-9a-f]{6}$/i.test(text)
       ? null
-      : "Use a six-digit hex color, such as #18181b.";
+      : "Use a six-digit hex color, such as #171717.";
   const limit =
     key === "button_label" ? 80 : key.includes("description") ? 500 : 120;
   return text.length > limit ? `Use ${limit} characters or fewer.` : null;
@@ -345,7 +345,7 @@ export function UnsubscribeEditor() {
         defaults[key] ??
         (key === "logo_url"
           ? brand.data?.logo_url || "https://example.com/logo.png"
-          : brand.data?.color || "#18181b"),
+          : brand.data?.color || "#171717"),
       disabled,
       "aria-invalid": Boolean(validation(key, form[key])),
       onChange: (
