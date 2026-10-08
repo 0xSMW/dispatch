@@ -1,3 +1,4 @@
+import { changeControl, controlValue } from "../../testingControls";
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -67,7 +68,7 @@ describe("integration fields", () => {
     const value = { ...integrationDraft(stripe), secret: "secret", restrictedKey: "rk_old" };
     const change = vi.fn();
     render(h(IntegrationFields, { value, onChange: change }));
-    fireEvent.change(screen.getByLabelText("Provider"), { target: { value: "clerk" } });
+    changeControl(screen.getByLabelText("Provider"), { target: { value: "clerk" } });
     expect(change).toHaveBeenCalledWith({ ...integrationDraft(), provider: "clerk", name: "Billing" });
   });
 
