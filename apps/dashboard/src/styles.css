@@ -1139,7 +1139,7 @@ tr.clickable {
   cursor: pointer;
 }
 
-tbody tr.clickable:hover > :is(td, th) {
+tbody tr.clickable:not(.selected):hover > :is(td, th) {
   background: var(--table-row-hover);
 }
 
