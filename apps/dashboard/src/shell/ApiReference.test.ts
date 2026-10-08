@@ -76,7 +76,7 @@ describe("ApiReference", () => {
 
   it("keeps the unknown-page empty state", () => {
     const drawer = open("/unknown");
-    expect(within(drawer).getByText("No API calls are listed for this page.")).toBeTruthy();
+    expect(within(drawer).getByText("This page has no API calls.")).toBeTruthy();
     expect(within(drawer).queryByRole("tablist")).toBeNull();
   });
 
