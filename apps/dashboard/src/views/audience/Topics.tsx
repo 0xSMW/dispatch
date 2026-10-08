@@ -4,6 +4,7 @@ import { Tag } from "lucide-react";
 import { Badge } from "../../components/Badge";
 import { ConfirmPhrase } from "../../components/ConfirmPhrase";
 import { copyText } from "../../components/Copy";
+import { Dropdown } from "../../components/Dropdown";
 import { Drawer } from "../../components/Drawer";
 import { Empty } from "../../components/Empty";
 import { Field, Select, TextArea } from "../../components/Field";
@@ -24,7 +25,7 @@ import { PreferenceCard, previewBrand } from "../public/Preferences";
 import { audienceTabs } from "../tabs";
 import "../../styles/audience.css";
 
-const defaultLabel = (value: Topic["default_subscription"] | "pending") => (value === "pending" ? "Pending confirmation" : value === "opt_in" ? "Opt in" : "Opt out");
+const defaultLabel = (value: Topic["default_subscription"] | "pending") => (value === "pending" ? "Pending confirmation" : value === "opt_in" ? "Subscribed" : "Not subscribed");
 
 /** Topics, with a live preview of the preference page beside the table. */
 export function Topics() {
@@ -82,7 +83,7 @@ export function Topics() {
                 </span>
               ),
             },
-            { header: "Defaults to", cell: (row) => <Badge value={row.default_subscription} label={defaultLabel(row.default_subscription)} /> },
+            { header: <span title="Applies when a contact has not chosen a preference for this topic.">Subscription default</span>, key: "default", cell: (row) => <Badge value={row.default_subscription} variant="neutral" label={defaultLabel(row.default_subscription)} /> },
             { header: "Visibility", cell: (row) => <Badge value={row.visibility} variant={row.visibility === "public" ? "info" : "neutral"} /> },
             { header: "Created", cell: (row) => <Time value={row.created_at} /> },
           ]}
@@ -159,18 +160,19 @@ function CreateTopic({ onClose, onDone }: { onClose: () => void; onDone: () => v
       submitting={isLoading}
     >
       <div className="form">
+        <p className="muted">Topics control which emails contacts receive. Segments group contacts for targeting.</p>
         <Field label="Name" value={form.name} onChange={set("name")} placeholder="Product updates" required autoFocus hint="50 characters at most." />
         <TextArea label="Description" value={form.description} onChange={set("description")} rows={2} hint={`${form.description.length} of 200 characters. Shown on the preference page.`} />
         <Field label="Key" value={form.key} onChange={set("key")} placeholder="product-updates" mono hint="Defaults to the name in lowercase with dashes." />
         <Select
-          label="Defaults to"
+          label="Subscription default"
           value={form.default_subscription}
           onChange={set("default_subscription")}
           options={[
-            { value: "opt_in", label: "Opt in" },
-            { value: "opt_out", label: "Opt out" },
+            { value: "opt_in", label: "Subscribed" },
+            { value: "opt_out", label: "Not subscribed" },
           ]}
-          hint="This cannot change later."
+          hint="Applies when a contact has not chosen a preference. This cannot change later."
         />
         <Select
           label="Visibility"
@@ -227,7 +229,7 @@ function EditTopic({ topic, onClose, onDone }: { topic: Topic; onClose: () => vo
             { value: "public", label: "Public" },
           ]}
         />
-        <Field label="Defaults to" value={defaultLabel(topic.default_subscription)} onChange={() => undefined} disabled hint="Set at creation and fixed." />
+        <Field label="Subscription default" value={defaultLabel(topic.default_subscription)} onChange={() => undefined} disabled hint="Applies when a contact has not chosen a preference. Set at creation and fixed." />
       </div>
     </Modal>
   );
@@ -262,10 +264,10 @@ function Subscriptions({ topic, onClose }: { topic: Topic; onClose: () => void }
         {can ? (
           <form className="inlineForm" onSubmit={submit}>
             <input type="email" aria-label="Email" placeholder="Email" value={email} onChange={(event) => setEmail(event.target.value)} required />
-            <select aria-label="Subscription" value={status} onChange={(event) => setStatus(event.target.value as "opt_in" | "opt_out")}>
-              <option value="opt_in">Opt in</option>
-              <option value="opt_out">Opt out</option>
-            </select>
+            <Dropdown aria-label="Subscription" value={status} onChange={(event) => setStatus(event.target.value as "opt_in" | "opt_out")}>
+              <option value="opt_in">Subscribed</option>
+              <option value="opt_out">Not subscribed</option>
+            </Dropdown>
             <button type="submit" disabled={save.isLoading}>
               Save
             </button>
