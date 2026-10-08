@@ -19,7 +19,6 @@ import { useMutation } from "../../hooks/useMutation";
 import { useSelection } from "../../hooks/useSelection";
 import { each } from "../../lib/bulk";
 import { errorMessage } from "../../lib/client";
-import { learnLinks } from "../../lib/docs";
 import { useCan, useClient } from "../../shell/session";
 import type { Automation, ContactProperty, EventDefinition, Segment, Topic } from "../../types";
 import { Presets } from "./Presets";
@@ -89,7 +88,6 @@ export function Automations() {
   return (
     <ListPage
       title="Automations"
-      learn={learnLinks("automations")}
       actions={
         <button type="button" onClick={() => setChoosing(true)}>
           Create automation
