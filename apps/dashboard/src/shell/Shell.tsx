@@ -34,6 +34,15 @@ import { Onboarding } from "./Onboarding";
 import { Shortcuts } from "./Shortcuts";
 import { useSession } from "./session";
 import { useTheme } from "./theme";
+import { NavIcon, type IconMotion } from "./NavIcon";
+import "../styles/sidebar-motion.css";
+
+const iconMotion: Record<string, IconMotion> = {
+  "/emails": "mail", "/metrics": "bars", "/broadcasts": "broadcast", "/automations": "branches",
+  "/templates": "document", "/audience": "people", "/goals": "target", "/domains": "globe",
+  "/logs": "logs", "/api-keys": "key", "/webhooks": "webhook", "/timeline": "activity",
+  "/events": "bolt", "/settings": "gear",
+};
 
 /** One shared menu for desktop, mobile, and every role. */
 export const nav = [
@@ -92,7 +101,7 @@ export function Shell() {
         <nav aria-label="Main">
           {nav.map(({ to, label, icon: Icon }) => (
             <NavLink key={to} to={to} className={({ isActive }) => (isActive ? "navItem active" : "navItem")}>
-              <Icon size={16} />
+              <NavIcon icon={Icon} motion={iconMotion[to]} />
               <span>{label}</span>
             </NavLink>
           ))}
@@ -121,10 +130,10 @@ function Tools({ apiUrl, onApi, onKeys }: { apiUrl: string; onApi: () => void; o
   return (
     <div className="sidebarTools">
       <Tool label="API reference" hint={shortcuts.api.keys[0]} detail={new URL(apiUrl).host} onClick={onApi}>
-        <Code2 size={15} aria-hidden />
+        <NavIcon icon={Code2} motion="code" size={15} />
       </Tool>
       <Tool label="Keyboard shortcuts" hint="?" onClick={onKeys}>
-        <Keyboard size={15} aria-hidden />
+        <NavIcon icon={Keyboard} motion="keyboard" size={15} />
       </Tool>
       <span className="spacer" />
       {docs ? (
