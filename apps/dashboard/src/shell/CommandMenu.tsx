@@ -147,7 +147,7 @@ export function CommandMenu({ pages, onClose, onApi, onKeys }: {
       </div>
       {waiting ? <div className="commandStatus" role="status">Searching records...</div> : null}
       {failed.length ? <div className="commandStatus" role="status">Could not search {failed.join(", ").toLowerCase()}. <button type="button" className="ghost small" onClick={() => setRetry((value) => value + 1)}>Retry</button></div> : null}
-      {!commands.length && !waiting ? <div className="commandEmpty">No matches. Try a name, recipient, or resource ID.</div> : null}
+      {!commands.length && !waiting ? <div className="commandEmpty">No matches. Try a name, recipient, or ID.</div> : null}
 
     </div>
     </div>
