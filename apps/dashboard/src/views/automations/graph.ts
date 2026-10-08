@@ -37,6 +37,8 @@ export type Node = {
   paths?: Array<{ key: string; label: string; steps: Node[] }>;
   /** Raw text of JSON fields while the user types, keyed by field name. Never sent. */
   drafts?: Record<string, string>;
+  /** Editor-only intent while entering an alternate segment contact; never serialized. */
+  contactTarget?: "other";
   /** Manual types for undeclared fields, by rule index path. Editor-only, shared by both views. */
   ruleTypes?: Record<string, PropertyType>;
 };
@@ -97,18 +99,18 @@ export function automationTrigger(row: { trigger?: string | null; trigger_config
   return config ? readTrigger(config) : { type: "event", event_name: row.trigger ?? "" };
 }
 
-export function triggerSummary(config: TriggerConfig, sources: RuleSources = {}): string {
-  const value = (item: unknown) => item === null ? "No value" : String(item);
+export function triggerSummary(config: TriggerConfig, sources: RuleSources & Pick<DisplaySources, "topicsError" | "segmentsError" | "topicsReady" | "segmentsReady"> = {}): string {
+  const value = (item: unknown) => displayValue(item, config.type === "contact_updated" ? config.field : undefined);
   switch (config.type) {
     case "event": return config.event_name;
     case "contact_created": return "Any new contact";
     case "contact_updated": {
       if (!config.field) return "Any change";
-      if (config.from === undefined && config.to === undefined) return `${config.field}: Any change`;
-      return `${config.field}: ${config.from === undefined ? "Any value" : value(config.from)} → ${config.to === undefined ? "Any value" : value(config.to)}`;
+      if (config.from === undefined && config.to === undefined) return `${fieldLabel(config.field)}: Any change`;
+      return `${fieldLabel(config.field)}: ${config.from === undefined ? "Any value" : value(config.from)} → ${config.to === undefined ? "Any value" : value(config.to)}`;
     }
-    case "topic_subscribed": return sources.topics?.find((row) => row.value === config.topic_id)?.label ?? config.topic_id;
-    case "segment_added": return sources.segments?.find((row) => row.value === config.segment_id)?.label ?? config.segment_id;
+    case "topic_subscribed": return resourceName(config.topic_id, "Topic", sources.topics, sources.topicsReady, sources.topicsError);
+    case "segment_added": return resourceName(config.segment_id, "Segment", sources.segments, sources.segmentsReady, sources.segmentsError);
   }
 }
 
@@ -222,9 +224,9 @@ export function branchSteps(node: Node, branch: Branch): Node[] {
 export function branchLabel(node: Node, branch: Branch): string {
   if (node.type === "split") {
     const variant = configuredVariants(node).find((variant) => variant.key === branch);
-    return variant ? `${variant.label} (${variant.weight}%)` : branch;
+    return variant ? `${variant.label} (${variant.weight}%)` : "Unavailable variant";
   }
-  if (node.type === "branch") return branch === "otherwise" ? "Otherwise" : configuredPaths(node).find((path) => path.key === branch)?.label || branch;
+  if (node.type === "branch") return branch === "otherwise" ? "Otherwise" : configuredPaths(node).find((path) => path.key === branch)?.label || "Unavailable path";
   return branchLabels[branch] ?? branch;
 }
 
@@ -783,7 +785,8 @@ export function stepIssues(node: Node, fields: ContextField[] = [], sending: Sen
     }
     case "add_to_segment":
       if (!config.segment_id) issues.segment_id = "Choose a segment.";
-      issues.email = emailIssue(config.email);
+      issues.email = node.contactTarget === "other" && !String(config.email ?? "").trim()
+        ? "Enter the email of the contact to add." : emailIssue(config.email);
       break;
     case "contact_update":
     case "contact_delete":
@@ -869,42 +872,95 @@ export function mergeIssues(...maps: Array<Record<string, Record<string, string>
   return out;
 }
 
-/** A one-line summary of a step, for the run view. */
-export function describe(node: Node): string {
+/** Presentation sources only; stored IDs and rule paths are never rewritten. */
+export type DisplaySources = {
+  templates?: Array<{ value: string; label: string }>;
+  templateNames?: Record<string, string>;
+  templatesReady?: boolean;
+  templatesError?: string | null;
+  segments?: Array<{ value: string; label: string }>;
+  topics?: Array<{ value: string; label: string }>;
+  segmentsReady?: boolean;
+  topicsReady?: boolean;
+  segmentsError?: string | null;
+  topicsError?: string | null;
+};
+
+export function resourceName(id: unknown, kind: string, choices?: Array<{ value: string; label: string }>, ready?: boolean, error?: string | null): string {
+  if (!id) return `${kind} not set`;
+  const name = choices?.find((row) => row.value === id)?.label;
+  if (name) return name;
+  if (error) return `${kind} unavailable`;
+  if (ready === false) return `Loading ${kind.toLowerCase()}…`;
+  return `${kind} unavailable`;
+}
+
+export function fieldLabel(field: string): string {
+  const labels: Record<string, string> = {
+    email: "Email", first_name: "First name", last_name: "Last name", unsubscribed: "Subscription",
+    created_at: "Created at", received_at: "Received at", topics: "Receiving topics", segments: "Segment membership",
+  };
+  const path = field.replace(/^(contact|event)\./, "");
+  const label = labels[path] ?? path.replaceAll("_", " ");
+  return label ? label[0]!.toUpperCase() + label.slice(1) : label;
+}
+
+function displayValue(value: unknown, field?: string): string {
+  if (value === null) return "No value";
+  if (field === "unsubscribed" || field === "contact.unsubscribed") {
+    if (value === true) return "Unsubscribed";
+    if (value === false) return "Subscribed";
+  }
+  return typeof value === "string" ? value : JSON.stringify(value) ?? "";
+}
+
+/** Expand accepted duration aliases without changing the stored input. */
+export function durationText(value: string): string {
+  if (durationSeconds(value) === null) return value;
+  const match = value.trim().toLowerCase().match(/^(\d+)\s*([a-z]+)$/)!;
+  const names: Record<string, string> = { s: "second", m: "minute", h: "hour", d: "day", w: "week" };
+  return `${Number(match[1])} ${names[match[2]![0]!]}${Number(match[1]) === 1 ? "" : "s"}`;
+}
+
+/** Shared summary for the canvas, inspector, list and run details. */
+export function describe(node: Node, sources: DisplaySources = {}): string {
   const config = node.config;
   switch (node.type) {
     case "send_email": {
       const template = config.template as { id?: string } | string | undefined;
       const id = typeof template === "string" ? template : template?.id;
-      return `${kindLabels[sendKind(config)]} · Template ${id || "not set"}${config.to ? ` to ${String(config.to)}` : ""}`;
+      const name = (id && sources.templateNames?.[id]) || resourceName(id, "Template", sources.templates, sources.templatesReady, sources.templatesError);
+      const topic = config.topic_id ? ` · ${resourceName(config.topic_id, "Topic", sources.topics, sources.topicsReady, sources.topicsError)}` : "";
+      return `${kindLabels[sendKind(config)]} · ${name}${config.to ? ` to ${String(config.to)}` : ""}${topic}`;
     }
-    case "delay":
-      return String(config.duration ?? "");
-    case "wait_for_event":
-      return `${String(config.event_name ?? "")}${config.timeout ? `, up to ${String(config.timeout)}` : ""}`;
-    case "condition":
-      return ruleText(config as Rule);
-    case "filter":
-      return `${ruleText(config.rule as Rule)} · ${config.scope === "following" ? "all following steps" : "next step"}`;
-    case "branch":
-      return `${configuredPaths(node).length} paths`;
-    case "split":
-      return configuredVariants(node).map((variant) => `${variant.label} ${variant.weight}%`).join(" / ");
-    case "exit":
-      return "The run ends here";
-    case "add_to_segment":
-      return `Segment ${String(config.segment_id ?? "")}`;
-    case "contact_update":
-      return "Update the contact";
-    case "contact_delete":
-      return "Delete the contact";
+    case "delay": return config.duration ? `Wait ${durationText(String(config.duration))}` : "Duration not set";
+    case "wait_for_event": return config.event_name ? `Wait for ${String(config.event_name)}${config.timeout ? `, up to ${durationText(String(config.timeout))}` : ""}` : "Event not set";
+    case "condition": return ruleText(config as Rule, sources) || "Rule not set";
+    case "filter": return `${ruleText(config.rule as Rule, sources) || "Rule not set"} · ${config.scope === "following" ? "all following steps" : "next step"}`;
+    case "branch": return configuredPaths(node).map((path) => path.label || "Unnamed path").concat("Otherwise").join(" / ");
+    case "split": return configuredVariants(node).map((variant) => `${variant.label} ${variant.weight}%`).join(" / ");
+    case "exit": return "The run ends here";
+    case "add_to_segment": return `${resourceName(config.segment_id, "Segment", sources.segments, sources.segmentsReady, sources.segmentsError)} · ${config.email || "Person in this automation"}`;
+    case "contact_update": {
+      const updates = ["first_name", "last_name", "unsubscribed"].filter((field) => config[field] !== undefined && config[field] !== "")
+        .map((field) => `${fieldLabel(field)}: ${displayValue(config[field], field)}`);
+      if (config.properties && typeof config.properties === "object" && !Array.isArray(config.properties)) {
+        updates.push(...Object.entries(config.properties).map(([key, value]) => `${fieldLabel(key)}: ${displayValue(value)}`));
+      }
+      return `${updates.length ? updates.join(" · ") : "No changes set"}${config.email ? ` · ${String(config.email)}` : ""}`;
+    }
+    case "contact_delete": return config.email ? `Delete ${String(config.email)}` : "Delete the person in this automation";
   }
 }
 
-export function ruleText(rule: Rule | undefined): string {
+export function ruleText(rule: Rule | undefined, sources: DisplaySources = {}): string {
   if (!rule) return "";
-  if (rule.type !== "rule") return (rule.rules ?? []).map((child) => `(${ruleText(child)})`).join(` ${rule.type} `);
+  if (rule.type !== "rule") return (rule.rules ?? []).map((child) => `(${ruleText(child, sources)})`).join(` ${rule.type} `);
+  if (!rule.field) return "";
   const words: Record<string, string> = { eq: "is", neq: "is not", gt: "is greater than", gte: "is at least", lt: "is less than", lte: "is at most" };
-  const value = rule.operator === "exists" || rule.operator === "is_empty" ? "" : ` ${JSON.stringify(rule.value ?? "")}`;
-  return `${rule.field} ${words[rule.operator] ?? rule.operator.replaceAll("_", " ")}${value}`;
+  const member = rule.field === "contact.segments" ? resourceName(rule.value, "Segment", sources.segments, sources.segmentsReady, sources.segmentsError)
+    : rule.field === "contact.topics" ? resourceName(rule.value, "Topic", sources.topics, sources.topicsReady, sources.topicsError) : typeof rule.value === "string" ? JSON.stringify(rule.value) : displayValue(rule.value === undefined ? "" : rule.value, rule.field);
+  const value = rule.operator === "exists" || rule.operator === "is_empty" ? "" : ` ${member}`;
+  const label = `${rule.field.startsWith("event.") ? "Event " : ""}${fieldLabel(rule.field)}`;
+  return `${label} ${words[rule.operator] ?? rule.operator.replaceAll("_", " ")}${value}`;
 }
