@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { ChevronDown, CircleHelp, RefreshCw } from "lucide-react";
+import { Activity, ChevronDown, CircleHelp, RefreshCw } from "lucide-react";
 import { AreaChart } from "../../components/AreaChart";
 import type { BadgeVariant } from "../../components/Badge";
 import { BarChart } from "../../components/BarChart";
@@ -252,8 +252,9 @@ export function Metrics() {
             </Panel>
           ) : quiet ? (
               <Empty
-                title="No email activity"
-                body="Nothing was sent in this range. Pick a longer range or another domain."
+                title="No emails sent in this range"
+                body="Try a longer range or a different domain."
+                icon={<Activity size={28} strokeWidth={1.5} />}
                 action={
                   <Link className="button secondary small" to="/emails/send">
                     Send a test email
@@ -291,7 +292,7 @@ export function Metrics() {
                 {sentSeries.length ? (
                   <AreaChart series={sentSeries} formatX={formatX} format={(value) => Math.round(value).toLocaleString()} label="Emails by event over time" />
                 ) : (
-                  <Empty title="No events chosen" body="Pick at least one event to chart." />
+                  <Empty title="No events selected" body="Select at least one event to chart." />
                 )}
                 <Table
                   compact
