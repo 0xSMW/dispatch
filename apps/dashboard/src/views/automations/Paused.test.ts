@@ -49,6 +49,11 @@ const writes = (fetch: Fetch) => fetch.mock.calls.filter(([, init]) => init?.met
 const saves = (fetch: Fetch) => writes(fetch).filter(([raw]) => !new URL(String(raw)).searchParams.has("dry_run"));
 const body = (call: Fetch["mock"]["calls"][number]) => JSON.parse(String(call[1]?.body));
 
+function chooseView(view: "Canvas" | "List") {
+  fireEvent.click(screen.getByRole("button", { name: "Actions" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: new RegExp(`^(Selected\\s*)?${view}$`) }));
+}
+
 describe("Paused automation editing", () => {
   beforeEach(() => {
     signIn();
@@ -64,7 +69,8 @@ describe("Paused automation editing", () => {
   it.each(["list", "canvas"])("allows editing and step controls in the paused %s builder", async (view) => {
     api();
     open(`?view=${view}`);
-    expect(await screen.findByText("Paused. Runs hold their place. New triggers are not started.")).toBeTruthy();
+    expect(await screen.findByRole("img", { name: "Paused" })).toBeTruthy();
+    expect(screen.queryByText("Paused. Runs hold their place. New triggers are not started.")).toBeNull();
     expect(screen.getByRole("button", { name: "Resume" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Actions" }));
     expect(screen.getByRole("menuitem", { name: "Stop and cancel runs" })).toBeTruthy();
@@ -87,9 +93,9 @@ describe("Paused automation editing", () => {
     signIn("sess_viewer", ["read"]);
     const fetch = api();
     open(`?view=${view}`);
-    await screen.findByText("Paused. Runs hold their place. New triggers are not started.");
+    await screen.findByRole("img", { name: "Paused" });
     expect(screen.queryByRole("button", { name: /^(Save|Resume|Pause|Stop and cancel runs)$/ })).toBeNull();
-    expect(screen.getByLabelText("Name")).toHaveProperty("disabled", true);
+    expect(await screen.findByLabelText("Name")).toHaveProperty("disabled", true);
     if (view === "canvas") fireEvent.click(await screen.findByRole("button", { name: "Step wait" }));
     const card = view === "canvas"
       ? screen.getByRole("region", { name: "Step wait settings" })
@@ -105,10 +111,10 @@ describe("Paused automation editing", () => {
     const fetch = api((url, init) => url.pathname === "/automations/automation_1"
       ? { body: { ...automation, status: init.method === "PATCH" ? "paused" : "enabled" } } : undefined);
     open();
-    await screen.findByText(/Pause to edit while keeping runs/);
-    expect(screen.getByLabelText("Name")).toHaveProperty("disabled", true);
+    await screen.findByRole("img", { name: "Enabled" });
+    expect(await screen.findByLabelText("Name")).toHaveProperty("disabled", true);
     fireEvent.click(screen.getByRole("button", { name: "Pause to edit" }));
-    await screen.findByText("Paused. Runs hold their place. New triggers are not started.");
+    await screen.findByRole("img", { name: "Paused" });
     expect(writes(fetch)).toHaveLength(1);
     expect(body(writes(fetch)[0]!)).toEqual({ status: "paused" });
     expect(screen.getByLabelText("Name")).toHaveProperty("disabled", false);
@@ -137,7 +143,7 @@ describe("Paused automation editing", () => {
       expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
     } else {
       expect(screen.getByText("Paused")).toBeTruthy();
-      expect(screen.getByText("Saved")).toBeTruthy();
+      expect(screen.getByRole("img", { name: "Saved" })).toBeTruthy();
     }
   });
 
@@ -161,13 +167,15 @@ describe("Paused automation editing", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Step wait" }));
     const panel = screen.getByRole("region", { name: "Step wait settings" });
     fireEvent.click(within(panel).getByRole("button", { name: "Remove step" }));
-    fireEvent.click(screen.getByRole("button", { name: "List" }));
+    chooseView("List");
     expect(screen.queryByRole("article", { name: "Step wait" })).toBeNull();
     fireEvent.click(screen.getByRole("tab", { name: "Runs" }));
     await screen.findByText("No runs yet");
     fireEvent.click(screen.getByRole("tab", { name: "Builder" }));
-    expect(screen.getByRole("button", { name: "List" }).getAttribute("aria-pressed")).toBe("true");
-    fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
+    fireEvent.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menuitem", { name: /Selected\s*List/ })).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    chooseView("Canvas");
     fireEvent.click(await screen.findByRole("button", { name: "Step send" }));
     fireEvent.click(screen.getByRole("button", { name: "Close panel" }));
     expect(document.querySelector(".canvasPanel")).toBeNull();
