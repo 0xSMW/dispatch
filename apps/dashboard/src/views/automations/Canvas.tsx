@@ -1,10 +1,11 @@
 import { Component, Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowDown, ArrowUp, List as ListIcon, Trash2, Workflow, X } from "lucide-react";
+import { Copy } from "../../components/Copy";
 import { Badge } from "../../components/Badge";
 import { Failed } from "../../components/Empty";
 import { Tile } from "../../components/PageHeader";
 import { Skeleton } from "../../components/Skeleton";
-import { canMove, listAt, newKey, stepError, stepLabels, treeTrigger, triggerLabels, triggerSummary, type TriggerConfig, type StepType, type Tree } from "./graph";
+import { describe, canMove, listAt, newKey, stepError, stepLabels, treeTrigger, triggerLabels, triggerSummary, type TriggerConfig, type StepType, type Tree } from "./graph";
 import { layout, locate, runFocus, slotId, type Slot } from "./layout";
 import { RunResult, StepForm, stepIcons, stepTones, type RunStep, type StepActions, type StepOptions } from "./Steps";
 import { TriggerForm, triggerSources } from "./Trigger";
@@ -132,7 +133,7 @@ export function Canvas({ tree, actions, disabled = false, errors = {}, options, 
     const config = treeTrigger(tree);
     panel = (
       <Inspector immersive={immersive} label="Trigger settings" header={
-        <PanelHeader title={triggerLabels[config.type]} tone={stepTones.trigger} icon={stepIcons.trigger} detail={tree.trigger} onClose={close} />
+        <PanelHeader title={triggerLabels[config.type]} tone={stepTones.trigger} icon={stepIcons.trigger} detail={triggerSummary(config, triggerSources(options))} onClose={close} />
       }>
         {run ? (
           <p className="muted">
@@ -152,6 +153,7 @@ export function Canvas({ tree, actions, disabled = false, errors = {}, options, 
             />
           </div>
         )}
+        <StepId value={tree.trigger} />
       </Inspector>
     );
   } else if (found) {
@@ -165,7 +167,7 @@ export function Canvas({ tree, actions, disabled = false, errors = {}, options, 
           title={stepLabels[node.type]}
           tone={stepTones[node.type]}
           icon={stepIcons[node.type]}
-          detail={node.key}
+          detail={describe(node, options)}
           onClose={close}
           tools={
             <>
@@ -187,7 +189,7 @@ export function Canvas({ tree, actions, disabled = false, errors = {}, options, 
           }
         />}>
         {run ? (
-          <RunResult node={node} result={result} />
+          <RunResult node={node} result={result} options={options} />
         ) : (
           <StepForm node={node} path={path} index={index} actions={editable ? actions : undefined} disabled={!editable} errors={issues} options={options} />
         )}
@@ -196,6 +198,7 @@ export function Canvas({ tree, actions, disabled = false, errors = {}, options, 
             {issues[stepError]}
           </p>
         ) : null}
+        <StepId value={node.sharedKey ?? node.key} />
       </Inspector>
     );
   } else if (!immersive) {
@@ -223,6 +226,7 @@ export function Canvas({ tree, actions, disabled = false, errors = {}, options, 
             <Flow
               nodes={nodes}
               edges={edges}
+              options={options}
               emailCounts={options?.emailCounts}
               triggerConfig={treeTrigger(tree)}
               triggerSources={triggerSources(options)}
@@ -238,6 +242,10 @@ export function Canvas({ tree, actions, disabled = false, errors = {}, options, 
       {panel}
     </div>
   );
+}
+
+function StepId({ value }: { value: string }) {
+  return <div className="fieldHint toolbar">Step ID <span className="mono">{value}</span><Copy value={value} label="Copy Step ID" /></div>;
 }
 
 /** Only the immersive editor separates fixed inspector controls from scrolling fields. */
@@ -256,7 +264,7 @@ function PanelHeader({ title, detail, icon, tone, tools, onClose }: { title: str
       {icon ? <Tile tone={tone}>{icon}</Tile> : null}
       <div className="stepTitle">
         <strong>{title}</strong>
-        {detail ? <span className="mono dim">{detail}</span> : null}
+        {detail ? <span className="dim">{detail}</span> : null}
       </div>
       <div className="toolbar">
         {tools}
