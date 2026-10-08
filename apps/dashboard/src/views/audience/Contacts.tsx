@@ -190,14 +190,14 @@ export function Contacts() {
         noun="contacts"
         empty={
           filtered ? (
-            <Empty title="No contacts found" body="No contact matches these filters."
+            <Empty title="No contacts match" body="Try different filters, or clear them to see everyone."
               action={<button type="button" className="secondary" onClick={() => setParams((current) => {
                 const next = new URLSearchParams(current);
                 for (const key of ["q", "subscribed", "segment_id"]) next.delete(key);
                 return next;
               })}>Clear filters</button>} />
           ) : (
-            <Empty title="No contacts" body="Add contacts by hand, import a CSV, or create them through the API."
+            <Empty title="No contacts yet" body="Add them one by one, import a CSV, or send them in through the API."
               action={can ? <>
                 <button type="button" onClick={() => setDialog("add")}>Add your first contact</button>
                 <button type="button" className="secondary" onClick={() => setDialog("import")}>Import CSV</button>
