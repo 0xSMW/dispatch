@@ -1,5 +1,5 @@
 import { useMemo, useState, type ReactNode } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Badge } from "../../components/Badge";
 import { ConfirmPhrase } from "../../components/ConfirmPhrase";
 import { Empty, Failed } from "../../components/Empty";
@@ -26,6 +26,7 @@ import { samples, useBrand } from "./Versions";
 
 /** Template grid: cards with a thumbnail, name, alias, and status. */
 export function Templates() {
+  const [, setParams] = useSearchParams();
   const client = useClient();
   const can = useCan();
   const navigate = useNavigate();
@@ -37,6 +38,7 @@ export function Templates() {
   const [deleting, setDeleting] = useState<Template | null>(null);
   const rows = list.rows;
   const filtered = Boolean(filters.q || filters.status);
+  const empty = !list.loading && !list.error && list.page === 1 && rows.length === 0 && !filtered;
 
   const duplicate = useMutation((row: Template) => client.post<Template>(`/templates/${row.id}/duplicate`), {
     success: "Template duplicated.",
@@ -47,8 +49,8 @@ export function Templates() {
     <div className="page">
       <PageHeader
         title="Templates"
-        learn={learnLinks("templates")}
-        actions={
+        learn={empty ? undefined : learnLinks("templates")}
+        actions={empty ? null : (
           <>
             <Link className="button secondary" to="/templates/library">
               Browse library
@@ -59,10 +61,10 @@ export function Templates() {
               </button>
             ) : null}
           </>
-        }
+        )}
       />
       <Tabs tabs={templateTabs} />
-      <FilterBar search="Search templates" filters={[{ param: "status", label: "Status", options: ["draft", "published"] }]} />
+      {!empty ? <FilterBar search="Search templates" filters={[{ param: "status", label: "Status", options: ["draft", "published"] }]} /> : null}
 
       {list.error ? (
         <Failed message={list.error} onRetry={() => void list.reload()} />
@@ -81,14 +83,13 @@ export function Templates() {
           <Empty
             title="No templates"
             body="Create one, or install a ready-made template from the library."
-            action={
-              <Link className="button secondary small" to="/templates/library">
-                Browse library
-              </Link>
-            }
+            action={<>
+              {can ? <button type="button" onClick={() => setCreating(true)}>Create template</button> : null}
+              <Link className="button secondary" to="/templates/library">Browse library</Link>
+            </>}
           />
         ) : (
-          <Empty title="No matching templates" body="Try another search or status." />
+          <Empty title="No matching templates" body="Try another search or status." action={<button type="button" className="secondary" onClick={() => setParams((previous) => { const next = new URLSearchParams(previous); next.delete("q"); next.delete("status"); return next; })}>Clear filters</button>} />
         )
       ) : (
         <div className="cardGrid">
