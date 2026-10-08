@@ -43,7 +43,7 @@ export function resolvedTheme(brand: BrandRecord): ThemeTokens {
 }
 export function themeContext(brand: BrandRecord) {
   const theme = resolvedTheme(brand);
-  const color = brand.color || "#18181b";
+  const color = brand.color || "#171717";
   const outline = theme.button_style === "outline";
   return {
     THEME_TEXT_COLOR: theme.text_color, THEME_BACKGROUND_COLOR: theme.background_color,
