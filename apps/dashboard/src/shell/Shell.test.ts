@@ -137,13 +137,13 @@ describe("Shell keys", () => {
 
   it.each([
     ["/automations/a/editor", true], ["/automations/a/editor?view=canvas", true],
-    ["/automations/a/editor?view=list", false], ["/automations/a/editor?tab=runs", false],
-    ["/automations/a/editor?tab=metrics&view=canvas", false], ["/automations", false],
+    ["/automations/a/editor?view=list", true], ["/automations/a/editor?tab=runs", true],
+    ["/automations/a/editor?tab=metrics&view=canvas", true], ["/automations", false],
     ["/templates/a/editor", false], ["/events", false],
-  ])("scopes workspace chrome to the Canvas builder at %s", (path, workspace) => {
+  ])("uses fullscreen chrome for every automation editor view at %s", (path, workspace) => {
     open(path as string);
     expect(document.querySelector(".app")?.classList.contains("automationWorkspace")).toBe(workspace);
-    expect(screen.getByRole("navigation", { name: "Main" })).toBeTruthy();
+    expect(Boolean(screen.queryByRole("navigation", { name: "Main" }))).toBe(!workspace);
   });
 
   it("replaces the old Events route while preserving search and hash", async () => {
@@ -189,5 +189,17 @@ describe("Shell keys", () => {
     for (const label of ["Open the API reference for this page", "Switch between dark and light", "Select every row on the page", "Delete the selected rows", "Save"]) {
       expect(within(dialog).getByText(label)).toBeTruthy();
     }
+  });
+
+  it.each([
+    ["/automations/auto_1/editor", true],
+    ["/automations/auto_1/editor?view=list", false],
+    ["/automations/auto_1/editor?tab=runs", false],
+    ["/automations/auto_1/editor?tab=metrics", false],
+  ])("shows canvas help only in the canvas workspace at %s", (path, canvas) => {
+    open(path);
+    fireEvent.keyDown(document.body, { key: "?", shiftKey: true });
+    const dialog = screen.getByRole("dialog", { name: "Keyboard shortcuts" });
+    expect(Boolean(within(dialog).queryByText("Pan canvas"))).toBe(canvas);
   });
 });
