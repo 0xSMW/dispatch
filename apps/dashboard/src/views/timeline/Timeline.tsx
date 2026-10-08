@@ -1,4 +1,5 @@
 import { useNavigate } from "react-router-dom";
+import { Inbox } from "lucide-react";
 import { Badge } from "../../components/Badge";
 import { Empty } from "../../components/Empty";
 import { ListPage } from "../../components/ListPage";
@@ -49,7 +50,7 @@ export function Timeline() {
         const href = timelineHref(row);
         if (href) navigate(href);
       }}
-      empty={<Empty title="Nothing yet" body="Activity across the API shows here." />}
+      empty={<Empty title="No activity yet" body="Activity from the API shows up here." icon={<Inbox size={28} strokeWidth={1.5} />} />}
       columns={[
         { header: "Kind", cell: (row) => kinds[row.kind] ?? row.kind },
         { header: "Name", cell: (row) => <Badge value={row.name} /> },
