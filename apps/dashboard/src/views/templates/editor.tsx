@@ -11,6 +11,7 @@ import { errorMessage } from "../../lib/client";
 import { addresses } from "../../lib/utils";
 import { useClient } from "../../shell/session";
 import { blocked } from "./guard";
+import { coverOf, excerpt } from "./cover";
 import type { VisualHandle, VisualProps } from "./Visual";
 import "../../styles/editor.css";
 import "../../styles/visual.css";
@@ -38,24 +39,24 @@ export function Preview({ html, actions }: { html: string; actions?: ReactNode }
   );
 }
 
-/** A scaled-down, non-interactive EmailFrame for cards. */
+/** A compact email cover using safe text extracted from the full document. */
 export function Thumb({ html }: { html: string | null | undefined }) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [scale, setScale] = useState(0.45);
-  useEffect(() => {
-    const element = ref.current;
-    if (!element || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(([entry]) => {
-      if (entry) setScale(Math.max(0.1, (entry.contentRect.width - 32) / 640));
-    });
-    observer.observe(element);
-    return () => observer.disconnect();
-  }, []);
-  return <div ref={ref} className="thumb" aria-hidden>{html ? (
-    <div className="thumbDocument" style={{ transform: `scale(${scale})` }}>
-      <EmailFrame html={html} thumbnail />
+  const cover = useMemo(() => coverOf(html), [html]);
+  return <div className="thumb" aria-hidden>{cover ? (
+    <div className="thumbCover">
+      {cover.brand ? <span className="thumbBrand">{excerpt(cover.brand, 32)}</span> : null}
+      <div className="thumbCopy">
+        <p className="thumbHeading">{excerpt(cover.heading, 62)}</p>
+        {cover.lead ? <p className="thumbLead">{excerpt(cover.lead, 106)}</p> : null}
+      </div>
+      {cover.code ? <span className="thumbCode">{excerpt(cover.code, 16)}</span>
+        : cover.details.length ? <div className="thumbDetails">{cover.details.map((row, index) => (
+          <div key={index}><span>{excerpt(row.label, 20)}</span><span>{excerpt(row.value, 28)}</span></div>
+        ))}</div>
+        : cover.action ? <span className="thumbAction">{excerpt(cover.action, 32)}</span> : null}
     </div>
-  ) : <span className="thumbEmpty">No content</span>}</div>;
+  ) : html === undefined ? <div className="thumbLoading"><span /><span /><span /></div>
+    : <span className="thumbEmpty">No content</span>}</div>;
 }
 
 export type SaveState = { saving: boolean; dirty: boolean; error: string | null; savedAt: number | null };
