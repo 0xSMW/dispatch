@@ -1,0 +1,67 @@
+/* Shared HUD for editor, preview and run canvases. */
+.canvas .canvasHud {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  right: var(--canvas-overlay-gap, 12px);
+  bottom: var(--canvas-overlay-gap, 12px);
+  max-width: calc(100% - 2 * var(--canvas-overlay-gap, 12px));
+}
+.canvasHud .canvasZoom,
+.canvasHud > button {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 2px 8px rgb(0 0 0 / 8%);
+}
+.canvasHud .canvasZoom {
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+}
+.canvas .canvasHud button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  min-height: 32px;
+  min-width: 32px;
+  padding: 0 8px;
+  color: var(--text);
+  cursor: pointer;
+}
+.canvasHud .canvasZoom button {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.canvas .canvasHud button:hover:not(:disabled) { background: var(--bg); }
+.canvas .canvasHud button:disabled { opacity: 0.4; cursor: default; }
+.canvas .canvasHud button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.canvasZoomValue {
+  min-width: 44px;
+  text-align: center;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.canvasHelp { display: grid; gap: 16px; margin: 0; }
+.canvasHelp > div { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 12px; }
+.canvasHelp dt { font-weight: 500; }
+.canvasHelp dd { margin: 0; color: var(--text-dim); }
+.canvasPanel .canvasPickerSearch { width: 100%; min-width: 0; }
+@media (max-width: 620px) {
+  .canvas .canvasHud { gap: 6px; }
+}
+.automationWorkspace .canvasView.immersive .canvasHud {
+  right: 16px;
+  bottom: 16px;
+}
+@media (max-width: 620px) {
+  .automationWorkspace .canvasView.immersive .canvasHud {
+    right: 8px;
+    bottom: calc(var(--builder-control-height, 44px) + 16px);
+  }
+}
