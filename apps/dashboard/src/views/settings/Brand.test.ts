@@ -1,3 +1,4 @@
+import { changeControl, controlValue } from "../../testingControls";
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { themeDefaults } from "@dispatchmail/core";
@@ -54,10 +55,10 @@ describe("Brand", () => {
     const fetch = api();
     show(h(Brand), "/settings/brand");
     await screen.findByLabelText("Product name");
-    fireEvent.change(screen.getByLabelText("Brand color"), { target: { value: "#facc15" } });
+    changeControl(screen.getByLabelText("Brand color"), { target: { value: "#facc15" } });
     expect(screen.getByText(/Text on this color is black/)).toBeTruthy();
-    fireEvent.change(screen.getByLabelText("Logo URL"), { target: { value: "" } });
-    fireEvent.change(screen.getByLabelText("Company name"), { target: { value: "Acme Inc." } });
+    changeControl(screen.getByLabelText("Logo URL"), { target: { value: "" } });
+    changeControl(screen.getByLabelText("Company name"), { target: { value: "Acme Inc." } });
     fireEvent.click(screen.getByRole("button", { name: /^Save/ }));
     await waitFor(() => expect(calls(fetch)).toContain("PATCH /brand"));
     expect(bodyOf(fetch, "PATCH /brand")).toEqual({ color: "#facc15", logo_url: null, company_name: "Acme Inc." });
@@ -68,8 +69,8 @@ describe("Brand", () => {
     api();
     show(h(Brand), "/settings/brand");
     await screen.findByLabelText("Product name");
-    fireEvent.change(screen.getByLabelText("Product URL"), { target: { value: "http://acme.com" } });
-    fireEvent.change(screen.getByLabelText("Product name"), { target: { value: "" } });
+    changeControl(screen.getByLabelText("Product URL"), { target: { value: "http://acme.com" } });
+    changeControl(screen.getByLabelText("Product name"), { target: { value: "" } });
     expect(screen.getByText("Use an https:// URL.")).toBeTruthy();
     expect(screen.getByText("This cannot be cleared once set.")).toBeTruthy();
     const form = screen.getByLabelText("Product name").closest("form")!;
@@ -85,7 +86,7 @@ describe("Brand", () => {
       ["Text color", "#123456"], ["Background color", "#e0eeee"], ["Surface color", "#fafafa"],
       ["Border color", "#aabbcc"], ["Font size", "18"], ["Radius", "0"],
       ["Font family", "Georgia, 'Times New Roman', serif"], ["Button style", "outline"],
-    ]) fireEvent.change(screen.getByLabelText(label!), { target: { value } });
+    ]) changeControl(screen.getByLabelText(label!), { target: { value } });
     const preview = screen.getByLabelText("Live email preview");
     expect(preview.style.background).toBe("rgb(224, 238, 238)");
     expect(preview.style.color).toBe("rgb(18, 52, 86)");
@@ -114,17 +115,17 @@ describe("Brand", () => {
     const fetch = api();
     show(h(Brand), "/settings/brand");
     await screen.findByLabelText("Product name");
-    fireEvent.change(screen.getByLabelText("Text color"), { target: { value: "#eeeeee" } });
+    changeControl(screen.getByLabelText("Text color"), { target: { value: "#eeeeee" } });
     expect(screen.getByText(/Text must reach 4.5:1/)).toBeTruthy();
     expect(screen.getByRole("button", { name: /^Save/ })).toHaveProperty("disabled", true);
-    fireEvent.change(screen.getByLabelText("Text color"), { target: { value: saved.text_color } });
-    fireEvent.change(screen.getByLabelText("Brand color"), { target: { value: "#facc15" } });
-    fireEvent.change(screen.getByLabelText("Button style"), { target: { value: "outline" } });
+    changeControl(screen.getByLabelText("Text color"), { target: { value: saved.text_color } });
+    changeControl(screen.getByLabelText("Brand color"), { target: { value: "#facc15" } });
+    changeControl(screen.getByLabelText("Button style"), { target: { value: "outline" } });
     expect(screen.getByText(/Button text must reach 4.5:1/)).toBeTruthy();
-    fireEvent.change(screen.getByLabelText("Button style"), { target: { value: "filled" } });
-    fireEvent.change(screen.getByLabelText("Font size"), { target: { value: "19" } });
-    fireEvent.change(screen.getByLabelText("Radius"), { target: { value: "17" } });
-    fireEvent.change(screen.getByLabelText("Surface color"), { target: { value: "url(https://evil.example)" } });
+    changeControl(screen.getByLabelText("Button style"), { target: { value: "filled" } });
+    changeControl(screen.getByLabelText("Font size"), { target: { value: "19" } });
+    changeControl(screen.getByLabelText("Radius"), { target: { value: "17" } });
+    changeControl(screen.getByLabelText("Surface color"), { target: { value: "url(https://evil.example)" } });
     expect(screen.getByLabelText("Font size").getAttribute("aria-invalid")).toBe("true");
     expect(screen.getByLabelText("Radius").getAttribute("aria-invalid")).toBe("true");
     const preview = screen.getByLabelText("Live email preview");
