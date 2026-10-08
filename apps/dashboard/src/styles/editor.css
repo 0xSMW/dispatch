@@ -36,14 +36,14 @@
 }
 
 .segmented button:hover:not(:disabled) {
-  background: var(--surface);
+  background: var(--hover);
   border-color: transparent;
   color: var(--text);
 }
 
 .segmented button.active,
 .segmented button.active:hover:not(:disabled) {
-  background: var(--surface);
+  background: var(--selected);
   color: var(--text);
   box-shadow: 0 0 0 1px var(--border);
 }
