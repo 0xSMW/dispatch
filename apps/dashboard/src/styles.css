@@ -27,6 +27,8 @@
   --bg: var(--neutral-950);
   --surface: var(--neutral-900);
   --surface-raised: var(--neutral-800);
+  --container-bg: color-mix(in srgb, var(--surface) 20%, transparent);
+  --container-raised-bg: color-mix(in srgb, var(--surface-raised) 20%, transparent);
   --border: var(--neutral-800);
   --border-input: var(--neutral-700);
   --border-light: var(--neutral-900);
@@ -770,7 +772,7 @@ button.switch.on {
   padding: 10px 14px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--surface-raised);
+  background: var(--container-raised-bg);
 }
 
 .banner span {
@@ -951,7 +953,7 @@ button.switch.on {
   padding: 16px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--surface);
+  background: var(--container-bg);
 }
 
 .panelHeader {
@@ -1309,7 +1311,7 @@ tbody tr.clickable a:hover {
   padding: 16px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--surface);
+  background: var(--container-bg);
 }
 
 .facts.cols2 {
@@ -1389,7 +1391,7 @@ tbody tr.clickable a:hover {
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--surface-raised);
+  background: var(--container-raised-bg);
   color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
@@ -1523,7 +1525,7 @@ tbody tr.clickable a:hover {
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 12px;
-  background: var(--surface);
+  background: linear-gradient(var(--container-bg), var(--container-bg)), var(--bg);
   box-shadow: var(--shadow);
 }
 
@@ -1557,18 +1559,28 @@ tbody tr.clickable a:hover {
 }
 
 .modalBody {
-  padding: 18px;
+  padding: 8px 24px 24px;
   overflow-y: auto;
+}
+
+.modalHeader {
+  gap: 16px;
+  padding: 24px 24px 16px;
+  border-bottom: 0;
 }
 
 .modalFooter {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
-  gap: 8px;
-  padding: 12px 18px;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 16px 24px 24px;
   border-top: 1px solid var(--border-light);
-  background: var(--surface-raised);
+  background: transparent;
 }
+
+.modalFooter > :first-child:not(:only-child) { margin-inline-end: auto; }
 
 .drawerOverlay {
   place-items: stretch end;
@@ -1942,7 +1954,7 @@ button.menuItem.danger:hover:not(:disabled) {
   padding: 28px;
   border: 1px solid var(--border);
   border-radius: 12px;
-  background: var(--surface);
+  background: var(--container-bg);
 }
 
 .loginCard .brand {
