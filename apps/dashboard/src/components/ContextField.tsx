@@ -1,3 +1,4 @@
+import { Dropdown } from "./Dropdown";
 import { useId } from "react";
 import { Field } from "./Field";
 import type { ContextField as ContextFieldRow } from "../lib/rules";
@@ -18,7 +19,7 @@ export function ContextField({
     <div className="contextField stack">
       <div className="field">
         <label htmlFor={id}>Choose {label.toLowerCase()}</label>
-        <select id={id} value={fields.some((field) => field.path === value) ? value : ""} onChange={(event) => onChange(event.target.value)} disabled={disabled}>
+        <Dropdown id={id} value={fields.some((field) => field.path === value) ? value : ""} onChange={(event) => onChange(event.target.value)} disabled={disabled}>
           <option value="">{allowCustom ? "Custom field" : "Choose a field"}</option>
           {(["Event", "Contact", "Topics", "Segments", "Email engagement"] as const).map((group) => {
             const rows = fields.filter((field) => field.group === group);
@@ -28,7 +29,7 @@ export function ContextField({
               </optgroup>
             ) : null;
           })}
-        </select>
+        </Dropdown>
       </div>
       {allowCustom ? <Field label={label} value={value} onChange={onChange} placeholder="event.plan" mono disabled={disabled} /> : null}
     </div>
