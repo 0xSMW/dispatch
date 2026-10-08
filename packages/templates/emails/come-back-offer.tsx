@@ -3,7 +3,7 @@ import { Layout } from "./_components";
 import { ProductAction } from "./_components/ProductAction";
 import { exampleBrand, heading, text, type Brand, type EmailVariable } from "./_theme";
 
-const preview = "Thinking about coming back? Review the options before you decide.";
+const preview = "Take a look at your options for returning to the product.";
 
 type Props = { brand?: Brand; firstName?: string; offer?: string; actionUrl?: string };
 
@@ -17,7 +17,7 @@ export default function ComeBackOffer({
       <Heading as="h1" className="dm-text" style={heading}>A fresh start</Heading>
       <Text className="dm-text" style={text}>Hi {firstName}, would you like to give {brand.productName} another try?</Text>
       <Text className="dm-text" style={text}>{offer}</Text>
-      <Text className="dm-text" style={text}>No pressure. You can review the options before you decide.</Text>
+      <Text className="dm-text" style={text}>Review the details before you decide to return.</Text>
       <ProductAction brand={brand} href={actionUrl}>See your options</ProductAction>
     </Layout>
   );
