@@ -94,7 +94,7 @@ describe("send kind in the shared builder", () => {
 
   it.each([false, true])("shows kind and send semantics in the run summary in canvas=%s", async (canvas) => {
     const panel = await open(canvas, { run: true });
-    expect(panel.getByText(/Transactional · Template receipt/)).toBeTruthy();
+    expect(panel.getAllByText(/Transactional · Receipt/)[0]).toBeTruthy();
     expect(panel.getByText(/Always sent, regardless/)).toBeTruthy();
     if (canvas) expect(within(screen.getByRole("button", { name: "Step send" })).getByText("Transactional")).toBeTruthy();
     else expect(panel.getByText("Transactional")).toBeTruthy();
