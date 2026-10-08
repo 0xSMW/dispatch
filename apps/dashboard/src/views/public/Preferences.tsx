@@ -26,6 +26,9 @@ export const preferenceText = {
 export function brandStyle(
   brand: Pick<PreferenceBrand, "color" | "text_color">,
 ): CSSProperties {
+  // Old installations saved Zinc's default as their brand color. Let the neutral
+  // default follow the page theme; explicit brand accents keep their own colors.
+  if (["#18181b", "#171717"].includes(brand.color.toLowerCase())) return {};
   return {
     "--brand": brand.color,
     "--brand-text": brand.text_color,
@@ -34,7 +37,7 @@ export function brandStyle(
 
 /** Black or white, whichever reads better on `color`. Mirrors `brandTextColor` in @dispatchmail/core. */
 export function textColor(color: string): "#ffffff" | "#000000" {
-  const hex = /^#[0-9a-f]{6}$/i.test(color) ? color.slice(1) : "18181b";
+  const hex = /^#[0-9a-f]{6}$/i.test(color) ? color.slice(1) : "171717";
   const channel = (part: string) => {
     const value = Number.parseInt(part, 16) / 255;
     return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
@@ -52,7 +55,7 @@ export function textColor(color: string): "#ffffff" | "#000000" {
 export function previewBrand(
   brand: Partial<BrandSettings> | null | undefined,
 ): PreferenceBrand {
-  const color = brand?.unsubscribe_color || brand?.color || "#18181b";
+  const color = brand?.unsubscribe_color || brand?.color || "#171717";
   return {
     product_name:
       brand?.product_name || brand?.variables?.PRODUCT_NAME || "Your product",
