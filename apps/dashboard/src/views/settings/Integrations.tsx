@@ -66,41 +66,6 @@ export function Integrations() {
         body="Connect Stripe, Clerk, Supabase, or Standard Webhooks to update your contacts and start automations."
         action={<>{can ? <button type="button" onClick={() => { setCredentials(null); setAdding("stripe"); }}>Connect integration</button> : <span className="muted">An administrator can connect an integration.</span>}<a href={setupGuide("stripe")} target="_blank" rel="noreferrer">Stripe setup guide</a></>}
       /> : <>
-      <Panel title="Integration setup">
-        <div className="integrationGrid">
-          {providers.map((provider) => <div key={provider.value} className="integrationCard">
-            <h3>{provider.label}</h3>
-            <p className="muted">Receive provider events, update contacts, and start automations.</p>
-            <div className="toolbar">
-              {can ? <button type="button" className="secondary" onClick={() => {
-                setCredentials(null);
-                setAdding(provider.value);
-              }}>Connect {provider.label}</button> : null}
-              <a href={setupGuide(provider.value)} target="_blank" rel="noreferrer">{provider.label} setup guide</a>
-            </div>
-          </div>)}
-          <div className="integrationCard">
-            <h3>Outgoing webhooks</h3>
-            <p className="muted">Deliver Dispatch events to your application.</p>
-            <Link to="/webhooks">Outgoing webhooks</Link>
-          </div>
-          <div className="integrationCard">
-            <h3>SMTP</h3>
-            <p className="muted">Send email through the relay.</p>
-            <Link to="/settings/smtp">SMTP</Link>
-          </div>
-          <div className="integrationCard">
-            <h3>Auth.js</h3>
-            <p className="muted">Send verification links from your application.</p>
-            <a href={`${docsBase()}templates/authjs.md`} target="_blank" rel="noreferrer">Auth.js recipe</a>
-          </div>
-          <div className="integrationCard">
-            <h3>Better Auth</h3>
-            <p className="muted">Send password reset, verification, and one-time codes.</p>
-            <a href={`${docsBase()}templates/better-auth.md`} target="_blank" rel="noreferrer">Better Auth recipe</a>
-          </div>
-        </div>
-      </Panel>
       <Panel title="Integrations" actions={can ? <button type="button" onClick={() => { setCredentials(null); setAdding("stripe"); }}>Add integration</button> : null}>
         <div className="stack">
           <p className="muted">Receive provider events to update contacts and start automations. Signing secrets and receiver URLs are never available through inspection.</p>
