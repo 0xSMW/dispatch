@@ -15,6 +15,13 @@ class ResizeObserver {
 }
 class DOMMatrixReadOnly { m22 = 1; }
 
+function selectValue(control: HTMLElement, value: string) {
+  const native = control.parentElement!.querySelector("select")!;
+  const label = Array.from(native.options).find(option => option.value === value)!.textContent!;
+  fireEvent.click(control);
+  fireEvent.click(screen.getByRole("option", { name: label }));
+}
+
 const presets = automations as AutomationPreset[];
 const newsletter = presets.find((row) => row.slug === "newsletter-welcome")!;
 const onboarding = presets.find((row) => row.slug === "onboarding-drip")!;
@@ -30,7 +37,7 @@ const result = {
   next_steps: ["Review the automation and its emails", "Enable the automation"],
 } as unknown as AutomationInstallation;
 
-function setup(extra: Record<string, unknown> = {}, stage = "") {
+function setup(extra: Record<string, unknown> = {}) {
   const fetch = api({
     "GET /template-library/automations": list(presets),
     ...Object.fromEntries(presets.map((row) => [`GET /template-library/automations/${row.slug}`, row])),
@@ -41,7 +48,7 @@ function setup(extra: Record<string, unknown> = {}, stage = "") {
   });
   const blank = vi.fn();
   const router = renderAt("/automations", [
-    { path: "/automations", element: h(Presets, { stage, onBlank: blank }) },
+    { path: "/automations", element: h(Presets, { onBlank: blank, onClose: vi.fn() }) },
     { path: "/automations/:id/editor", element: h("p", null, "Installed editor") },
   ]);
   return { fetch, blank, router };
@@ -49,18 +56,18 @@ function setup(extra: Record<string, unknown> = {}, stage = "") {
 
 async function preview(preset: AutomationPreset) {
   fireEvent.click(await screen.findByRole("button", { name: preset.name }));
-  const drawer = screen.getByRole("dialog", { name: preset.name });
-  await within(drawer).findByRole("button", { name: "Install as automation" });
-  await waitFor(() => expect(within(drawer).getByRole("button", { name: "Install as automation" })).toHaveProperty("disabled", false));
+  const drawer = screen.getByRole("dialog", { name: "Create automation" });
+  await within(drawer).findByRole("button", { name: "Use this recipe" });
+  await waitFor(() => expect(within(drawer).getByRole("button", { name: "Use this recipe" })).toHaveProperty("disabled", false));
   return drawer;
 }
 
 async function installation(preset: AutomationPreset) {
   const drawer = await preview(preset);
-  fireEvent.click(within(drawer).getByRole("button", { name: "Install as automation" }));
-  await screen.findByRole("option", { name: "acme.com" });
-  const dialog = screen.getByRole("dialog", { name: `Install ${preset.name}` });
-  fireEvent.change(within(dialog).getByLabelText("Verified sender domain"), { target: { value: "acme.com" } });
+  fireEvent.click(within(drawer).getByRole("button", { name: "Use this recipe" }));
+  await waitFor(() => expect(document.querySelector('option[value="acme.com"]')).toBeTruthy());
+  const dialog = screen.getByRole("dialog", { name: `Configure ${preset.name}` });
+  selectValue(within(dialog).getByLabelText("Verified sender domain"), "acme.com");
   fireEvent.change(within(dialog).getByLabelText("From"), { target: { value: "Acme <hello@ACME.com>" } });
   return within(dialog);
 }
@@ -76,18 +83,19 @@ describe("Presets", () => {
   it("shows all six real stage cards and Blank without ID cursor paging", async () => {
     const { fetch, blank } = setup();
     await screen.findByRole("button", { name: newsletter.name });
-    for (const stage of stages) expect(screen.getByRole("region", { name: stage.label })).toBeTruthy();
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
     for (const preset of presets) expect(screen.getByRole("button", { name: preset.name })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Start blank" }));
     expect(blank).toHaveBeenCalledOnce();
     expect(calls(fetch, "GET /template-library/automations").map((call) => call.url.search)).toEqual([""]);
   });
 
-  it("filters stage cards without changing the preset endpoint", async () => {
-    const { fetch } = setup({}, "dunning");
-    await screen.findByRole("button", { name: presets.find((row) => row.stage === "dunning")!.name });
-    expect(screen.queryByRole("button", { name: newsletter.name })).toBeNull();
-    expect(calls(fetch, "GET /template-library/automations")).toHaveLength(1);
+  it("keeps recipe selection when returning from configuration without stacking dialogs", async () => {
+    setup();
+    await installation(onboarding);
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.getAllByRole("dialog")).toHaveLength(1);
+    expect(screen.getByRole("button", { name: onboarding.name }).getAttribute("aria-pressed")).toBe("true");
   });
 
   it("renders the real read-only graph without add/edit actions", async () => {
@@ -103,19 +111,19 @@ describe("Presets", () => {
   it("requires a live newsletter topic and posts exact snake_case options, then navigates to review", async () => {
     const { fetch, router } = setup();
     const dialog = await installation(newsletter);
-    const submit = dialog.getByRole("button", { name: /Install disabled/ });
+    const submit = dialog.getByRole("button", { name: /Create automation/ });
     expect(submit).toHaveProperty("disabled", true);
     fireEvent.click(submit);
     expect(calls(fetch, `POST /template-library/automations/${newsletter.slug}/install`)).toEqual([]);
-    await dialog.findByRole("option", { name: "Product news" });
-    fireEvent.change(dialog.getByLabelText("Topic"), { target: { value: "topic_1" } });
+    await waitFor(() => expect(document.querySelector('option[value="topic_1"]')).toBeTruthy());
+    selectValue(dialog.getByLabelText("Topic"), "topic_1");
     fireEvent.click(submit);
     await dialog.findByText("Installed disabled: Installed welcome");
     expect(calls(fetch, `POST /template-library/automations/${newsletter.slug}/install`)[0]!.body).toEqual({
       from: "Acme <hello@ACME.com>", topic_id: "topic_1",
     });
     for (const step of result.next_steps) expect(dialog.getByText(step)).toBeTruthy();
-    expect(dialog.queryByRole("button", { name: /Install disabled/ })).toBeNull();
+    expect(dialog.queryByRole("button", { name: /Create automation/ })).toBeNull();
     fireEvent.click(dialog.getByRole("link", { name: "Review automation" }));
     await screen.findByText("Installed editor");
     expect(router.state.location.pathname).toBe("/automations/automation_installed/editor");
@@ -129,11 +137,27 @@ describe("Presets", () => {
     });
     const dialog = await installation(onboarding);
     fireEvent.change(dialog.getByLabelText("Name"), { target: { value: "Custom onboarding" } });
-    fireEvent.click(dialog.getByRole("button", { name: /Install disabled/ }));
+    fireEvent.click(dialog.getByRole("button", { name: /Create automation/ }));
     await dialog.findByText("Choose a topic for marketing steps");
     expect(calls(fetch, `POST /template-library/automations/${onboarding.slug}/install`)[0]!.body).toEqual({
       name: "Custom onboarding", from: "Acme <hello@ACME.com>",
     });
+  });
+
+  it("recovers missing topics without losing the configuration draft", async () => {
+    let available = false;
+    setup({ "GET /topics": () => ({ body: list(available ? [{ id: "topic_1", name: "Product news" }] : []) }) });
+    const dialog = await installation(newsletter);
+    fireEvent.change(dialog.getByLabelText("Name"), { target: { value: "My welcome" } });
+    expect(dialog.getByRole("link", { name: "Create a topic" }).getAttribute("target")).toBe("_blank");
+    expect(dialog.getByRole("button", { name: "Create automation" })).toHaveProperty("disabled", true);
+    available = true;
+    fireEvent.click(dialog.getByRole("button", { name: "Refresh topics" }));
+    await waitFor(() => expect(document.querySelector('option[value="topic_1"]')).toBeTruthy());
+    selectValue(dialog.getByLabelText("Topic"), "topic_1");
+    expect(dialog.getByLabelText("Name")).toHaveProperty("value", "My welcome");
+    expect(dialog.getByLabelText("From")).toHaveProperty("value", "Acme <hello@ACME.com>");
+    expect(dialog.getByRole("button", { name: "Create automation" })).toHaveProperty("disabled", false);
   });
 
   it("shows server conflicts and keeps the dialog available for correction", async () => {
@@ -143,7 +167,7 @@ describe("Presets", () => {
       }),
     });
     const dialog = await installation(onboarding);
-    fireEvent.click(dialog.getByRole("button", { name: /Install disabled/ }));
+    fireEvent.click(dialog.getByRole("button", { name: /Create automation/ }));
     expect(await dialog.findByRole("alert")).toHaveProperty("textContent", "Automation name already exists");
     expect(calls(fetch, `POST /template-library/automations/${onboarding.slug}/install`)).toHaveLength(1);
     expect(dialog.queryByRole("link", { name: "Review automation" })).toBeNull();
@@ -155,7 +179,7 @@ describe("Presets", () => {
     expect(dialog.queryByRole("option", { name: "pending.com" })).toBeNull();
     expect(dialog.queryByRole("option", { name: "disabled.com" })).toBeNull();
     fireEvent.change(dialog.getByLabelText("From"), { target: { value: "hello@foreign.com" } });
-    expect(dialog.getByRole("button", { name: /Install disabled/ })).toHaveProperty("disabled", true);
+    expect(dialog.getByRole("button", { name: /Create automation/ })).toHaveProperty("disabled", true);
     expect(fetch.mock.calls.some(([, init]) => init?.method === "POST")).toBe(false);
   });
 
@@ -163,9 +187,9 @@ describe("Presets", () => {
     signIn("viewer", ["read"]);
     const { fetch } = setup();
     fireEvent.click(await screen.findByRole("button", { name: newsletter.name }));
-    const drawer = screen.getByRole("dialog", { name: newsletter.name });
+    const drawer = screen.getByRole("dialog", { name: "Create automation" });
     await waitFor(() => expect(drawer.querySelector(".canvasView")).toBeTruthy());
-    expect(screen.queryByRole("button", { name: "Install as automation" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Use this recipe" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Start blank" })).toBeNull();
     expect(screen.queryByLabelText("From")).toBeNull();
     expect(calls(fetch, "GET /domains")).toHaveLength(0);
@@ -175,7 +199,7 @@ describe("Presets", () => {
   it("renders listing failures with retry rather than an install flow", async () => {
     setup({ "GET /template-library/automations": () => ({ status: 500, body: { message: "Library unavailable" } }) });
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Could not loadLibrary unavailableTry again");
-    expect(screen.queryByRole("button", { name: "Install as automation" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Use this recipe" })).toHaveProperty("disabled", true);
   });
 });
 
