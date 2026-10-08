@@ -2,7 +2,7 @@ import { Heading, Text } from "react-email";
 import { Action, Layout, Notice } from "./_components";
 import { exampleBrand, heading, text, type Brand, type EmailVariable } from "./_theme";
 
-const preview = "Confirm your subscription before we send you any product notes.";
+const preview = "One step left: confirm your email subscription.";
 
 type Props = { brand?: Brand; confirmUrl: string; expiresIn?: string };
 
@@ -12,11 +12,11 @@ export default function ConfirmSubscription({ brand = exampleBrand, confirmUrl, 
       reason="You received this email because this address was submitted on a signup form.">
       <Heading as="h1" className="dm-text" style={heading}>Confirm your subscription</Heading>
       <Text className="dm-text" style={text}>
-        Confirm that you want to receive emails from {brand.productName}. You are not subscribed until you confirm.
+        One more step: confirm your email address to receive updates from {brand.productName}.
       </Text>
       <Action brand={brand} href={confirmUrl}>Confirm subscription</Action>
       <Text className="dm-text" style={text}>This link expires in {expiresIn}.</Text>
-      <Notice>If you did not request this subscription, ignore this email. We will not subscribe you.</Notice>
+      <Notice>If you did not request this subscription, ignore this email.<br />We will not subscribe you.</Notice>
     </Layout>
   );
 }
