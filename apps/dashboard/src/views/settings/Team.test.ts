@@ -56,7 +56,7 @@ describe("Team", () => {
     );
     expect(calls(fetch)).not.toContain("GET /memberships?limit=20");
     expect(screen.getByText("sess_1 (this one)").closest("details")).toBeNull();
-    expect(screen.getByRole("heading", { name: "Team" }).closest("section")?.classList.contains("panel")).toBe(false);
+    expect(screen.getByRole("heading", { name: "Team" }).closest("section")?.classList.contains("panel")).toBe(true);
     expect(screen.getByText("domain.create").closest("details")).toBeNull();
     expect(screen.queryByRole("heading", { name: "Users" })).toBeNull();
     expect(screen.queryByRole("heading", { name: "Roles" })).toBeNull();
