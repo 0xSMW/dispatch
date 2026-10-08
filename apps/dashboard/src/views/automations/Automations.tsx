@@ -107,7 +107,7 @@ export function Automations() {
           <Empty title="No automations" body={`No automations are ${filters.status}.`} />
         ) : (
           <Empty title="No automations" body="Start with a lifecycle stage or build your own automation."
-            action={can ? <button type="button" onClick={() => setChoosing(true)}>Choose a starting point</button> : null} />
+            action={<button type="button" onClick={() => setChoosing(true)}>{can ? "Choose a starting point" : "Browse presets"}</button>} />
         )
       }
       columns={[
@@ -155,9 +155,9 @@ export function Automations() {
         />
       )}
     >
-      <Presets onBlank={() => setCreating(true)} />
+      {list.loading || list.error || list.rows.length || list.page > 1 || filters.status ? <Presets onBlank={() => setCreating(true)} /> : null}
       {choosing ? <Modal isOpen title="Choose a starting point" onClose={() => setChoosing(false)}>
-        <Presets onBlank={() => { setChoosing(false); setCreating(true); }} />
+        <Presets onBlank={can ? () => { setChoosing(false); setCreating(true); } : undefined} />
       </Modal> : null}
       {creating && can ? <CreateAutomation onClose={() => setCreating(false)} /> : null}
       {enrolling ? <Enroll automation={enrolling} onClose={() => setEnrolling(null)} /> : null}
