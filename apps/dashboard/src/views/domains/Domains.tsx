@@ -16,7 +16,6 @@ import { useList } from "../../hooks/useList";
 import { useMutation } from "../../hooks/useMutation";
 import { useSelection } from "../../hooks/useSelection";
 import { domainRegions, domainStatuses } from "../../lib/events";
-import { learnLinks } from "../../lib/docs";
 import { useClient } from "../../shell/session";
 import type { Domain } from "../../types";
 import "../../styles/operations.css";
@@ -64,7 +63,6 @@ export function Domains() {
   return (
     <ListPage
       title="Domains"
-      learn={learnLinks("domains")}
       actions={
         <Link className="button" to="/domains/add">
           Add domain
