@@ -46,7 +46,7 @@ export function Setup() {
             <ul>
               <li><Link to="/settings/brand">Set your brand</Link></li>
               <li><Link to="/events">Send your first event</Link></li>
-              <li><Link to="/templates#ready-made">Choose a template</Link></li>
+              <li><Link to="/templates/library">Choose a template</Link></li>
             </ul>
           ) : (
             <p className="muted">Ask a team member with full access to set the brand, send an event, or choose a template.</p>
