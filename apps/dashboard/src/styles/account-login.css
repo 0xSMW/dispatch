@@ -6,6 +6,7 @@
 
 /* A compact sign-in form with the same monochrome palette as the application. */
 .loginPage {
+  --login-input-bg: var(--neutral-1000);
   background: var(--bg);
   color: var(--text);
   min-height: 100svh;
@@ -27,7 +28,14 @@
 .loginPage .loginCard h1 { margin: 0; font-size: 26px; line-height: 1.2; letter-spacing: -0.7px; font-weight: 600; }
 .loginPage .field { gap: 8px; }
 .loginPage .field label { color: var(--text); font-size: 13px; font-weight: 500; }
-.loginPage .field input { height: 40px; padding: 0 12px; background: var(--surface); color: var(--text); border-radius: 7px; }
+.loginPage .field input { height: 40px; padding: 0 12px; background: var(--login-input-bg); color: var(--text); border-radius: 7px; }
+:root[data-theme="light"] .loginPage { --login-input-bg: var(--neutral-0); }
+/* Cover the browser autofill paint without changing the keyboard focus outline. */
+.loginPage .field input:is(:autofill, :-webkit-autofill) {
+  box-shadow: 0 0 0 1000px var(--login-input-bg) inset;
+  -webkit-text-fill-color: var(--text);
+  caret-color: var(--text);
+}
 .loginPage .loginCard > button { min-height: 40px; margin-top: 4px; border-radius: 7px; }
 .loginPage .alert { font-size: 13px; }
 @media (max-width: 480px) {
