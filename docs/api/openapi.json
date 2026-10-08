@@ -15036,6 +15036,73 @@
         }
       }
     },
+    "/usage/summary": {
+      "get": {
+        "operationId": "getUsageSummary",
+        "summary": "Get monthly usage summary",
+        "tags": [
+          "Platform"
+        ],
+        "x-scope": "full",
+        "parameters": [
+          {
+            "name": "month",
+            "in": "query",
+            "required": false,
+            "description": "UTC calendar month in YYYY-MM format. Defaults to the current UTC month.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[1-9]\\d{3}-(0[1-9]|1[0-2])$"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/RequestIdHeader"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success.",
+            "headers": {
+              "x-request-id": {
+                "$ref": "#/components/headers/RequestId"
+              },
+              "ratelimit-limit": {
+                "$ref": "#/components/headers/RateLimitLimit"
+              },
+              "ratelimit-remaining": {
+                "$ref": "#/components/headers/RateLimitRemaining"
+              },
+              "ratelimit-reset": {
+                "$ref": "#/components/headers/RateLimitReset"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageSummary"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        },
+        "description": "Summarizes accepted non-sandbox, non-test sends using historical recipient destinations and daily API request counters. Counts SES destinations separately for the SES cost estimate; sends without historical recipient arrays are reported as unmeasured."
+      }
+    },
     "/links/check": {
       "post": {
         "operationId": "checkLinks",
@@ -23597,6 +23664,113 @@
           "updated_at": {
             "type": "string",
             "format": "date-time"
+          }
+        }
+      },
+      "UsageSummary": {
+        "type": "object",
+        "required": [
+          "object",
+          "month",
+          "timezone",
+          "start",
+          "end",
+          "recipients",
+          "ses_recipients",
+          "unmeasured_sends",
+          "api_requests",
+          "ses_estimate_usd",
+          "ses_rate_per_1000_usd",
+          "days",
+          "request_id"
+        ],
+        "properties": {
+          "object": {
+            "type": "string",
+            "const": "usage_summary"
+          },
+          "month": {
+            "type": "string",
+            "pattern": "^[1-9]\\d{3}-(0[1-9]|1[0-2])$"
+          },
+          "timezone": {
+            "type": "string",
+            "const": "UTC"
+          },
+          "start": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Inclusive start of the UTC calendar month."
+          },
+          "end": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Exclusive end of the UTC calendar month."
+          },
+          "recipients": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "ses_recipients": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unmeasured_sends": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "api_requests": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "ses_estimate_usd": {
+            "type": "number",
+            "minimum": 0,
+            "description": "SES recipient destinations multiplied by the rate per 1,000; excludes other providers and is not rounded to cents."
+          },
+          "ses_rate_per_1000_usd": {
+            "type": "number",
+            "const": 0.1
+          },
+          "days": {
+            "type": "array",
+            "description": "Every UTC day in the selected month, including zero-filled days without activity.",
+            "items": {
+              "type": "object",
+              "required": [
+                "date",
+                "recipients",
+                "ses_recipients",
+                "unmeasured_sends",
+                "api_requests"
+              ],
+              "properties": {
+                "date": {
+                  "type": "string",
+                  "format": "date"
+                },
+                "recipients": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "ses_recipients": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "unmeasured_sends": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "api_requests": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          },
+          "request_id": {
+            "type": "string",
+            "description": "The request ID."
           }
         }
       },
