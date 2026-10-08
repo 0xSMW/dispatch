@@ -39,6 +39,11 @@ export interface TableProps<T> {
   compact?: boolean;
 }
 
+export function rowCountLabel(count: number, noun: string): string {
+  const singular = noun.endsWith("ies") ? `${noun.slice(0, -3)}y` : noun.endsWith("s") ? noun.slice(0, -1) : noun;
+  return `${count} ${count === 1 ? singular : noun}`;
+}
+
 function interactive(event: MouseEvent) {
   const target = event.target as HTMLElement;
   return Boolean(target.closest("button, a, input, select, textarea, label, [role='menu']"));
@@ -167,20 +172,20 @@ export function Table<T>({
           )}
         </tbody>
       </table>
-      {page !== undefined ? (
+      {page !== undefined && !error && !showSkeleton && (noun || page > 1 || hasMore) ? (
         <div className="tableFooter">
           <span>
-            Page {page}
-            {noun && rows.length > 0 ? ` · ${rows.length} ${noun}` : ""}
+            {page > 1 || hasMore ? `Page ${page}${noun && rows.length > 0 ? " · " : ""}` : ""}
+            {noun && rows.length > 0 ? rowCountLabel(rows.length, noun) : ""}
           </span>
-          <div className="toolbar">
+          {page > 1 || hasMore ? <div className="toolbar">
             <button type="button" className="ghost small" disabled={page <= 1 || loading} onClick={onPrevious}>
               Previous
             </button>
             <button type="button" className="ghost small" disabled={!hasMore || loading} onClick={onNext}>
               Next
             </button>
-          </div>
+          </div> : null}
         </div>
       ) : null}
     </div>
