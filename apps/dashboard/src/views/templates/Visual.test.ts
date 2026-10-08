@@ -1,3 +1,4 @@
+import { changeControl, controlValue } from "../../testingControls";
 // @vitest-environment jsdom
 // HTML with placeholders goes through @react-email/editor and
 // comes back with every placeholder intact, or the guard keeps the user in Code mode.
@@ -293,7 +294,7 @@ describe("Source mode switch", () => {
     fireEvent.click(screen.getByRole("button", { name: "Code" }));
     const area = (await screen.findByLabelText("HTML")) as HTMLTextAreaElement;
     expect(area.value).toContain("From visual");
-    fireEvent.change(area, { target: { value: "<p>Typed in code</p>" } });
+    changeControl(area, { target: { value: "<p>Typed in code</p>" } });
     await new Promise((resolve) => setTimeout(resolve, 600));
     expect((screen.getByLabelText("HTML") as HTMLTextAreaElement).value).toBe("<p>Typed in code</p>");
   });
@@ -476,7 +477,7 @@ describe("Visual placeholder controls", () => {
     const { onHtml } = setup("<p>Hi <strong>{{{NAME|there}}}</strong> and {{{NAME}}}.</p>");
     await select("NAME");
     const panel = within(screen.getByRole("complementary", { name: "Placeholder controls" }));
-    fireEvent.change(panel.getByLabelText("Name"), { target: { value: "FIRST" } });
+    changeControl(panel.getByLabelText("Name"), { target: { value: "FIRST" } });
     fireEvent.blur(panel.getByLabelText("Name"));
     await waitFor(() => expect(onHtml).toHaveBeenCalled());
     const html = String(onHtml.mock.calls.at(-1)![0]);
@@ -508,7 +509,7 @@ describe("Visual placeholder controls", () => {
     await select("name");
     panel = within(screen.getByRole("complementary", { name: "Placeholder controls" }));
     expect((panel.getByLabelText("List item") as HTMLInputElement).value).toBe("Item in ITEMS");
-    fireEvent.change(panel.getByLabelText("Fallback for name"), { target: { value: "Product" } });
+    changeControl(panel.getByLabelText("Fallback for name"), { target: { value: "Product" } });
     await waitFor(() => expect(onHtml).toHaveBeenCalled());
     expect(tokens(String(onHtml.mock.calls.at(-1)![0]))).toEqual(["{{{#each ITEMS}}}", "{{{name|Product}}}", "{{{/each}}}"]);
     expect(changed).not.toHaveBeenCalled();
@@ -542,7 +543,7 @@ describe("Visual placeholder controls", () => {
     expect(screen.queryByRole("complementary")).toBeNull();
     await select("name", 0);
     let panel = within(screen.getByRole("complementary"));
-    fireEvent.change(panel.getByLabelText("Name"), { target: { value: "description" } });
+    changeControl(panel.getByLabelText("Name"), { target: { value: "description" } });
     fireEvent.blur(panel.getByLabelText("Name"));
     act(() => void current.commands.setTextSelection(1));
     await select("description");
@@ -588,7 +589,7 @@ describe("Visual placeholder controls", () => {
     const { onHtml } = setup("<p>{{{#each ITEMS}}}</p><p>{{{name|Widget}}}</p><p>{{{/each}}}</p>");
     await select("name");
     const fallback = `R&D "<em>plain</em>" &amp; &#39;`;
-    fireEvent.change(within(screen.getByRole("complementary")).getByLabelText("Fallback for name"), { target: { value: fallback } });
+    changeControl(within(screen.getByRole("complementary")).getByLabelText("Fallback for name"), { target: { value: fallback } });
     await waitFor(() => expect(onHtml).toHaveBeenCalled());
     const saved = String(onHtml.mock.calls.at(-1)![0]);
     expect(saved).toContain(`{{{name|${fallback}}}}`);
@@ -615,7 +616,7 @@ describe("Visual placeholder controls", () => {
       current.commands.setTextSelection(position);
     });
     const input = within(screen.getByRole("complementary", { name: "Placeholder controls" })).getByLabelText("Name");
-    fireEvent.change(input, { target: { value: "ITEMS" } });
+    changeControl(input, { target: { value: "ITEMS" } });
     fireEvent.blur(input);
     await waitFor(() => expect(onHtml).toHaveBeenCalled());
     expect(tokens(String(onHtml.mock.calls.at(-1)![0]))).toEqual(["{{{#each ITEMS}}}", "{{{name}}}", "{{{/each}}}"]);
