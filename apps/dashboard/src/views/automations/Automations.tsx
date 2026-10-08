@@ -104,9 +104,9 @@ export function Automations() {
       ]}
       empty={
         filters.status ? (
-          <Empty title="No automations" body={`No automations are ${filters.status}.`} />
+          <Empty title={`No ${filters.status} automations`} body="Try another status." />
         ) : (
-          <Empty title="No automations" body="Start with a lifecycle stage or build your own automation."
+          <Empty title="No automations yet" body="Start from a ready-made lifecycle stage, or build your own."
             action={<button type="button" onClick={() => setChoosing(true)}>{can ? "Choose a starting point" : "Browse presets"}</button>} />
         )
       }
