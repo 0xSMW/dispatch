@@ -111,7 +111,7 @@ describe("Library", () => {
     expect(screen.getByRole("article", { name: "Payment failed" })).toBeTruthy();
     expect(screen.getAllByRole("button", { name: "Install as automation" })).toHaveLength(1);
     fireEvent.change(screen.getByLabelText("Stage"), { target: { value: "retention" } });
-    expect(screen.getByText("No matching templates")).toBeTruthy();
+    expect(screen.getByText("No templates match")).toBeTruthy();
     fireEvent.click(screen.getByRole("tab", { name: "Transactional" }));
     expect(screen.getAllByRole("article")).toHaveLength(2);
     expect(screen.queryByLabelText("Stage")).toBeNull();
@@ -125,7 +125,7 @@ describe("Library", () => {
     });
     renderAt(`/templates/library?tab=${tab}`, [{ path: "/templates/library", element: h(Library) }]);
     expect(await screen.findByText("No library templates")).toBeTruthy();
-    expect(screen.getByText("The template library is empty on this install.")).toBeTruthy();
+    expect(screen.getByText("There are no ready-made templates here yet.")).toBeTruthy();
     expect(screen.queryByRole("tab", { name: "Transactional" })).toBeNull();
     expect(screen.queryByRole("tab", { name: "Lifecycle" })).toBeNull();
     expect(screen.queryByLabelText("Stage")).toBeNull();
