@@ -52,7 +52,7 @@ export function Received() {
       list={list}
       noun="emails"
       rowHref={(row) => `/emails/receiving/${row.id}`}
-      empty={<Empty title="No received emails" body="Inbound mail and simulated messages show here." />}
+      empty={<Empty title="No received emails yet" body="Incoming emails and simulated messages show up here." />}
       columns={[
         {
           header: "From",
