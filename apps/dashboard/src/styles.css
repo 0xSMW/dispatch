@@ -1135,7 +1135,17 @@ td a {
   min-height: 300px;
   border: 1px solid var(--border);
   border-radius: 14px;
-  background: var(--bg);
+  background: transparent;
+}
+
+/* Panels containing only an empty state share the page background. */
+.panel:has(> .empty):not(:has(> :not(.panelHeader, .empty))),
+.panel:has(> .emptyTable):not(:has(> :not(.panelHeader, .emptyTable))),
+.panel:has(> .stack > .empty:only-child):not(:has(> :not(.panelHeader, .stack))),
+.panel:has(> .stack > .emptyTable:only-child):not(:has(> :not(.panelHeader, .stack))),
+.panel:has(> .previewFrame > .empty:only-child):not(:has(> :not(.panelHeader, .previewFrame))) {
+  background: transparent;
+  border-color: transparent;
 }
 .panel .empty, .drawer .empty, .empty.compact, .emptyTable.compact .empty { min-height: 0; padding: 24px 16px; }
 .panel .emptyIcon, .drawer .emptyIcon, .empty.compact .emptyIcon, .emptyTable.compact .empty .emptyIcon { width: 42px; height: 42px; border-radius: 12px; }
