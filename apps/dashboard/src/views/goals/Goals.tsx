@@ -74,7 +74,6 @@ export function Goals() {
   const [deleting, setDeleting] = useState<Goal | null>(null);
   return <ListPage
     title="Goals"
-    description="Measure conversions after any real email send."
     actions={can ? <button type="button" onClick={() => setEditing("new")}>Create goal</button> : null}
     list={list}
     noun="goals"
