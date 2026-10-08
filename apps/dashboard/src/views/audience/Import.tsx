@@ -214,7 +214,7 @@ export function ImportContacts({ onClose, onDone }: { onClose: () => void; onDon
               <Table
                 compact
                 rows={head.rows.map((cells, row) => ({ id: String(row), cells }))}
-                empty={<p className="muted">No data rows in the first 64 KB.</p>}
+                empty={<p className="muted">No rows found in the first 64 KB of this file.</p>}
                 columns={head.headers.map((header, column) => ({
                   header,
                   key: `${column}-${header}`,
@@ -550,7 +550,7 @@ export function Imports({ onClose, onImport }: { onClose: () => void; onImport?:
             error={list.error}
             onRetry={() => void list.reload()}
             onRowClick={(row) => setOpen(row.id)}
-            empty={<Empty compact title="No imports yet" body="Import a CSV to bring your contacts into Dispatch." action={onImport ? <button type="button" onClick={onImport}>Import CSV</button> : null} />}
+            empty={<Empty compact title="No imports yet" body="Import a CSV to add all your contacts at once." action={onImport ? <button type="button" onClick={onImport}>Import CSV</button> : null} />}
             page={list.page}
             hasMore={list.hasMore}
             onNext={list.next}
