@@ -16,7 +16,7 @@ import { useFilters } from "../../hooks/useFilters";
 import { useList } from "../../hooks/useList";
 import { useAll, useResource } from "../../hooks/useResource";
 import { withQuery } from "../../lib/client";
-import type { Automation, Broadcast, Domain, Metrics as MetricsResponse } from "../../types";
+import type { Automation, Broadcast, Domain, Goal, Metrics as MetricsResponse } from "../../types";
 import { GoalConversions } from "../goals/GoalConversions";
 import {
   bucketLabel,
@@ -237,21 +237,20 @@ export function Metrics() {
         />
       ) : (
         <>
-          <div className="statGrid">
+          {loading || !quiet ? <div className="statGrid">
             <Stat label="Sent" value={totals.sent} loading={loading} tone="neutral" />
             <Stat label="Delivered" value={totals.delivered} rate={totals.deliveryRate} rateLabel="of sent" loading={loading} tone="success" />
             <Stat label="Bounced" value={totals.bounced} rate={totals.bounceRate} rateLabel="of sent" loading={loading} tone="danger" />
             <Stat label="Complained" value={totals.complained} rate={totals.complaintRate} rateLabel="of delivered" digits={2} loading={loading} tone="warning" />
             <Stat label="Opened" value={totals.opened} rate={totals.openRate} rateLabel="of delivered" loading={loading} tone="info" />
             <Stat label="Clicked" value={totals.clicked} rate={totals.clickRate} rateLabel="of delivered" loading={loading} tone="accent" />
-          </div>
+          </div> : null}
 
           {loading ? (
             <Panel title="Sent emails">
               <Skeleton lines={6} />
             </Panel>
           ) : quiet ? (
-            <Panel title="Sent emails">
               <Empty
                 title="No email activity"
                 body="Nothing was sent in this range. Pick a longer range or another domain."
@@ -261,7 +260,6 @@ export function Metrics() {
                   </Link>
                 }
               />
-            </Panel>
           ) : (
             <>
               <Panel
@@ -366,6 +364,7 @@ const groupLabels: Record<Granularity, string> = { hourly: "By hour", daily: "By
 
 /** Goal scope is independent of the email-domain filter; only the date range is shared. */
 function GoalScopes({ start, end }: { start: string; end: string }) {
+  const goals = useAll<Goal>("/goals");
   const [scope, setScope] = useState("global");
   const [selected, setSelected] = useState("");
   const automations = useAll<Automation>(scope === "automation" ? "/automations" : null);
@@ -373,6 +372,7 @@ function GoalScopes({ start, end }: { start: string; end: string }) {
   const resource = scope === "automation" ? automations : broadcasts;
   const rows = resource.data?.data ?? [];
   const id = rows.find((row) => row.id === selected)?.id ?? rows[0]?.id;
+  if (!goals.loading && !goals.error && goals.data && !goals.data.has_more && goals.data.data.length === 0) return null;
   return <div className="stack">
     <Select label="Goal scope" value={scope} onChange={(next) => { setScope(next); setSelected(""); }}
       options={[{ value: "global", label: "All real sends" }, { value: "automation", label: "Automation" }, { value: "broadcast", label: "Broadcast" }]} />
