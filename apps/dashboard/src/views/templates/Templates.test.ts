@@ -34,7 +34,7 @@ describe("Templates", () => {
     const { fetch } = setup();
     const card = await screen.findByRole("article", { name: "Welcome" });
     expect(within(card).getByText("welcome")).toBeTruthy();
-    expect(within(card).getByText("published")).toBeTruthy();
+    expect(within(card).getByText("Published")).toBeTruthy();
     expect(within(card).getByText("Unpublished changes")).toBeTruthy();
     expect(card.querySelector("iframe")?.getAttribute("srcdoc")).toContain("your plan is Free");
     expect(screen.getByRole("article", { name: "Reset password" })).toBeTruthy();
