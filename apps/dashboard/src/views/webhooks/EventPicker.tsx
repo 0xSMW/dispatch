@@ -22,7 +22,7 @@ export function EventPicker({ value, onChange }: { value: string[]; onChange: (e
         </button>
         <span className="dim">{value.length} selected</span>
       </div>
-      {groups.length === 0 ? <p className="dim">No event types match.</p> : null}
+      {groups.length === 0 ? <p className="dim">No matching event types.</p> : null}
       {groups.map((group) => (
         <div key={group} className="checkGrid" role="group" aria-label={group}>
           {shown
