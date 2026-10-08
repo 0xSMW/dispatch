@@ -121,7 +121,7 @@ export function Usage() {
   const data = system.data;
 
   return (
-    <div className="page">
+    <div className="page settingsPage">
       <PageHeader title="Settings" />
       <Tabs tabs={settingsTabs} />
 
