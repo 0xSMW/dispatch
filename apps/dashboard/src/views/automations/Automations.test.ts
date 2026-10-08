@@ -58,8 +58,8 @@ describe("Automations", () => {
     const fetch = mockFetch((url) => ({ body: { object: "list", has_more: false,
       data: new URL(url).pathname === "/template-library/automations" ? automations : [] } }));
     open();
-    await screen.findByText("No automations");
-    expect(screen.getByText("Start with a lifecycle stage or build your own automation.")).toBeTruthy();
+    await screen.findByText("No automations yet");
+    expect(screen.getByText("Start from a ready-made lifecycle stage, or build your own.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: permission === "full" ? "Choose a starting point" : "Browse presets" }));
     await screen.findByRole("button", { name: automations[0]!.name });
     for (const name of ["Acquisition", "Onboarding", "Retention", "Re-engagement", "Dunning", "Reactivation"]) {
