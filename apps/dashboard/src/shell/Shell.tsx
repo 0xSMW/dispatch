@@ -77,9 +77,9 @@ export function Shell() {
   const { session } = useSession();
   const location = useLocation();
   const pageEditor = /^\/settings\/unsubscribe-page\/edit\/?$/.test(location.pathname);
+  const workspace = /^\/automations\/[^/]+\/editor\/?$/.test(location.pathname);
   const params = new URLSearchParams(location.search);
-  const workspace = /^\/automations\/[^/]+\/editor\/?$/.test(location.pathname)
-    && params.get("tab") !== "runs" && params.get("tab") !== "metrics" && params.get("view") !== "list";
+  const canvas = workspace && !["runs", "metrics"].includes(params.get("tab") ?? "") && params.get("view") !== "list";
   const [panel, setPanel] = useState<"api" | "keys" | "commands" | null>(null);
   const open = (next: "api" | "keys" | "commands") => () => {
     if (!panel && !dialogOpen()) setPanel(next);
@@ -97,8 +97,8 @@ export function Shell() {
   if (pageEditor) return <Outlet />;
 
   return (
-    <div className={workspace ? "app automationWorkspace" : "app"}>
-      <aside className="sidebar">
+    <div className={workspace ? "app automationWorkspace automationFullscreen" : "app"}>
+      {!workspace ? <aside className="sidebar">
         <Account />
         <nav aria-label="Main">
           {nav.map(({ to, label, icon: Icon }) => (
@@ -111,7 +111,7 @@ export function Shell() {
         <div className="sidebarFoot">
           <Tools apiUrl={session.apiUrl} onApi={() => setPanel("api")} onKeys={() => setPanel("keys")} />
         </div>
-      </aside>
+      </aside> : null}
       <div className="main">
         <main className="content">
           {location.pathname === "/emails" ? <Onboarding /> : null}
@@ -120,7 +120,7 @@ export function Shell() {
       </div>
       {panel === "commands" ? <CommandMenu pages={nav} onClose={() => setPanel(null)} onApi={() => setPanel("api")} onKeys={() => setPanel("keys")} /> : null}
       {panel === "api" ? <ApiReference apiUrl={session.apiUrl} onClose={() => setPanel(null)} /> : null}
-      {panel === "keys" ? <Shortcuts onClose={() => setPanel(null)} /> : null}
+      {panel === "keys" ? <Shortcuts canvas={canvas} onClose={() => setPanel(null)} /> : null}
     </div>
   );
 }
