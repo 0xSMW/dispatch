@@ -79,7 +79,7 @@ export function Suppressions() {
       noun="suppressions"
       selection={selection}
       bulkActions={[{ label: "Remove", hint: "⌫", danger: true, onClick: () => setRemovingMany(true) }]}
-      empty={<Empty title="No suppressions" body="Bounced and complained addresses, and ones you add, show here." />}
+      empty={<Empty title="No suppressed addresses" body="Addresses that bounce or report your email as spam show up here, along with any you add." />}
       columns={[
         {
           header: "Email",
