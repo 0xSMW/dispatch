@@ -10,10 +10,11 @@ describe("general settings", () => {
   it("loads defaults and saves the import choice and domain list", async () => {
     signIn();
     const fetch = mockFetch((_url, init) => ({
-      body: init.method === "PATCH" ? JSON.parse(String(init.body)) : { import_trigger_automations: false, sandbox_domains: [] },
+      body: init.method === "PATCH" ? JSON.parse(String(init.body)) : { import_trigger_automations: false, sandbox_domains: ["existing.test"] },
     }));
     render(h(General), { wrapper });
     const toggle = await screen.findByRole("switch");
+    await waitFor(() => expect(screen.getByLabelText("Additional sandbox domains")).toHaveProperty("value", "existing.test"));
     expect(toggle.getAttribute("aria-checked")).toBe("false");
     fireEvent.click(toggle);
     fireEvent.change(screen.getByLabelText("Additional sandbox domains"), { target: { value: "demo.test\nqa.test" } });
