@@ -1,3 +1,5 @@
+import { badgeLabel } from "./Badge";
+import { Dropdown } from "./Dropdown";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Search } from "lucide-react";
@@ -83,7 +85,7 @@ export function FilterBar({ search = "Search", searchParam = "q", filters = [], 
         </label>
       ) : null}
       {filters.map((filter) => (
-        <select
+        <Dropdown
           key={filter.param}
           aria-label={filter.label}
           className="filterSelect"
@@ -92,14 +94,14 @@ export function FilterBar({ search = "Search", searchParam = "q", filters = [], 
         >
           <option value="">{filter.all ?? `All ${filter.label.toLowerCase()}`}</option>
           {filter.options.map((option) => {
-            const item = typeof option === "string" ? { value: option, label: option.replaceAll("_", " ") } : option;
+            const item = typeof option === "string" ? { value: option, label: badgeLabel(option) } : option;
             return (
               <option key={item.value} value={item.value}>
                 {item.label}
               </option>
             );
           })}
-        </select>
+        </Dropdown>
       ))}
       {children ? <div className="toolbar filterExtra">{children}</div> : null}
     </div>
