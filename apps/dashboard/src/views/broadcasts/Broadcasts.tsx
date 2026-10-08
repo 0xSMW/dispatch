@@ -15,7 +15,7 @@ import { toast } from "../../components/Toast";
 import { useFilters } from "../../hooks/useFilters";
 import { useList } from "../../hooks/useList";
 import { useMutation } from "../../hooks/useMutation";
-import { useAll } from "../../hooks/useResource";
+import { useAll, type ResourceState } from "../../hooks/useResource";
 import { useCan, useClient } from "../../shell/session";
 import type { Broadcast, List, Segment, Topic } from "../../types";
 
@@ -116,7 +116,7 @@ export function Broadcasts() {
         />
       )}
     >
-      {creating ? <CreateBroadcast segments={segments.data?.data ?? []} onClose={() => setCreating(false)} /> : null}
+      {creating ? <CreateBroadcast segments={segments} onClose={() => setCreating(false)} /> : null}
       {deleting ? (
         <ConfirmPhrase
           title="Delete broadcast"
@@ -144,7 +144,7 @@ export function createBody(form: typeof blank) {
   return body;
 }
 
-function CreateBroadcast({ segments, onClose }: { segments: Segment[]; onClose: () => void }) {
+function CreateBroadcast({ segments, onClose }: { segments: ResourceState<List<Segment>>; onClose: () => void }) {
   const client = useClient();
   const navigate = useNavigate();
   const topics = useAll<Topic>("/topics");
@@ -163,20 +163,23 @@ function CreateBroadcast({ segments, onClose }: { segments: Segment[]; onClose: 
       onSubmit={() => void create.mutate()}
       submitLabel="Create draft"
       submitting={create.isLoading}
-      submitDisabled={!form.from.trim() || !form.segment_id || !form.subject.trim()}
+      submitDisabled={segments.loading || Boolean(segments.error) || !form.from.trim() || !form.segment_id || !form.subject.trim()}
     >
       <div className="form">
         <p className="fieldHint">Broadcasts are always Marketing: they respect contact and topic opt-outs and add an unsubscribe header.</p>
         <Field label="Name" value={form.name} onChange={set("name")} placeholder="October update" autoFocus hint="Defaults to the subject." />
         <Field label="From" value={form.from} onChange={set("from")} placeholder="Acme <news@acme.com>" required />
+        {segments.loading ? <p role="status">Loading segments…</p> : segments.error ? <p role="alert">Could not load segments: {segments.error}</p> : !segments.data?.data.length ? <p className="fieldHint">Create a segment to choose who receives this broadcast.</p> : null}
+        <div className="toolbar"><a href="/audience/segments" target="_blank" rel="noreferrer">Create segment</a><button type="button" className="secondary small" disabled={segments.loading} onClick={() => void segments.reload()}>{segments.error ? "Retry segments" : "Refresh segments"}</button></div>
         <Select
           label="Segment"
           value={form.segment_id}
           onChange={set("segment_id")}
           placeholder="Choose a segment"
-          options={segments.map((segment) => ({ value: segment.id, label: segment.name }))}
+          options={(segments.data?.data ?? []).map((segment) => ({ value: segment.id, label: segment.name }))}
           required
         />
+        {topics.error ? <p role="alert">Could not load topics. <button type="button" className="secondary small" onClick={() => void topics.reload()}>Retry topics</button></p> : null}
         <Select
           label="Topic"
           value={form.topic_id}
