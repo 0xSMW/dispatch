@@ -11,6 +11,13 @@ export const brandSchema = z.object({
   privacy_url: httpsUrl.nullable().optional(),
   unsubscribe_title: z.string().min(1).max(120).nullable().optional(),
   unsubscribe_description: z.string().min(1).max(500).nullable().optional(),
+  unsubscribe_button_label: z.string().min(1).max(80).nullable().optional(),
+  unsubscribe_updated_title: z.string().min(1).max(120).nullable().optional(),
+  unsubscribe_updated_description: z.string().min(1).max(500).nullable().optional(),
+  unsubscribe_unsubscribed_title: z.string().min(1).max(120).nullable().optional(),
+  unsubscribe_unsubscribed_description: z.string().min(1).max(500).nullable().optional(),
+  unsubscribe_logo_url: httpsUrl.nullable().optional(),
+  unsubscribe_color: z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional(),
 }).merge(themeSchema).strict();
 export type BrandInput = z.infer<typeof brandSchema>;
 export type BrandRecord = BrandInput;
