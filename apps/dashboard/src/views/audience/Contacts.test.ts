@@ -53,8 +53,10 @@ describe("Contacts", () => {
     expect(screen.getByText("1,200")).toBeTruthy();
     expect(screen.getByText("1,100")).toBeTruthy();
     expect(screen.getByText("Ada Lovelace")).toBeTruthy();
-    expect(screen.getByText("unsubscribed")).toBeTruthy();
+    expect(within(screen.getByText("bob@example.com").closest("tr")!).getByText("Unsubscribed")).toBeTruthy();
+    fireEvent.click(screen.getByRole("combobox", { name: "Segments" }));
     expect(screen.getByRole("option", { name: "VIP" })).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole("combobox", { name: "Segments" }), { key: "Escape" });
     const learn = within(screen.getByRole("navigation", { name: "Learn more" }));
     expect(learn.getByRole("link", { name: "Properties" }).getAttribute("href")).toContain("audience.md#properties");
     expect(learn.getByRole("link", { name: "Segments" }).getAttribute("href")).toContain("audience.md#segments");
@@ -84,6 +86,22 @@ describe("Contacts", () => {
     expect(within(row).getByText("+2")).toBeTruthy();
   });
 
+  it("surfaces effective topic subscriptions without exposing opted-out topics as subscribed", async () => {
+    const fetch = api({ "GET /contacts": list([{ ...ada, topics: [
+      { id: "topic_news", name: "News", subscription: "opt_in" },
+      { id: "topic_other", name: "Other", subscription: "opt_out" },
+      { id: "topic_pending", name: "Pending", subscription: "pending" },
+    ] }]) });
+    show(h(Contacts), "/audience?topic_id=topic_news");
+    const row = (await screen.findByText("ada@example.com")).closest("tr")!;
+    expect(within(row).getByText("News")).toBeTruthy();
+    expect(within(row).queryByText("Other")).toBeNull();
+    expect(within(row).queryByText("Pending")).toBeNull();
+    expect(calls(fetch)).toContain("GET /contacts?topic_id=topic_news&limit=40");
+    expect(screen.queryByRole("button", { name: "Next" })).toBeNull();
+    expect(screen.getByText("1 contact")).toBeTruthy();
+  });
+
   it("sends the segment filter from the URL", async () => {
     const fetch = api();
     show(h(Contacts), "/audience?segment_id=seg_vip");
@@ -96,7 +114,7 @@ describe("Contacts", () => {
     show(h(Contacts), "/audience?q=lovelace&subscribed=false");
     await screen.findByText("ada@example.com");
     expect(calls(fetch)).toContain("GET /contacts?q=lovelace&subscribed=false&limit=40");
-    expect((screen.getByLabelText("Subscription") as HTMLSelectElement).value).toBe("false");
+    expect(screen.getByRole("combobox", { name: "Subscription" }).textContent).toContain("Unsubscribed");
     expect(screen.getByRole("searchbox", { name: "Search by email or name" })).toBeTruthy();
   });
 
@@ -104,7 +122,8 @@ describe("Contacts", () => {
     const fetch = api();
     show(h(Contacts), "/audience");
     await screen.findByText("ada@example.com");
-    fireEvent.change(screen.getByLabelText("Subscription"), { target: { value: "true" } });
+    fireEvent.click(screen.getByRole("combobox", { name: "Subscription" }));
+    fireEvent.click(screen.getByRole("option", { name: "Subscribed" }));
     await waitFor(() => expect(calls(fetch)).toContain("GET /contacts?subscribed=true&limit=40"));
   });
 
