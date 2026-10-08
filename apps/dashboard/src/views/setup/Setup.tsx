@@ -19,7 +19,7 @@ export function Setup() {
 
   return (
     <div className="page">
-      <PageHeader title="Onboarding" description="Three steps to a working install." />
+      <PageHeader title="Onboarding" />
 
       <Panel title="Steps">
         <ol className="steps">
