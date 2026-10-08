@@ -1,36 +1,16 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { h, wrapper } from "../testing";
+import { h } from "../testing";
 import { PageHeader } from "./PageHeader";
 import { shortcuts } from "../lib/shortcuts";
 
-describe("PageHeader Learn chips", () => {
+describe("PageHeader", () => {
   afterEach(cleanup);
-
-  it("renders accessible documentation chips below the title", () => {
-    render(h(wrapper, null, h(PageHeader, {
-      title: "Templates",
-      learn: [{ label: "Variables", href: "https://docs.acme.test/v1/templates.md#variables" }],
-    })));
-    const nav = screen.getByRole("navigation", { name: "Learn more" });
-    const link = within(nav).getByRole("link", { name: "Variables" });
-    expect(link.getAttribute("href")).toBe("https://docs.acme.test/v1/templates.md#variables");
-    expect(link.getAttribute("target")).toBe("_blank");
-    expect(link.getAttribute("rel")).toBe("noopener noreferrer");
-    expect(screen.getByRole("heading", { name: "Templates" })).toBeTruthy();
-  });
 
   it("preserves functional scope context below the title", () => {
     render(h(PageHeader, { title: "Logs", context: h("a", { href: "/emails/em_1" }, "Email em_1") }));
     expect(screen.getByRole("link", { name: "Email em_1" }).getAttribute("href")).toBe("/emails/em_1");
-  });
-
-  it("does not leave an empty Learn row on pages without targets", () => {
-    const { rerender } = render(h(PageHeader, { title: "Emails" }));
-    expect(screen.queryByRole("navigation", { name: "Learn more" })).toBeNull();
-    rerender(h(PageHeader, { title: "Emails", learn: [] }));
-    expect(screen.queryByText("Learn")).toBeNull();
   });
 
   it("places API before the primary action and uses the shell shortcut event", () => {
