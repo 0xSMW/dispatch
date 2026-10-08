@@ -33,13 +33,14 @@ describe("PageHeader Learn chips", () => {
     expect(screen.queryByText("Learn")).toBeNull();
   });
 
-  it("always shows API beside existing actions and uses the shell shortcut event", () => {
+  it("places API before the primary action and uses the shell shortcut event", () => {
     const listener = vi.fn();
     document.addEventListener("keydown", listener);
     try {
       render(h(PageHeader, { title: "Emails", actions: h("button", null, "Send email") }));
       expect(screen.getByRole("button", { name: "Send email" })).toBeTruthy();
       const api = screen.getByRole("button", { name: "API" });
+      expect([...api.parentElement!.children].map((child) => child.textContent)).toEqual(["API", "Send email"]);
       expect(api.getAttribute("title")).toContain(shortcuts.api.keys[0]);
       fireEvent.click(api);
       expect(listener).toHaveBeenCalledOnce();
