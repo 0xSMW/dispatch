@@ -5,6 +5,7 @@ import {
   BarChart3,
   BookOpen,
   Code2,
+  ChevronsUpDown,
   FileText,
   GitBranch,
   Globe2,
@@ -37,6 +38,7 @@ import { useSession } from "./session";
 import { useTheme } from "./theme";
 import { NavIcon, type IconMotion } from "./NavIcon";
 import "../styles/sidebar-motion.css";
+import "../styles/account-login.css";
 
 const iconMotion: Record<string, IconMotion> = {
   "/emails": "mail", "/metrics": "bars", "/broadcasts": "broadcast", "/automations": "branches",
@@ -94,12 +96,7 @@ export function Shell() {
   return (
     <div className={workspace ? "app automationWorkspace" : "app"}>
       <aside className="sidebar">
-        <div className="brand">
-          <span className="brandMark" aria-hidden>
-            <img src="/logo.svg" alt="" />
-          </span>
-          <span>Dispatch</span>
-        </div>
+        <Account />
         <nav aria-label="Main">
           {nav.map(({ to, label, icon: Icon }) => (
             <NavLink key={to} to={to} end={to === "/audience" && location.pathname.startsWith("/audience/topics")} className={({ isActive }) => (isActive ? "navItem active" : "navItem")}>
@@ -110,7 +107,6 @@ export function Shell() {
         </nav>
         <div className="sidebarFoot">
           <Tools apiUrl={session.apiUrl} onApi={() => setPanel("api")} onKeys={() => setPanel("keys")} />
-          <Account />
         </div>
       </aside>
       <div className="main">
@@ -126,7 +122,7 @@ export function Shell() {
   );
 }
 
-/** Icon row above the account menu: API reference, shortcuts, and docs. The API host shows on hover. */
+/** Footer icon row: API reference, shortcuts, and docs. The API host shows on hover. */
 function Tools({ apiUrl, onApi, onKeys }: { apiUrl: string; onApi: () => void; onKeys: () => void }) {
   const docs = import.meta.env.VITE_DOCS_URL as string | undefined;
   return (
@@ -171,21 +167,26 @@ function Account() {
   const navigate = useNavigate();
   const [changing, setChanging] = useState(false);
   const email = session?.user?.email ?? "Account";
+  const name = session?.user?.name?.trim();
+  const initials = name
+    ? name.split(/\s+/).map((part) => part[0]).slice(0, 2).join("").toUpperCase()
+    : email.slice(0, 1).toUpperCase();
   return (
     <div className="account">
       <Menu
-        placement="up"
+        placement="down"
         align="start"
         triggerClassName="accountButton"
         trigger={
           <>
             <span className="avatar" aria-hidden>
-              {email.slice(0, 1).toUpperCase()}
+              {initials}
             </span>
             <span className="accountText">
-              <span>{session?.user?.name ?? email}</span>
-              {session?.user?.name ? <span className="dim">{email}</span> : null}
+              <span>{name || email}</span>
+              {name ? <span className="dim">{" "}{email}</span> : null}
             </span>
+            <ChevronsUpDown className="accountChevron" size={14} aria-hidden />
           </>
         }
         items={[
