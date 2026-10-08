@@ -20,7 +20,7 @@ describe("Domains", () => {
     expect(await screen.findByText("send.acme.test")).toBeTruthy();
     expect(screen.getByText("North Virginia")).toBeTruthy();
     expect(screen.getByText("Ireland")).toBeTruthy();
-    expect(screen.getAllByText("verified").find((node) => node.classList.contains("badge"))?.className).toContain("success");
+    expect(screen.getAllByText("Verified").find((node) => node.classList.contains("badge"))?.className).toContain("success");
     expect(requests(fetch, "GET", "/domains")[0].url.searchParams.get("limit")).toBe("40");
     const learn = within(screen.getByRole("navigation", { name: "Learn more" }));
     expect(learn.getByRole("link", { name: "DNS records" }).getAttribute("href")).toContain("domains.md#dns-records");
@@ -36,6 +36,7 @@ describe("Domains", () => {
     expect(url.searchParams.get("q")).toBe("acme");
     expect(url.searchParams.get("status")).toBe("verified");
     expect(url.searchParams.get("region")).toBe("eu-west-1");
+    fireEvent.click(screen.getByRole("combobox", { name: "Regions" }));
     expect(screen.getByRole("option", { name: "Ireland (eu-west-1)" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Export CSV" })).toBeTruthy();
   });
