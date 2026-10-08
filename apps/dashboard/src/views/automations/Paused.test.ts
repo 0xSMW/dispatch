@@ -66,7 +66,9 @@ describe("Paused automation editing", () => {
     open(`?view=${view}`);
     expect(await screen.findByText("Paused. Runs hold their place. New triggers are not started.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Resume" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Stop and cancel runs" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menuitem", { name: "Stop and cancel runs" })).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
     expect(screen.queryByRole("button", { name: "Pause" })).toBeNull();
     expect(screen.getByRole("button", { name: "Save" })).toHaveProperty("disabled", true);
     expect(screen.getByLabelText("Name")).toHaveProperty("disabled", false);
@@ -103,9 +105,9 @@ describe("Paused automation editing", () => {
     const fetch = api((url, init) => url.pathname === "/automations/automation_1"
       ? { body: { ...automation, status: init.method === "PATCH" ? "paused" : "enabled" } } : undefined);
     open();
-    const notice = await screen.findByText(/Pause it to change its steps while keeping runs/);
+    await screen.findByText(/Pause to edit while keeping runs/);
     expect(screen.getByLabelText("Name")).toHaveProperty("disabled", true);
-    fireEvent.click(within(notice.closest("[role=status]")!).getByRole("button", { name: "Pause" }));
+    fireEvent.click(screen.getByRole("button", { name: "Pause to edit" }));
     await screen.findByText("Paused. Runs hold their place. New triggers are not started.");
     expect(writes(fetch)).toHaveLength(1);
     expect(body(writes(fetch)[0]!)).toEqual({ status: "paused" });
@@ -244,7 +246,8 @@ describe("Paused automation editing", () => {
       ? { body: { total: 1000, totals: { running: 4, completed: 996, failed: 0, cancelled: 0 } } }
       : url.pathname.endsWith("/stop") && init.method === "POST" ? { body: { ...automation, status: "disabled" } } : undefined);
     open();
-    fireEvent.click(await screen.findByRole("button", { name: "Stop and cancel runs" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Stop and cancel runs" }));
     const dialog = screen.getByRole("dialog");
     expect(await within(dialog).findByText("4 runs in progress will be cancelled.")).toBeTruthy();
     fireEvent.click(within(dialog).getByLabelText("Let cancelled contacts enter again"));
