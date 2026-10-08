@@ -1,3 +1,4 @@
+import * as fs from "node:fs/promises";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -5,6 +6,11 @@ import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { ApiError, brandContext } from "@dispatchmail/core";
 import { installLibraryTemplate, libraryEntry, listLibrary, loadLibrary, previewLibrary, type LibraryFile } from "./library.js";
+
+vi.mock("node:fs/promises", async (original) => {
+  const actual = await original<typeof import("node:fs/promises")>();
+  return { ...actual, readFile: vi.fn(actual.readFile) };
+});
 
 const library: LibraryFile = {
   version: "1.0.0",
@@ -32,6 +38,19 @@ const library: LibraryFile = {
 };
 
 describe("template library", () => {
+  it("loads the built-in catalog without reading a runtime file", async () => {
+    const read = vi.mocked(fs.readFile).mockRejectedValue(new Error("No repository files in the serverless runtime"));
+    try {
+      const catalog = await loadLibrary();
+      expect(catalog.templates).toHaveLength(25);
+      expect(catalog.automations.length).toBeGreaterThan(0);
+      expect(read).not.toHaveBeenCalled();
+    } finally {
+      read.mockReset();
+      read.mockImplementation((await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises")).readFile);
+    }
+  });
+
   it("lists the manifest without the html and text bodies", () => {
     const listed = listLibrary(library);
     expect(listed.object).toBe("list");
