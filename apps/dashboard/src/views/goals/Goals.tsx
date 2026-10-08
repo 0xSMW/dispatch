@@ -78,7 +78,7 @@ export function Goals() {
     list={list}
     noun="goals"
     onRowClick={setEditing}
-    empty={<Empty title="No goals" body="Create an event or contact-state goal, then measure it against earlier sends." />}
+    empty={<Empty title="No goals" body="Set a goal based on an event or a contact's status. You'll see how many contacts reach it after receiving your email." />}
     columns={[
       { header: "Name", cell: (row) => <strong>{row.name}</strong> },
       { header: "Target", cell: (row) => "event" in row.target ? row.target.event : "Contact state" },
