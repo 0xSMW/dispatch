@@ -3,6 +3,7 @@ import { branching, projectRun, toGraph, toTree, type Graph, type ListPath, type
 import {
   branchGap,
   columnGap,
+  emailNodeHeight,
   endHeight,
   endWidth,
   layout,
@@ -95,6 +96,17 @@ describe("layout", () => {
     expect(edges.map((item) => item.data?.slot)).toEqual([{ path: [], index: 0 }, { path: [], index: 1 }, undefined]);
     expect(edges.map((item) => item.data?.addLabel)).toEqual(["Add step after the trigger", "Add step after welcome", undefined]);
     expect(byId(nodes, "end:main").data).toEqual({ slot: { path: [], index: 2 }, label: "Add step at the end", exit: false });
+  });
+
+  it("reserves the metrics row in email cards and moves the next step and handles by that height", () => {
+    const { nodes } = layout(tree(linear), { editable: true, showEmailCounts: true });
+    const welcome = byId(nodes, "welcome");
+    const pause = byId(nodes, "pause");
+    expect(welcome.height).toBe(emailNodeHeight);
+    expect(welcome.handles?.find((handle) => handle.type === "source")?.y).toBe(emailNodeHeight - 1);
+    expect(pause.position.y).toBe(welcome.position.y + emailNodeHeight + rowGap);
+    expect(pause.height).toBe(nodeHeight);
+    expect(byId(nodes, "start").height).toBe(nodeHeight);
   });
 
   it("gives every node a fixed size and top and bottom handles, so edges draw before measuring", () => {
