@@ -268,14 +268,14 @@
 }
 
 .viewSwitch button:hover:not(:disabled) {
-  background: var(--surface);
+  background: var(--hover);
   color: var(--text);
 }
 
 .viewSwitch button.active,
 .viewSwitch button.active:hover:not(:disabled) {
   border-color: var(--border);
-  background: var(--surface);
+  background: var(--selected);
   color: var(--text);
 }
 
@@ -367,7 +367,7 @@ button.pickerItem {
 
 button.pickerItem:hover:not(:disabled) {
   border-color: var(--border);
-  background: var(--surface-raised);
+  background: var(--hover);
 }
 
 /* React Flow, themed with the dashboard tokens so both themes work. */
@@ -380,7 +380,7 @@ button.pickerItem:hover:not(:disabled) {
   --xy-node-background-color: transparent;
   --xy-node-border: none;
   --xy-controls-button-background-color: var(--surface);
-  --xy-controls-button-background-color-hover: var(--surface-raised);
+  --xy-controls-button-background-color-hover: var(--hover);
   --xy-controls-button-color: var(--text-muted);
   --xy-controls-button-color-hover: var(--text);
   --xy-controls-button-border-color: var(--border);
@@ -447,11 +447,12 @@ button.canvasNode.withCounts {
 
 button.canvasNode:hover:not(:disabled) {
   border-color: var(--border-input);
-  background: var(--surface);
+  background: var(--hover);
 }
 
 button.canvasNode.selected,
 button.canvasNode.selected:hover:not(:disabled) {
+  background: var(--selected);
   border-color: var(--primary);
   box-shadow: 0 0 0 1px var(--primary);
 }
@@ -485,7 +486,9 @@ button.canvasNode.tint.info {
   box-shadow: inset 3px 0 0 var(--info);
 }
 
-button.canvasNode.tint.skipped {
+button.canvasNode.tint.skipped,
+button.canvasNode.tint.skipped.selected,
+button.canvasNode.tint.skipped:hover:not(:disabled) {
   background: var(--bg);
   color: var(--text-muted);
 }
@@ -570,11 +573,17 @@ button.canvasEnd {
   font-weight: 500;
 }
 
-button.canvasEnd:hover:not(:disabled),
+button.canvasEnd:hover:not(:disabled) {
+  border-style: solid;
+  border-color: var(--primary);
+  background: var(--hover);
+  color: var(--text);
+}
+
 button.canvasEnd.active {
   border-style: solid;
   border-color: var(--primary);
-  background: var(--surface);
+  background: var(--selected);
   color: var(--text);
 }
 
@@ -631,9 +640,14 @@ button.canvasAdd {
   color: var(--text-muted);
 }
 
-button.canvasAdd:hover:not(:disabled),
+button.canvasAdd:hover:not(:disabled) {
+  border-color: var(--primary);
+  background: var(--hover);
+  color: var(--primary);
+}
+
 button.canvasAdd.active {
   border-color: var(--primary);
-  background: var(--surface);
+  background: var(--selected);
   color: var(--primary);
 }
