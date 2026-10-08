@@ -57,7 +57,7 @@ export function Send() {
       <div className="page">
         <PageHeader title="Emails" />
         <Tabs tabs={emailTabs} />
-        <Empty title="Read access" body="Your role can read emails but not send them. Ask an admin for full access." />
+        <Empty title="View-only access" body="You can view emails but not send them. Ask an admin for access." />
       </div>
     );
   }
