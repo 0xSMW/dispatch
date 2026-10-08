@@ -30,7 +30,7 @@ describe("Suppressions", () => {
   it("sends search and the date range", async () => {
     const fetch = api({ "/suppressions": list([]) });
     visit(h(Suppressions), "/emails/suppressions?q=bounced&range=custom&start=2026-09-01&end=2026-09-30", "/emails/suppressions");
-    await screen.findByText("No matching results");
+    await screen.findByText("No results");
     const url = requests(fetch, "GET", "/suppressions")[0].url;
     expect(url.searchParams.get("q")).toBe("bounced");
     expect(url.searchParams.get("from")).toBeTruthy();
@@ -40,7 +40,7 @@ describe("Suppressions", () => {
   it("adds pasted addresses in one batch call", async () => {
     const fetch = api({ "/suppressions": list([]), "POST /suppressions/batch/add": list([]) });
     visit(h(Suppressions), "/emails/suppressions");
-    await screen.findByText("No suppressions");
+    await screen.findByText("No suppressed addresses");
     fireEvent.click(screen.getByRole("button", { name: "Add email addresses" }));
     fireEvent.change(screen.getByLabelText("Addresses"), { target: { value: "a@x.test, b@x.test\nA@x.test" } });
     fireEvent.click(screen.getByRole("button", { name: /^Add 2/ }));
@@ -51,7 +51,7 @@ describe("Suppressions", () => {
   it("adds one address with its reason", async () => {
     const fetch = api({ "/suppressions": list([]), "POST /suppressions": rows[1] });
     visit(h(Suppressions), "/emails/suppressions");
-    await screen.findByText("No suppressions");
+    await screen.findByText("No suppressed addresses");
     fireEvent.click(screen.getByRole("button", { name: "Add email addresses" }));
     fireEvent.change(screen.getByLabelText("Addresses"), { target: { value: "one@x.test" } });
     fireEvent.change(screen.getByLabelText("Reason"), { target: { value: "asked us to stop" } });
