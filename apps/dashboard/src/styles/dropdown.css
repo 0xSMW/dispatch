@@ -1,0 +1,110 @@
+.dropdown {
+  display: inline-block;
+  position: relative;
+  min-width: 0;
+  vertical-align: middle;
+}
+.field > .dropdown {
+  display: block;
+  width: 100%;
+}
+.dropdownNative {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  border: 0 !important;
+  opacity: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+button.dropdownTrigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  width: 100%;
+  min-height: 36px;
+  padding: 8px 12px;
+  border: 1px solid var(--border-input);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: none;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 400;
+  text-align: left;
+}
+button.dropdownTrigger:hover:not(:disabled),
+button.dropdownTrigger[aria-expanded="true"] {
+  background: var(--surface-raised);
+  color: var(--text);
+  border-color: var(--border-input);
+  box-shadow: none;
+}
+button.dropdownTrigger:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+button.dropdownTrigger > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+button.dropdownTrigger > svg {
+  flex: none;
+  color: var(--text-muted);
+}
+button.dropdownTrigger:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.dropdownMenu {
+  position: fixed;
+  z-index: 10000;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 5px;
+  border: 1px solid var(--border-input);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  box-sizing: border-box;
+  font-size: 14px;
+}
+.dropdownOption {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 34px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  cursor: pointer;
+  line-height: 20px;
+}
+.dropdownOption > span {
+  overflow-wrap: anywhere;
+}
+.dropdownOption > svg {
+  flex: none;
+}
+.dropdownOption.active:not([aria-disabled="true"]) {
+  background: var(--surface-raised);
+}
+.dropdownOption[aria-disabled="true"] {
+  color: var(--text-dim);
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.dropdownGroup,
+.dropdownEmpty {
+  padding: 8px 9px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.varTable .dropdown { width: 100%; }
+.varTable button.dropdownTrigger { min-height: 30px; font-size: 13px; padding: 5px 9px; }
