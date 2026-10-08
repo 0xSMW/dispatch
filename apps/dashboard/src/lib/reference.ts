@@ -352,6 +352,10 @@ const pages: Record<string, Omit<Reference, "prompt">> = {
     title: "Unsubscribe page",
     calls: [get("/brand", "Logo and color", "dispatch.brand.get()"), get("/topics", "Topics on the page", "dispatch.topics.list()")],
   },
+  "/settings/unsubscribe-page/edit": {
+    title: "Unsubscribe page editor",
+    calls: [get("/brand", "Page content and appearance", "dispatch.brand.get()"), patch("/brand", "Update page content", 'dispatch.brand.update({ unsubscribe_title: "Email preferences" })', { unsubscribe_title: "Email preferences" })],
+  },
   "/timeline": { title: "Timeline", calls: [get("/timeline", "Recent activity across resources", "dispatch.timeline.list()")] },
 };
 
@@ -397,6 +401,7 @@ const goals: Record<string, string> = {
   Team: "Help me inspect Dispatch memberships, sessions, and audit logs with my current permissions.",
   SMTP: "Help me find Dispatch SMTP relay settings and send transactional email without lifecycle setup.",
   Brand: "Help me review Dispatch brand values and safe theme tokens. Explain that saving does not rewrite installed emails; explicitly update library templates only after approval and preserve edited copies.",
+  "Unsubscribe page editor": "Help me customize Dispatch preference and success page content and appearance, preview changes, and save only the intended page overrides.",
   "Unsubscribe page": "Help me review Dispatch unsubscribe-page branding and marketing topics while preserving recipient consent.",
   Timeline: "Help me inspect recent Dispatch activity across resources.",
 };
