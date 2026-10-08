@@ -49,7 +49,7 @@ describe("Topics", () => {
     const fetch = api();
     show(h(Topics), "/audience/topics");
     await screen.findByText("Internal");
-    expect(screen.getByText("Mailing lists your contacts can subscribe to and leave from the preference page.")).toBeTruthy();
+    expect(screen.queryByText("Mailing lists your contacts can subscribe to and leave from the preference page.")).toBeNull();
     expect(calls(fetch)).toEqual(expect.arrayContaining(["GET /topics?limit=40", "GET /brand"]));
     const preview = screen.getByRole("complementary", { name: "Preference page preview" });
     await within(preview).findByText("Acme");
