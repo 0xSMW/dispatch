@@ -13,7 +13,7 @@ export const themeSchema = z.object({
   radius: z.number().int().min(0).max(16).optional(), button_style: z.enum(["filled", "outline"]).optional(),
 });
 export const themeDefaults = {
-  text_color: "#18181b", background_color: "#f4f4f5", surface_color: "#ffffff", border_color: "#e4e4e7",
+  text_color: "#171717", background_color: "#f5f5f5", surface_color: "#ffffff", border_color: "#e5e5e5",
   font_family: emailFonts[0], font_size: 16, radius: 8, button_style: "filled" as "filled" | "outline",
 };
 export type ThemeTokens = typeof themeDefaults;
