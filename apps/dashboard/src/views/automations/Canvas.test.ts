@@ -69,6 +69,19 @@ afterEach(() => {
 });
 
 describe("Canvas", () => {
+  it("uses resource names on canvas and inspector and keeps the copyable ID only in the inspector footer", async () => {
+    show({ options: { templates: [{ value: "tpl_1", label: "Welcome" }], templateNames: { tpl_1: "Welcome" }, events: [], segments: [] } });
+    const card = await screen.findByRole("button", { name: "Step welcome" });
+    expect(within(card).getByText("Transactional · Welcome")).toBeTruthy();
+    expect(card.textContent).not.toContain("tpl_1");
+    expect(within(card).queryByText("welcome")).toBeNull();
+    fireEvent.click(card);
+    const panel = screen.getByRole("region", { name: "Step welcome settings" });
+    expect(within(panel).getByRole("button", { name: "Copy Step ID" })).toBeTruthy();
+    expect(panel.querySelector("header")!.textContent).not.toContain("welcome");
+    expect(within(panel).getByText("welcome").closest(".fieldHint")).toBeTruthy();
+  });
+
   it("declares a natural-height, measured top-right immersive panel with a full usable-height cap and independently scrolling body", () => {
     // CSS contract only. jsdom cannot establish compact/long rendered heights or real overlap.
     const panel = canvasStyles.match(/\.canvasView\.immersive > \.canvasPanel\s*\{([^}]+)\}/)![1]!;
@@ -319,7 +332,7 @@ describe("Canvas", () => {
 
   it.each([
     { config: { type: "contact_created" }, label: "Contact added", summary: "Any new contact" },
-    { config: { type: "contact_updated", field: "unsubscribed", from: false, to: true }, label: "Contact changes", summary: "unsubscribed: false → true" },
+    { config: { type: "contact_updated", field: "unsubscribed", from: false, to: true }, label: "Contact changes", summary: "Subscription: Subscribed → Unsubscribed" },
     { config: { type: "topic_subscribed", topic_id: "topic_1" }, label: "Subscribed to topic", summary: "News" },
     { config: { type: "segment_added", segment_id: "seg_1" }, label: "Added to segment", summary: "Trials" },
   ])("draws the shared $label label and summary in the canvas and panel", async ({ config, label, summary }) => {
