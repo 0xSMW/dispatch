@@ -51,6 +51,31 @@ describe("RunMetrics helpers", () => {
 describe("RunMetrics goal card", () => {
   beforeEach(() => signIn());
   afterEach(() => { cleanup(); sessionStorage.clear(); vi.unstubAllGlobals(); });
+  it.each([
+    { label: "list response", response: { object: "list", data: [] } },
+    { label: "missing totals", response: { total: 0, data: [] } },
+    { label: "partial totals", response: { total: 0, totals: { running: 0 }, data: [] } },
+    { label: "non-numeric total", response: { total: "0", totals: zero, data: [] } },
+    { label: "missing daily rows", response: { total: 0, totals: zero } },
+    { label: "invalid date", response: { total: 1, totals: { ...zero, running: 1 }, data: [{ date: "2026-02-30", ...zero, running: 1 }] } },
+    { label: "missing daily counts", response: { total: 1, totals: { ...zero, running: 1 }, data: [{ date: "2026-10-08", running: 1 }] } },
+    { label: "null response", response: null },
+  ])("shows a retryable failure for $label and recovers without inventing zero counts", async ({ response }) => {
+    let retry = false;
+    mockFetch((raw) => new URL(raw).pathname.endsWith("/runs/metrics")
+      ? { body: retry ? { total: 1, totals: { ...zero, running: 1 }, data: [] } : response }
+      : { body: { object: "list", has_more: false, data: [] } });
+    render(h(MemoryRouter, null, h(SessionProvider, null, h(RunMetrics, { automationId: "automation_1" }))));
+    expect(await screen.findByText("Run metrics returned an invalid response. Try again.")).toBeTruthy();
+    expect(screen.queryByLabelText("Runs by status")).toBeNull();
+    expect(screen.queryByText("0 of 0 runs")).toBeNull();
+    retry = true;
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await screen.findByLabelText("Runs by status");
+    expect(screen.getByText("1 of 1 run")).toBeTruthy();
+    expect(screen.queryByText("Run metrics returned an invalid response. Try again.")).toBeNull();
+  });
+
   it("shares the automation range and can narrow goals to an attributed email step", async () => {
     const fetch = mockFetch((raw) => {
       const path = new URL(raw).pathname;
