@@ -1,7 +1,8 @@
 import { useId, useRef, type FormEvent, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { useDialog } from "../hooks/useDialog";
-import { metaKey } from "./Kbd";
+import { Kbd } from "./Kbd";
+import { shortcuts } from "../lib/shortcuts";
 
 export interface ModalProps {
   isOpen: boolean;
@@ -51,11 +52,11 @@ export function Modal({
     (onSubmit ? (
       <>
         <button type="button" className="secondary" onClick={onClose}>
-          Cancel <kbd>Esc</kbd>
+          Cancel <span className="keyHints">{shortcuts.dismiss.keys.map((key) => <Kbd key={key}>{key}</Kbd>)}</span>
         </button>
         <button type="submit" className={danger ? "danger" : undefined} disabled={blocked} aria-busy={submitting}>
           {submitting ? <span className="spinner" aria-hidden /> : null}
-          {submitLabel} <kbd>{metaKey}↵</kbd>
+          {submitLabel} <span className="keyHints">{shortcuts.submit.keys.map((key) => <Kbd key={key}>{key}</Kbd>)}</span>
         </button>
       </>
     ) : null);
