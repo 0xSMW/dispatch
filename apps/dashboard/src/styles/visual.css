@@ -82,7 +82,7 @@
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: #ffffff;
-  color: #18181b;
+  color: #171717;
   /* The email's own markup is shown here, in the dashboard page. These keep it inside this box:
      a fixed or absolute element in the email cannot cover the rest of the app. */
   position: relative;
