@@ -112,9 +112,9 @@ export function ReceivedEmail() {
         ) : body === "preview" ? (
           <Preview html={row.html} untrusted />
         ) : body === "text" ? (
-          <Code value={row.text} language="text" empty={<Empty title="No plain text part" />} />
+          <Code value={row.text} language="text" empty={<Empty title="No plain text version" />} />
         ) : body === "html" ? (
-          <Code value={row.html} language="html" empty={<Empty title="No HTML part" />} />
+          <Code value={row.html} language="html" empty={<Empty title="No HTML version" />} />
         ) : body === "headers" ? (
           <Table
             compact
@@ -156,7 +156,7 @@ export function ReceivedEmail() {
             </a>
           </div>
         ) : (
-          <Empty title="No raw message" body="Dispatch kept no raw MIME copy of this email." />
+          <Empty title="No original message file" body="Dispatch didn't save a raw copy of this email." />
         )}
       </Panel>
 
