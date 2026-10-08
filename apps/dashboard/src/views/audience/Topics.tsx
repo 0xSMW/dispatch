@@ -32,6 +32,7 @@ export function Topics() {
   const can = useCan();
   const list = useList<Topic>("/topics");
   const brand = useResource<BrandSettings>("/brand");
+  const empty = !list.loading && !list.error && list.page === 1 && list.rows.length === 0;
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<Topic | null>(null);
   const [deleting, setDeleting] = useState<Topic | null>(null);
@@ -47,7 +48,7 @@ export function Topics() {
       <PageHeader
         title="Audience"
         actions={
-          can ? (
+          can && !empty ? (
             <button type="button" onClick={() => setCreating(true)}>
               Create topic
             </button>
@@ -55,7 +56,7 @@ export function Topics() {
         }
       />
       <Tabs tabs={audienceTabs} />
-      <div className="splitLayout">
+      <div className={empty ? "emptyPage" : "splitLayout"}>
         <Table
           rows={list.rows}
           loading={list.loading}
@@ -67,7 +68,8 @@ export function Topics() {
           onNext={list.next}
           onPrevious={list.previous}
           noun="topics"
-          empty={<Empty title="No topics" body="Create a topic so contacts can choose which emails they get." />}
+          empty={<Empty title="No topics" body="Create a topic so contacts can choose which emails they get."
+            action={can ? <button type="button" onClick={() => setCreating(true)}>Create topic</button> : null} />}
           columns={[
             {
               header: "Name",
@@ -96,7 +98,7 @@ export function Topics() {
             />
           )}
         />
-        <aside className="previewPane" aria-label="Preference page preview">
+        {!empty ? <aside className="previewPane" aria-label="Preference page preview">
           <span className="previewLabel">Preference page preview</span>
           <PreferenceCard
             brand={previewBrand(brand.data)}
@@ -108,7 +110,7 @@ export function Topics() {
           <p className="searchNote">
             Shows public topics with their defaults. Logo and color come from <Link to="/settings/brand">brand settings</Link>.
           </p>
-        </aside>
+        </aside> : null}
       </div>
 
       {creating ? <CreateTopic onClose={() => setCreating(false)} onDone={list.reload} /> : null}
