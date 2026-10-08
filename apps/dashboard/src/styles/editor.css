@@ -198,6 +198,15 @@
   min-width: 0;
 }
 
+.card .thumb {
+  transition: border-color 300ms ease, box-shadow 300ms ease;
+}
+
+.card.isAdded .thumb {
+  border-color: var(--success);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--success) 20%, transparent);
+}
+
 .card > a,
 button.cardPreview {
   display: block;
@@ -283,19 +292,6 @@ button.cardLink:hover:not(:disabled) {
 .cardText {
   color: var(--text-muted);
   font-size: 13px;
-}
-
-.templateCategory {
-  display: grid;
-  gap: 12px;
-  margin-top: 8px;
-}
-
-.categoryTitle {
-  color: var(--text-muted);
-  font-size: 14px;
-  font-weight: 600;
-  line-height: 20px;
 }
 
 /* Notices and checklists */
