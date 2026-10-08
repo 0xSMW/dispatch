@@ -3,20 +3,20 @@ import { Layout } from "./_components";
 import { ProductAction } from "./_components/ProductAction";
 import { exampleBrand, heading, text, type Brand, type EmailVariable } from "./_theme";
 
-const preview = "Pick up where you left off and take the next step in your account.";
+const preview = "Pick up where you left off and continue your account setup.";
 
 type Props = { brand?: Brand; firstName?: string; actionUrl?: string };
 
 export default function SetupReminder({ brand = exampleBrand, firstName = "there", actionUrl }: Props) {
   return (
-    <Layout brand={brand} preview={preview} title="Ready for your next step?"
+    <Layout brand={brand} preview={preview} title="Continue your setup"
       reason="You received this email because you signed up for tips on getting started." marketing>
-      <Heading as="h1" className="dm-text" style={heading}>Ready for your next step?</Heading>
+      <Heading as="h1" className="dm-text" style={heading}>Continue your setup</Heading>
       <Text className="dm-text" style={text}>
-        Hi {firstName}, a little time in {brand.productName} can help you get started.
+        Hi {firstName}, ready to continue setting up {brand.productName}?
       </Text>
       <Text className="dm-text" style={text}>
-        Open your account and finish the next setup step. If you get stuck, contact support and we can help.
+        Pick up where you left off. If you need a hand, contact support.
       </Text>
       <ProductAction brand={brand} href={actionUrl}>Continue setup</ProductAction>
     </Layout>
