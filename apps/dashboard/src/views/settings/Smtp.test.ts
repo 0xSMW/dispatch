@@ -39,7 +39,7 @@ describe("Smtp", () => {
     stubApi({ "GET /system": system(smtp) });
     show(h(Smtp), "/settings/smtp");
     const empty = (await screen.findByText("SMTP isn't available here")).closest(".empty");
-    expect(empty?.parentElement?.className).toBe("page");
+    expect(empty?.parentElement?.classList.contains("panel")).toBe(true);
     expect(empty?.classList.contains("compact")).toBe(false);
     expect(screen.queryByRole("link", { name: "Send a test email" })).toBeNull();
     expect(screen.queryByText("Host")).toBeNull();
