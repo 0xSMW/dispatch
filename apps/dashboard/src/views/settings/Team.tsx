@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 import { Badge } from "../../components/Badge";
 import { Code } from "../../components/Code";
 import { ConfirmPhrase } from "../../components/ConfirmPhrase";
+import { Empty } from "../../components/Empty";
 import { Drawer } from "../../components/Drawer";
 import { Facts } from "../../components/Facts";
 import { Field, Select } from "../../components/Field";
@@ -67,7 +68,7 @@ export function Team() {
       <PageHeader
         title="Settings"
         actions={
-          can ? (
+          can && (members.loading || members.error || members.rows.length || members.page > 1) ? (
             <button type="button" onClick={() => setDialog("invite")}>
               Invite member
             </button>
@@ -79,6 +80,8 @@ export function Team() {
       <Section
         title="Members"
         list={members}
+        emptyBody="Invite a member to give them access to this team."
+        emptyAction={can ? <button type="button" onClick={() => setDialog("invite")}>Invite member</button> : null}
         columns={[
           { header: "Member", cell: (row) => row.email },
           { header: "Name", cell: (row) => row.name },
@@ -112,6 +115,7 @@ export function Team() {
       <Section
         title="Users"
         list={users}
+        emptyBody="User accounts appear here when members are added."
         columns={[
           { header: "Email", cell: (row) => row.email },
           { header: "Name", cell: (row) => row.name },
@@ -152,6 +156,7 @@ export function Team() {
       <Section
         title="Roles"
         list={roles}
+        emptyBody="Add a role to define permissions for your team."
         action={
           can ? (
             <button type="button" className="secondary small" onClick={() => setDialog("role")}>
@@ -189,6 +194,7 @@ export function Team() {
       <Section
         title="Sessions"
         list={sessions}
+        emptyBody="Sign-in sessions appear here when team members sign in."
         columns={[
           { header: "Email", cell: (row) => row.email },
           {
@@ -232,7 +238,7 @@ export function Team() {
 
       <Panel title="Audit log">
         <div className="stack">
-          <FilterBar search="Filter by action, such as domain" searchParam="action" />
+          {audit.loading || audit.error || audit.rows.length || audit.page > 1 || filters.action ? <FilterBar search="Filter by action, such as domain" searchParam="action" /> : null}
           <Table
             compact
             rows={audit.rows}
@@ -240,7 +246,7 @@ export function Team() {
             error={audit.error}
             onRetry={() => void audit.reload()}
             onRowClick={setEntry}
-            empty={<p className="muted">{filters.action ? "No entries match." : "No audit entries yet."}</p>}
+            empty={<Empty compact title={filters.action ? "No entries match." : "No audit entries yet."} body={filters.action ? "Try another action to find an entry." : "Changes to your team and settings will appear here."} />}
             page={audit.page}
             hasMore={audit.hasMore}
             onNext={audit.next}
@@ -300,18 +306,23 @@ function Section<T extends { id: string }>({
   list,
   columns,
   action,
+  emptyAction,
+  emptyBody,
   menu,
 }: {
   title: string;
   list: ListState<T>;
   columns: Array<Column<T>>;
   action?: ReactNode;
+  emptyAction?: ReactNode;
+  emptyBody?: ReactNode;
   menu?: (row: T) => ReactNode;
 }) {
   return (
-    <Panel title={title} actions={action}>
+    <Panel title={title} actions={list.loading || list.error || list.rows.length || list.page > 1 ? action : null}>
       <Table
         compact
+        empty={<Empty compact title={`No ${title.toLowerCase()} yet`} body={emptyBody} action={emptyAction ?? action} />}
         rows={list.rows}
         loading={list.loading}
         error={list.error}
