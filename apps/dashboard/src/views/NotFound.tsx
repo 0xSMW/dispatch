@@ -6,10 +6,10 @@ export function NotFound() {
     <div className="page">
       <Empty
         title="Page not found"
-        body="Check the address, or go back to your emails."
+        body="Check the address, or head back to your emails."
         action={
           <Link className="button secondary small" to="/emails">
-            Emails
+            Back to emails
           </Link>
         }
       />
