@@ -2,7 +2,7 @@ import { Heading, Text } from "react-email";
 import { Action, If, Layout, Notice } from "./_components";
 import { exampleBrand, heading, muted, text, type Brand, type EmailVariable } from "./_theme";
 
-const preview = "Use this link to choose a new password. It expires soon.";
+const preview = "Choose a new password for your account with this reset link.";
 
 type Props = {
   brand?: Brand;
@@ -32,22 +32,22 @@ export default function PasswordReset({
         Reset your password
       </Heading>
       <Text className="dm-text" style={text}>
-        Hi {name}, we received a request to reset the password for your {brand.productName} account.
+        Hi {name}, use this link to reset your {brand.productName} password.
       </Text>
       <Action brand={brand} href={actionUrl}>
         Reset password
       </Action>
       <Text className="dm-text" style={text}>
-        This link expires in {expiresIn}. After that, ask for a new one.
+        This link expires in {expiresIn}. Request a new link if it expires.
       </Text>
       <If value={browser}>
         <Text className="dm-muted" style={muted}>
-          The request came from {browser}.
+          Browser: {browser}.
         </Text>
       </If>
       <If value={os}>
         <Text className="dm-muted" style={muted}>
-          The operating system was {os}.
+          Operating system: {os}.
         </Text>
       </If>
       <Notice>If you did not ask for this, ignore this email. Your password will not change.</Notice>
