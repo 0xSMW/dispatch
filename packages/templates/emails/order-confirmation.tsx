@@ -1,8 +1,8 @@
 import { Heading, Text } from "react-email";
-import { Action, If, Layout, LineItems, type LineItem } from "./_components";
+import { Action, Details, If, Layout, LineItems, type LineItem } from "./_components";
 import { exampleBrand, heading, text, type Brand, type EmailVariable } from "./_theme";
 
-const preview = "We received your order. This note confirms the items and the total.";
+const preview = "Your order is confirmed. Review the items and total.";
 
 type Props = {
   brand?: Brand;
@@ -44,46 +44,30 @@ export default function OrderConfirmation({
         Order confirmed
       </Heading>
       <Text className="dm-text" style={text}>
-        We received order {orderName}. This email confirms the items and the amount paid.
+        We received your order {orderName}. Here are your order details.
       </Text>
       <LineItems items={lineItems} showImage />
       <If value={subtotal}>
-        <Text className="dm-text" style={text}>
-          Subtotal {subtotal}
-        </Text>
+        <Details rows={[{ label: "Subtotal", value: subtotal }]} />
       </If>
       <If value={discount}>
-        <Text className="dm-text" style={text}>
-          Discount {discount}
-        </Text>
+        <Details rows={[{ label: "Discount", value: discount }]} />
       </If>
       <If value={shipping}>
-        <Text className="dm-text" style={text}>
-          Shipping {shipping}
-        </Text>
+        <Details rows={[{ label: "Shipping", value: shipping }]} />
       </If>
       <If value={tax}>
-        <Text className="dm-text" style={text}>
-          Tax {tax}
-        </Text>
+        <Details rows={[{ label: "Tax", value: tax }]} />
       </If>
-      <Text className="dm-text" style={text}>
-        Total {total}
-      </Text>
+      <Details rows={[{ label: "Total", value: <strong>{total}</strong> }]} />
       <If value={shippingAddress}>
-        <Text className="dm-text" style={text}>
-          Shipping address {shippingAddress}
-        </Text>
+        <Details rows={[{ label: "Shipping address", value: shippingAddress }]} />
       </If>
       <If value={billingAddress}>
-        <Text className="dm-text" style={text}>
-          Billing address {billingAddress}
-        </Text>
+        <Details rows={[{ label: "Billing address", value: billingAddress }]} />
       </If>
       <If value={paymentMethod}>
-        <Text className="dm-text" style={text}>
-          Payment method {paymentMethod}
-        </Text>
+        <Details rows={[{ label: "Payment method", value: paymentMethod }]} />
       </If>
       <Action brand={brand} href={orderStatusUrl}>
         View order status
