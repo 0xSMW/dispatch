@@ -41,14 +41,16 @@ export function Smtp() {
     <div className="page">
       <PageHeader title="Settings" />
       <Tabs tabs={settingsTabs} />
-      <Panel title="SMTP">
+      {!system.loading && !system.error && !system.data?.smtp ? (
+        <Empty title="SMTP isn't available here" body="Send your emails through the API instead."
+          // action={<Link className="button secondary" to="/emails/send">Send a test email</Link>}
+        />
+      ) : <Panel title="SMTP">
         <div className="stack">
           {system.loading ? (
             <Skeleton lines={4} />
           ) : system.error ? (
             <Failed message={system.error} onRetry={system.reload} />
-          ) : !system.data?.smtp ? (
-            <Empty compact title="SMTP isn't available here" body="Send your emails through the API instead." action={<Link className="button secondary" to="/emails/send">Send a test email</Link>} />
           ) : (
             <>
               <p className="muted">Send through Dispatch from anything that speaks SMTP. Messages take the same path as the API.</p>
@@ -83,7 +85,7 @@ export function Smtp() {
             </>
           )}
         </div>
-      </Panel>
+      </Panel>}
     </div>
   );
 }
