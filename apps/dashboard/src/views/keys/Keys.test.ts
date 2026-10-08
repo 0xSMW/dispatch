@@ -1,3 +1,4 @@
+import { changeControl } from "../../testingControls";
 // @vitest-environment jsdom
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -51,10 +52,12 @@ describe("Keys", () => {
     await screen.findByText("No API keys yet");
 
     fireEvent.click(screen.getByRole("button", { name: "Create API key" }));
-    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Mailer" } });
-    fireEvent.change(screen.getByLabelText("Permission"), { target: { value: "sending_access" } });
+    changeControl(screen.getByLabelText("Name"), { target: { value: "Mailer" } });
+    changeControl(screen.getByLabelText("Permission"), { target: { value: "sending_access" } });
+    fireEvent.click(screen.getByRole("combobox", { name: "Domain" }));
     await screen.findByRole("option", { name: "send.acme.test" });
-    fireEvent.change(screen.getByLabelText("Domain"), { target: { value: "domain_1" } });
+    fireEvent.keyDown(screen.getByRole("combobox", { name: "Domain" }), { key: "Escape" });
+    changeControl(screen.getByLabelText("Domain"), { target: { value: "domain_1" } });
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: /^Create/ }));
 
     expect(await screen.findByText("re_secret_token")).toBeTruthy();
@@ -69,7 +72,7 @@ describe("Keys", () => {
     await screen.findByText("Production");
     fireEvent.click(screen.getAllByRole("button", { name: "Actions" })[0]);
     fireEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
-    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Production EU" } });
+    changeControl(screen.getByLabelText("Name"), { target: { value: "Production EU" } });
     fireEvent.click(screen.getByRole("button", { name: /^Save/ }));
     await waitFor(() => expect(requests(fetch, "PATCH", "/api-keys/key_1")[0]?.body).toEqual({ name: "Production EU" }));
   });
@@ -80,7 +83,7 @@ describe("Keys", () => {
     await screen.findByText("Unused");
     fireEvent.click(screen.getAllByRole("button", { name: "Actions" })[2]);
     fireEvent.click(screen.getByRole("menuitem", { name: "Remove" }));
-    fireEvent.change(screen.getByLabelText("Confirmation phrase"), { target: { value: "Unused" } });
+    changeControl(screen.getByLabelText("Confirmation phrase"), { target: { value: "Unused" } });
     fireEvent.click(screen.getByRole("button", { name: /^Remove key/ }));
     await waitFor(() => expect(requests(fetch, "DELETE", "/api-keys/key_3")).toHaveLength(1));
   });
