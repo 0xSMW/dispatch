@@ -95,7 +95,6 @@ export function Forms() {
   return (
     <ListPage
       title="Audience"
-      description="Public signup forms with topic choices, allowed origins, and optional email confirmation."
       tabs={audienceTabs}
       actions={can ? <button type="button" onClick={() => setCreating(true)}>Create form</button> : null}
       list={list}
