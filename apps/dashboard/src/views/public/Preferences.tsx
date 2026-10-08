@@ -1,4 +1,9 @@
-import { useState, type CSSProperties, type FormEvent } from "react";
+import {
+  useState,
+  type CSSProperties,
+  type FormEvent,
+  type KeyboardEvent,
+} from "react";
 import { CheckCircle2 } from "lucide-react";
 import type { BrandSettings, Preferences } from "../../types";
 import "../../styles/public.css";
@@ -8,15 +13,23 @@ export type PreferenceTopic = Preferences["topics"][number];
 
 /** Default copy for the preference page. The settings page previews the same text. */
 export const preferenceText = {
-  title: "Do you want to unsubscribe?",
-  description: "Confirm your preferences:",
+  title: "Email preferences",
+  description: "Choose the emails you receive.",
+  button: "Save preferences",
+  updatedTitle: "Preferences updated",
+  unsubscribedTitle: "You’re unsubscribed",
   updated: "Your email preferences were updated.",
   unsubscribed: "You have been unsubscribed.",
 };
 
 /** The tenant's color as CSS variables. A brand color is data, so it cannot be a theme token. */
-export function brandStyle(brand: Pick<PreferenceBrand, "color" | "text_color">): CSSProperties {
-  return { "--brand": brand.color, "--brand-text": brand.text_color } as CSSProperties;
+export function brandStyle(
+  brand: Pick<PreferenceBrand, "color" | "text_color">,
+): CSSProperties {
+  return {
+    "--brand": brand.color,
+    "--brand-text": brand.text_color,
+  } as CSSProperties;
 }
 
 /** Black or white, whichever reads better on `color`. Mirrors `brandTextColor` in @dispatchmail/core. */
@@ -26,20 +39,33 @@ export function textColor(color: string): "#ffffff" | "#000000" {
     const value = Number.parseInt(part, 16) / 255;
     return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
   };
-  const lum = 0.2126 * channel(hex.slice(0, 2)) + 0.7152 * channel(hex.slice(2, 4)) + 0.0722 * channel(hex.slice(4, 6));
+  const lum =
+    0.2126 * channel(hex.slice(0, 2)) +
+    0.7152 * channel(hex.slice(2, 4)) +
+    0.0722 * channel(hex.slice(4, 6));
   const onWhite = 1.05 / (lum + 0.05);
   const onBlack = (lum + 0.05) / 0.05;
   return onWhite >= onBlack ? "#ffffff" : "#000000";
 }
 
 /** The page brand from `GET /brand`, with the API's defaults for unset fields. */
-export function previewBrand(brand: Partial<BrandSettings> | null | undefined): PreferenceBrand {
-  const color = brand?.color || "#18181b";
+export function previewBrand(
+  brand: Partial<BrandSettings> | null | undefined,
+): PreferenceBrand {
+  const color = brand?.unsubscribe_color || brand?.color || "#18181b";
   return {
-    product_name: brand?.product_name || brand?.variables?.PRODUCT_NAME || "Your product",
-    logo_url: brand?.logo_url || null,
+    product_name:
+      brand?.product_name || brand?.variables?.PRODUCT_NAME || "Your product",
+    logo_url: brand?.unsubscribe_logo_url || brand?.logo_url || null,
     color,
-    text_color: brand?.button_text_color || textColor(color),
+    text_color: textColor(color),
+    title: brand?.unsubscribe_title,
+    description: brand?.unsubscribe_description,
+    button_label: brand?.unsubscribe_button_label,
+    updated_title: brand?.unsubscribe_updated_title,
+    updated_description: brand?.unsubscribe_updated_description,
+    unsubscribed_title: brand?.unsubscribe_unsubscribed_title,
+    unsubscribed_description: brand?.unsubscribe_unsubscribed_description,
   };
 }
 
@@ -61,28 +87,61 @@ export interface PreferenceCardProps {
   description?: string;
   /** Inside a dashboard page: locally simulate changes without saving recipient preferences. */
   preview?: boolean;
+  onDoneChange?: (done: Done) => void;
+  onSelect?: (
+    field:
+      | "title"
+      | "description"
+      | "button_label"
+      | "updated_title"
+      | "updated_description"
+      | "unsubscribed_title"
+      | "unsubscribed_description",
+  ) => void;
 }
 
 /** The preference page body. The public page drives it; Topics and the settings page render it as a preview. */
 export function PreferenceCard(props: PreferenceCardProps) {
-  return props.preview ? <PreferencePreview {...props} /> : <PreferenceBody {...props} />;
+  return props.preview ? (
+    <PreferencePreview {...props} />
+  ) : (
+    <PreferenceBody {...props} />
+  );
 }
 
 function PreferencePreview(props: PreferenceCardProps) {
   const [choices, setChoices] = useState<Record<string, boolean>>({});
   const [done, setDone] = useState<Done>(null);
   const checked = { ...props.checked, ...choices };
+  const outcome = props.done === undefined ? done : props.done;
+  const finish = (next: Done) => {
+    setDone(next);
+    props.onDoneChange?.(next);
+  };
   return (
     <div className="prefPreview">
       <PreferenceBody
         {...props}
         checked={checked}
-        done={done}
-        onToggle={(id) => setChoices((current) => ({ ...current, [id]: !checked[id] }))}
-        onUpdate={() => setDone("updated")}
-        onUnsubscribeAll={() => setDone("unsubscribed")}
+        done={outcome}
+        onToggle={(id) =>
+          setChoices((current) => ({ ...current, [id]: !checked[id] }))
+        }
+        onUpdate={() => finish("updated")}
+        onUnsubscribeAll={() => finish("unsubscribed")}
       />
-      {done ? <button type="button" className="ghost" onClick={() => { setChoices({}); setDone(null); }}>Reset preview</button> : null}
+      {outcome && !props.onSelect ? (
+        <button
+          type="button"
+          className="ghost"
+          onClick={() => {
+            setChoices({});
+            finish(null);
+          }}
+        >
+          Reset preview
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -98,13 +157,35 @@ function PreferenceBody({
   busy = false,
   done = null,
   error,
-  title = preferenceText.title,
-  description = preferenceText.description,
+  title = brand.title || preferenceText.title,
+  description = brand.description || preferenceText.description,
+  onSelect,
   preview = false,
 }: PreferenceCardProps) {
   const Heading = preview ? "h2" : "h1";
+  const selectable = (
+    field: Parameters<NonNullable<PreferenceCardProps["onSelect"]>>[0],
+  ) =>
+    onSelect
+      ? {
+          tabIndex: 0,
+          title: "Edit this text",
+          onClick: () => onSelect(field),
+          onKeyDown: (event: KeyboardEvent) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              onSelect(field);
+            }
+          },
+        }
+      : {};
   const header = brand.logo_url ? (
-    <img className="prefLogo" src={brand.logo_url} alt={brand.product_name} referrerPolicy="no-referrer" />
+    <img
+      className="prefLogo"
+      src={brand.logo_url}
+      alt={brand.product_name}
+      referrerPolicy="no-referrer"
+    />
   ) : (
     <div className="prefName">{brand.product_name}</div>
   );
@@ -114,8 +195,28 @@ function PreferenceBody({
       <div className="publicCard" style={brandStyle(brand)}>
         {header}
         <div className="prefDone" role="status">
+          <Heading
+            className="prefTitle"
+            {...selectable(
+              done === "updated" ? "updated_title" : "unsubscribed_title",
+            )}
+          >
+            {done === "updated"
+              ? brand.updated_title || preferenceText.updatedTitle
+              : brand.unsubscribed_title || preferenceText.unsubscribedTitle}
+          </Heading>
+          <p
+            {...selectable(
+              done === "updated"
+                ? "updated_description"
+                : "unsubscribed_description",
+            )}
+          >
+            {done === "updated"
+              ? brand.updated_description || preferenceText.updated
+              : brand.unsubscribed_description || preferenceText.unsubscribed}
+          </p>
           <CheckCircle2 size={28} aria-hidden />
-          <p>{done === "updated" ? preferenceText.updated : preferenceText.unsubscribed}</p>
         </div>
       </div>
     );
@@ -123,17 +224,22 @@ function PreferenceBody({
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    onUpdate?.();
+    if (onSelect) onSelect("button_label");
+    else onUpdate?.();
   }
 
   return (
     <form className="publicCard" style={brandStyle(brand)} onSubmit={submit}>
       {header}
-      <Heading className="prefTitle">{title}</Heading>
+      <Heading className="prefTitle" {...selectable("title")}>
+        {title}
+      </Heading>
+      <p className="prefDescription" {...selectable("description")}>
+        {description}
+      </p>
       {email ? <p className="center muted">{email}</p> : null}
       {topics.length ? (
         <>
-          <p>{description}</p>
           <fieldset className="prefTopics" aria-label="Topics">
             {topics.map((topic) => (
               <label key={topic.id} className="prefTopic">
@@ -149,12 +255,17 @@ function PreferenceBody({
             ))}
           </fieldset>
           <button type="submit" className="brandButton" disabled={busy}>
-            Update preferences
+            {brand.button_label || preferenceText.button}
           </button>
           <p className="prefOr">Or</p>
         </>
       ) : null}
-      <button type="button" className="outlineButton" disabled={busy} onClick={() => onUnsubscribeAll?.()}>
+      <button
+        type="button"
+        className="outlineButton"
+        disabled={busy}
+        onClick={() => onUnsubscribeAll?.()}
+      >
         Unsubscribe from all
       </button>
       {error ? (
