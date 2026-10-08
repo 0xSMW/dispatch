@@ -33,7 +33,7 @@ export function CommandMenu({ pages, onClose, onApi, onKeys }: {
   const [recent, setRecent] = useState<Recent[]>(() => {
     try {
       const value: unknown = JSON.parse(sessionStorage.getItem(historyKey) ?? "[]");
-      return Array.isArray(value) ? value.filter((row): row is Recent => row && typeof row.id === "string" && typeof row.label === "string" && typeof row.detail === "string" && typeof row.to === "string" && row.to.startsWith("/") && !row.to.startsWith("//")).slice(0, 5) : [];
+      return Array.isArray(value) ? value.filter((row): row is Recent => row && typeof row.id === "string" && typeof row.label === "string" && typeof row.detail === "string" && typeof row.to === "string" && row.to.startsWith("/") && !row.to.startsWith("//") && row.to.split("?")[0] !== "/emails/send").slice(0, 5) : [];
     } catch { return []; }
   });
   // Capture existing page controls before opening another dialog. Their original guards apply.
@@ -52,7 +52,7 @@ export function CommandMenu({ pages, onClose, onApi, onKeys }: {
     { id: "api", label: "API reference", detail: "For this page", group: "Actions", action: onApi },
     { id: "shortcuts", label: "Keyboard shortcuts", detail: "All shortcuts", group: "Actions", action: onKeys },
     { id: "theme", label: theme === "dark" ? "Switch to light theme" : "Switch to dark theme", detail: "Appearance", group: "Actions", action: () => { onClose(); toggleTheme(); } },
-    ...(can ? [{ id: "send", label: "Send email", detail: "Open the test send form", group: "Actions", to: "/emails/send" }] : []),
+    // ...(can ? [{ id: "send", label: "Send email", detail: "Open the test send form", group: "Actions", to: "/emails/send" }] : []),
   ];
   const trimmed = query.trim();
   const intent = emailCommand(trimmed);
