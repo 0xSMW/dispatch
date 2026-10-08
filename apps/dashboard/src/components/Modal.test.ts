@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { h } from "../testing";
@@ -27,7 +27,28 @@ function Page({ onClose }: { onClose: () => void }) {
 }
 
 describe("dialog focus", () => {
-  afterEach(cleanup);
+  afterEach(() => { cleanup(); vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+  it("keeps a closing drawer mounted until the exit finishes and closes once", () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: false })));
+    const close = vi.fn();
+    render(h(Drawer, { isOpen: true, title: "Details", onClose: close, children: h("p", null, "Content") }));
+    fireEvent.click(screen.getByRole("button", { name: "Close panel" }));
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.getByRole("dialog", { name: "Details" })).toBeTruthy();
+    expect(close).not.toHaveBeenCalled();
+    act(() => { vi.advanceTimersByTime(220); });
+    expect(close).toHaveBeenCalledTimes(1);
+  });
+
+  it("closes drawers immediately when reduced motion is requested", () => {
+    vi.stubGlobal("matchMedia", vi.fn(() => ({ matches: true })));
+    const close = vi.fn();
+    render(h(Drawer, { isOpen: true, title: "Details", onClose: close, children: h("p", null, "Content") }));
+    fireEvent.click(screen.getByRole("button", { name: "Close panel" }));
+    expect(close).toHaveBeenCalledTimes(1);
+  });
 
   it("moves focus in, keeps Tab inside, and gives focus back on close", () => {
     const onClose = vi.fn();
