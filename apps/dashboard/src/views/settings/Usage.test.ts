@@ -84,8 +84,10 @@ describe("Usage", () => {
     expect(screen.getByLabelText("2026-10-01: 2 recipients, 120 API requests")).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Month (UTC)"), { target: { value: "2026-09" } });
     await waitFor(() => expect(calls(fetch)).toContain("GET /usage/summary?month=2026-09"));
-    expect(screen.getByText("System details").closest("details")?.open).toBe(false);
-    expect(screen.getByText("Raw usage counters").closest("details")?.open).toBe(false);
+    expect(screen.getByRole("heading", { name: "System details" }).closest("details")).toBeNull();
+    expect(screen.getByRole("heading", { name: "Raw usage counters" }).closest("details")).toBeNull();
+    expect(screen.getByRole("heading", { name: "Daily totals" }).closest("details")).toBeNull();
+    expect(screen.queryByRole("link", { name: "Send a test email" })).toBeNull();
   });
 
   it("discloses historical sends without recipient measurements", async () => {
