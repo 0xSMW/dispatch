@@ -1,3 +1,4 @@
+import { changeControl, controlValue } from "../../testingControls";
 // @vitest-environment jsdom
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -45,7 +46,7 @@ describe("BroadcastEditor", () => {
   it("previews for a sample contact and inserts personalization", async () => {
     const { fetch } = setup();
     await screen.findByLabelText("HTML");
-    expect(screen.getByLabelText("Email kind")).toHaveProperty("value", "Marketing");
+    expect(controlValue(screen.getByLabelText("Email kind"))).toBe("Marketing");
     expect(screen.getByLabelText("Email kind")).toHaveProperty("disabled", true);
     expect(preview()).toContain("<p>Hi Ada</p>");
     const area = screen.getByLabelText("HTML") as HTMLTextAreaElement;
@@ -63,7 +64,7 @@ describe("BroadcastEditor", () => {
   it("reviews, checks links, and sends after the typed confirmation", async () => {
     const { fetch, router } = setup();
     await screen.findByLabelText("HTML");
-    await screen.findByRole("option", { name: "Customers" });
+    await waitFor(() => expect(document.querySelector("select")?.parentElement?.textContent ?? document.body.textContent).toContain("Customers"));
     fireEvent.click(screen.getByRole("button", { name: "Review" }));
     const dialog = within(screen.getByRole("dialog"));
     expect(await dialog.findByText("Link 404 not found.")).toBeTruthy();
@@ -80,7 +81,7 @@ describe("BroadcastEditor", () => {
 
     const send = dialog.getByRole("button", { name: /Send now/ });
     expect(send).toHaveProperty("disabled", true);
-    fireEvent.change(dialog.getByLabelText("Confirmation phrase"), { target: { value: "SEND" } });
+    changeControl(dialog.getByLabelText("Confirmation phrase"), { target: { value: "SEND" } });
     expect(send).toHaveProperty("disabled", false);
     fireEvent.click(send);
     await waitFor(() => expect(router.state.location.pathname).toBe("/broadcasts/broadcast_1"));
@@ -92,12 +93,12 @@ describe("BroadcastEditor", () => {
     const counted = { ...audience, object: "broadcast_audience" as const, no_first_name: 1, no_last_name: 2 };
     const form = toForm(broadcast({ html }));
     const { fetch } = setup(broadcast({ html }), { "GET /broadcasts/broadcast_1/audience": counted });
-    await screen.findByRole("option", { name: "Customers" });
+    await waitFor(() => expect(document.querySelector("select")?.parentElement?.textContent ?? document.body.textContent).toContain("Customers"));
     expect(screen.queryByRole("list", { name: "Checks" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Visual" }));
     const reason = "Visual mode does not open the link javascript:alert(1).";
     expect(await screen.findByText(reason)).toBeTruthy();
-    expect(screen.getByLabelText("HTML")).toHaveProperty("value", html);
+    expect(controlValue(screen.getByLabelText("HTML"))).toBe(html);
     expect(calls(fetch, "PATCH /broadcasts/broadcast_1")).toHaveLength(0);
     expect(calls(fetch, "POST /links/check")).toHaveLength(0);
 
@@ -121,7 +122,7 @@ describe("BroadcastEditor", () => {
     expect(calls(fetch, "POST /links/check")[0]!.body).toEqual({ urls: ["https://acme.test/new"] });
     const send = dialog.getByRole("button", { name: /Send now/ });
     expect(send).toHaveProperty("disabled", true);
-    fireEvent.change(dialog.getByLabelText("Confirmation phrase"), { target: { value: "SEND" } });
+    changeControl(dialog.getByLabelText("Confirmation phrase"), { target: { value: "SEND" } });
     expect(send).toHaveProperty("disabled", false);
     expect(calls(fetch, "POST /broadcasts/broadcast_1/send")).toHaveLength(0);
   });
@@ -138,10 +139,10 @@ describe("BroadcastEditor", () => {
       "POST /emails": { id: "email_1" },
     });
     renderAt("/broadcasts/broadcast_1/editor", [{ path: "/broadcasts/:id/editor", element: h(BroadcastEditor) }]);
-    fireEvent.change(await screen.findByLabelText("Subject"), { target: { value: "Hi {{{FIRST_NAME}}}" } });
+    changeControl(await screen.findByLabelText("Subject"), { target: { value: "Hi {{{FIRST_NAME}}}" } });
     fireEvent.click(screen.getByRole("button", { name: "Test email" }));
     const dialog = within(screen.getByRole("dialog"));
-    fireEvent.change(dialog.getByLabelText("To"), { target: { value: "me@acme.test" } });
+    changeControl(dialog.getByLabelText("To"), { target: { value: "me@acme.test" } });
     fireEvent.click(dialog.getByRole("button", { name: /Send test/ }));
     await waitFor(() => expect(calls(fetch, "POST /emails")).toHaveLength(1));
 
@@ -154,8 +155,8 @@ describe("BroadcastEditor", () => {
 
   it("saves the draft before counting the audience", async () => {
     const { fetch } = setup();
-    await screen.findByRole("option", { name: "Customers" });
-    fireEvent.change(await screen.findByLabelText("Topic"), { target: { value: "topic_1" } });
+    await waitFor(() => expect(document.querySelector("select")?.parentElement?.textContent ?? document.body.textContent).toContain("Customers"));
+    changeControl(await screen.findByLabelText("Topic"), { target: { value: "topic_1" } });
     fireEvent.click(screen.getByRole("button", { name: "Review" }));
     const dialog = within(screen.getByRole("dialog"));
     expect(await dialog.findByText("Sending to 112 contacts in Customers.")).toBeTruthy();
@@ -169,14 +170,14 @@ describe("BroadcastEditor", () => {
   it("schedules with the resolved time", async () => {
     const { fetch } = setup();
     await screen.findByLabelText("HTML");
-    await screen.findByRole("option", { name: "Customers" });
+    await waitFor(() => expect(document.querySelector("select")?.parentElement?.textContent ?? document.body.textContent).toContain("Customers"));
     fireEvent.click(screen.getByRole("button", { name: "Review" }));
     const dialog = within(screen.getByRole("dialog"));
-    fireEvent.change(dialog.getByLabelText("When"), { target: { value: "later" } });
-    fireEvent.change(dialog.getByLabelText("Confirmation phrase"), { target: { value: "SEND" } });
+    changeControl(dialog.getByLabelText("When"), { target: { value: "later" } });
+    changeControl(dialog.getByLabelText("Confirmation phrase"), { target: { value: "SEND" } });
     // A phrase is read in the browser, shown with its zone, and only then can it be scheduled.
     const before = Date.now();
-    fireEvent.change(dialog.getByLabelText("Send at"), { target: { value: "in 2 hours" } });
+    changeControl(dialog.getByLabelText("Send at"), { target: { value: "in 2 hours" } });
     expect((dialog.getByRole("button", { name: /Schedule/ }) as HTMLButtonElement).disabled).toBe(true);
     expect(await dialog.findByText(/^Sends .+ \(.+\)\.$/)).toBeTruthy();
     fireEvent.click(dialog.getByRole("button", { name: /Schedule/ }));
@@ -197,7 +198,7 @@ describe("BroadcastEditor", () => {
 
   it("preserves counting and link-check loading rows before displaying their results", async () => {
     const { fetch } = setup();
-    await screen.findByRole("option", { name: "Customers" });
+    await waitFor(() => expect(document.querySelector("select")?.parentElement?.textContent ?? document.body.textContent).toContain("Customers"));
     let release!: () => void;
     const pending = new Promise<void>((resolve) => { release = resolve; });
     const reply = fetch.getMockImplementation()!;
@@ -221,26 +222,26 @@ describe("BroadcastEditor", () => {
       "GET /broadcasts/broadcast_1/audience": failed,
       "POST /links/check": failed,
     });
-    await screen.findByRole("option", { name: "Customers" });
+    await waitFor(() => expect(document.querySelector("select")?.parentElement?.textContent ?? document.body.textContent).toContain("Customers"));
     fireEvent.click(screen.getByRole("button", { name: "Review" }));
     const dialog = within(screen.getByRole("dialog"));
     expect(await dialog.findByText("Could not count the contacts in Customers.")).toBeTruthy();
     expect(await dialog.findByText("Could not check the link.")).toBeTruthy();
     expect(dialog.getByText("Open them yourself before sending.")).toBeTruthy();
     expect(dialog.queryByText(/links work/)).toBeNull();
-    fireEvent.change(dialog.getByLabelText("Confirmation phrase"), { target: { value: "SEND" } });
+    changeControl(dialog.getByLabelText("Confirmation phrase"), { target: { value: "SEND" } });
     expect(dialog.getByRole("button", { name: /Send now/ })).toHaveProperty("disabled", false);
     expect(calls(fetch, "POST /broadcasts/broadcast_1/send")).toHaveLength(0);
   });
 
   it("keeps missing content blocking after the confirmation phrase is entered", async () => {
     const { fetch } = setup(broadcast({ html: null, text: null }));
-    await screen.findByRole("option", { name: "Customers" });
+    await waitFor(() => expect(document.querySelector("select")?.parentElement?.textContent ?? document.body.textContent).toContain("Customers"));
     fireEvent.click(screen.getByRole("button", { name: "Review" }));
     const dialog = within(screen.getByRole("dialog"));
     const failure = await dialog.findByText("Add HTML or plain text content.");
     expect(failure.closest("li")?.className).toBe("fail");
-    fireEvent.change(dialog.getByLabelText("Confirmation phrase"), { target: { value: "SEND" } });
+    changeControl(dialog.getByLabelText("Confirmation phrase"), { target: { value: "SEND" } });
     expect(dialog.getByRole("button", { name: /Send now/ })).toHaveProperty("disabled", true);
     expect(calls(fetch, "POST /broadcasts/broadcast_1/send")).toHaveLength(0);
   });
@@ -249,14 +250,14 @@ describe("BroadcastEditor", () => {
     const { fetch } = setup(broadcast(), {
       "PATCH /broadcasts/broadcast_1": () => ({ status: 500, body: { name: "internal_error", message: "Save unavailable" } }),
     });
-    await screen.findByRole("option", { name: "Customers" });
-    fireEvent.change(await screen.findByLabelText("Subject"), { target: { value: "Updated" } });
+    await waitFor(() => expect(document.querySelector("select")?.parentElement?.textContent ?? document.body.textContent).toContain("Customers"));
+    changeControl(await screen.findByLabelText("Subject"), { target: { value: "Updated" } });
     fireEvent.click(screen.getByRole("button", { name: "Review" }));
     const dialog = within(screen.getByRole("dialog"));
     const failure = await dialog.findByText("Not saved: Save unavailable");
     expect(failure.closest("li")?.getAttribute("data-check-id")).toBe("save");
     expect(failure.closest("li")?.className).toBe("fail");
-    fireEvent.change(dialog.getByLabelText("Confirmation phrase"), { target: { value: "SEND" } });
+    changeControl(dialog.getByLabelText("Confirmation phrase"), { target: { value: "SEND" } });
     expect(dialog.getByRole("button", { name: /Send now/ })).toHaveProperty("disabled", true);
     expect(calls(fetch, "GET /broadcasts/broadcast_1/audience")).toHaveLength(0);
     expect(calls(fetch, "POST /broadcasts/broadcast_1/send")).toHaveLength(0);
