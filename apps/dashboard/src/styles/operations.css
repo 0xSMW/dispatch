@@ -100,7 +100,7 @@ a.fileChip:hover {
   border: 1px solid var(--border);
   border-left-width: 3px;
   border-radius: var(--radius);
-  background: var(--surface);
+  background: var(--container-bg);
 }
 
 .insight.danger {
