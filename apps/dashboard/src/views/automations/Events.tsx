@@ -57,7 +57,6 @@ export function Events() {
   return (
     <ListPage
       title="Events"
-      description={<>Sending <code>POST /events/send</code> with a new email address creates a contact. Fire a signup event to add the contact and start matching automations.</>}
       actions={
         <>
           <button type="button" className="secondary" onClick={() => setSending("")}>
