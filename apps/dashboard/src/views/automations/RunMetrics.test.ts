@@ -1,3 +1,4 @@
+import { changeControl, controlValue } from "../../testingControls";
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
@@ -69,7 +70,7 @@ describe("RunMetrics goal card", () => {
     expect(goalCalls()[0]!.searchParams.get("start_date")).toBe(runQuery.get("start_date"));
     expect(goalCalls()[0]!.searchParams.get("end_date")).toBe(runQuery.get("end_date"));
     expect(goalCalls()[0]!.searchParams.get("step_key")).toBeNull();
-    fireEvent.change(screen.getByLabelText("Goal email step"), { target: { value: "welcome" } });
+    changeControl(screen.getByLabelText("Goal email step"), { target: { value: "welcome" } });
     await waitFor(() => expect(goalCalls().at(-1)!.searchParams.get("step_key")).toBe("welcome"));
     expect(goalCalls().at(-1)!.searchParams.get("automation_id")).toBe("automation_1");
     expect(goalCalls().at(-1)!.searchParams.get("broadcast_id")).toBeNull();
