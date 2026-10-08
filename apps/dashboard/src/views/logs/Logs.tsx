@@ -40,7 +40,7 @@ export function Logs() {
   return (
     <ListPage
       title="Logs"
-      description={filters.email_id ? <EmailScope id={filters.email_id} /> : undefined}
+      context={filters.email_id ? <EmailScope id={filters.email_id} /> : undefined}
       search="Search by log ID, request ID, or endpoint"
       filters={[
         { param: "status", label: "Statuses", options: statusOptions },
