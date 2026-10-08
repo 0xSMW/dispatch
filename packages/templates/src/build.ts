@@ -178,7 +178,7 @@ async function main() {
     const variables = component.Variables;
     const props = placeholderProps(variables, listPlaceholder);
     const html = String(await render(createElement(component, { ...props, brand }), { pretty: false }));
-    const text = String(await toPlainText(html));
+    const text = String(await toPlainText(html)).replace(/\n[ \t]*\n(?:[ \t]*\n)+/g, "\n\n").trim();
     const previewHtml = String(
       await render(
         createElement(component, { ...props, ...component.PreviewProps, brand }),
@@ -209,7 +209,7 @@ async function main() {
     });
   }
 
-  const library: Library = { version: "1.0.0", templates, automations: presets };
+  const library: Library = { version: "1.1.0", templates, automations: presets };
   const payment = await paymentInput();
   const failures = [
     ...checkLibrary(library, themePairs),
