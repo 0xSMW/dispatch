@@ -283,7 +283,7 @@ describe("templates", () => {
       PRODUCT_URL: "https://example.com",
       BRAND_COLOR: "#ffffff",
       BRAND_TEXT_COLOR: "#000000",
-      SUPPORT_EMAIL: "hello@example.com",
+      SUPPORT_EMAIL: "",
       COMPANY_NAME: "Acme",
       CURRENT_YEAR: "2026"
     });
