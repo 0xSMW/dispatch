@@ -30,6 +30,28 @@ describe("UnsubscribePage", () => {
     expect(within(preview).getByRole("heading", { level: 2, name: "Do you want to unsubscribe?" })).toBeTruthy();
   });
 
+  it("keeps button text readable and simulates preview changes without saving", async () => {
+    const fetch = stubApi({
+      "GET /brand": { object: "brand", color: "#18181b", text_color: "#18181b", button_text_color: "#ffffff", variables: { PRODUCT_NAME: "Stephen’s updates" } },
+      "GET /topics": list([{ id: "t1", name: "News", description: null, visibility: "public", default_subscription: "opt_out" }]),
+    });
+    show(h(UnsubscribePage), "/settings/unsubscribe-page");
+    const preview = screen.getByRole("complementary", { name: "Preference page preview" });
+    expect(await within(preview).findByText("Stephen’s updates")).toBeTruthy();
+    const button = within(preview).getByRole("button", { name: "Update preferences" });
+    expect(button.closest("form")?.style.getPropertyValue("--brand-text")).toBe("#ffffff");
+    const checkbox = within(preview).getByRole("checkbox") as HTMLInputElement;
+    fireEvent.click(checkbox);
+    expect(checkbox.checked).toBe(true);
+    fireEvent.click(button);
+    expect(within(preview).getByRole("status").textContent).toContain("Your email preferences were updated.");
+    fireEvent.click(within(preview).getByRole("button", { name: "Reset preview" }));
+    expect((within(preview).getByRole("checkbox") as HTMLInputElement).checked).toBe(false);
+    fireEvent.click(within(preview).getByRole("button", { name: "Unsubscribe from all" }));
+    expect(within(preview).getByRole("status").textContent).toContain("You have been unsubscribed.");
+    expect(calls(fetch).every((call) => call.startsWith("GET "))).toBe(true);
+  });
+
   it("saves a custom title and description, previews them as typed, and clears one with null", async () => {
     const fetch = stubApi({
       "GET /brand": { object: "brand", product_name: "Acme", color: "#123456", text_color: "#ffffff", unsubscribe_title: "Leaving so soon?" },
