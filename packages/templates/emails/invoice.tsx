@@ -2,7 +2,7 @@ import { Heading, Text } from "react-email";
 import { Action, Details, If, Layout, LineItems, TextLink, type LineItem } from "./_components";
 import { exampleBrand, heading, text, type Brand, type EmailVariable } from "./_theme";
 
-const preview = "An invoice is ready, with the amount due and the date payment is due.";
+const preview = "Your invoice is ready. Review the amount and due date.";
 
 type Props = {
   brand?: Brand;
@@ -37,11 +37,11 @@ export default function Invoice({
     <Layout
       brand={brand}
       preview={preview}
-      title="Invoice"
+      title="Your invoice"
       reason="You received this email because an invoice was issued."
     >
       <Heading as="h1" className="dm-text" style={heading}>
-        Invoice
+        Your invoice
       </Heading>
       <Text className="dm-text" style={text}>
         {brand.companyName} issued invoice {invoiceNumber} for {brand.productName}.
@@ -49,38 +49,30 @@ export default function Invoice({
       <Details
         rows={[
           { label: "Invoice", value: invoiceNumber },
-          { label: "Issued at", value: issuedAt },
+          { label: "Issue date", value: issuedAt },
           { label: "Due date", value: dueDate },
           { label: "Amount due", value: amountDue },
         ]}
       />
       <LineItems items={lineItems} />
       <If value={subtotal}>
-        <Text className="dm-text" style={text}>
-          Subtotal {subtotal}
-        </Text>
+        <Details rows={[{ label: "Subtotal", value: subtotal }]} />
       </If>
       <If value={tax}>
-        <Text className="dm-text" style={text}>
-          Tax {tax}
-        </Text>
+        <Details rows={[{ label: "Tax", value: tax }]} />
       </If>
       <If value={taxId}>
-        <Text className="dm-text" style={text}>
-          Tax id {taxId}
-        </Text>
+        <Details rows={[{ label: "Tax ID", value: taxId }]} />
       </If>
       <If value={billingAddress}>
-        <Text className="dm-text" style={text}>
-          Billing address {billingAddress}
-        </Text>
+        <Details rows={[{ label: "Billing address", value: billingAddress }]} />
       </If>
       <Action brand={brand} href={payUrl}>
         Pay invoice
       </Action>
       <If value={pdfUrl}>
         <TextLink brand={brand} href={pdfUrl}>
-          Download the PDF
+          Download invoice PDF
         </TextLink>
       </If>
     </Layout>
