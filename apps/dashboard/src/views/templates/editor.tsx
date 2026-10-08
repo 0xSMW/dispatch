@@ -40,7 +40,22 @@ export function Preview({ html, actions }: { html: string; actions?: ReactNode }
 
 /** A scaled-down, non-interactive EmailFrame for cards. */
 export function Thumb({ html }: { html: string | null | undefined }) {
-  return <div className="thumb" aria-hidden>{html ? <EmailFrame html={html} /> : <span className="thumbEmpty">No content</span>}</div>;
+  const ref = useRef<HTMLDivElement>(null);
+  const [scale, setScale] = useState(0.45);
+  useEffect(() => {
+    const element = ref.current;
+    if (!element || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => {
+      if (entry) setScale(Math.max(0.1, (entry.contentRect.width - 32) / 640));
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  return <div ref={ref} className="thumb" aria-hidden>{html ? (
+    <div className="thumbDocument" style={{ transform: `scale(${scale})` }}>
+      <EmailFrame html={html} thumbnail />
+    </div>
+  ) : <span className="thumbEmpty">No content</span>}</div>;
 }
 
 export type SaveState = { saving: boolean; dirty: boolean; error: string | null; savedAt: number | null };
