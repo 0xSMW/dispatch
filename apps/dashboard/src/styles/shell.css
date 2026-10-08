@@ -37,3 +37,8 @@
   gap: 4px;
   margin: 0;
 }
+
+/* Automation editors own the full viewport across Builder, Runs and Metrics. */
+.app.automationFullscreen { display: flex; width: 100%; height: 100dvh; min-height: 0; }
+.automationFullscreen > .main { flex: 1; width: 100%; min-width: 0; min-height: 0; margin: 0; }
+.automationFullscreen > .main > .content { display: flex; flex: 1; width: 100%; max-width: none; height: 100%; min-height: 0; padding: 0; }
