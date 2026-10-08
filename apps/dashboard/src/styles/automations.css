@@ -377,8 +377,11 @@ button.automationChoice {
   width: 100%; padding: 12px; text-align: left; white-space: normal;
   background: transparent; color: var(--text); border: 1px solid transparent; box-shadow: none;
 }
-button.automationChoice[aria-pressed="true"], button.automationChoice:hover:not(:disabled) {
-  background: var(--surface-raised); color: var(--text); border-color: var(--border); box-shadow: none;
+button.automationChoice:hover:not(:disabled) {
+  background: var(--hover); color: var(--text); border-color: var(--border); box-shadow: none;
+}
+button.automationChoice[aria-pressed="true"] {
+  background: var(--selected); color: var(--text); border-color: var(--border); box-shadow: none;
 }
 .automationChoice small { color: var(--text-muted); font-weight: 400; }
 .automationRecipe { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
