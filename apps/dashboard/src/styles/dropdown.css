@@ -36,9 +36,14 @@ button.dropdownTrigger {
   font-weight: 400;
   text-align: left;
 }
-button.dropdownTrigger:hover:not(:disabled),
+button.dropdownTrigger:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--text);
+  border-color: var(--border-input);
+  box-shadow: none;
+}
 button.dropdownTrigger[aria-expanded="true"] {
-  background: var(--surface-raised);
+  background: var(--selected);
   color: var(--text);
   border-color: var(--border-input);
   box-shadow: none;
@@ -68,7 +73,7 @@ button.dropdownTrigger:disabled {
   padding: 5px;
   border: 1px solid var(--border-input);
   border-radius: 10px;
-  background: var(--surface);
+  background: var(--popover);
   color: var(--text);
   box-shadow: var(--shadow);
   box-sizing: border-box;
@@ -92,7 +97,7 @@ button.dropdownTrigger:disabled {
   flex: none;
 }
 .dropdownOption.active:not([aria-disabled="true"]) {
-  background: var(--surface-raised);
+  background: var(--hover);
 }
 .dropdownOption[aria-disabled="true"] {
   color: var(--text-dim);
