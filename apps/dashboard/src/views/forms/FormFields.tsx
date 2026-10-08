@@ -1,4 +1,5 @@
 import type * as React from "react";
+import { useState } from "react";
 import { Field, Select, Switch } from "../../components/Field";
 import "../../styles/audience.css";
 
@@ -38,6 +39,7 @@ function choicesWithSelected(choices: readonly FormChoice[], selected: readonly 
 export function FormFields({
   value, topics, properties, senders, onChange, disabled = false, errors = {},
 }: FormFieldsProps): React.JSX.Element {
+  const [queries, setQueries] = useState({ topic_ids: "", properties: "" });
   function change(patch: Partial<FormDraft>) {
     if (disabled) return;
     const next = { ...value, ...patch };
@@ -52,9 +54,10 @@ export function FormFields({
   function selections(key: "topic_ids" | "properties", label: string, choices: readonly FormChoice[]) {
     const options = choicesWithSelected(choices, value[key]);
     return (
-      <fieldset className="checkList" disabled={disabled} aria-invalid={errors[key] ? true : undefined}>
+      <fieldset className="checkList formChoices" disabled={disabled} aria-invalid={errors[key] ? true : undefined}>
         <legend>{label}</legend>
-        {options.map((choice) => (
+        {options.length > 6 ? <Field label={`Search ${label.toLowerCase()}`} value={queries[key]} onChange={(query) => setQueries((current) => ({ ...current, [key]: query }))} disabled={disabled} /> : null}
+        {options.filter((choice) => choice.label.toLowerCase().includes(queries[key].toLowerCase())).map((choice) => (
           <label className="check" key={choice.value}>
             <input
               type="checkbox"
@@ -100,7 +103,7 @@ export function FormFields({
         disabled={disabled}
       />
       {errors.double_opt_in ? <span className="fieldError" role="alert">{errors.double_opt_in}</span> : null}
-      <fieldset className="checkList" disabled={disabled} aria-invalid={errors.allowed_origins ? true : undefined}>
+      <fieldset className="checkList formChoices" disabled={disabled} aria-invalid={errors.allowed_origins ? true : undefined}>
         <legend>Allowed origins</legend>
         {value.allowed_origins.map((origin, index) => (
           <div className="form" key={index}>
