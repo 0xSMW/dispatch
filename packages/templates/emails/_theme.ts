@@ -45,19 +45,19 @@ export type EmailVariable = {
 };
 
 export const light = {
-  canvas: "#f4f4f5",
+  canvas: "#f5f5f5",
   card: "#ffffff",
-  text: "#18181b",
-  muted: "#3f3f46",
-  button: "#18181b",
+  text: "#171717",
+  muted: "#404040",
+  button: "#171717",
   buttonText: "#ffffff",
 };
 
 export const dark = {
-  canvas: "#09090b",
-  card: "#18181b",
+  canvas: "#0a0a0a",
+  card: "#171717",
   text: "#fafafa",
-  muted: "#e4e4e7",
+  muted: "#e5e5e5",
   // Links take the brand color in light mode. On the dark card that color can vanish (the default
   // brand color is the card color), so dark mode uses one fixed link color.
   link: "#93c5fd",
