@@ -1,3 +1,4 @@
+import "../../styles/settings.css";
 import { useEffect, useState, type FormEvent } from "react";
 import { Failed, Field, PageHeader, Panel, Skeleton, Switch, Tabs, TextArea } from "../../components";
 import { useMutation } from "../../hooks/useMutation";
@@ -30,21 +31,21 @@ export function General() {
     if (can && dirty && validLimit) void save.mutate();
   }
   return (
-    <div className="page">
+    <div className="page settingsPage">
       <PageHeader title="Settings" />
       <Tabs tabs={settingsTabs} />
-      {saved.error ? <Failed message={saved.error} onRetry={saved.reload} /> : null}
-      {!saved.data && !saved.error ? <Skeleton lines={4} /> : null}
-      {saved.data ? <Panel title="General">
-        <form className="stack" onSubmit={submit}>
+      <Panel title="General">
+        {saved.error ? <Failed message={saved.error} onRetry={saved.reload} /> : null}
+        {!saved.data && !saved.error ? <Skeleton lines={4} /> : null}
+        {saved.data ? <form className="stack" onSubmit={submit}>
           <fieldset className="form" disabled={!can}>
             <Switch label="Start automations for imported contacts by default" checked={imports} onChange={setImports} hint="Each import can override this choice. Matching flows may send emails immediately." />
             <TextArea label="Additional sandbox domains" value={domains} onChange={setDomains} rows={4} hint="One hostname per line. Mail to these domains is stored for testing and never sent to SES." />
             <Field label="Daily confirmation email limit" type="number" value={confirmationLimit} onChange={setConfirmationLimit} hint="Per tenant, per UTC day. Default 500. Zero disables confirmation sends." error={!validLimit ? "Use a whole number from 0 to 100000" : undefined} />
           </fieldset>
           {can ? <button type="submit" disabled={!dirty || !validLimit || save.isLoading} aria-busy={save.isLoading}>Save</button> : null}
-        </form>
-      </Panel> : null}
+        </form> : null}
+      </Panel>
     </div>
   );
 }
