@@ -77,7 +77,7 @@ describe("Templates", () => {
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Add to templates" }));
     await waitFor(() => expect(router.state.location.pathname).toBe("/templates"));
     expect(router.state.location.search).toBe("?added=tpl_receipt");
-    const own = screen.getByRole("region", { name: "Your templates" });
+    const own = await screen.findByRole("region", { name: "Your templates" });
     expect((await within(own).findByRole("article", { name: "Receipt" })).className).toContain("isAdded");
     expect(calls(fetch, "GET /templates")).toHaveLength(2);
     expect(calls(fetch, "GET /templates")[1]!.url.searchParams.has("q")).toBe(false);
