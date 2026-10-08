@@ -48,27 +48,39 @@
   box-shadow: 0 0 0 1px var(--border);
 }
 
-/* Card thumbnails: a 1000 px wide email scaled to 40 percent */
-
+/* Fixed desktop composition, fitted to each card with an even inset. */
 .thumb {
   position: relative;
-  height: 200px;
+  height: 240px;
   overflow: hidden;
   border-bottom: 1px solid var(--border);
-  background: #ffffff;
+  background: var(--bg);
+}
+
+.thumbDocument {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  width: 640px;
+  margin-left: -320px;
+  transform-origin: 50% 0;
+  pointer-events: none;
 }
 
 .thumb .emailFrame {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 250%;
-  height: 250%;
+  width: 640px;
+  height: 1600px;
   min-height: 0;
   border: 0;
   border-radius: 0;
-  transform: scale(0.4);
-  transform-origin: 0 0;
+}
+
+.thumb::after {
+  content: "";
+  position: absolute;
+  inset: auto 0 0;
+  height: 32px;
+  background: linear-gradient(transparent, var(--bg));
   pointer-events: none;
 }
 
