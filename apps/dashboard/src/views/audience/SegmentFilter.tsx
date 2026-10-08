@@ -66,6 +66,26 @@ export function segmentRuleIssue(rule: Rule, fields: ContextField[], scopes: {
   return visit(rule, 1);
 }
 
+/** Only referenced resources should block a draft; unrelated picker failures are recoverable. */
+export function ruleSources(rule: Rule | null): Set<string> {
+  const result = new Set<string>();
+  const seen = new Set<Rule>();
+  function visit(node: Rule | null) {
+    if (!node || seen.has(node)) return;
+    seen.add(node);
+    if (node.type === "and" || node.type === "or") { if (Array.isArray(node.rules)) node.rules.forEach(visit); return; }
+    if (node.type !== "rule") return;
+    if (node.field === "contact.topics") result.add("topics");
+    if (node.field === "contact.segments") result.add("segments");
+    // Legacy scalar properties can override topics/segments, so their definitions are required.
+    if (node.field?.startsWith("contact.") && !["contact.email", "contact.first_name", "contact.last_name", "contact.unsubscribed", "contact.created_at"].includes(node.field)) result.add("properties");
+    if (node.scope?.automation_id) result.add("automations");
+    if (node.scope?.broadcast_id) result.add("broadcasts");
+  }
+  visit(rule);
+  return result;
+}
+
 /** Live, paginated choices and an uncached read-only preview of the controlled draft. */
 export function SegmentFilter({ rule, onChange, disabled = false, onValidityChange }: SegmentFilterProps) {
   const client = useClient();
@@ -83,11 +103,12 @@ export function SegmentFilter({ rule, onChange, disabled = false, onValidityChan
     automations: automations.rows.map((row) => ({ value: row.id, label: row.name })),
     broadcasts: broadcasts.rows.map((row) => ({ value: row.id, label: row.name })),
   }), [automations.rows, broadcasts.rows]);
-  const sources = [properties, topics, segments, automations, broadcasts];
-  const loading = sources.some((source) => source.loading);
-  const sourceError = sources.find((source) => source.error)?.error;
-  const truncated = sources.some((source) => source.hasMore);
-  const issue = sourceError ?? (loading ? "Loading filter choices…" : truncated ? "Too many choices to load. Narrow your resources before editing this filter." : segmentRuleIssue(rule, fields, scopes));
+  const sources = { properties, topics, segments, automations, broadcasts };
+  const needed = ruleSources(rule);
+  const relevant = Object.entries(sources).filter(([key]) => needed.has(key)).map(([, source]) => source);
+  const loading = relevant.some((source) => source.loading);
+  const sourceError = relevant.find((source) => source.error)?.error;
+  const issue = sourceError ?? (loading ? "Loading filter choices…" : segmentRuleIssue(rule, fields, scopes));
   const valid = !issue;
   useEffect(() => onValidityChange?.(valid), [valid, onValidityChange]);
 
@@ -107,9 +128,9 @@ export function SegmentFilter({ rule, onChange, disabled = false, onValidityChan
 
   return (
     <div className="stack">
-      <RuleEditor rule={rule} onChange={(next) => { if (!disabled) onChange(next); }} disabled={disabled || loading || Boolean(sourceError) || truncated} fields={fields} context="segment" engagementScopes={scopes} />
+      <RuleEditor rule={rule} onChange={(next) => { if (!disabled) onChange(next); }} disabled={disabled} fields={fields} context="segment" engagementScopes={scopes} />
       {issue ? <p className="fieldError" role={loading ? "status" : "alert"}>{issue}</p> : null}
-      {sourceError ? <button type="button" className="secondary" onClick={() => { for (const source of sources) void source.reload(); }}>Retry choices</button> : null}
+      {Object.values(sources).some((source) => source.error) ? <button type="button" className="secondary" onClick={() => { for (const source of Object.values(sources)) void source.reload(); }}>Retry choices</button> : null}
       <section aria-label="Filter preview" className="stack" aria-live="polite">
         {valid && !result ? <p className="muted" role="status">Updating preview…</p> : null}
         {result?.error ? <p className="fieldError" role="alert">{result.error}</p> : null}
