@@ -30,6 +30,8 @@ describe("Login", () => {
     }));
     open();
     expect(screen.queryByLabelText("API key")).toBeNull();
+    expect(screen.getByLabelText("Email").getAttribute("autocomplete")).toBe("username");
+    expect(screen.getByLabelText("Password").getAttribute("autocomplete")).toBe("current-password");
     fireEvent.change(screen.getByLabelText("Email"), { target: { value: "ada@example.com" } });
     fireEvent.change(screen.getByLabelText("Password"), { target: { value: "correct horse battery" } });
     fireEvent.click(screen.getByRole("button", { name: "Sign in" }));
