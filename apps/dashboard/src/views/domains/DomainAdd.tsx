@@ -70,8 +70,8 @@ function NameStep({ onAdded }: { onAdded: (domain: Domain) => void }) {
             options={domainRegions.map((code) => ({ value: code, label: `${regionCities[code] ?? code} (${code})` }))}
             hint="The SES region that sends this domain's mail. It cannot change later."
           />
-          <details className="advanced">
-            <summary>Advanced</summary>
+          <section className="stack">
+            <h2>Advanced</h2>
             <Field
               label="Custom return path"
               value={returnPath}
@@ -79,7 +79,7 @@ function NameStep({ onAdded }: { onAdded: (domain: Domain) => void }) {
               mono
               hint={`Bounces go to ${returnPath.trim() || "send"}.${name.trim() || "example.com"}. Set at creation only.`}
             />
-          </details>
+          </section>
           <div className="toolbar">
             <button type="submit" disabled={add.isLoading || !name.trim()}>
               {add.isLoading ? <span className="spinner" aria-hidden /> : null}
