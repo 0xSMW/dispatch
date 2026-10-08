@@ -1,8 +1,8 @@
 import { Heading, Text } from "react-email";
-import { Action, If, Layout, Unless } from "./_components";
-import { exampleBrand, heading, muted, text, type Brand, type EmailVariable } from "./_theme";
+import { Action, If, Layout, TextLink, Unless } from "./_components";
+import { exampleBrand, heading, text, type Brand, type EmailVariable } from "./_theme";
 
-const preview = "Your account is ready. Sign in when you want to get started.";
+const preview = "Your account is ready. Take your first step.";
 
 type Props = {
   brand?: Brand;
@@ -30,7 +30,7 @@ export default function Welcome({
         Welcome
       </Heading>
       <Text className="dm-text" style={text}>
-        Hi {name}, your {brand.productName} account is ready.
+        Hi {name}, welcome to {brand.productName}. Your account is ready.
       </Text>
       <If value={actionUrl}>
         <Action brand={brand} href={actionUrl}>
@@ -45,12 +45,12 @@ export default function Welcome({
         </If>
       </Unless>
       <If value={helpUrl}>
-        <Text className="dm-muted" style={muted}>
-          Help reference {helpUrl}
-        </Text>
+        <TextLink brand={brand} href={helpUrl}>
+          Help getting started
+        </TextLink>
       </If>
       <Text className="dm-text" style={text}>
-        If you did not expect an account, contact support and we can close it.
+        If you did not expect this account, contact support to request its closure.
       </Text>
     </Layout>
   );
