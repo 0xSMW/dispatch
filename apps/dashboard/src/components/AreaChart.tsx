@@ -1,3 +1,4 @@
+import { Inbox } from "lucide-react";
 import { ChartFrame, scale, useHover, viewHeight, viewWidth, xs, type ChartProps } from "./chart";
 import { Empty } from "./Empty";
 
@@ -8,7 +9,7 @@ import { Empty } from "./Empty";
 export function AreaChart({ series, threshold, format = String, formatX = (value) => value, label }: ChartProps) {
   const labels = xs(series);
   const hover = useHover(labels.length);
-  if (labels.length === 0) return <Empty title="No data" body="Nothing happened in this range." />;
+  if (labels.length === 0) return <Empty title="No activity in this range" body="Try a longer date range." icon={<Inbox size={28} strokeWidth={1.5} />} />;
 
   const max = Math.max(threshold?.y ?? 0, ...series.flatMap((item) => item.points.map((point) => point.y)));
   const y = scale(max);
