@@ -91,6 +91,7 @@ export function Library() {
   const stage = stageOptions.some((option) => option.value === params.get("stage")) ? params.get("stage")! : "";
   const entries = library.data?.data ?? [];
   const visible = visibleTemplates(entries, tab, stage);
+  const empty = !library.loading && !library.error && Boolean(library.data) && entries.length === 0;
   function filter(name: string, value: string) {
     setParams((current) => {
       const next = new URLSearchParams(current);
@@ -103,11 +104,11 @@ export function Library() {
   return (
     <div className="page">
       <PageHeader title="Templates"
-        actions={<Link className="button secondary" to="/settings/brand">Edit brand</Link>} />
+        actions={empty ? undefined : <Link className="button secondary" to="/settings/brand">Edit brand</Link>} />
       <Tabs tabs={templateTabs} />
-      <Tabs label="Library templates" value={tab} onChange={(value) => filter("tab", value)}
-        tabs={[{ id: "transactional", label: "Transactional" }, { id: "lifecycle", label: "Lifecycle" }]} />
-      {tab === "lifecycle" ? (
+      {!empty ? <Tabs label="Library templates" value={tab} onChange={(value) => filter("tab", value)}
+        tabs={[{ id: "transactional", label: "Transactional" }, { id: "lifecycle", label: "Lifecycle" }]} /> : null}
+      {!empty && tab === "lifecycle" ? (
         <div className="stack">
           <p className="muted">Emails for each stage of the customer lifecycle. Marketing emails respect topic opt-outs; transactional emails are always sent.</p>
           <Select label="Stage" value={stage} onChange={(value) => filter("stage", value)} placeholder="All stages" options={stageOptions} />
@@ -119,9 +120,9 @@ export function Library() {
       ) : library.loading && !library.data ? (
         <Skeleton lines={6} />
       ) : entries.length === 0 ? (
-        <Empty title="No library templates" body="The template library is empty on this install." />
+        <Empty title="No library templates" body="The template library is empty on this install." action={<Link className="button" to="/templates">Create a template</Link>} />
       ) : visible.length === 0 ? (
-        <Empty title="No matching templates" body="Choose another stage or library tab." />
+        <Empty title="No matching templates" body="Choose another stage or library tab." action={<button type="button" className="secondary" onClick={() => setParams((previous) => { const next = new URLSearchParams(previous); next.delete("stage"); next.delete("tab"); return next; })}>Reset library filters</button>} />
       ) : (
         byCategory(visible).map(([category, items]) => (
           <section key={category} className="stack" aria-label={title(category)}>
