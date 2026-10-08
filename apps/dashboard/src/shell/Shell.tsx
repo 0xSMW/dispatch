@@ -76,6 +76,7 @@ export function EventsRedirect() {
 export function Shell() {
   const { session } = useSession();
   const location = useLocation();
+  const pageEditor = /^\/settings\/unsubscribe-page\/edit\/?$/.test(location.pathname);
   const params = new URLSearchParams(location.search);
   const workspace = /^\/automations\/[^/]+\/editor\/?$/.test(location.pathname)
     && params.get("tab") !== "runs" && params.get("tab") !== "metrics" && params.get("view") !== "list";
@@ -86,12 +87,14 @@ export function Shell() {
   useHotkey(shortcuts.commands.combo, () => {
     if (panel === "commands") setPanel(null);
     else open("commands")();
-  }, { enabled: Boolean(session) });
-  useHotkey(shortcuts.api.combo, open("api"), { enabled: Boolean(session) });
-  useHotkey(shortcuts.help.combo, open("keys"), { enabled: Boolean(session) });
+  }, { enabled: Boolean(session) && !pageEditor });
+  useHotkey(shortcuts.api.combo, open("api"), { enabled: Boolean(session) && !pageEditor });
+  useHotkey(shortcuts.help.combo, open("keys"), { enabled: Boolean(session) && !pageEditor });
   if (!session) {
     return <Navigate to="/login" replace state={{ from: `${location.pathname}${location.search}` }} />;
   }
+
+  if (pageEditor) return <Outlet />;
 
   return (
     <div className={workspace ? "app automationWorkspace" : "app"}>
