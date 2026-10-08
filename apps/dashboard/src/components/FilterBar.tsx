@@ -92,7 +92,7 @@ export function FilterBar({ search = "Search", searchParam = "q", filters = [], 
           value={params.get(filter.param) ?? ""}
           onChange={(event) => setFilter(filter.param, event.target.value)}
         >
-          <option value="">{filter.all ?? `All ${filter.label.toLowerCase()}`}</option>
+          <option value="">{filter.all ?? `All ${filter.label.replace(/\b[A-Z][a-z]+\b/g, (word) => word.toLowerCase())}`}</option>
           {filter.options.map((option) => {
             const item = typeof option === "string" ? { value: option, label: badgeLabel(option) } : option;
             return (
