@@ -2,7 +2,7 @@ import { Heading, Text } from "react-email";
 import { Action, If, Layout } from "./_components";
 import { exampleBrand, heading, text, type Brand, type EmailVariable } from "./_theme";
 
-const preview = "Your payment still needs attention. Update your payment method.";
+const preview = "An outstanding payment still needs your attention.";
 
 type Props = { brand?: Brand; amount: string; updatePaymentUrl: string; invoiceNumber?: string };
 
@@ -12,10 +12,10 @@ export default function CardUpdateReminder({ brand = exampleBrand, amount, updat
       reason="You received this email because a subscription payment is still outstanding.">
       <Heading as="h1" className="dm-text" style={heading}>Update your payment method</Heading>
       <Text className="dm-text" style={text}>
-        We still could not collect {amount} for your {brand.productName} subscription.
+        Your {brand.productName} subscription has an outstanding balance of {amount}.
       </Text>
-      <If value={invoiceNumber}><Text className="dm-text" style={text}>Invoice {invoiceNumber} needs attention.</Text></If>
-      <Text className="dm-text" style={text}>Review the payment details and update your payment method to resolve the balance.</Text>
+      <If value={invoiceNumber}><Text className="dm-text" style={text}>Invoice: {invoiceNumber}.</Text></If>
+      <Text className="dm-text" style={text}>Review your payment details and update the payment method to resolve this balance.</Text>
       <Action brand={brand} href={updatePaymentUrl}>Update payment method</Action>
     </Layout>
   );
