@@ -172,7 +172,7 @@ export function Template() {
         ) : view === "preview" ? (
           <Preview html={preview.html} />
         ) : view === "text" ? (
-          <Code value={row?.text ?? ""} language="text" empty={<p className="muted">No plain text version. The API generates one from the HTML at send time.</p>} />
+          <Code value={row?.text ?? ""} language="text" empty={<p className="muted">No plain text version. One is created automatically from the HTML when you send.</p>} />
         ) : (
           <Code value={row?.html ?? ""} language="html" empty={<p className="muted">No HTML.</p>} />
         )}
