@@ -1,8 +1,9 @@
-import type { ReactNode } from "react";
-import { useNavigate } from "react-router-dom";
+import { cloneElement, isValidElement, type ReactNode } from "react";
+import { useNavigate, useSearchParams, Link } from "react-router-dom";
 import type { ListState } from "../hooks/useList";
 import type { Selection } from "../hooks/useSelection";
 import { useCan } from "../shell/session";
+import { Empty, type EmptyProps } from "./Empty";
 import { BulkBar, type BulkAction } from "./BulkBar";
 import { FilterBar, type Filter } from "./FilterBar";
 import { PageHeader, type PageHeaderProps } from "./PageHeader";
@@ -63,14 +64,27 @@ export function ListPage<T extends { id: string }>({
 }: ListPageProps<T>) {
   const navigate = useNavigate();
   const can = useCan();
+  const [params, setParams] = useSearchParams();
+  const filtered = [...params].some(([key, value]) => value && !["tab", "view"].includes(key));
+  const blank = !list.loading && !list.error && list.page === 1 && !list.rows.length && !filtered;
+  const emptyContent = blank && isValidElement<EmptyProps>(empty) && empty.type === Empty
+    ? cloneElement(empty, { action: empty.props.action ?? (canActions(actions)) })
+    : filtered && !list.rows.length && !list.loading && !list.error
+      ? <Empty title="No matching results" body="Try another search or clear the filters." action={<button type="button" className="secondary" onClick={() => setParams((previous) => { const next = new URLSearchParams(previous); for (const key of [...next.keys()]) if (!["tab", "view"].includes(key)) next.delete(key); return next; })}>Clear filters</button>} />
+      : empty;
+  function canActions(value: ReactNode) {
+    if (!can) return null;
+    if (title === "Timeline" || title === "Logs") return <Link className="button" to="/emails/send">Send test email</Link>;
+    return value;
+  }
   const click = onRowClick ?? (rowHref ? (row: T) => navigate(rowHref(row)) : undefined);
   const hasFilters = Boolean(search) || Boolean(filters?.length) || Boolean(filterExtra);
 
   return (
     <div className="page">
-      <PageHeader title={title} context={context} learn={learn} actions={can ? actions : null} />
+      <PageHeader title={title} context={context} learn={blank ? undefined : learn} actions={can && !blank ? actions : null} />
       {tabs ? <Tabs tabs={tabs} /> : null}
-      {hasFilters ? (
+      {hasFilters && !blank ? (
         <FilterBar search={search ?? false} filters={filters}>
           {filterExtra}
         </FilterBar>
@@ -81,7 +95,7 @@ export function ListPage<T extends { id: string }>({
         loading={list.loading}
         error={list.error}
         onRetry={() => void list.reload()}
-        empty={empty}
+        empty={emptyContent}
         onRowClick={click}
         selection={selection}
         menu={menu}
