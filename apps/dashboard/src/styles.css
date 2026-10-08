@@ -199,8 +199,8 @@ button,
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  gap: 6px;
-  min-height: 32px;
+  gap: 8px;
+  min-height: 36px;
   padding: 0 12px;
   border: 1px solid var(--primary);
   border-radius: 8px;
@@ -216,7 +216,7 @@ button:hover:not(:disabled),
 .button:hover {
   background: var(--primary-hover);
   border-color: var(--primary-hover);
-  box-shadow: var(--glow);
+  box-shadow: none;
   text-decoration: none;
 }
 
@@ -275,7 +275,7 @@ button.small,
 
 button.icon,
 .button.icon {
-  width: 32px;
+  width: 36px;
   padding: 0;
 }
 
@@ -298,15 +298,58 @@ button.ghost:disabled {
   border-color: transparent;
 }
 
+button > svg,
+.button > svg {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
 kbd {
-  display: inline-block;
-  min-width: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 20px;
+  min-width: 20px;
   padding: 0 4px;
-  border: 1px solid currentColor;
+  border: 1px solid var(--border-input);
   border-radius: 4px;
+  background: var(--surface-raised);
+  color: inherit;
   font-size: 11px;
-  line-height: 16px;
+  line-height: 1;
+  font-weight: 400;
   text-align: center;
+}
+
+button kbd,
+.button kbd {
+  background: color-mix(in srgb, var(--on-primary) 6%, transparent);
+  border-color: color-mix(in srgb, var(--on-primary) 16%, transparent);
+}
+
+button.secondary kbd,
+.button.secondary kbd,
+button.ghost kbd,
+.button.ghost kbd {
+  background: var(--surface-raised);
+  border-color: var(--border-input);
+}
+
+button.danger kbd {
+  background: color-mix(in srgb, var(--on-danger) 6%, transparent);
+  border-color: color-mix(in srgb, var(--on-danger) 16%, transparent);
+}
+
+button:disabled kbd {
+  background: var(--disabled-bg);
+  border-color: var(--disabled-border);
+}
+
+.keyHints {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
 }
 
 .spinner {
