@@ -28,23 +28,14 @@ afterEach(() => {
 });
 
 describe("Integrations", () => {
-  it("lists integrations with eight setup tiles and links to existing sending routes and pinned recipes", async () => {
+  it("keeps connected integrations first and offers provider setup inside creation", async () => {
     const fetch = stubApi(routes());
     show(h(Integrations), "/settings/integrations");
     expect(await screen.findByText("Billing")).toBeTruthy();
     expect(calls(fetch)).toEqual(["GET /integrations?limit=40"]);
-    expect(screen.getByRole("link", { name: "Outgoing webhooks" }).getAttribute("href")).toBe("/webhooks");
-    expect(screen.getAllByRole("link", { name: "SMTP" }).every((link) => link.getAttribute("href") === "/settings/smtp")).toBe(true);
-    expect(screen.getByRole("link", { name: "Auth.js recipe" }).getAttribute("href")).toMatch(/templates\/authjs.md$/);
-    expect(screen.getByRole("link", { name: "Better Auth recipe" }).getAttribute("href")).toMatch(/templates\/better-auth.md$/);
-    for (const [provider, label] of [["stripe", "Stripe"], ["clerk", "Clerk"], ["supabase", "Supabase"], ["webhook", "Standard Webhooks"]]) {
-      expect(screen.getByRole("heading", { name: label })).toBeTruthy();
-      expect(screen.getByRole("button", { name: `Connect ${label}` })).toBeTruthy();
-      expect(screen.getByRole("link", { name: `${label} setup guide` }).getAttribute("href")).toMatch(new RegExp(`templates/${provider}.md#receiver-setup$`));
-    }
-    for (const label of ["Outgoing webhooks", "SMTP", "Auth.js", "Better Auth"]) {
-      expect(screen.getByRole("heading", { name: label })).toBeTruthy();
-    }
+    expect(screen.queryByRole("heading", { name: "Integration setup" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Add integration" }));
+    expect(screen.getByRole("link", { name: "Open provider setup guide" }).getAttribute("href")).toMatch(/templates\/stripe.md#receiver-setup$/);
   });
 
   it.each([
@@ -58,8 +49,8 @@ describe("Integrations", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Connect integration" }));
     expect(screen.queryByRole("heading", { name: "Integration setup" })).toBeNull();
     expect(screen.queryByRole("table")).toBeNull();
-    fireEvent.change(screen.getByLabelText("Provider"), { target: { value: provider } });
-    expect(screen.getByLabelText("Provider")).toHaveProperty("value", provider);
+    fireEvent.change(screen.getByLabelText("Provider").closest(".dropdown")!.querySelector("select")!, { target: { value: provider } });
+    expect(screen.getByLabelText("Provider").closest(".dropdown")!.querySelector("select")).toHaveProperty("value", provider);
     expect(screen.getByRole("link", { name: "Open provider setup guide" }).getAttribute("href")).toMatch(new RegExp(`templates/${provider}.md#receiver-setup$`));
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "New integration" } });
     fireEvent.change(screen.getByLabelText(provider === "supabase" ? "Shared secret" : "Signing secret"), { target: { value: "synthetic-secret" } });
@@ -90,9 +81,6 @@ describe("Integrations", () => {
     expect(screen.getByRole("link", { name: "View contact" }).getAttribute("href")).toBe("/audience/contacts/con_1");
     expect(screen.queryByRole("button", { name: "Add integration" })).toBeNull();
     expect(screen.queryByRole("button", { name: /^Connect / })).toBeNull();
-    for (const label of ["Stripe", "Clerk", "Supabase", "Standard Webhooks"]) {
-      expect(screen.getByRole("link", { name: `${label} setup guide` })).toBeTruthy();
-    }
     expect(screen.getByRole("link", { name: "Open provider setup guide" }).getAttribute("href")).toMatch(/templates\/stripe.md#receiver-setup$/);
     for (const action of ["Edit Billing", "Rotate Billing", "Delete Billing"]) expect(screen.queryByRole("button", { name: action })).toBeNull();
     for (const secret of ["hidden_secret", "hidden_url", "hidden_token", "raw_secret_exception", "body_secret", "delivery_token"]) {
