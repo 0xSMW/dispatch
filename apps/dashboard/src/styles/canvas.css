@@ -425,12 +425,13 @@ button.canvasNode {
   /* React Flow's non-selectable wrappers ignore pointer events; the inner controls still work. */
   pointer-events: all;
   display: grid;
-  align-content: center;
+  box-sizing: border-box;
+  align-content: start;
   justify-content: stretch;
-  gap: 3px;
-  width: 248px;
-  height: 100px;
-  padding: 8px 12px;
+  gap: 8px;
+  width: 272px;
+  height: 98px;
+  padding: 24px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: var(--surface);
@@ -438,6 +439,10 @@ button.canvasNode {
   font-weight: 400;
   text-align: left;
   cursor: pointer;
+}
+
+button.canvasNode.withCounts {
+  height: 122px;
 }
 
 button.canvasNode:hover:not(:disabled) {
@@ -491,6 +496,7 @@ button.canvasNode.tint.selected {
 }
 
 .canvasNodeHead {
+  height: 24px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -512,6 +518,8 @@ button.canvasNode.tint.selected {
 }
 
 .canvasNodeLine {
+  height: 16px;
+  line-height: 16px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
