@@ -43,7 +43,7 @@ export function SplitMetrics({
       {failure ? <p className="fieldError" role="alert">{failure}</p> : null}
       <Table rows={report?.data ?? []} rowKey={(row) => row.key} loading={loading} error={error}
         onRetry={onRetry ? () => { if (!busy && !pending && !loading) onRetry(); } : undefined}
-        empty={<p className="fieldHint">No split results in this window.</p>}
+        empty={<p className="fieldHint">No split results in this time period.</p>}
         columns={[
           { header: "Variant", cell: (row) => <><strong>{row.label}</strong><div className="mono dim">{row.key}</div>{row.weight === null ? <div className="dim">Historical · removed path</div> : null}</> },
           { header: "Current weight", cell: (row) => row.weight === null ? "—" : `${row.weight}%` },
