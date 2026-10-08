@@ -3,18 +3,18 @@ import { Layout } from "./_components";
 import { ProductAction } from "./_components/ProductAction";
 import { exampleBrand, heading, text, type Brand, type EmailVariable } from "./_theme";
 
-const preview = "Need more room? Compare the plans and choose what fits your work.";
+const preview = "Compare the available plans for your next step.";
 
 type Props = { brand?: Brand; firstName?: string; actionUrl?: string };
 
 export default function UpgradeInvite({ brand = exampleBrand, firstName = "there", actionUrl }: Props) {
   return (
-    <Layout brand={brand} preview={preview} title="Room for your next step"
+    <Layout brand={brand} preview={preview} title="Find the right plan"
       reason="You received this email because you subscribed to product recommendations." marketing>
-      <Heading as="h1" className="dm-text" style={heading}>Room for your next step</Heading>
-      <Text className="dm-text" style={text}>Hi {firstName}, is your current {brand.productName} plan still a good fit?</Text>
+      <Heading as="h1" className="dm-text" style={heading}>Find the right plan</Heading>
+      <Text className="dm-text" style={text}>Hi {firstName}, need more capacity in {brand.productName}?</Text>
       <Text className="dm-text" style={text}>
-        If you need more room, compare the available plans. Pick the one that fits your work, or stay on your current plan.
+        Compare the available plans and choose what fits your work. You can also keep your current plan.
       </Text>
       <ProductAction brand={brand} href={actionUrl}>Compare plans</ProductAction>
     </Layout>
