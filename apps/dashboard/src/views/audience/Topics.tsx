@@ -68,7 +68,7 @@ export function Topics() {
           onNext={list.next}
           onPrevious={list.previous}
           noun="topics"
-          empty={<Empty title="No topics" body="Create a topic so contacts can choose which emails they get."
+          empty={<Empty title="No topics yet" body="Topics let contacts choose which emails they get. Create your first one."
             action={can ? <button type="button" onClick={() => setCreating(true)}>Create topic</button> : null} />}
           columns={[
             {
@@ -277,7 +277,7 @@ function Subscriptions({ topic, onClose }: { topic: Topic; onClose: () => void }
           loading={subscriptions.loading}
           error={subscriptions.error}
           onRetry={() => void subscriptions.reload()}
-          empty={<p className="muted">No contacts have chosen yet. Everyone else gets the default: {defaultLabel(topic.default_subscription).toLowerCase()}.</p>}
+          empty={<p className="muted">Nobody has chosen yet, so everyone gets the default: {defaultLabel(topic.default_subscription).toLowerCase()}.</p>}
           page={subscriptions.page}
           hasMore={subscriptions.hasMore}
           onNext={subscriptions.next}
