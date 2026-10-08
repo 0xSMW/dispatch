@@ -84,7 +84,7 @@ export function Log() {
       )}
 
       <Panel title="Response body">
-        {row ? <Code value={row.response_body} language="json" empty={<p className="muted">Not stored. Dispatch skips list responses and bodies over 64 KB.</p>} /> : <Skeleton lines={4} />}
+        {row ? <Code value={row.response_body} language="json" empty={<p className="muted">Not saved. Dispatch doesn't store list responses or bodies over 64 KB.</p>} /> : <Skeleton lines={4} />}
       </Panel>
       <Panel title="Request body">
         {row ? <Code value={row.request_body} language="json" empty={<p className="muted">No request body.</p>} /> : <Skeleton lines={4} />}
