@@ -58,7 +58,7 @@ export function Segments() {
       list={list}
       noun="segments"
       onRowClick={setOpen}
-      empty={<Empty title="No segments" body="Create a segment to group contacts and target broadcasts." />}
+      empty={<Empty title="No segments yet" body="Group your contacts into a segment, then send broadcasts to it." />}
       columns={[
         {
           header: "Name",
@@ -324,7 +324,7 @@ function SegmentContacts({ segment, onClose, onChange }: { segment: Segment; onC
           loading={members.loading}
           error={members.error}
           onRetry={() => void members.reload()}
-          empty={<p className="muted">No contacts in this segment.</p>}
+          empty={<p className="muted">No contacts in this segment yet.</p>}
           page={members.page}
           hasMore={members.hasMore}
           onNext={members.next}
