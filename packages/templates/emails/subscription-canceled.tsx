@@ -2,7 +2,7 @@ import { Heading, Text } from "react-email";
 import { Action, If, Layout } from "./_components";
 import { exampleBrand, heading, text, type Brand, type EmailVariable } from "./_theme";
 
-const preview = "Your subscription has been canceled. Review your billing options.";
+const preview = "Your subscription was canceled after an unpaid invoice.";
 
 type Props = { brand?: Brand; updatePaymentUrl: string; invoiceNumber?: string };
 
@@ -12,9 +12,9 @@ export default function SubscriptionCanceled({ brand = exampleBrand, updatePayme
       reason="You received this email because your subscription was canceled after an unpaid invoice.">
       <Heading as="h1" className="dm-text" style={heading}>Your subscription was canceled</Heading>
       <Text className="dm-text" style={text}>Your {brand.productName} subscription was canceled because payment was not completed.</Text>
-      <If value={invoiceNumber}><Text className="dm-text" style={text}>The outstanding invoice is {invoiceNumber}.</Text></If>
+      <If value={invoiceNumber}><Text className="dm-text" style={text}>Outstanding invoice: {invoiceNumber}.</Text></If>
       <Text className="dm-text" style={text}>
-        Review your billing details if you would like to resolve the payment. Contact support if you need help with your account.
+        Review billing to resolve the outstanding payment. Contact support if you need help with your account.
       </Text>
       <Action brand={brand} href={updatePaymentUrl}>Review billing</Action>
     </Layout>
