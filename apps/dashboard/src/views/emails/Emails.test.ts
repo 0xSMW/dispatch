@@ -43,6 +43,7 @@ describe("Emails", () => {
     visit(h(Emails), "/emails?q=ada&status=bounced&api_key_id=key_1&range=today", "/emails");
 
     expect(await screen.findByText("ada@example.com")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Send email" })).toBeNull();
     const query = requests(fetch, "GET", "/emails")[0].url.searchParams;
     expect(query.get("q")).toBe("ada");
     expect(query.get("status")).toBe("bounced");
