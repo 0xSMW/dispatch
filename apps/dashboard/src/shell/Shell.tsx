@@ -17,12 +17,16 @@ import {
   Moon,
   Rocket,
   ScrollText,
+  Search,
   Settings,
   Sun,
+  Target,
   Users,
   Webhook,
   Zap,
 } from "lucide-react";
+import { CommandMenu } from "./CommandMenu";
+import { metaKey } from "../components/Kbd";
 import { Menu } from "../components/Menu";
 import { useHotkey } from "../hooks/useHotkey";
 import { dialogOpen, shortcuts } from "../lib/shortcuts";
@@ -36,12 +40,12 @@ import { useTheme } from "./theme";
 /** One shared menu for desktop, mobile, and every role. */
 export const nav = [
   { to: "/emails", label: "Emails", icon: Mail },
+  { to: "/metrics", label: "Metrics", icon: BarChart3 },
   { to: "/broadcasts", label: "Broadcasts", icon: Megaphone },
   { to: "/automations", label: "Automations", icon: GitBranch },
   { to: "/templates", label: "Templates", icon: FileText },
   { to: "/audience", label: "Audience", icon: Users },
-  { to: "/metrics", label: "Metrics", icon: BarChart3 },
-  { to: "/goals", label: "Goals", icon: BarChart3 },
+  { to: "/goals", label: "Goals", icon: Target },
   { to: "/domains", label: "Domains", icon: Globe2 },
   { to: "/logs", label: "Logs", icon: ScrollText },
   { to: "/api-keys", label: "API keys", icon: KeyRound },
@@ -64,10 +68,14 @@ export function Shell() {
   const params = new URLSearchParams(location.search);
   const workspace = /^\/automations\/[^/]+\/editor\/?$/.test(location.pathname)
     && params.get("tab") !== "runs" && params.get("tab") !== "metrics" && params.get("view") !== "list";
-  const [panel, setPanel] = useState<"api" | "keys" | null>(null);
-  const open = (next: "api" | "keys") => () => {
+  const [panel, setPanel] = useState<"api" | "keys" | "commands" | null>(null);
+  const open = (next: "api" | "keys" | "commands") => () => {
     if (!panel && !dialogOpen()) setPanel(next);
   };
+  useHotkey(shortcuts.commands.combo, () => {
+    if (panel === "commands") setPanel(null);
+    else open("commands")();
+  }, { enabled: Boolean(session) });
   useHotkey(shortcuts.api.combo, open("api"), { enabled: Boolean(session) });
   useHotkey(shortcuts.help.combo, open("keys"), { enabled: Boolean(session) });
   if (!session) {
@@ -83,6 +91,9 @@ export function Shell() {
           </span>
           <span>Dispatch</span>
         </div>
+        <button type="button" className="commandTrigger" onClick={open("commands")} aria-label="Search or jump" aria-keyshortcuts="Meta+K Control+K">
+          <Search size={15} aria-hidden /><span>Search or jump...</span><kbd>{metaKey.trim()} K</kbd>
+        </button>
         <nav aria-label="Main">
           {nav.map(({ to, label, icon: Icon }) => (
             <NavLink key={to} to={to} className={({ isActive }) => (isActive ? "navItem active" : "navItem")}>
@@ -102,6 +113,7 @@ export function Shell() {
           <Outlet />
         </main>
       </div>
+      {panel === "commands" ? <CommandMenu pages={nav} onClose={() => setPanel(null)} onApi={() => setPanel("api")} onKeys={() => setPanel("keys")} /> : null}
       {panel === "api" ? <ApiReference apiUrl={session.apiUrl} onClose={() => setPanel(null)} /> : null}
       {panel === "keys" ? <Shortcuts onClose={() => setPanel(null)} /> : null}
     </div>
