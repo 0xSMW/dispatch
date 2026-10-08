@@ -33,7 +33,7 @@ export function DomainAdd() {
         <li className={id ? "current" : undefined}>DNS records</li>
       </ol>
       {!can ? (
-        <Empty title="Read access" body="Your role can read domains but not add them. Ask an admin for full access." />
+        <Empty title="View-only access" body="You can view domains but not add them. Ask an admin for access." />
       ) : id ? (
         <DnsStep id={id} />
       ) : (
