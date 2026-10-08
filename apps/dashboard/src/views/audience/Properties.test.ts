@@ -1,3 +1,4 @@
+import { changeControl, controlValue } from "../../testingControls";
 // @vitest-environment jsdom
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -44,11 +45,11 @@ describe("Properties", () => {
     await screen.findByText("seats");
     fireEvent.click(screen.getByRole("button", { name: "Add property" }));
     const dialog = await screen.findByRole("dialog");
-    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "bad key" } });
+    changeControl(within(dialog).getByLabelText("Name"), { target: { value: "bad key" } });
     expect(within(dialog).getByText("Letters, digits, and underscores, 50 at most.")).toBeTruthy();
-    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "lifetime_value" } });
-    fireEvent.change(within(dialog).getByLabelText("Type"), { target: { value: "number" } });
-    fireEvent.change(within(dialog).getByLabelText("Fallback value"), { target: { value: "0" } });
+    changeControl(within(dialog).getByLabelText("Name"), { target: { value: "lifetime_value" } });
+    changeControl(within(dialog).getByLabelText("Type"), { target: { value: "number" } });
+    changeControl(within(dialog).getByLabelText("Fallback value"), { target: { value: "0" } });
     fireEvent.submit(dialog.querySelector("form")!);
     await waitFor(() => expect(calls(fetch)).toContain("POST /contact-properties"));
     expect(bodyOf(fetch, "POST /contact-properties")).toEqual({ key: "lifetime_value", type: "number", fallback_value: 0 });
@@ -60,14 +61,14 @@ describe("Properties", () => {
     await screen.findByText("seats");
     rowAction("seats", "Edit fallback");
     let dialog = await screen.findByRole("dialog");
-    fireEvent.change(within(dialog).getByLabelText("Fallback value"), { target: { value: "" } });
+    changeControl(within(dialog).getByLabelText("Fallback value"), { target: { value: "" } });
     fireEvent.submit(dialog.querySelector("form")!);
     await waitFor(() => expect(bodyOf(fetch, "PATCH /contact-properties/prop_seats")).toEqual({ fallback_value: null }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 
     rowAction("seats", "Delete");
     dialog = await screen.findByRole("dialog");
-    fireEvent.change(within(dialog).getByLabelText("Confirmation phrase"), { target: { value: "seats" } });
+    changeControl(within(dialog).getByLabelText("Confirmation phrase"), { target: { value: "seats" } });
     fireEvent.submit(dialog.querySelector("form")!);
     await waitFor(() => expect(calls(fetch)).toContain("DELETE /contact-properties/prop_seats"));
   });
@@ -81,9 +82,9 @@ describe("Properties", () => {
     await screen.findByText("seats");
     fireEvent.click(screen.getByRole("button", { name: "Add property" }));
     const dialog = await screen.findByRole("dialog");
-    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: key } });
-    fireEvent.change(within(dialog).getByLabelText("Type"), { target: { value: type } });
-    fireEvent.change(within(dialog).getByLabelText("Fallback value"), { target: { value: fallback } });
+    changeControl(within(dialog).getByLabelText("Name"), { target: { value: key } });
+    changeControl(within(dialog).getByLabelText("Type"), { target: { value: type } });
+    changeControl(within(dialog).getByLabelText("Fallback value"), { target: { value: fallback } });
     fireEvent.submit(dialog.querySelector("form")!);
     await waitFor(() => expect(bodyOf(fetch, "POST /contact-properties")).toEqual({ key, type, fallback_value: expected }));
   });
@@ -97,20 +98,20 @@ describe("Properties", () => {
     await screen.findByText("topics");
     rowAction("topics", "Edit fallback");
     let dialog = await screen.findByRole("dialog");
-    expect(within(dialog).getByLabelText("Fallback value")).toHaveProperty("value", "false");
-    fireEvent.change(within(dialog).getByLabelText("Fallback value"), { target: { value: "" } });
+    expect(controlValue(within(dialog).getByLabelText("Fallback value"))).toBe("false");
+    changeControl(within(dialog).getByLabelText("Fallback value"), { target: { value: "" } });
     fireEvent.submit(dialog.querySelector("form")!);
     await waitFor(() => expect(bodyOf(fetch, "PATCH /contact-properties/prop_seats")).toEqual({ fallback_value: null }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     fireEvent.click(screen.getByRole("button", { name: "Add property" }));
     dialog = await screen.findByRole("dialog");
-    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "segments" } });
+    changeControl(within(dialog).getByLabelText("Name"), { target: { value: "segments" } });
     expect(within(dialog).getByText("Topics and segments are reserved context fields.")).toBeTruthy();
     expect(within(dialog).getByRole("button", { name: /^Add/ })).toHaveProperty("disabled", true);
-    fireEvent.change(within(dialog).getByLabelText("Name"), { target: { value: "renewed" } });
-    fireEvent.change(within(dialog).getByLabelText("Type"), { target: { value: "date" } });
-    fireEvent.change(within(dialog).getByLabelText("Fallback value format"), { target: { value: "text" } });
-    fireEvent.change(within(dialog).getByLabelText("Fallback value"), { target: { value: "2025-02-29" } });
+    changeControl(within(dialog).getByLabelText("Name"), { target: { value: "renewed" } });
+    changeControl(within(dialog).getByLabelText("Type"), { target: { value: "date" } });
+    changeControl(within(dialog).getByLabelText("Fallback value format"), { target: { value: "text" } });
+    changeControl(within(dialog).getByLabelText("Fallback value"), { target: { value: "2025-02-29" } });
     expect(within(dialog).getByText(/Use an ISO date/)).toBeTruthy();
     fireEvent.submit(dialog.querySelector("form")!);
     expect(calls(fetch).some((call) => call.startsWith("POST"))).toBe(false);
