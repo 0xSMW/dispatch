@@ -15,7 +15,7 @@
   --text: #f0f0f0;
   --text-muted: #a1a4a5;
   --text-dim: #878d8f;
-  --focus: rgba(255, 255, 255, 0.45);
+  --focus: #5c6266;
   --primary: #ffffff;
   --primary-hover: #e4e4e4;
   --primary-subtle: #191b1e;
@@ -59,7 +59,7 @@
   --text: #191919;
   --text-muted: #4d4d4d;
   --text-dim: #656565;
-  --focus: rgba(0, 0, 0, 0.35);
+  --focus: #656b70;
   --primary: #000000;
   --primary-hover: #262626;
   --primary-subtle: #f0f0f0;
@@ -128,9 +128,19 @@ a:hover {
   text-decoration: underline;
 }
 
+:focus:not(:focus-visible) {
+  outline: none;
+}
+
 :focus-visible {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
+}
+
+/* Dialog containers receive programmatic focus; indicate keyboard focus on their controls. */
+.modal:focus,
+.drawer:focus {
+  outline: none;
 }
 
 h1,
@@ -1240,7 +1250,6 @@ td a {
   font-size: 11px;
   font-weight: 600;
   letter-spacing: 0.04em;
-  text-transform: uppercase;
 }
 
 .fact dd {
@@ -1508,7 +1517,7 @@ td a {
 
 @keyframes drawerIn {
   from { transform: translateX(100%); }
-  to { transform: translateX(0); }
+  to { transform: none; }
 }
 
 @keyframes drawerOut {
@@ -1913,3 +1922,5 @@ button.menuItem.danger:hover:not(:disabled) {
     max-width: 200px;
   }
 }
+
+.modal.wide { width: min(900px, calc(100vw - 32px)); max-width: 900px; }
