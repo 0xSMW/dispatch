@@ -1,3 +1,4 @@
+import { changeControl, controlValue } from "../../testingControls";
 // @vitest-environment jsdom
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -71,7 +72,7 @@ describe("Email", () => {
     expect(screen.getByText("Acme <hello@acme.test>")).toBeTruthy();
     expect(screen.getByText("support@acme.test")).toBeTruthy();
     expect(requests(fetch, "GET", "/emails/email_1/events")[0].url.searchParams.get("limit")).toBe("100");
-    await screen.findByText("delivered", { selector: ".eventNode .badge" });
+    await screen.findByText("Delivered", { selector: ".eventNode .badge" });
 
     const link = await screen.findByRole("link", { name: /invoice\.pdf/ });
     expect(link.getAttribute("href")).toBe("http://localhost:3100/files/signed");
@@ -197,8 +198,8 @@ describe("Email", () => {
 
     expect(await screen.findByText("Sandbox")).toBeTruthy();
     expect(screen.getByText("Sandbox delivery is simulated. No email is sent externally.")).toBeTruthy();
-    expect(screen.getByText("delivered", { selector: ".pageHeader .badge" })).toBeTruthy();
-    expect(await screen.findByText("delivered (simulated)")).toBeTruthy();
+    expect(screen.getByText("Delivered", { selector: ".pageHeader .badge" })).toBeTruthy();
+    expect(await screen.findByText("Delivered (simulated)")).toBeTruthy();
     expect(screen.queryByText("Message ID")).toBeNull();
   });
 
@@ -214,11 +215,11 @@ describe("Email", () => {
     const table = await screen.findByRole("table");
     const rows = within(table).getAllByRole("row");
     expect(within(rows[1]).queryByText("Sandbox")).toBeNull();
-    expect(within(rows[1]).getByText("delivered")).toBeTruthy();
+    expect(within(rows[1]).getByText("Delivered")).toBeTruthy();
     expect(within(rows[2]).getByText("Sandbox")).toBeTruthy();
     expect(within(rows[2]).getByText("CC")).toBeTruthy();
     expect(within(rows[3]).getByText("Sandbox")).toBeTruthy();
-    expect(within(rows[3]).getByText("queued")).toBeTruthy();
+    expect(within(rows[3]).getByText("Queued")).toBeTruthy();
     expect(within(rows[3]).getByText("BCC")).toBeTruthy();
     expect(screen.getByText(/Sandbox recipients are simulated and are never sent externally/)).toBeTruthy();
     expect(screen.queryByText("delivered (simulated)")).toBeNull();
@@ -227,10 +228,10 @@ describe("Email", () => {
 
   it("identifies sandbox timeline events without changing their event status", () => {
     const simulated = timeline([event("email.delivered", { sandbox: true })])[0];
-    expect(simulated.label).toBe("delivered (simulated)");
+    expect(simulated.label).toBe("Delivered (simulated)");
     expect(simulated.status).toBe("email.delivered");
     expect(simulated.detail).toContain("No email is sent externally.");
-    expect(timeline([event("email.delivered", { sandbox: false })])[0].label).toBe("delivered");
+    expect(timeline([event("email.delivered", { sandbox: false })])[0].label).toBe("Delivered");
   });
 
   it("explains a bounce in a drawer and removes the address from the suppression list", async () => {
@@ -260,7 +261,7 @@ describe("Email", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Email actions" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Share email" }));
-    fireEvent.change(screen.getByLabelText("Expires after"), { target: { value: "48h" } });
+    changeControl(screen.getByLabelText("Expires after"), { target: { value: "48h" } });
     fireEvent.click(screen.getByRole("button", { name: /Create link/ }));
 
     expect(await screen.findByText("http://localhost:5173/shared?token=abc")).toBeTruthy();
@@ -285,7 +286,7 @@ describe("Email", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Email actions" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Edit schedule" }));
-    fireEvent.change(screen.getByLabelText("Send at"), { target: { value: "tomorrow at 9am" } });
+    changeControl(screen.getByLabelText("Send at"), { target: { value: "tomorrow at 9am" } });
     // The phrase is read in the browser's zone and shown before it can be saved.
     await screen.findByText(/^Sends .+ \(.+\)\.$/);
     fireEvent.click(screen.getByRole("button", { name: /^Save/ }));
@@ -298,7 +299,7 @@ describe("Email", () => {
 
   it("builds timeline nodes with the bounce reason as hover detail", () => {
     const nodes = timeline([event("email.delivery_delayed"), bounce]);
-    expect(nodes.map((node) => node.label)).toEqual(["delivery delayed", "bounced"]);
+    expect(nodes.map((node) => node.label)).toEqual(["Delivery delayed", "Bounced"]);
     expect(nodes[1].detail).toBe("Permanent · NoEmail · 550 5.1.1 user unknown");
   });
 
