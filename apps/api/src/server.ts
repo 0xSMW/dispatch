@@ -104,6 +104,7 @@ import { emailWhere, type EmailQuery } from "./emails.js";
 import { domainWhere, receivedWhere, templateWhere, type DomainQuery, type ReceivedQuery, type TemplateQuery } from "./filters.js";
 import { registerImports } from "./imports.js";
 import { registerInsights } from "./insights.js";
+import { registerUsage } from "./usage.js";
 import { registerLinks } from "./links.js";
 import { permitted, presentKey, readOnly, registerPlatform, type KeyRow } from "./platform.js";
 import { rateKey, rateLimitValue, sessionRateKey, sessionRateLimitValue, signins } from "./rate.js";
@@ -958,6 +959,7 @@ app.post("/templates/:id/duplicate", async (request) => {
 registerAudience(app, { db, paging, emitChange, slug });
 registerImports(app, { db, storage, paging });
 registerInsights(app, { db });
+registerUsage(app, { db, flushTelemetry });
 registerLinks(app);
 
 registerBroadcasts(app, { db, paging });
