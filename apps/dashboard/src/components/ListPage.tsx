@@ -1,5 +1,5 @@
 import { cloneElement, isValidElement, type ReactNode } from "react";
-import { useNavigate, useSearchParams, Link } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import type { ListState } from "../hooks/useList";
 import type { Selection } from "../hooks/useSelection";
 import { useCan } from "../shell/session";
@@ -74,7 +74,7 @@ export function ListPage<T extends { id: string }>({
       : empty;
   function canActions(value: ReactNode) {
     if (!can) return null;
-    if (title === "Timeline" || title === "Logs") return <Link className="button" to="/emails/send">Send test email</Link>;
+    // if (title === "Timeline" || title === "Logs") return <Link className="button" to="/emails/send">Send test email</Link>;
     return value;
   }
   const click = onRowClick ?? (rowHref ? (row: T) => navigate(rowHref(row)) : undefined);
