@@ -1,3 +1,4 @@
+import { changeControl, controlValue } from "../../testingControls";
 // @vitest-environment jsdom
 import { useState } from "react";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -58,7 +59,7 @@ describe("send kind in the shared builder", () => {
     fireEvent.click(panel.getByRole("radio", { name: "Marketing" }));
     expect(config().kind).toBe("marketing");
     expect(stepIssues({ ...initial, config: config() })).toEqual({});
-    fireEvent.change(panel.getByLabelText("Topic"), { target: { value: "news_topic" } });
+    changeControl(panel.getByLabelText("Topic"), { target: { value: "news_topic" } });
     fireEvent.click(panel.getByRole("radio", { name: "Transactional" }));
     expect(config()).not.toHaveProperty("topic_id");
     expect(config()).toMatchObject(initial.config);
@@ -66,20 +67,20 @@ describe("send kind in the shared builder", () => {
 
   it.each([false, true])("forces Marketing and explains disabled Transactional for a Marketing template in canvas=%s", async (canvas) => {
     const panel = await open(canvas);
-    fireEvent.change(panel.getByLabelText("Template"), { target: { value: "news" } });
+    changeControl(panel.getByLabelText("Template"), { target: { value: "news" } });
     expect(config().kind).toBe("marketing");
     expect(panel.getByRole("radio", { name: "Transactional" })).toHaveProperty("disabled", true);
     expect(panel.getByRole("radio", { name: "Marketing" })).toHaveProperty("checked", true);
     expect(panel.getByText(/Transactional is unavailable/)).toBeTruthy();
     expect(config().template.variables).toEqual({ plan: "pro" });
-    fireEvent.change(panel.getByLabelText("Template"), { target: { value: "receipt" } });
+    changeControl(panel.getByLabelText("Template"), { target: { value: "receipt" } });
     expect(panel.getByRole("radio", { name: "Transactional" })).toHaveProperty("disabled", false);
     expect(config().kind).toBe("marketing"); // Transactional templates can still be used for Marketing.
   });
 
   it.each([false, true])("loads detail content when list metadata is unavailable in canvas=%s", async (canvas) => {
     const panel = await open(canvas, { fallback: true });
-    fireEvent.change(panel.getByLabelText("Template"), { target: { value: "news" } });
+    changeControl(panel.getByLabelText("Template"), { target: { value: "news" } });
     await waitFor(() => expect(config().kind).toBe("marketing"));
     expect(panel.getByRole("radio", { name: "Transactional" })).toHaveProperty("disabled", true);
     expect(panel.getByText(/unsubscribe placeholder/)).toBeTruthy();
