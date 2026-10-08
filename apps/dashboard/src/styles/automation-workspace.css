@@ -52,7 +52,7 @@
   height: 36px;
   border-radius: 6px;
 }
-.automationWorkspaceEditor .automationHeader .backLink:hover { background: var(--surface-raised); }
+.automationWorkspaceEditor .automationHeader .backLink:hover { background: var(--hover); }
 .automationWorkspaceEditor .automationHeader .automationName {
   flex: 0 1 auto;
   min-width: 0;
@@ -83,19 +83,19 @@
   border: 0;
   border-radius: 6px;
 }
-.automationWorkspaceEditor .automationHeader .tab.active { background: var(--surface-raised); }
+.automationWorkspaceEditor .automationHeader .tab.active { background: var(--selected); }
 .automationWorkspaceEditor .automationActions { margin-left: 0; flex: none; gap: 8px; flex-wrap: nowrap; }
 .automationWorkspaceEditor .automationActions button { min-height: 36px; height: 36px; padding: 0 12px; font-size: 12px; }
 .automationWorkspaceEditor .automationActions button.icon { width: 36px; padding: 0; }
 .automationWorkspaceEditor .saveState { white-space: nowrap; font-size: 12px; }
-.automationWorkspaceEditor .automationStatusIcon.saving { color: var(--success, #2ecc8b); }
+.automationWorkspaceEditor .automationStatusIcon.saving { color: var(--success); }
 .automationWorkspaceEditor .savedFeedback { animation: automationSaveFade 2200ms ease forwards; }
 .automationWorkspaceEditor .savingSpinner { animation: automationSaveSpin 800ms linear infinite; }
-@keyframes automationSaveFade { 0%, 45% { color: var(--success, #2ecc8b); } 100% { color: var(--text); } }
+@keyframes automationSaveFade { 0%, 45% { color: var(--success); } 100% { color: var(--text); } }
 @keyframes automationSaveSpin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) {
   .automationWorkspaceEditor .savingSpinner { animation: none; }
-  .automationWorkspaceEditor .savedFeedback { animation: none; color: var(--success, #2ecc8b); }
+  .automationWorkspaceEditor .savedFeedback { animation: none; color: var(--success); }
 }
 .automationWorkspaceEditor .automationStatusIcon {
   position: relative;
@@ -116,7 +116,7 @@
   padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: 6px;
-  background: var(--surface-raised);
+  background: var(--popover);
   color: var(--text);
   font-size: 12px;
   white-space: nowrap;
@@ -141,13 +141,6 @@
 .automationWorkspaceEditor .canvasView.immersive { --canvas-panel-top: 8px; }
 .automationWorkspaceEditor .automationCanvas { height: 100%; }
 .automationWorkspaceEditor .canvasView.immersive > .canvasPanel { box-shadow: none; max-height: calc(100% - var(--canvas-panel-top) - 56px); }
-:root:not([data-theme="light"]) .automationWorkspaceEditor {
-  --bg: #080808;
-  --surface: #101010;
-  --surface-raised: #1b1b1b;
-  --border: #292929;
-  --border-input: #383838;
-}
 @media (max-width: 1100px) {
   .automationWorkspaceEditor .automationHeader { grid-template-columns: minmax(0, 1fr) minmax(120px, 220px) minmax(0, 1fr); padding: 8px; }
   .automationWorkspaceEditor .automationHeader .tab { padding: 0 8px; }
