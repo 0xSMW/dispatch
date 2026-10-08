@@ -27,6 +27,13 @@ function entry(fields: Partial<DiscoveryTemplate>): DiscoveryTemplate {
   };
 }
 
+function selectValue(control: HTMLElement, value: string) {
+  const native = control.parentElement!.querySelector("select")!;
+  const label = Array.from(native.options).find(option => option.value === value)!.textContent!;
+  fireEvent.click(control);
+  fireEvent.click(screen.getByRole("option", { name: label }));
+}
+
 const entries = [entry({}), entry({ slug: "receipt", name: "Receipt", category: "billing", description: "After a payment." })];
 
 function setup() {
@@ -104,18 +111,17 @@ describe("Library", () => {
     expect(await screen.findByRole("article", { name: "Payment failed" })).toBeTruthy();
     expect(screen.queryByRole("article", { name: "Password reset" })).toBeNull();
     expect(screen.getByRole("article", { name: "Newsletter" })).toBeTruthy();
-    await screen.findByRole("button", { name: automations[0]!.name });
-    expect(screen.getAllByRole("button", { name: "Install as automation" })).toHaveLength(6);
-    fireEvent.change(screen.getByLabelText("Stage"), { target: { value: "dunning" } });
+    expect(screen.getByRole("link", { name: "Browse automation recipes" }).getAttribute("href")).toBe("/automations?create=1");
+    selectValue(screen.getByLabelText("Stage"), "dunning");
     expect(screen.getAllByRole("article")).toHaveLength(1);
     expect(screen.getByRole("article", { name: "Payment failed" })).toBeTruthy();
-    expect(screen.getAllByRole("button", { name: "Install as automation" })).toHaveLength(1);
-    fireEvent.change(screen.getByLabelText("Stage"), { target: { value: "retention" } });
+    expect(screen.queryByRole("button", { name: "Install as automation" })).toBeNull();
+    selectValue(screen.getByLabelText("Stage"), "retention");
     expect(screen.getByText("No templates match")).toBeTruthy();
     fireEvent.click(screen.getByRole("tab", { name: "Transactional" }));
     expect(screen.getAllByRole("article")).toHaveLength(2);
     expect(screen.queryByLabelText("Stage")).toBeNull();
-    expect(calls(fetch, "GET /template-library/automations")).toHaveLength(1);
+    expect(calls(fetch, "GET /template-library/automations")).toHaveLength(0);
   });
 
   it.each(["transactional", "lifecycle"])("hides browsing controls when the %s library has no entries", async (tab) => {
