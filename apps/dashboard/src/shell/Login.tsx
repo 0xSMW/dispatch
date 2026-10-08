@@ -3,6 +3,7 @@ import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { Field } from "../components/Field";
 import { defaultApiUrl, errorMessage } from "../lib/client";
 import { useSession } from "./session";
+import "../styles/account-login.css";
 
 /**
  * Sign in: email and password, exchanged for a session token through `POST /sessions`. The API
@@ -35,13 +36,15 @@ export function Login() {
   return (
     <div className="loginPage">
       <form className="loginCard" onSubmit={submit}>
-        <div className="brand">
-          <span className="brandMark" aria-hidden>
-            <img src="/logo.svg" alt="" />
-          </span>
-          <span>Dispatch</span>
-        </div>
-        <h1>Sign in</h1>
+        <header className="loginHeader">
+          <div className="brand">
+            <span className="brandMark" aria-hidden>
+              <img src="/logo.svg" alt="" />
+            </span>
+            <span>Dispatch</span>
+          </div>
+          <h1>Sign in</h1>
+        </header>
         {import.meta.env.VITE_API_URL ? null : (
           <Field label="API URL" type="url" value={form.apiUrl} onChange={(apiUrl) => setForm({ ...form, apiUrl })} required mono />
         )}
