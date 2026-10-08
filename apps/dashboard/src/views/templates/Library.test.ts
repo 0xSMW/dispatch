@@ -48,14 +48,18 @@ describe("Library", () => {
     vi.unstubAllGlobals();
   });
 
-  it("groups cards by category with rendered thumbnails", async () => {
+  it("groups cards by category with compact email covers", async () => {
     setup();
     const auth = await screen.findByRole("region", { name: "Authentication" });
     expect(within(auth).getByRole("article", { name: "Password reset" })).toBeTruthy();
-    expect(within(auth).getByText("Transactional")).toBeTruthy();
+    expect(within(auth).getByText("Ready to use")).toBeTruthy();
     const billing = screen.getByRole("region", { name: "Billing" });
     const card = within(billing).getByRole("article", { name: "Receipt" });
-    await waitFor(() => expect(card.querySelector("iframe")?.getAttribute("srcdoc")).toBe(framed("<p>Receipt body</p>", undefined, true)));
+    await waitFor(() => expect(within(card).getByText("Receipt body")).toBeTruthy());
+    expect(card.querySelector("iframe")).toBeNull();
+    expect(within(card).getByText("receipt").className).toContain("cardSlug");
+    expect(within(card).getByText("Ready to use").className).toBe("cardStatus");
+    expect(card.querySelector(".badge")).toBeNull();
   });
 
   it("previews a template with its variables and installs it", async () => {
@@ -77,17 +81,19 @@ describe("Library", () => {
     expect(calls(fetch, "POST /template-library/password-reset/install")).toHaveLength(1);
   });
 
-  it("shows when guidance, shipped recipes and the brand page", async () => {
+  it("keeps guidance and recipes in the full preview, with concise grid metadata", async () => {
     setup();
     const card = await screen.findByRole("article", { name: "Password reset" });
-    expect(within(card).getByText("Send after a password reset request.")).toBeTruthy();
-    expect(within(card).getByRole("link", { name: "Auth.js recipe" }).getAttribute("href")).toMatch(/templates\/authjs.md$/);
-    expect(within(card).getByRole("link", { name: "Better Auth recipe" }).getAttribute("href")).toMatch(/templates\/better-auth.md$/);
-    const receipt = screen.getByRole("article", { name: "Receipt" });
-    expect(within(receipt).getByRole("link", { name: "Stripe recipe" }).getAttribute("href")).toMatch(/templates\/stripe.md$/);
+    expect(within(card).queryByText("Send after a password reset request.")).toBeNull();
+    fireEvent.click(within(card).getByRole("button", { name: "Preview Password reset" }));
+    const drawer = within(await screen.findByRole("dialog"));
+    expect(drawer.getByText("Send after a password reset request.")).toBeTruthy();
+    expect(drawer.getByRole("link", { name: "Auth.js recipe" }).getAttribute("href")).toMatch(/templates\/authjs.md$/);
+    expect(drawer.getByRole("link", { name: "Better Auth recipe" }).getAttribute("href")).toMatch(/templates\/better-auth.md$/);
+    expect(drawer.getByRole("link", { name: "Edit brand" }).getAttribute("href")).toBe("/settings/brand");
   });
 
-  it("shows transactional and lifecycle groups together without tabs or stage controls", async () => {
+  it("shows one category heading beneath ready-made templates, preserving manifest order", async () => {
     const lifecycle = [
       entry({ slug: "welcome", name: "Welcome", stage: "onboarding" }),
       entry({ slug: "payment-failed", name: "Payment failed", stage: "dunning", category: "billing" }),
@@ -98,11 +104,16 @@ describe("Library", () => {
       ...Object.fromEntries([...entries, ...lifecycle].map((item) => [`GET /template-library/${item.slug}`, { ...item, rendered: { html: "<p>Preview</p>" } }])),
     });
     renderAt("/templates", [{ path: "/templates", element: h(Library) }]);
-    const lifecycleGroup = await screen.findByRole("region", { name: "Lifecycle" });
-    expect(within(lifecycleGroup).getByRole("article", { name: "Payment failed" })).toBeTruthy();
-    expect(within(lifecycleGroup).getByRole("article", { name: "Newsletter" })).toBeTruthy();
-    const transactional = screen.getByRole("region", { name: "Transactional" });
-    expect(within(transactional).getByRole("article", { name: "Password reset" })).toBeTruthy();
+    const auth = await screen.findByRole("region", { name: "Authentication" });
+    expect(within(auth).getByRole("article", { name: "Password reset" })).toBeTruthy();
+    expect(within(auth).getByRole("article", { name: "Newsletter" })).toBeTruthy();
+    const billing = screen.getByRole("region", { name: "Billing" });
+    expect(within(billing).getByRole("article", { name: "Payment failed" })).toBeTruthy();
+    expect(screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent)).toEqual(["Authentication", "Billing"]);
+    expect(screen.getByRole("heading", { level: 2, name: "Ready-made templates" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "Transactional" })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Lifecycle" })).toBeNull();
+    expect(screen.queryByRole("heading", { level: 4 })).toBeNull();
     expect(screen.getAllByRole("article")).toHaveLength(5);
     expect(screen.queryByRole("tab")).toBeNull();
     expect(screen.queryByLabelText("Stage")).toBeNull();
