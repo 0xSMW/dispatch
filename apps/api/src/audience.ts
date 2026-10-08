@@ -124,11 +124,21 @@ export function registerAudience(
 
   app.get("/contacts", async (request) => {
     const tenantId = request.auth!.tenant_id;
-    const query = request.query as ContactQuery;
+    const query = request.query as ContactQuery & { topic_id?: string };
     const filters = contactWhere({ ...query, segment_id: undefined });
     if (query.segment_id) {
       const predicate = await segmentFilter(db, tenantId, query.segment_id, (value) => { filters.params.push(value); return `$${filters.params.length + 1}`; });
       filters.where = [filters.where, predicate].filter(Boolean).join(" and ");
+    }
+    if (query.topic_id) {
+      filters.params.push(query.topic_id);
+      const topicParam = `$${filters.params.length + 1}`;
+      filters.where = [filters.where, `exists (
+        select 1 from topics t
+        left join topic_subscriptions s on s.tenant_id = t.tenant_id and s.topic_id = t.id and s.contact_id = c.id
+        where t.tenant_id = c.tenant_id and t.id = ${topicParam} and t.deleted_at is null
+          and coalesce(s.status, t.default_status) = 'subscribed'
+      )`].filter(Boolean).join(" and ");
     }
     const definitions = await propertyDefinitions(db, tenantId);
     const page = await paginate<ContactRow>(db, "contacts c", tenantId, paging(request), {
@@ -154,7 +164,21 @@ export function registerAudience(
     for (const row of memberships.rows) {
       segments.set(row.contact_id, [...(segments.get(row.contact_id) ?? []), { id: row.id, name: row.name }]);
     }
-    return presentPage(page, (row) => ({ ...presentContact(row, definitions), segments: segments.get(row.id) ?? [] }));
+    // Effective preferences match contactTopics: explicit opt-out/pending overrides the default.
+    // Global unsubscribe stays separate on the contact and must not rewrite their topic choices.
+    const preferences = page.data.length ? await db.query<{ contact_id: string; id: string; name: string; status: string }>(
+      `select c.id as contact_id, t.id, t.name, coalesce(s.status, t.default_status) as status
+       from contacts c join topics t on t.tenant_id = c.tenant_id and t.deleted_at is null
+       left join topic_subscriptions s on s.tenant_id = t.tenant_id and s.topic_id = t.id and s.contact_id = c.id
+       where c.tenant_id = $1 and c.id = any($2::text[]) and c.deleted_at is null
+       order by t.name, t.id`,
+      [tenantId, page.data.map((row) => row.id)],
+    ) : { rows: [] };
+    const topics = new Map<string, Array<{ id: string; name: string; subscription: "opt_in" | "opt_out" | "pending" }>>();
+    for (const row of preferences.rows) {
+      topics.set(row.contact_id, [...(topics.get(row.contact_id) ?? []), { id: row.id, name: row.name, subscription: subscriptionWire(row.status) }]);
+    }
+    return presentPage(page, (row) => ({ ...presentContact(row, definitions), segments: segments.get(row.id) ?? [], topics: topics.get(row.id) ?? [] }));
   });
 
   app.get("/contacts/stats", async (request) => {
