@@ -34,6 +34,31 @@ it("matches the committed library.json to a fresh build", () => {
   }
 }, 30_000);
 
+it("ships dark styles, bounded buttons and plain-text links in every generated template", () => {
+  for (const item of library.templates) {
+    expect(item.html, item.slug).toContain("@media (prefers-color-scheme: dark)");
+    expect(item.html, item.slug).toContain(".dm-text { color: #fafafa !important;");
+    expect(item.html, item.slug).toContain("max-width:560px");
+    expect(item.html, item.slug).toContain("table-layout:fixed");
+    expect(item.html, item.slug).toContain("border-collapse:separate");
+    expect(item.html, item.slug).toContain("padding:36px 32px;border-radius:{{{THEME_RADIUS}}}");
+    expect(item.html, item.slug).toContain(".dm-canvas > table > tbody > tr > td");
+    expect(item.html, item.slug).not.toContain("min-height:44px");
+    const buttons = [...item.html.matchAll(/<a[^>]*class="dm-button"[^>]*style="([^"]*)"/g)];
+    for (const [, style] of buttons) {
+      expect(style).toContain("line-height:20px");
+      expect(style).toContain("padding:11px 20px");
+      expect(style).not.toMatch(/(?:^|;)(?:min-)?height:/);
+    }
+  }
+  const confirmation = entry("confirm-subscription");
+  const url = "https://example.com/confirm/" + "a".repeat(1500);
+  const rendered = renderTemplate(confirmation, { CONFIRM_URL: url }, { ...themeContext({}), PRODUCT_NAME: "Acme", PRODUCT_URL: "https://example.com", LOGO_URL: "", BRAND_COLOR: "#18181b", BRAND_TEXT_COLOR: "#ffffff", SUPPORT_URL: "", SUPPORT_EMAIL: "", PRIVACY_URL: "", COMPANY_NAME: "Acme", COMPANY_ADDRESS: "", CURRENT_YEAR: "2026" });
+  expect(rendered.html).toContain(`href="${url}"`);
+  expect(rendered.html?.replace(/<[^>]+>/g, "")).not.toContain(url);
+  expect(rendered.text).toContain(url);
+});
+
 describe("sample renders", () => {
   it.each(library.templates.map((item) => [item.slug, item] as const))("%s matches its snapshot", (_slug, item) => {
     const brand = {
