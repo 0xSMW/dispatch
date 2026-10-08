@@ -127,6 +127,33 @@ describe("RuleEditor", () => {
 });
 
 describe("StepForm", () => {
+  it("defaults segment membership to this person and explicitly edits another email without wire metadata", () => {
+    render(h(Form, { initial: { key: "segment", type: "add_to_segment", config: { segment_id: "seg_vip" } } }));
+    expect(controlValue(screen.getByLabelText("Contact"))).toBe("person");
+    expect(screen.queryByLabelText("Email")).toBeNull();
+    changeControl(screen.getByLabelText("Contact"), { target: { value: "other" } });
+    expect(screen.getByText("Enter the email of the contact to add.")).toBeTruthy();
+    expect(screen.getByTestId("graph").textContent).not.toContain("contactTarget");
+    changeControl(screen.getByLabelText("Email"), { target: { value: "friend@example.com" } });
+    expect(config()).toEqual({ segment_id: "seg_vip", email: "friend@example.com" });
+    fireEvent.click(screen.getByRole("button", { name: "Toggle form" }));
+    fireEvent.click(screen.getByRole("button", { name: "Toggle form" }));
+    expect(controlValue(screen.getByLabelText("Contact"))).toBe("other");
+    expect(controlValue(screen.getByLabelText("Email"))).toBe("friend@example.com");
+    changeControl(screen.getByLabelText("Contact"), { target: { value: "person" } });
+    expect(config()).toEqual({ segment_id: "seg_vip" });
+    expect(screen.queryByLabelText("Email")).toBeNull();
+  });
+
+  it("does not carry another-contact mode across step selection", () => {
+    const props = { path: [], index: 0, disabled: false, errors: {}, options };
+    const { rerender } = render(h(StepForm, { ...props, node: { key: "override", type: "add_to_segment", config: { segment_id: "seg_vip", email: "other@example.com" } } }));
+    expect(controlValue(screen.getByLabelText("Contact"))).toBe("other");
+    rerender(h(StepForm, { ...props, node: { key: "person", type: "add_to_segment", config: { segment_id: "seg_vip" } } }));
+    expect(controlValue(screen.getByLabelText("Contact"))).toBe("person");
+    expect(screen.queryByLabelText("Email")).toBeNull();
+  });
+
   it("does not transfer a removed sibling's manual type onto an inferred number", () => {
     render(h(Form, { initial: { key: "condition", type: "condition", config: { type: "and", rules: [
       { type: "rule", field: "event.custom", operator: "eq", value: "" },
