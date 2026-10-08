@@ -11,18 +11,18 @@ export function Details({ rows, brand }: { rows: Array<{ label: string; value: R
       cellPadding={0}
       cellSpacing={0}
       border={0}
-      style={{ marginBottom: "16px" }}
+      style={{ marginBottom: rows.length > 1 ? "16px" : "0" }}
     >
       <tbody>
         {rows.map((row) => (
           <tr key={row.label}>
             <td
               className="dm-muted"
-              style={{ ...muted, ...style, width: "160px", padding: "4px 12px 4px 0" }}
+              style={{ ...muted, ...style, width: "38%", verticalAlign: "top", padding: "8px 16px 8px 0" }}
             >
               {row.label}
             </td>
-            <td className="dm-text" style={{ ...text, ...style, marginBottom: "0", padding: "4px 0" }}>
+            <td className="dm-text" style={{ ...text, ...style, marginBottom: "0", padding: "8px 0", verticalAlign: "top", overflowWrap: "anywhere" }}>
               {row.value}
             </td>
           </tr>
