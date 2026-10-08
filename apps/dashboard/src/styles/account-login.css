@@ -16,7 +16,7 @@
   max-width: 400px;
   gap: 20px;
   padding: 32px;
-  background: var(--surface);
+  background: var(--container-bg);
   border-color: var(--border);
   border-radius: 12px;
 }
