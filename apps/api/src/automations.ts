@@ -25,7 +25,7 @@ import {
   type PagingParams,
 } from "@dispatchmail/db";
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import { runWhere, type RunQuery } from "./filters.js";
+import { automationWhere, runWhere, type RunQuery } from "./filters.js";
 
 type RunRow = {
   id: string;
@@ -270,15 +270,12 @@ export function registerAutomations(
   });
 
   app.get("/automations", async (request) => {
-    const status = (request.query as { status?: string }).status;
-    if (status && !["enabled", "paused", "disabled"].includes(status)) {
-      throw new ApiError("validation_error", 422, "status must be enabled, paused, or disabled");
-    }
+    const filters = automationWhere(request.query as { status?: string; q?: string });
     const page = await paginate<AutomationRow & { run_count: number }>(db, "automations", request.auth!.tenant_id, paging(request), {
       select: `${automationColumns}, (select count(*)::integer from automation_runs r
         where r.tenant_id = automations.tenant_id and r.automation_id = automations.id) as run_count`,
       deletedCol: "deleted_at",
-      where: status === "disabled" ? "not enabled" : status === "paused" ? "enabled and paused_at is not null" : status === "enabled" ? "enabled and paused_at is null" : undefined,
+      ...filters,
     });
     return { object: page.object, has_more: page.has_more, data: page.data.map(presentAutomationRow) };
   });
