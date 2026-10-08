@@ -1,5 +1,5 @@
-import { createContext, useContext, useMemo, useState } from "react";
-import { AlertCircle, HelpCircle, Minus, Plus, Scan } from "lucide-react";
+import { createContext, useContext, useMemo } from "react";
+import { AlertCircle, Minus, Plus, Scan } from "lucide-react";
 import {
   Background,
   BackgroundVariant,
@@ -16,7 +16,6 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { Modal } from "../../components/Modal";
 import { Badge, statusToVariant } from "../../components/Badge";
 import { Tile } from "../../components/PageHeader";
 import { describe as summary, stepLabels, triggerLabels, triggerSummary, type DisplaySources, type TriggerConfig } from "./graph";
@@ -62,7 +61,7 @@ function tintOf(status: string | null) {
 function StepBox({ data }: NodeProps<StepNode>) {
   const { selected, onSelect, emailCounts, options } = useContext(FlowActions);
   const { node, issues, status, error } = data;
-  const classes = ["canvasNode", "nodrag", "nopan", tintOf(status), issues ? "invalid" : "", selected === node.key ? "selected" : ""];
+  const classes = ["canvasNode", node.type === "send_email" && emailCounts ? "withCounts" : "", "nodrag", "nopan", tintOf(status), issues ? "invalid" : "", selected === node.key ? "selected" : ""];
   return (
     <>
       <Handles exit={node.type === "exit"} />
@@ -189,28 +188,15 @@ export type FlowProps = Actions & { nodes: CanvasNode[]; edges: CanvasEdge[]; la
 function CanvasHud() {
   const { zoomIn, zoomOut, fitView } = useReactFlow();
   const { zoom } = useViewport();
-  const [helpOpen, setHelpOpen] = useState(false);
   return (
-    <>
-      <Panel position="bottom-right" className="canvasHud nodrag nopan" aria-label="Canvas controls">
-        <div className="canvasZoom" role="group" aria-label="Zoom">
-          <button type="button" aria-label="Zoom out" disabled={zoom <= 0.3} onClick={() => void zoomOut({ duration: 180 })}><Minus size={14} aria-hidden /></button>
-          <span className="canvasZoomValue" aria-label={`Zoom ${Math.round(zoom * 100)} percent`}>{Math.round(zoom * 100)}%</span>
-          <button type="button" aria-label="Zoom in" disabled={zoom >= 1.5} onClick={() => void zoomIn({ duration: 180 })}><Plus size={14} aria-hidden /></button>
-        </div>
-        <button type="button" className="canvasFit" aria-label="Fit canvas" onClick={() => void fitView({ padding: 0.15, maxZoom: 1, duration: 240 })}><Scan size={14} aria-hidden />Fit</button>
-        <button type="button" aria-label="Canvas shortcuts" onClick={() => setHelpOpen(true)}><HelpCircle size={15} aria-hidden /></button>
-      </Panel>
-      <Modal isOpen={helpOpen} onClose={() => setHelpOpen(false)} title="Canvas controls" size="small">
-        <dl className="canvasHelp">
-          <div><dt><kbd>Space</kbd> + drag</dt><dd>Pan the canvas</dd></div>
-          <div><dt>Scroll</dt><dd>Pan the canvas</dd></div>
-          <div><dt>Zoom − / +</dt><dd>Change the zoom level</dd></div>
-          <div><dt>Fit</dt><dd>Bring every step into view</dd></div>
-          <div><dt><kbd>Esc</kbd></dt><dd>Close the inspector when focus is outside a field or dialog</dd></div>
-        </dl>
-      </Modal>
-    </>
+    <Panel position="bottom-right" className="canvasHud nodrag nopan" aria-label="Canvas controls">
+      <div className="canvasZoom" role="group" aria-label="Zoom">
+        <button type="button" aria-label="Zoom out" disabled={zoom <= 0.3} onClick={() => void zoomOut({ duration: 180 })}><Minus size={14} aria-hidden /></button>
+        <span className="canvasZoomValue" aria-label={`Zoom ${Math.round(zoom * 100)} percent`}>{Math.round(zoom * 100)}%</span>
+        <button type="button" aria-label="Zoom in" disabled={zoom >= 1.5} onClick={() => void zoomIn({ duration: 180 })}><Plus size={14} aria-hidden /></button>
+      </div>
+      <button type="button" className="canvasFit" aria-label="Fit canvas" onClick={() => void fitView({ padding: 0.15, maxZoom: 1, duration: 240 })}><Scan size={14} aria-hidden />Fit</button>
+    </Panel>
   );
 }
 
