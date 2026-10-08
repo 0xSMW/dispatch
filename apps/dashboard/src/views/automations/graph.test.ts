@@ -246,9 +246,9 @@ describe("contact triggers", () => {
     expect(Object.values(triggerLabels)).toEqual(["Event received", "Contact added", "Contact changes", "Subscribed to topic", "Added to segment"]);
     expect(triggerSummary({ type: "contact_created" })).toBe("Any new contact");
     expect(triggerSummary({ type: "contact_updated" })).toBe("Any change");
-    expect(triggerSummary({ type: "contact_updated", field: "plan", from: "free", to: "pro" })).toBe("plan: free → pro");
-    expect(triggerSummary({ type: "contact_updated", field: "unsubscribed", from: false, to: true })).toBe("unsubscribed: false → true");
-    expect(triggerSummary({ type: "contact_updated", field: "seats", from: null, to: 0 })).toBe("seats: No value → 0");
+    expect(triggerSummary({ type: "contact_updated", field: "plan", from: "free", to: "pro" })).toBe("Plan: free → pro");
+    expect(triggerSummary({ type: "contact_updated", field: "unsubscribed", from: false, to: true })).toBe("Subscription: Subscribed → Unsubscribed");
+    expect(triggerSummary({ type: "contact_updated", field: "seats", from: null, to: 0 })).toBe("Seats: No value → 0");
     expect(triggerSummary({ type: "topic_subscribed", topic_id: "topic_1" }, sources)).toBe("News");
     expect(triggerSummary({ type: "segment_added", segment_id: "seg_1" }, sources)).toBe("Trials");
   });
