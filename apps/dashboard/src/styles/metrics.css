@@ -90,7 +90,6 @@
   color: var(--text-dim);
   font-size: 12px;
   font-weight: 600;
-  text-transform: uppercase;
 }
 
 .statValue {
