@@ -4,7 +4,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { callAt, h, mockFetch } from "../../testing";
 import type { Preferences } from "../../types";
-import { textColor } from "./Preferences";
+import { previewBrand, textColor } from "./Preferences";
 import { Unsubscribe } from "./Unsubscribe";
 
 const page: Preferences = {
@@ -97,5 +97,14 @@ describe("textColor", () => {
     expect(textColor("#ffffff")).toBe("#000000");
     expect(textColor("#18181b")).toBe("#ffffff");
     expect(textColor("#facc15")).toBe("#000000");
+  });
+});
+
+
+describe("previewBrand", () => {
+  it("uses button contrast rather than the email body color", () => {
+    expect(previewBrand({ color: "#18181b", text_color: "#18181b" }).text_color).toBe("#ffffff");
+    expect(previewBrand({ color: "#ffffff", text_color: "#ffffff" }).text_color).toBe("#000000");
+    expect(previewBrand({ color: "#18181b", button_text_color: "#eeeeee" }).text_color).toBe("#eeeeee");
   });
 });
