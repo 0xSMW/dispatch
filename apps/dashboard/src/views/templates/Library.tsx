@@ -84,25 +84,16 @@ export function Library({ onInstalled }: { onInstalled?: () => void }) {
       ) : entries.length === 0 ? (
         <Empty title="No ready-made templates" body="There are no ready-made templates here yet." />
       ) : (
-        (["transactional", "lifecycle"] as const).map((group) => {
-          const items = visibleTemplates(entries, group);
-          if (!items.length) return null;
-          return (
-            <section key={group} className="stack" aria-label={title(group)}>
-              <h3>{title(group)}</h3>
-              {byCategory(items).map(([category, templates]) => (
-                <section key={category} className="stack" aria-label={title(category)}>
-                  <h4 className="categoryTitle">{title(category)}</h4>
-                  <div className="cardGrid">
-                    {templates.map((entry) => (
-                      <LibraryCard key={entry.slug} entry={entry} onOpen={() => setOpen(entry)} />
-                    ))}
-                  </div>
-                </section>
+        byCategory(entries).map(([category, templates]) => (
+          <section key={category} className="templateCategory" aria-label={title(category)}>
+            <h3 className="categoryTitle">{title(category)}</h3>
+            <div className="cardGrid">
+              {templates.map((entry) => (
+                <LibraryCard key={entry.slug} entry={entry} onOpen={() => setOpen(entry)} />
               ))}
-            </section>
-          );
-        })
+            </div>
+          </section>
+        ))
       )}
       {open ? <LibraryPreview entry={open} onClose={() => setOpen(null)} onInstalled={onInstalled} /> : null}
     </section>
@@ -114,20 +105,17 @@ function LibraryCard({ entry, onOpen }: { entry: DiscoveryTemplate; onOpen: () =
   const rendered = renderedOf(detail.data);
   return (
     <article className="card" aria-label={entry.name}>
-      <Thumb html={rendered?.html} />
+      <button type="button" className="cardPreview" aria-label={`Preview ${entry.name}`} onClick={onOpen}>
+        <Thumb html={rendered?.html ?? (detail.loading ? undefined : null)} />
+      </button>
       <div className="cardBody">
-        <div className="cardTitle">
+        <div className="cardIdentity">
           <button type="button" className="cardLink" onClick={onOpen}>
             {entry.name}
           </button>
-          <Badge value={entry.kind} label={kindLabels[entry.kind]} variant={entry.kind === "marketing" ? "accent" : "neutral"} />
+          <span className="cardSlug mono">{entry.slug}</span>
         </div>
-        <p className="cardText">{entry.description}</p>
-        <Guidance entry={entry} />
-        <div className="cardMeta">
-          <span className="mono">{entry.slug}</span>
-          <span>{entry.variables.length} variables</span>
-        </div>
+        <span className="cardStatus">Ready to use</span>
       </div>
     </article>
   );
