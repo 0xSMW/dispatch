@@ -74,6 +74,11 @@ function api(overrides: (url: URL, init: RequestInit) => Reply | undefined = () 
   });
 }
 
+function chooseView(view: "Canvas" | "List") {
+  fireEvent.click(screen.getByRole("button", { name: "Actions" }));
+  fireEvent.click(screen.getByRole("menuitem", { name: new RegExp(`^(Selected\\s*)?${view}$`) }));
+}
+
 describe("AutomationEditor", () => {
   beforeEach(() => signIn());
   afterEach(() => {
@@ -81,88 +86,35 @@ describe("AutomationEditor", () => {
     sessionStorage.clear();
     vi.unstubAllGlobals();
   });
-  it.each([
-    { role: "full", width: 1440 }, { role: "viewer", width: 1440 },
-    { role: "full", width: 390 }, { role: "viewer", width: 390 },
-  ])("updates the measured toolbar/notices anchor on observer and resize events for $role at $width", async ({ role, width }) => {
+  it.each(["full", "viewer"])("keeps view and custom count dates in Actions for %s without idle editor chrome", async (role) => {
     if (role === "viewer") signIn("viewer", ["read"]);
-    vi.stubGlobal("innerWidth", width);
-    // Synthetic rectangles validate measurement wiring, NOT rendered geometry or responsive fit.
-    // Real wrapped-toolbar/short-viewport/scroll evidence must come from supervisor Chrome.
-    let controlsBottom = 160;
-    let hudHeight = 44;
-    let workspaceTop = 40;
-    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
-      if (this.classList.contains("automationBuilderHud")) return new DOMRect(8, 400, width - 16, hudHeight);
-      if (this.classList.contains("automationControls")) return new DOMRect(12, workspaceTop + 12, width - 24, controlsBottom - workspaceTop - 12);
-      if (this.classList.contains("automationEditor")) return new DOMRect(0, workspaceTop, width, 480);
-      return new DOMRect();
-    });
-    const observers: Array<{ targets: Set<Element>; notify: () => void; disconnect: ReturnType<typeof vi.fn> }> = [];
-    vi.stubGlobal("ResizeObserver", class {
-      targets = new Set<Element>();
-      disconnect = vi.fn();
-      constructor(callback: ResizeObserverCallback) {
-        observers.push({ targets: this.targets, notify: () => callback([], this as unknown as ResizeObserver), disconnect: this.disconnect });
-      }
-      observe(target: Element) { this.targets.add(target); }
-      unobserve(target: Element) { this.targets.delete(target); }
-    });
-    const fetch = api((url) => url.pathname === "/automations/automation_1" ? { body: {
-      ...automation, status: "paused",
-      steps: [automation.steps[0], { key: "delay", type: "delay", config: { duration: "1 hour" } },
-        { key: "update", type: "contact_update", config: { first_name: "Ada", properties: { plan: "pro" } } }],
-      connections: [{ from: "trigger", to: "delay" }, { from: "delay", to: "update" }],
-    } } : undefined);
-    open("/automations/automation_1/editor");
-    await screen.findByRole("button", { name: "Step delay" });
-    const workspace = document.querySelector<HTMLElement>(".automationEditor")!;
-    const controls = document.querySelector(".automationControls")!;
-    const observer = observers.find((item) => item.targets.has(controls))!;
-    expect(observer.targets.has(workspace)).toBe(true);
-    const hud = document.querySelector(".automationBuilderHud")!;
-    const hudObserver = observers.find((item) => item.targets.has(hud))!;
-    expect(workspace.style.getPropertyValue("--builder-control-height")).toBe("44px");
-    hudHeight = 88; // Custom date inputs wrap into another row.
-    hudObserver.notify();
-    expect(workspace.style.getPropertyValue("--builder-control-height")).toBe("88px");
-    hudHeight = 132;
-    fireEvent(window, new Event("resize"));
-    expect(workspace.style.getPropertyValue("--builder-control-height")).toBe("132px");
-    expect(controls.textContent).toContain("Paused. Runs hold their place.");
-    expect(workspace.style.getPropertyValue("--canvas-controls-bottom")).toBe("120px");
-    fireEvent.click(screen.getByRole("button", { name: "Step delay" }));
-    expect(screen.getByRole("region", { name: "Step delay settings" })).toBeTruthy();
-    controlsBottom = 232; // Simulate a notice/toolbar size change delivered by ResizeObserver.
-    observer.notify();
-    expect(workspace.style.getPropertyValue("--canvas-controls-bottom")).toBe("192px");
-    fireEvent.click(screen.getByRole("button", { name: "Step update" }));
-    const panel = screen.getByRole("region", { name: "Step update settings" });
-    expect(workspace.style.getPropertyValue("--canvas-controls-bottom")).toBe("192px");
-    expect(within(panel).getByLabelText("Properties")).toHaveProperty("disabled", role === "viewer");
-    // A node change keeps the same inherited anchor instead of measuring its form height.
-    const body = panel.querySelector(".canvasPanelBody")!;
-    expect(body.contains(within(panel).getByRole("button", { name: "Close panel" }))).toBe(false);
-    controlsBottom = 150;
-    workspaceTop = 60;
-    fireEvent(window, new Event("resize"));
-    expect(workspace.style.getPropertyValue("--canvas-controls-bottom")).toBe("90px");
-    fireEvent.click(within(panel).getByRole("button", { name: "Close panel" }));
-    expect(document.querySelector(".canvasPanel")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Step delay" }));
-    expect(workspace.style.getPropertyValue("--canvas-controls-bottom")).toBe("90px");
-    fireEvent.click(screen.getByRole("button", { name: "List" }));
-    expect(observer.disconnect).toHaveBeenCalledOnce();
-    expect(workspace.style.getPropertyValue("--canvas-controls-bottom")).toBe("");
-    controlsBottom = 260;
-    fireEvent(window, new Event("resize"));
-    expect(workspace.style.getPropertyValue("--canvas-controls-bottom")).toBe("");
-    fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
-    expect(workspace.style.getPropertyValue("--canvas-controls-bottom")).toBe("200px");
-    expect(screen.getByRole("region", { name: "Step delay settings" })).toBeTruthy();
-    const activeObserver = [...observers].reverse().find((item) => item.targets.has(controls))!;
-    cleanup();
-    expect(activeObserver.disconnect).toHaveBeenCalledOnce();
+    const fetch = api();
+    const router = open("/automations/automation_1/editor");
+    await screen.findByLabelText("Name");
+    expect(screen.queryByText("Saved")).toBeNull();
+    expect(document.querySelector(".automationBuilderHud")).toBeNull();
+    expect(document.querySelector(".automationStatus")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menuitem", { name: /Selected\s*Canvas/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole("menuitem", { name: "List" }));
+    await screen.findByRole("article", { name: "Step welcome" });
+    expect(new URLSearchParams(router.state.location.search).get("view")).toBe("list");
+    fireEvent.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menuitem", { name: /Selected\s*List/ })).toBeTruthy();
+    if (role === "viewer") expect(screen.queryByRole("menuitem", { name: "Duplicate" })).toBeNull();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Counts date range" }));
+    changeControl(screen.getByLabelText("Date range"), { target: { value: "custom" } });
+    fireEvent.change(screen.getByLabelText("From date"), { target: { value: "2026-10-01" } });
+    fireEvent.change(screen.getByLabelText("To date"), { target: { value: "2026-10-08" } });
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(new URLSearchParams(router.state.location.search).get("start")).toBe("2026-10-01");
+    expect(new URLSearchParams(router.state.location.search).get("end")).toBe("2026-10-08");
+    fireEvent.click(screen.getByRole("tab", { name: "Runs" }));
+    chooseView("Canvas");
+    expect(new URLSearchParams(router.state.location.search).get("tab")).toBeNull();
+    expect(new URLSearchParams(router.state.location.search).get("range")).toBe("custom");
+    const status = screen.getByRole("img", { name: "Disabled" });
+    expect(status.tabIndex).toBe(0);
     expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH" || init?.method === "POST")).toBe(false);
   });
 
@@ -171,8 +123,10 @@ describe("AutomationEditor", () => {
     const fetch = api();
     open("/automations/automation_1/editor");
     expect(await screen.findByRole("button", { name: "Step welcome" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Canvas" }).getAttribute("aria-pressed")).toBe("true");
-    expect(screen.getByRole("button", { name: "List" }).getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menuitem", { name: /Selected\s*Canvas/ })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "List" })).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
     expect(screen.getByTestId("location").textContent).toBe("/automations/automation_1/editor");
     expect(document.querySelector(".automationEditor.immersive .automationHeader")).toBeTruthy();
     expect(document.querySelector(".builderName")).toBeNull();
@@ -183,15 +137,15 @@ describe("AutomationEditor", () => {
     fireEvent.click(screen.getByRole("button", { name: "Help" }));
     expect(screen.getByRole("menuitem", { name: "API" })).toBeTruthy();
     fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
-    expect(document.querySelector(".automationBuilderHud")).toBeTruthy();
-    expect(screen.getByLabelText("Date range")).toBeTruthy();
+    expect(document.querySelector(".automationBuilderHud")).toBeNull();
+    expect(screen.queryByText("Saved")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Step welcome" }));
     const panel = screen.getByRole("region", { name: "Step welcome settings" });
     expect(within(panel).getByLabelText("Subject")).toHaveProperty("disabled", role === "viewer");
     fireEvent.click(within(panel).getByRole("button", { name: "Close panel" }));
     expect(screen.queryByRole("region", { name: "Step welcome settings" })).toBeNull();
     if (role === "viewer") {
-      expect(screen.queryByRole("button", { name: /^(Save|Start|Actions)$/ })).toBeNull();
+      expect(screen.queryByRole("button", { name: /^(Save|Start)$/ })).toBeNull();
       fireEvent.keyDown(document.body, { key: "s", metaKey: true });
     } else {
       expect(screen.getByRole("button", { name: "Save" })).toHaveProperty("disabled", true);
@@ -209,12 +163,12 @@ describe("AutomationEditor", () => {
     const panel = screen.getByRole("region", { name: "Step welcome settings" });
     changeControl(within(panel).getByLabelText("Subject"), { target: { value: "Draft subject" } });
     changeControl(screen.getByLabelText("Name"), { target: { value: "Draft name" } });
-    fireEvent.click(screen.getByRole("button", { name: "List" }));
+    chooseView("List");
     expect(new URLSearchParams(router.state.location.search).get("view")).toBe("list");
     const card = screen.getByRole("article", { name: "Step welcome" });
     expect(controlValue(within(card).getByLabelText("Subject"))).toBe("Draft subject");
     changeControl(within(card).getByLabelText("Subject"), { target: { value: "Newer draft" } });
-    if (choice === "canvas") fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
+    if (choice === "canvas") chooseView("Canvas");
     for (const tab of ["Runs", "Metrics"]) {
       fireEvent.click(screen.getByRole("tab", { name: tab }));
       await (tab === "Runs" ? screen.findByText("No runs match") : screen.findByLabelText("Runs by status"));
@@ -223,7 +177,7 @@ describe("AutomationEditor", () => {
       expect(new URLSearchParams(router.state.location.search).get("range")).toBe("7d");
       expect(screen.queryByRole("region", { name: "Step welcome settings" })).toBeNull();
       fireEvent.click(screen.getByRole("tab", { name: "Builder" }));
-      expect(screen.getByRole("button", { name: choice === "canvas" ? "Canvas" : "List" }).getAttribute("aria-pressed")).toBe("true");
+      expect(new URLSearchParams(router.state.location.search).get("view")).toBe(choice);
       expect(controlValue(screen.getByLabelText("Name"))).toBe("Draft name");
       expect(screen.getByText("Unsaved changes")).toBeTruthy();
       expect(screen.getByRole("button", { name: "Save" })).toHaveProperty("disabled", false);
@@ -232,7 +186,7 @@ describe("AutomationEditor", () => {
       });
       expect(controlValue(within(selected).getByLabelText("Subject"))).toBe("Newer draft");
     }
-    if (choice === "list") fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
+    if (choice === "list") chooseView("Canvas");
     expect(screen.getByRole("region", { name: "Step welcome settings" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Step welcome" }).getAttribute("aria-pressed")).toBe("true");
     fireEvent.click(screen.getByRole("button", { name: "Close panel" }));
@@ -255,9 +209,11 @@ describe("AutomationEditor", () => {
     expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
     changeControl(name, { target: { value: "  Renamed  " } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await screen.findByText("Saved");
+    await screen.findByRole("img", { name: "Saved" });
     expect(JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "PATCH")![1]!.body)).name).toBe("Renamed");
     expect(controlValue(screen.getByLabelText("Name"))).toBe("  Renamed  ");
+    expect(screen.getByRole("img", { name: "Saved" }).classList.contains("savedFeedback")).toBe(true);
+    await waitFor(() => expect(screen.queryByRole("img", { name: "Saved" })).toBeNull(), { timeout: 3000 });
   });
 
   it("uses a status-only update when resuming a clean paused graph", async () => {
@@ -337,7 +293,7 @@ describe("AutomationEditor", () => {
     expect(controlValue(within(card).getByLabelText("Field"))).toBe("event.plan");
     expect(screen.getByRole("region", { name: "True branch of pro" })).toBeTruthy();
     expect(screen.getByRole("region", { name: "False branch of pro" })).toBeTruthy();
-    expect(screen.getByText("Saved")).toBeTruthy();
+    expect(screen.queryByText("Saved")).toBeNull();
   });
 
   it("loads and saves native contact change bounds without requiring an event", async () => {
@@ -396,6 +352,7 @@ describe("AutomationEditor", () => {
     await waitFor(() => expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(true));
     const body = JSON.parse(String(fetch.mock.calls.find(([, init]) => init?.method === "PATCH")![1]!.body));
     expect(body.reentry).toBe("once");
+    expect(screen.getByRole("img", { name: "Saving" }).querySelector(".savingSpinner")).toBeTruthy();
     changeControl(selector, { target: { value: "every_time" } });
     release({ body: { ...automation, ...body } });
     await screen.findByText("Unsaved changes");
@@ -510,6 +467,8 @@ describe("AutomationEditor", () => {
     expect(requests()).toHaveLength(1);
     expect(new URL(String(requests()[0]![0])).searchParams.get("automation_id")).toBe("automation_1");
     expect(new URL(String(requests()[0]![0])).searchParams.get("start_date")).toBe("1970-01-01T00:00:00.000Z");
+    fireEvent.click(screen.getByRole("button", { name: "Actions" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Counts date range" }));
     changeControl(screen.getByLabelText("Date range"), { target: { value: "7d" } });
     await waitFor(() => expect(requests()).toHaveLength(2));
   });
@@ -669,7 +628,8 @@ describe("AutomationEditor", () => {
     const patch = () => fetch.mock.calls.find(([, init]) => init?.method === "PATCH");
     await waitFor(() => expect(patch()).toBeTruthy());
     expect(JSON.parse(String(patch()![1]!.body)).status).toBe("enabled");
-    expect(await screen.findByText(/Enabled automations cannot be edited/)).toBeTruthy();
+    expect(await screen.findByRole("img", { name: "Enabled" }, { timeout: 3000 })).toBeTruthy();
+    expect(screen.queryByText(/Enabled automations cannot be edited/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Actions" }));
     expect(screen.getByRole("menuitem", { name: "Stop and cancel runs" })).toBeTruthy();
     fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
@@ -694,7 +654,7 @@ describe("AutomationEditor", () => {
     expect(await panel.findByText("Choose a topic before starting a Marketing email.")).toBeTruthy();
     expect(fetch.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await screen.findByText("Saved");
+    await screen.findByRole("img", { name: "Saved" });
     const patches = () => fetch.mock.calls.filter(([, init]) => init?.method === "PATCH").map(([, init]) => JSON.parse(String(init!.body)));
     expect(patches()).toHaveLength(1);
     expect(patches()[0].steps[1].config.kind).toBe("marketing");
