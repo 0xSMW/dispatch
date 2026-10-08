@@ -2,7 +2,7 @@ import { Heading, Text } from "react-email";
 import { Details, If, Layout, LineItems, TextLink, type LineItem } from "./_components";
 import { exampleBrand, heading, text, type Brand, type EmailVariable } from "./_theme";
 
-const preview = "Your payment was received. This receipt lists the items, tax, and total.";
+const preview = "Payment received. Your receipt and payment details are inside.";
 
 type Props = {
   brand?: Brand;
@@ -46,47 +46,35 @@ export default function Receipt({
         Receipt
       </Heading>
       <Text className="dm-text" style={text}>
-        We received your payment for {brand.productName}. This email is the receipt.
+        Your payment for {brand.productName} was received.
       </Text>
       <Details
         rows={[
           { label: "Receipt", value: receiptNumber },
-          { label: "Paid at", value: paidAt },
+          { label: "Payment date", value: paidAt },
         ]}
       />
       <LineItems items={lineItems} />
       <If value={subtotal}>
-        <Text className="dm-text" style={text}>
-          Subtotal {subtotal}
-        </Text>
+        <Details rows={[{ label: "Subtotal", value: subtotal }]} />
       </If>
       <If value={discount}>
-        <Text className="dm-text" style={text}>
-          Discount {discount}
-        </Text>
+        <Details rows={[{ label: "Discount", value: discount }]} />
       </If>
       <If value={tax}>
-        <Text className="dm-text" style={text}>
-          Tax {tax}
-        </Text>
+        <Details rows={[{ label: "Tax", value: tax }]} />
       </If>
       <If value={taxId}>
-        <Text className="dm-text" style={text}>
-          Tax id {taxId}
-        </Text>
+        <Details rows={[{ label: "Tax ID", value: taxId }]} />
       </If>
-      <Text className="dm-text" style={text}>
-        Total {total}
-      </Text>
+      <Details rows={[{ label: "Total", value: <strong>{total}</strong> }]} />
       <If value={cardLast4}>
         <Text className="dm-text" style={text}>
           Paid with {cardBrand} ending in {cardLast4}.
         </Text>
       </If>
       <If value={billingAddress}>
-        <Text className="dm-text" style={text}>
-          Billing address {billingAddress}
-        </Text>
+        <Details rows={[{ label: "Billing address", value: billingAddress }]} />
       </If>
       <If value={receiptUrl}>
         <TextLink brand={brand} href={receiptUrl}>
