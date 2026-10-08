@@ -66,7 +66,7 @@ export function Webhooks() {
       list={list}
       noun="webhooks"
       rowHref={(row) => `/webhooks/${row.id}`}
-      empty={<Empty title="No webhooks" body="Add an endpoint to receive email, contact, and domain events." />}
+      empty={<Empty title="No webhooks yet" body="Add an endpoint to get notified about email, contact, and domain events." />}
       columns={[
         {
           header: "Endpoint",
