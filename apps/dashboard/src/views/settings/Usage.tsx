@@ -1,5 +1,6 @@
+import { Link } from "react-router-dom";
 import { Badge } from "../../components/Badge";
-import { Failed } from "../../components/Empty";
+import { Empty, Failed } from "../../components/Empty";
 import { Facts } from "../../components/Facts";
 import { PageHeader } from "../../components/PageHeader";
 import { Panel } from "../../components/Panel";
@@ -112,14 +113,14 @@ export function Usage() {
 
       <Panel title="Usage">
         <div className="stack">
-          <p className="note">Counters for this tenant.</p>
+          {usage.loading || usage.error || usage.rows.length || usage.page > 1 ? <p className="note">Counters for this tenant.</p> : null}
           <Table
             compact
             rows={usage.rows}
             loading={usage.loading}
             error={usage.error}
             onRetry={() => void usage.reload()}
-            empty={<p className="muted">No usage yet. Counters start with the first API call.</p>}
+            empty={<Empty compact title="No usage yet" body="Counters start with the first API call." action={<Link to="/emails/send">Test send</Link>} />}
             page={usage.page}
             hasMore={usage.hasMore}
             onNext={usage.next}
