@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { Download } from "lucide-react";
 import { Badge } from "../../components/Badge";
 import { ConfirmPhrase } from "../../components/ConfirmPhrase";
@@ -45,6 +45,7 @@ export function Contacts() {
   const client = useClient();
   const can = useCan();
   const navigate = useNavigate();
+  const [, setParams] = useSearchParams();
   const filters = useFilters(["q", "subscribed", "segment_id"]);
   const list = useList<Contact>("/contacts", filters);
   const segments = useAll<Segment>("/segments");
@@ -53,6 +54,8 @@ export function Contacts() {
   const [deleting, setDeleting] = useState<Contact | null>(null);
   const close = () => setDialog(null);
   const filtered = Boolean(filters.q || filters.subscribed || filters.segment_id);
+  const emptyAccount = !list.loading && !list.error && list.page === 1 && list.rows.length === 0
+    && !filtered && !stats.loading && !stats.error && stats.data?.all === 0;
 
   const selection = useSelection(list.rows.map((row) => row.id));
 
@@ -119,13 +122,13 @@ export function Contacts() {
     <div className="page">
       <PageHeader
         title="Audience"
-        learn={learnLinks("audience")}
+        learn={emptyAccount ? undefined : learnLinks("audience")}
         actions={
           <>
             <button type="button" className="secondary" onClick={() => setDialog("imports")}>
               Imports
             </button>
-            {can ? (
+            {can && !emptyAccount ? (
               <>
                 <button type="button" className="secondary" onClick={() => setDialog("import")}>
                   Import CSV
@@ -139,8 +142,8 @@ export function Contacts() {
         }
       />
       <Tabs tabs={audienceTabs} />
-      <StatStrip stats={stats.data} />
-      <FilterBar
+      {!emptyAccount ? <StatStrip stats={stats.data} /> : null}
+      {!emptyAccount ? <FilterBar
         search="Search by email or name"
         filters={[
           {
@@ -161,7 +164,7 @@ export function Contacts() {
         >
           <Download size={16} />
         </button>
-      </FilterBar>
+      </FilterBar> : null}
       <Table
         columns={columns}
         rows={list.rows}
@@ -187,10 +190,18 @@ export function Contacts() {
         noun="contacts"
         empty={
           filtered ? (
-            <Empty title="No contacts found" body="No contact matches these filters." />
+            <Empty title="No contacts found" body="No contact matches these filters."
+              action={<button type="button" className="secondary" onClick={() => setParams((current) => {
+                const next = new URLSearchParams(current);
+                for (const key of ["q", "subscribed", "segment_id"]) next.delete(key);
+                return next;
+              })}>Clear filters</button>} />
           ) : (
             <Empty title="No contacts" body="Add contacts by hand, import a CSV, or create them through the API."
-              action={can ? <button type="button" onClick={() => setDialog("add")}>Add your first contact</button> : null} />
+              action={can ? <>
+                <button type="button" onClick={() => setDialog("add")}>Add your first contact</button>
+                <button type="button" className="secondary" onClick={() => setDialog("import")}>Import CSV</button>
+              </> : null} />
           )
         }
       />
@@ -205,7 +216,7 @@ export function Contacts() {
 
       {dialog === "add" ? <AddContact onClose={close} onDone={refresh} /> : null}
       {dialog === "import" ? <ImportContacts onClose={close} onDone={refresh} /> : null}
-      {dialog === "imports" ? <Imports onClose={close} /> : null}
+      {dialog === "imports" ? <Imports onClose={close} onImport={can ? () => setDialog("import") : undefined} /> : null}
       {dialog === "segment" ? (
         <AddToSegment
           ids={selection.ids}
