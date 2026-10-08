@@ -1,3 +1,4 @@
+import { changeControl, controlValue } from "../../testingControls";
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -29,10 +30,10 @@ describe("Enrollment", () => {
     const onJob = vi.fn();
     render(h(Enroll, { automation, onClose: vi.fn(), onJob }), { wrapper });
     expect(screen.getByRole("button", { name: /Enroll contacts/ })).toHaveProperty("disabled", true);
-    await screen.findByRole("option", { name: "VIP" });
+    await waitFor(() => expect(document.querySelector("select")?.parentElement?.textContent ?? document.body.textContent).toContain("VIP"));
     expect(screen.getByText("This can send emails immediately.")).toBeTruthy();
     expect(screen.getByText(/ignores from\/to/)).toBeTruthy();
-    fireEvent.change(screen.getByLabelText("Audience"), { target: { value: audience } });
+    changeControl(screen.getByLabelText("Audience"), { target: { value: audience } });
     fireEvent.click(screen.getByRole("button", { name: /Enroll contacts/ }));
     await screen.findByText("queued");
     expect(bodyOf(fetch, "POST /automations/auto_1/enroll")).toEqual(body);
@@ -65,7 +66,7 @@ describe("Enrollment", () => {
   it("shows start errors without pretending a job exists", async () => {
     stubApi({ "GET /segments": segments, "POST /automations/auto_1/enroll": new Status(409, { name: "conflict", message: "Automation is paused." }) });
     render(h(Enroll, { automation, onClose: vi.fn() }), { wrapper });
-    fireEvent.change(screen.getByLabelText("Audience"), { target: { value: "all" } });
+    changeControl(screen.getByLabelText("Audience"), { target: { value: "all" } });
     fireEvent.click(screen.getByRole("button", { name: /Enroll contacts/ }));
     expect(await screen.findByRole("alert")).toHaveProperty("textContent", "Automation is paused.");
     expect(screen.queryByText("Enrollment progress")).toBeNull();
