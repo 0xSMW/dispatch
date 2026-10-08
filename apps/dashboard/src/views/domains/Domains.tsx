@@ -85,9 +85,9 @@ export function Domains() {
       ]}
       empty={
         filters.q || filters.status || filters.region ? (
-          <Empty title="No matching domains" body="Try another search or filter." />
+          <Empty title="No domains match" body="Try a different search or filter." />
         ) : (
-          <Empty title="No domains" body="Add a domain to send from your own address." />
+          <Empty title="No domains yet" body="Add a domain to send email from your own address." />
         )
       }
       columns={[
