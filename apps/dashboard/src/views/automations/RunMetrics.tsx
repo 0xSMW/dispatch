@@ -12,7 +12,7 @@ import type { ResourceState } from "../../hooks/useResource";
 import { emailRows, type EmailReport } from "./EmailMetrics";
 import { branchesOf, branchSteps, type Tree, type Node } from "./graph";
 import { SplitMetrics } from "./SplitMetrics";
-import { withQuery } from "../../lib/client";
+import { withQuery, type Client } from "../../lib/client";
 import type { RunCounts, RunMetrics as Metrics, SplitReport } from "../../types";
 import type { Series } from "../../components/chart";
 import { GoalConversions } from "../goals/GoalConversions";
@@ -71,13 +71,31 @@ export function runSeries(days: Metrics["data"]): Series[] {
   }));
 }
 
+/** Validate the response before rendering counts or building dated chart points. */
+async function loadRunMetrics(client: Client, path: string): Promise<Metrics> {
+  const value = await client.get<Metrics>(path);
+  const count = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0;
+  const counts = (value: unknown) => {
+    if (!value || typeof value !== "object") return false;
+    const row = value as Record<string, unknown>;
+    return ["running", "completed", "failed", "cancelled"].every((key) => count(row[key]));
+  };
+  if (!value || !count(value.total) || !counts(value.totals) || !Array.isArray(value.data) ||
+    !value.data.every((row) => row && counts(row) && typeof row.date === "string" &&
+      /^\d{4}-\d{2}-\d{2}$/.test(row.date) && Number.isFinite(day(row.date).getTime()) &&
+      day(row.date).toISOString().slice(0, 10) === row.date)) {
+    throw new Error("Run metrics returned an invalid response. Try again.");
+  }
+  return value;
+}
+
 /** The builder's Metrics tab: status shares and runs per day, from `GET /automations/:id/runs/metrics`. */
 export function RunMetrics({ automationId, tree = null, names = {}, emails, onWinner, winnerDisabled = true, winnerBusy = false }: {
   automationId: string; tree?: Tree | null; names?: Record<string, string>; emails?: ResourceState<EmailReport>;
   onWinner?: (stepKey: string, variant: string) => Promise<void>; winnerDisabled?: boolean; winnerBusy?: boolean;
 }) {
   const range = useDateRange();
-  const metrics = useResource<Metrics>(withQuery(`/automations/${automationId}/runs/metrics`, { start_date: range.start, end_date: range.end }));
+  const metrics = useResource<Metrics>(withQuery(`/automations/${automationId}/runs/metrics`, { start_date: range.start, end_date: range.end }), loadRunMetrics);
   const data = metrics.data;
   const [stepKey, setStepKey] = useState("");
   const steps = emailRows(tree, names, emails?.data ?? null).filter((row) => row.key !== "legacy");
