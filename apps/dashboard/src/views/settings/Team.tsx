@@ -98,6 +98,7 @@ export function Team() {
 
       <Section
         title="Team"
+        plain
         list={users}
         emptyBody="Add someone to give them access to your team."
         columns={[
@@ -166,8 +167,6 @@ export function Team() {
 
       </Modal> : null}
 
-      <details>
-      <summary>Sessions</summary>
       <Section
         title="Sessions"
         list={sessions}
@@ -213,10 +212,7 @@ export function Team() {
         }
       />
 
-      </details>
 
-      <details open={Boolean(filters.action)}>
-      <summary>Audit log</summary>
       <Panel title="Audit log">
         <div className="stack">
           {audit.loading || audit.error || audit.rows.length || audit.page > 1 || filters.action ? <FilterBar search="Filter by action, such as domain" searchParam="action" /> : null}
@@ -242,7 +238,6 @@ export function Team() {
         </div>
       </Panel>
 
-      </details>
 
       {dialog === "invite" ? <Invite onClose={close} onDone={() => void users.reload()} /> : null}
       {dialog === "role" ? <AddRole onClose={close} onDone={roles.reload} /> : null}
@@ -286,6 +281,7 @@ export function Team() {
 
 function Section<T extends { id: string }>({
   title,
+  plain = false,
   list,
   columns,
   action,
@@ -294,6 +290,7 @@ function Section<T extends { id: string }>({
   menu,
 }: {
   title: string;
+  plain?: boolean;
   list: ListState<T>;
   columns: Array<Column<T>>;
   action?: ReactNode;
@@ -301,8 +298,7 @@ function Section<T extends { id: string }>({
   emptyBody?: ReactNode;
   menu?: (row: T) => ReactNode;
 }) {
-  return (
-    <Panel title={title} actions={list.loading || list.error || list.rows.length || list.page > 1 ? action : null}>
+  const table = (
       <Table
         compact
         empty={<Empty compact title={`No ${title.toLowerCase()} yet`} body={emptyBody} action={emptyAction ?? action} />}
@@ -317,8 +313,17 @@ function Section<T extends { id: string }>({
         onNext={list.next}
         onPrevious={list.previous}
       />
-    </Panel>
   );
+  const actions = list.loading || list.error || list.rows.length || list.page > 1 ? action : null;
+  return plain ? (
+    <section>
+      <div className="panelHeader">
+        <h2>{title}</h2>
+        {actions ? <div className="toolbar">{actions}</div> : null}
+      </div>
+      {table}
+    </section>
+  ) : <Panel title={title} actions={actions}>{table}</Panel>;
 }
 
 /**
