@@ -114,9 +114,9 @@ html:root {
   --re-separator: var(--border);
   --re-text: var(--text);
   --re-text-muted: var(--text-muted);
-  --re-hover: var(--surface);
-  --re-active: var(--primary-subtle);
-  --re-pressed: var(--primary-subtle);
+  --re-hover: var(--hover);
+  --re-active: var(--selected);
+  --re-pressed: var(--selected);
   --re-shadow: var(--shadow);
   --re-radius: var(--radius);
   --re-danger: var(--danger);
