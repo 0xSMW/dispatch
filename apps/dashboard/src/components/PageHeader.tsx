@@ -15,14 +15,14 @@ export interface PageHeaderProps {
   actions?: ReactNode;
   /** Back link above the title, such as { to: "/domains", label: "Domains" }. */
   back?: { to: string; label: string };
-  /** A line under the title. */
-  description?: ReactNode;
+  /** Functional context under the title, such as an active email scope. */
+  context?: ReactNode;
   /** Links to public documentation available in this dashboard version. */
   learn?: Array<{ label: string; href: string }>;
 }
 
 /** Title row for list and detail pages. */
-export function PageHeader({ title, label, icon, tone = "neutral", actions, back, description, learn }: PageHeaderProps) {
+export function PageHeader({ title, label, icon, tone = "neutral", actions, back, context, learn }: PageHeaderProps) {
   return (
     <header className="pageHeader">
       {back ? (
@@ -36,7 +36,7 @@ export function PageHeader({ title, label, icon, tone = "neutral", actions, back
         <div className="pageHeaderText">
           {label ? <div className="typeLabel">{label}</div> : null}
           <h1>{title}</h1>
-          {description ? <p className="muted">{description}</p> : null}
+          {context ? <p className="muted">{context}</p> : null}
         </div>
         <div className="toolbar pageActions">
           {actions}
