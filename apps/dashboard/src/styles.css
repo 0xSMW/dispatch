@@ -558,6 +558,63 @@ button.switch.on {
   flex: 1;
 }
 
+.sidebarTool {
+  position: relative;
+  display: inline-flex;
+}
+
+.sidebarTooltip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 110;
+  display: grid;
+  gap: 4px;
+  width: max-content;
+  max-width: 240px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-input);
+  border-radius: 7px;
+  background: var(--surface-raised);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  font-size: 12px;
+  font-weight: 400;
+  visibility: hidden;
+  opacity: 0;
+  transform: translateY(3px);
+  pointer-events: none;
+  transition: opacity 120ms ease, transform 120ms ease, visibility 120ms;
+}
+
+.sidebarTooltip.visible {
+  visibility: visible;
+  opacity: 1;
+  transform: translateY(0);
+  transition-delay: 150ms;
+}
+
+.sidebarTooltipRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.sidebarTooltipRow kbd {
+  margin-left: auto;
+  font-size: 10px;
+}
+
+.sidebarTooltip small {
+  color: var(--text-muted);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebarTooltip { transition: none; transform: none; }
+}
+
 .account .menu {
   width: 100%;
 }
@@ -1405,6 +1462,16 @@ td a {
 .drawerOverlay {
   place-items: stretch end;
   padding: 0;
+  overflow: hidden;
+  animation: drawerBackdropIn 220ms ease-in-out both;
+}
+
+.drawerOverlay.closing {
+  animation: drawerBackdropOut 220ms ease-in-out both;
+}
+
+.drawerOverlay.closing .drawer {
+  animation: drawerOut 220ms ease-in-out both;
 }
 
 .drawer {
@@ -1415,6 +1482,31 @@ td a {
   border-left: 1px solid var(--border);
   background: var(--surface);
   box-shadow: var(--shadow);
+  animation: drawerIn 220ms ease-in-out both;
+}
+
+@keyframes drawerIn {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+@keyframes drawerOut {
+  from { transform: translateX(0); }
+  to { transform: translateX(100%); }
+}
+
+@keyframes drawerBackdropIn {
+  from { background: transparent; }
+  to { background: var(--overlay); }
+}
+
+@keyframes drawerBackdropOut {
+  from { background: var(--overlay); }
+  to { background: transparent; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .drawerOverlay, .drawer, .drawerOverlay.closing, .drawerOverlay.closing .drawer { animation: none; }
 }
 
 .drawer.wide {
