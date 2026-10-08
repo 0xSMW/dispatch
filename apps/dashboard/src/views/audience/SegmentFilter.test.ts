@@ -25,6 +25,34 @@ function Harness({ initial = emailRule, disabled = false }: { initial?: Rule; di
 describe("SegmentFilter", () => {
   afterEach(() => { cleanup(); sessionStorage.clear(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
+  it("previews built-in rules despite unrelated choices failing, but blocks referenced scopes", async () => {
+    const fetch = mockFetch((raw) => {
+      const path = new URL(raw).pathname;
+      if (path === "/segments/preview") return { body: { count: 2, sample: [] } };
+      return { status: 500, body: { message: "Choices unavailable" } };
+    });
+    signIn();
+    const view = render(h(SegmentFilter, { rule: emailRule, onChange: vi.fn() }), { wrapper });
+    await screen.findByText("2 matching contacts");
+    const before = calls(fetch).filter((call) => call === "POST /segments/preview").length;
+    view.rerender(h(SegmentFilter, { rule: { ...opened, scope: { automation_id: "auto_1" } }, onChange: vi.fn() }));
+    await screen.findByRole("alert");
+    expect(calls(fetch).filter((call) => call === "POST /segments/preview")).toHaveLength(before);
+  });
+
+  it.each(["contact.topics", "contact.segments"])("requires definitions for potentially legacy scalar %s", async (field) => {
+    mockFetch((raw) => {
+      const path = new URL(raw).pathname;
+      if (path === "/contact-properties") return { status: 500, body: { message: "Properties unavailable" } };
+      return { body: sources[`GET ${path}` as keyof typeof sources] };
+    });
+    signIn();
+    const valid = vi.fn();
+    render(h(SegmentFilter, { rule: { type: "rule", field, operator: "contains", value: "topic_news" }, onChange: vi.fn(), onValidityChange: valid }), { wrapper });
+    await screen.findByRole("alert");
+    expect(valid).toHaveBeenLastCalledWith(false);
+  });
+
   it("previews the exact controlled rule, caps samples at ten, and excludes event choices", async () => {
     const fetch = stubApi({
       ...sources, "POST /segments/preview": { count: 42, sample: Array.from({ length: 12 }, (_, index) => ({ id: `c_${index}`, email: `${index}@example.com` })) },
@@ -74,16 +102,16 @@ describe("SegmentFilter", () => {
     signIn();
     render(h(Harness, { initial: opened }), { wrapper });
     await screen.findByText("0 matching contacts");
-    fireEvent.change(screen.getByLabelText("Email scope"), { target: { value: "automation" } });
-    fireEvent.change(screen.getByLabelText("Automation"), { target: { value: "auto_2" } });
+    fireEvent.change(screen.getByLabelText("Email scope").closest(".dropdown")!.querySelector("select")!, { target: { value: "automation" } });
+    fireEvent.change(screen.getByLabelText("Automation").closest(".dropdown")!.querySelector("select")!, { target: { value: "auto_2" } });
     fireEvent.change(screen.getByLabelText("Window"), { target: { value: "30 days" } });
     await waitFor(() => expect(bodyOf(fetch, "POST /segments/preview")).toEqual({ rule: { ...opened, scope: { automation_id: "auto_2" }, window: "30 days" } }));
-    fireEvent.change(screen.getByLabelText("Email scope"), { target: { value: "broadcast" } });
-    fireEvent.change(screen.getByLabelText("Broadcast"), { target: { value: "br_2" } });
+    fireEvent.change(screen.getByLabelText("Email scope").closest(".dropdown")!.querySelector("select")!, { target: { value: "broadcast" } });
+    fireEvent.change(screen.getByLabelText("Broadcast").closest(".dropdown")!.querySelector("select")!, { target: { value: "br_2" } });
     await waitFor(() => expect(bodyOf(fetch, "POST /segments/preview")).toEqual({ rule: { ...opened, scope: { broadcast_id: "br_2" }, window: "30 days" } }));
     expect(calls(fetch)).toContain("GET /automations?limit=100&after=auto_1");
     expect(calls(fetch)).toContain("GET /broadcasts?limit=100&after=br_1");
-    fireEvent.change(screen.getByLabelText("Email scope"), { target: { value: "any" } });
+    fireEvent.change(screen.getByLabelText("Email scope").closest(".dropdown")!.querySelector("select")!, { target: { value: "any" } });
     fireEvent.change(screen.getByLabelText("Window"), { target: { value: "" } });
     await waitFor(() => expect(bodyOf(fetch, "POST /segments/preview")).toEqual({ rule: opened }));
   });
