@@ -10,8 +10,8 @@ const darkModeCss = `
     .dm-canvas, .dm-canvas > table > tbody > tr > td { background-color: ${dark.canvas} !important; }
     .dm-card { background-color: ${dark.card} !important; }
     .dm-text { color: ${dark.text} !important; }
-    .dm-divider { border-color: #3f3f46 !important; }
-    .dm-button { background-color: #fafafa !important; color: #18181b !important; border-color: #fafafa !important; }
+    .dm-divider { border-color: #404040 !important; }
+    .dm-button { background-color: #fafafa !important; color: #171717 !important; border-color: #fafafa !important; }
     .dm-muted { color: ${dark.muted} !important; }
     a.dm-link { color: ${dark.link} !important; }
   }
