@@ -140,8 +140,8 @@ describe("lifecycle sources and metadata", () => {
   it.each(["setup-reminder", "confirm-subscription"])("%s renders the canonical default theme CSS", (slug) => {
     const rendered = renderTemplate(entry(slug), { CONFIRM_URL: "https://acme.example/confirm/token" }, brand);
     for (const css of [
-      "background-color:#f4f4f5", "background-color:#ffffff", "color:#18181b",
-      "border:1px solid #e4e4e7", "font-size:16px", "border-radius:8px",
+      "background-color:#f5f5f5", "background-color:#ffffff", "color:#171717",
+      "border:1px solid #e5e5e5", "font-size:16px", "border-radius:8px",
       "background-color:#18181b;border-radius:8px;border:1px solid #18181b;color:#ffffff",
     ]) {
       expect(rendered.html).toContain(css);
