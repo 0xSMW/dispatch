@@ -149,7 +149,7 @@ export function Webhook() {
           <Delivery key={selected} webhookId={id!} eventId={selected} onReplayed={() => void deliveries.reload()} />
         ) : (
           <Panel title="Delivery">
-            <Empty title="No delivery selected" body="Pick a delivery to see its payload and attempts." />
+            <Empty title="No delivery selected" body="Pick a delivery to see what was sent and each attempt." />
           </Panel>
         )}
       </div>
