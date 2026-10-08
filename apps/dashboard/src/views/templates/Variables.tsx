@@ -1,3 +1,4 @@
+import { Dropdown } from "../../components/Dropdown";
 import { useRef, type MutableRefObject } from "react";
 import { Table } from "../../components/Table";
 import { builtIn, type Found, type Variable, type VariableType } from "./render";
@@ -90,7 +91,7 @@ export function VariableTable({
           {
             header: "Type",
             cell: (item) => (
-              <select
+              <Dropdown
                 aria-label={`Type of ${item.key}`}
                 value={item.type}
                 disabled={disabled}
@@ -102,7 +103,7 @@ export function VariableTable({
                 <option value="string">string</option>
                 <option value="number">number</option>
                 <option value="list">list</option>
-              </select>
+              </Dropdown>
             ),
           },
           {
