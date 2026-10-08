@@ -3,7 +3,7 @@ import { Layout } from "./_components";
 import { ProductAction } from "./_components/ProductAction";
 import { exampleBrand, heading, text, type Brand, type EmailVariable } from "./_theme";
 
-const preview = "You are subscribed. Here is what to expect from our product notes.";
+const preview = "You are subscribed to product news and practical tips.";
 
 type Props = {
   brand?: Brand;
@@ -17,10 +17,10 @@ export default function NewsletterWelcome({ brand = exampleBrand, firstName = "t
       reason="You received this email because you subscribed to our product notes." marketing>
       <Heading as="h1" className="dm-text" style={heading}>Thanks for subscribing</Heading>
       <Text className="dm-text" style={text}>
-        Hi {firstName}, welcome to the {brand.productName} newsletter.
+        Hi {firstName}, you are subscribed to the {brand.productName} newsletter.
       </Text>
       <Text className="dm-text" style={text}>
-        We will share product news and practical tips. You can change your preferences or unsubscribe below.
+        Expect product news and practical tips. Manage your preferences or unsubscribe any time below.
       </Text>
       <ProductAction brand={brand} href={actionUrl}>Explore {brand.productName}</ProductAction>
     </Layout>
