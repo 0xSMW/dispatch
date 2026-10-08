@@ -203,7 +203,7 @@ describe("AutomationEditor", () => {
     if (choice === "canvas") fireEvent.click(screen.getByRole("button", { name: "Canvas" }));
     for (const tab of ["Runs", "Metrics"]) {
       fireEvent.click(screen.getByRole("tab", { name: tab }));
-      await (tab === "Runs" ? screen.findByText("No runs") : screen.findByLabelText("Runs by status"));
+      await (tab === "Runs" ? screen.findByText("No runs match") : screen.findByLabelText("Runs by status"));
       expect(document.querySelector(".automationEditor.immersive")).toBeNull();
       expect(new URLSearchParams(router.state.location.search).get("view")).toBe(choice);
       expect(new URLSearchParams(router.state.location.search).get("range")).toBe("7d");
@@ -741,7 +741,7 @@ describe("AutomationEditor", () => {
   it("filters runs by date range", async () => {
     const fetch = api();
     open("/automations/automation_1/editor?tab=runs&range=custom&start=2026-09-01&end=2026-09-02");
-    await screen.findByText("No runs");
+    await screen.findByText("No runs match");
     const runsCall = fetch.mock.calls.map(([url]) => new URL(String(url))).find((url) => url.pathname.endsWith("/runs"))!;
     expect(runsCall.searchParams.get("start_date")).toBe(new Date(2026, 8, 1).toISOString());
     expect(runsCall.searchParams.get("end_date")).toBe(new Date(new Date(2026, 8, 3).getTime() - 1).toISOString());
