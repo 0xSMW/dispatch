@@ -305,9 +305,14 @@ export function registerPlatform(
     const page = await paginate(
       db,
       {
-        table: "users",
+        // Page people, including accounts whose team membership was removed. The join is
+        // one-to-one by (tenant_id, user_id), so it does not alter user pagination.
+        table: "users u left join memberships m on m.tenant_id = u.tenant_id and m.user_id = u.id and m.disabled_at is null left join roles r on r.tenant_id = m.tenant_id and r.id = m.role_id",
         tenantId: request.auth!.tenant_id,
-        select: "id, email, name, created_at, updated_at, deactivated_at",
+        tenantCol: "u.tenant_id",
+        cursorCol: "u.created_at",
+        idCol: "u.id",
+        select: "u.id, u.email, u.name, u.created_at, u.updated_at, u.deactivated_at, m.id as membership_id, m.created_at as membership_created_at, m.role_id, r.name as role, r.deleted_at as role_deleted_at, case when r.deleted_at is null then r.permissions else '[]'::jsonb end as permissions",
         deletedCol: null,
       },
       paging(request),
