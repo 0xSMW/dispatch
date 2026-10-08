@@ -70,6 +70,16 @@ export function Table<T>({
   const span = columns.length + (selection ? 1 : 0) + (menu ? 1 : 0);
   const showSkeleton = loading && rows.length === 0;
 
+  if (!loading && !error && rows.length === 0) {
+    return <div className={compact ? "emptyTable compact" : "emptyTable"}>
+      {empty ?? <Empty />}
+      {page !== undefined && page > 1 ? <div className="tableFooter">
+        <span>Page {page}</span>
+        <button type="button" className="secondary small" onClick={onPrevious}>Previous</button>
+      </div> : null}
+    </div>;
+  }
+
   return (
     <div className={compact ? "tableWrap compact" : "tableWrap"}>
       <table>
