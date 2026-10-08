@@ -12,7 +12,7 @@ const code = {
 export function Code({ children, brand }: { children: React.ReactNode; brand?: Brand }) {
   const theme = useTheme(brand);
   return (
-    <Text className="dm-text" style={{ ...code, fontSize: theme.THEME_FONT_SIZE,
+    <Text className="dm-text dm-divider" style={{ ...code, fontSize: "28px", fontWeight: "600", padding: "16px 20px", border: `1px solid ${theme.THEME_BORDER_COLOR}`, borderRadius: theme.THEME_RADIUS,
       fontFamily: theme.THEME_FONT_FAMILY, color: theme.THEME_TEXT_COLOR }}>
       {children}
     </Text>
