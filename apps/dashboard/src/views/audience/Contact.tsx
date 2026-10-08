@@ -1,3 +1,4 @@
+import { Dropdown } from "../../components/Dropdown";
 import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { User, X } from "lucide-react";
@@ -303,14 +304,14 @@ function Segments({ contactId }: { contactId: string }) {
         ) : null}
         {can && available.length ? (
           <form className="inlineForm" onSubmit={submit}>
-            <select aria-label="Segment" value={choice} onChange={(event) => setChoice(event.target.value)}>
+            <Dropdown aria-label="Segment" value={choice} onChange={(event) => setChoice(event.target.value)}>
               <option value="">Choose a segment</option>
               {available.map((segment) => (
                 <option key={segment.id} value={segment.id}>
                   {segment.name}
                 </option>
               ))}
-            </select>
+            </Dropdown>
             <button type="submit" className="secondary" disabled={!choice || add.isLoading}>
               Add
             </button>
