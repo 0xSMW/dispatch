@@ -2,7 +2,7 @@ import { Heading, Text } from "react-email";
 import { Action, If, Layout, TextLink } from "./_components";
 import { exampleBrand, heading, text, type Brand, type EmailVariable } from "./_theme";
 
-const preview = "We could not take your payment. Update the card to keep the service.";
+const preview = "Your payment needs attention. Review your payment method.";
 
 type Props = {
   brand?: Brand;
@@ -29,18 +29,18 @@ export default function PaymentFailed({
     <Layout
       brand={brand}
       preview={preview}
-      title="Payment failed"
+      title="Your payment needs attention"
       reason="You received this email because a payment failed."
     >
       <Heading as="h1" className="dm-text" style={heading}>
-        Payment failed
+        Your payment needs attention
       </Heading>
       <Text className="dm-text" style={text}>
         We could not collect {amount} for your {brand.productName} subscription.
       </Text>
       <If value={cardLast4}>
         <Text className="dm-text" style={text}>
-          The card on file was {cardBrand} ending in {cardLast4}.
+          Payment method: {cardBrand} ending in {cardLast4}.
         </Text>
       </If>
       <If value={nextRetryAt}>
@@ -58,7 +58,7 @@ export default function PaymentFailed({
       </Action>
       <If value={invoiceUrl}>
         <TextLink brand={brand} href={invoiceUrl}>
-          View the invoice
+          View invoice
         </TextLink>
       </If>
     </Layout>
