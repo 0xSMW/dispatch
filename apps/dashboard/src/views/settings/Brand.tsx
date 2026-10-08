@@ -326,9 +326,9 @@ function TemplatePreview({ version }: { version: number }) {
     >
       <div className="previewFrame">
         {library.error || entry.error ? (
-          <Empty compact title="Preview unavailable" body={<>The template library is not available. {library.error ?? entry.error}</>} action={<Link to="/templates/library">Browse library</Link>} />
+          <Empty compact title="Preview unavailable" body={<>The template library isn't available right now. {library.error ?? entry.error}</>} action={<Link to="/templates/library">Browse library</Link>} />
         ) : library.data && !slug ? (
-          <Empty compact title="No library preview" body="The template library is empty." action={<Link to="/templates/library">Browse library</Link>} />
+          <Empty compact title="No preview available" body="The template library is empty." action={<Link to="/templates/library">Browse library</Link>} />
         ) : html ? (
           <>
             <div className="previewHead">
