@@ -48,7 +48,7 @@ export function Smtp() {
           ) : system.error ? (
             <Failed message={system.error} onRetry={system.reload} />
           ) : !system.data?.smtp ? (
-            <Empty compact title="SMTP is unavailable on this deployment." body="Send messages through the HTTP API." action={<Link className="button secondary" to="/emails/send">Test send</Link>} />
+            <Empty compact title="SMTP isn't available here" body="Send your emails through the API instead." action={<Link className="button secondary" to="/emails/send">Send a test email</Link>} />
           ) : (
             <>
               <p className="muted">Send through Dispatch from anything that speaks SMTP. Messages take the same path as the API.</p>
