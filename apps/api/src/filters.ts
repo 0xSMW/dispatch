@@ -41,6 +41,17 @@ function flag(value: string, name: string) {
 
 export type TemplateQuery = { q?: string; status?: string };
 
+export function automationWhere(query: { q?: string; status?: string }) {
+  const filter = builder();
+  if (query.status === "disabled") filter.clauses.push("not enabled");
+  else if (query.status === "paused") filter.clauses.push("enabled and paused_at is not null");
+  else if (query.status === "enabled") filter.clauses.push("enabled and paused_at is null");
+  else if (query.status) throw new ApiError("validation_error", 422, "status must be enabled, paused, or disabled");
+  const q = query.q?.trim();
+  if (q) filter.clauses.push(`name ilike ${filter.like(q)}`);
+  return filter.done();
+}
+
 export function templateWhere(query: TemplateQuery) {
   const filter = builder();
   const q = query.q?.trim();
