@@ -218,6 +218,20 @@ describe("platform routes", () => {
     expect(queries.at(-1)!.sql).not.toContain("order by updated_at");
   });
 
+  it("pages tenant users with their membership and effective role, retaining removed accounts", async () => {
+    const { app, queries } = await build();
+    const response = await app.inject({ method: "GET", url: "/users" });
+    expect(response.statusCode).toBe(200);
+    const query = queries.at(-1)!;
+    expect(query.sql).toContain("users u left join memberships m on m.tenant_id = u.tenant_id and m.user_id = u.id and m.disabled_at is null");
+    expect(query.sql).toContain("left join roles r on r.tenant_id = m.tenant_id and r.id = m.role_id");
+    expect(query.sql).toContain("m.id as membership_id");
+    expect(query.sql).toContain("r.deleted_at as role_deleted_at");
+    expect(query.sql).toContain("case when r.deleted_at is null then r.permissions else '[]'::jsonb end as permissions");
+    expect(query.sql).toContain("where u.tenant_id = $1 order by u.created_at desc, u.id desc");
+    expect(query.params[0]).toBe("tenant_1");
+  });
+
   it("orders joined lists by a qualified id", async () => {
     const { app, queries } = await build();
     await app.inject({ method: "GET", url: "/memberships" });
