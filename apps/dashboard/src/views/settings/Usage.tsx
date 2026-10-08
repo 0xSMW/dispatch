@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
 import { Badge, badgeLabel } from "../../components/Badge";
 import { Empty, Failed } from "../../components/Empty";
 import { Facts } from "../../components/Facts";
@@ -109,7 +108,7 @@ function MonthlyUsage({ data }: { data: UsageSummary }) {
       <div className="usageAxis"><span>{data.days[0]?.date}</span><span>{data.days.at(-1)?.date}</span></div>
       {data.recipients === 0 ? <p className="note">No recorded recipient sends this month.</p> : null}
     </figure>
-    <details><summary>Daily totals</summary><div className="usageDaily"><table><thead><tr><th>Date (UTC)</th><th>Recipients</th><th>API requests</th></tr></thead><tbody>{data.days.map((day) => <tr key={day.date}><td>{day.date}</td><td>{day.recipients.toLocaleString()}</td><td>{day.api_requests.toLocaleString()}</td></tr>)}</tbody></table></div></details>
+    <section><h3>Daily totals</h3><div className="usageDaily"><table><thead><tr><th>Date (UTC)</th><th>Recipients</th><th>API requests</th></tr></thead><tbody>{data.days.map((day) => <tr key={day.date}><td>{day.date}</td><td>{day.recipients.toLocaleString()}</td><td>{day.api_requests.toLocaleString()}</td></tr>)}</tbody></table></div></section>
   </div>;
 }
 
@@ -135,8 +134,7 @@ export function Usage() {
         {system.error ? <Failed message={system.error} onRetry={system.reload} /> : !data ? <Skeleton lines={2} /> : <Quota sending={data.sending ?? null} />}
       </Panel>
 
-      <details><summary>System details</summary>
-      <Panel title="System">
+      <Panel title="System details">
         {system.error ? (
           <Failed message={system.error} onRetry={system.reload} />
         ) : !data ? (
@@ -161,9 +159,7 @@ export function Usage() {
         )}
       </Panel>
 
-      </details>
-      <details><summary>Raw usage counters</summary>
-      <Panel title="Usage">
+      <Panel title="Raw usage counters">
         <div className="stack">
           {usage.loading || usage.error || usage.rows.length || usage.page > 1 ? <p className="note">Counters for this tenant.</p> : null}
           <Table
@@ -172,7 +168,9 @@ export function Usage() {
             loading={usage.loading}
             error={usage.error}
             onRetry={() => void usage.reload()}
-            empty={<Empty compact title="No usage yet" body="Your usage shows up here after your first API call." action={<Link to="/emails/send">Send a test email</Link>} />}
+            empty={<Empty compact title="No usage yet" body="Your usage shows up here after your first API call."
+              // action={<Link to="/emails/send">Send a test email</Link>}
+            />}
             page={usage.page}
             hasMore={usage.hasMore}
             onNext={usage.next}
@@ -186,7 +184,6 @@ export function Usage() {
           />
         </div>
       </Panel>
-      </details>
     </div>
   );
 }
