@@ -87,8 +87,9 @@ describe("Forms", () => {
       name: "Signup", topic_ids: ["topic_news"], properties: ["company"], double_opt_in: true,
       from_email: "no-reply@example.com", allowed_origins: ["https://www.example.com"], redirect_url: null,
     }));
-    const snippets = await screen.findByRole("dialog", { name: "Created signup" });
-    expect(within(snippets).getByText(/http:\/\/localhost:3100\/forms\/created%2Fkey/)).toBeTruthy();
+    const snippets = await screen.findByRole("dialog", { name: "Embed form" });
+    expect(snippets.querySelector("code")!.textContent).toContain("http://localhost:3100/forms/created%2Fkey");
+    expect(within(snippets).getByText("Created signup")).toBeTruthy();
     fireEvent.click(within(snippets).getByRole("button", { name: "Copy HTML snippet" }));
     await waitFor(() => expect(copy).toHaveBeenCalledWith(expect.stringContaining('name="website"')));
     expect(calls(fetch).filter((call) => call.startsWith("GET /forms"))).toHaveLength(2);
@@ -116,7 +117,7 @@ describe("Forms", () => {
       name: "Edited", topic_ids: ["topic_news"], properties: ["company"], double_opt_in: false,
       from_email: "news@example.com", allowed_origins: ["https://www.example.com"], redirect_url: null,
     }));
-    await screen.findByRole("dialog", { name: "Edited" });
+    await screen.findByRole("dialog", { name: "Embed form" });
     expect(calls(fetch)).toContain("GET /forms/form_1");
   });
 
@@ -190,8 +191,8 @@ describe("Forms", () => {
     expect(screen.queryByRole("menuitem", { name: "Edit" })).toBeNull();
     expect(screen.queryByRole("menuitem", { name: "Delete" })).toBeNull();
     fireEvent.click(screen.getByRole("menuitem", { name: "View snippets" }));
-    const dialog = await screen.findByRole("dialog", { name: "Newsletter" });
-    fireEvent.click(within(dialog).getByRole("tab", { name: "Fetch" }));
+    const dialog = await screen.findByRole("dialog", { name: "Embed form" });
+    fireEvent.click(within(dialog).getByRole("tab", { name: "JavaScript" }));
     const snippet = dialog.querySelector("code")!.textContent!;
     expect(snippet).toContain("http://localhost:3100/deployment/forms/newsletter");
     expect(snippet).not.toContain("sess_private");
