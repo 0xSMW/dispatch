@@ -1,0 +1,176 @@
+/* Full-screen automation workspace. Scope overrides to the editor only. */
+.automationWorkspaceEditor.automationEditor.immersive {
+  --canvas-overlay-gap: 8px;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+.automationWorkspaceEditor.immersive > .automationControls {
+  position: relative;
+  inset: auto;
+  z-index: 5;
+  display: grid;
+  flex: none;
+  gap: 0;
+  max-height: none;
+  overflow: visible;
+  pointer-events: auto;
+}
+.automationWorkspaceEditor .automationHeader {
+  flex-wrap: nowrap;
+  gap: 8px;
+  padding: 8px 16px;
+  min-height: 52px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--surface);
+}
+.automationWorkspaceEditor .automationHeader .backLink {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+}
+.automationWorkspaceEditor .automationHeader .backLink:hover { background: var(--surface-raised); }
+.automationWorkspaceEditor .automationHeader .automationName {
+  flex: 0 1 240px;
+  min-width: 100px;
+  gap: 0;
+}
+.automationWorkspaceEditor .automationName input {
+  height: 36px;
+  min-height: 36px;
+  padding: 0 8px;
+  border-color: transparent;
+  background: transparent;
+  font-size: 14px;
+  font-weight: 600;
+}
+.automationWorkspaceEditor .automationName input:hover:not(:disabled) { border-color: var(--border); }
+.automationWorkspaceEditor .automationName input:disabled { opacity: 1; color: var(--text); }
+.automationWorkspaceEditor .automationName .fieldError { font-size: 11px; }
+.automationWorkspaceEditor .automationHeader .tabs {
+  flex: none;
+  gap: 8px;
+  border: 0;
+  margin: 0;
+}
+.automationWorkspaceEditor .automationHeader .tab {
+  min-height: 36px;
+  height: 36px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 6px;
+}
+.automationWorkspaceEditor .automationHeader .tab.active { background: var(--surface-raised); }
+.automationWorkspaceEditor .automationActions { margin-left: auto; flex: none; gap: 8px; flex-wrap: nowrap; }
+.automationWorkspaceEditor .automationActions button { min-height: 36px; height: 36px; padding: 0 12px; font-size: 12px; }
+.automationWorkspaceEditor .automationActions button.icon { width: 36px; padding: 0; }
+.automationWorkspaceEditor .saveState { white-space: nowrap; font-size: 12px; }
+.automationWorkspaceEditor .automationStatus {
+  padding: 6px 16px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 18px;
+}
+.automationWorkspaceEditor .automationControls > .notice,
+.automationWorkspaceEditor .automationControls > .alert { margin: 8px 16px; }
+.automationWorkspaceEditor .automationEditorBody {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.automationWorkspaceEditor .automationEditorBody > .builder {
+  margin: 0;
+  max-width: none;
+  height: 100%;
+  min-height: 0;
+}
+.automationWorkspaceEditor.scrollWorkspace .automationEditorBody { overflow: auto; }
+.automationWorkspaceEditor.scrollWorkspace .automationEditorBody > .builder {
+  height: auto;
+  min-height: 100%;
+  display: grid;
+  gap: 16px;
+  padding: 24px 24px 88px;
+  max-width: 1040px;
+  margin: 0 auto;
+}
+.automationWorkspaceEditor.scrollWorkspace .automationEditorBody > .stack {
+  padding: 24px;
+}
+.automationWorkspaceEditor .canvasView.immersive { --canvas-panel-top: 8px; }
+.automationWorkspaceEditor .automationCanvas { height: 100%; }
+.automationWorkspaceEditor .canvasView.immersive > .canvasPanel {
+  box-shadow: none;
+  max-height: calc(100% - var(--canvas-panel-top) - var(--builder-control-height, 44px) - 40px);
+}
+.automationWorkspaceEditor .automationBuilderHud {
+  position: absolute;
+  left: 16px;
+  bottom: 16px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  max-width: calc(100% - 32px);
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.automationWorkspaceEditor.scrollWorkspace .automationBuilderHud { position: sticky; width: fit-content; margin: -68px 16px 16px; }
+.automationWorkspaceEditor .automationBuilderHud .viewSwitch { padding: 0; border: 0; background: transparent; }
+.automationWorkspaceEditor .automationBuilderHud .viewSwitch button,
+.automationWorkspaceEditor .automationBuilderHud .filterSelect { height: 36px; min-height: 36px; }
+.automationWorkspaceEditor .automationBuilderHud .inline { gap: 8px; flex-wrap: wrap; }
+.automationWorkspaceEditor .automationCountsLabel { padding-left: 8px; color: var(--text-muted); font-size: 12px; }
+:root:not([data-theme="light"]) .automationWorkspaceEditor {
+  --bg: #080808;
+  --surface: #101010;
+  --surface-raised: #1b1b1b;
+  --border: #292929;
+  --border-input: #383838;
+}
+@media (max-width: 1100px) {
+  .automationWorkspaceEditor .saveState { display: none; }
+  .automationWorkspaceEditor .automationHeader { padding: 8px; }
+  .automationWorkspaceEditor .automationHeader .automationName { flex-basis: 180px; }
+}
+@media (max-width: 780px) {
+  .automationWorkspaceEditor .automationHeader { flex-wrap: wrap; }
+  .automationWorkspaceEditor .automationHeader .automationName { flex: 1; }
+  .automationWorkspaceEditor .automationHeader .tabs { order: 2; }
+  .automationWorkspaceEditor .automationActions { order: 3; width: auto; }
+  .automationWorkspaceEditor .automationBuilderHud { left: 8px; bottom: 8px; max-width: calc(100% - 16px); }
+  .automationWorkspaceEditor.scrollWorkspace .automationEditorBody > .builder,
+  .automationWorkspaceEditor.scrollWorkspace .automationEditorBody > .stack { padding: 16px 12px 96px; }
+}
+@media (max-width: 480px) {
+  .automationWorkspaceEditor .automationHeader .tab { padding: 0 8px; }
+  .automationWorkspaceEditor .automationActions { margin-left: 0; flex-wrap: wrap; }
+  .automationWorkspaceEditor .automationActions button { padding: 0 8px; }
+  .automationWorkspaceEditor .automationCountsLabel { padding-left: 0; }
+}
+
+/* Leave room beside the zoom HUD on desktop; narrow screens stack the HUDs. */
+@media (min-width: 621px) {
+  .automationWorkspaceEditor.canvasWorkspace .automationBuilderHud { max-width: calc(100% - 248px); }
+}
+@media (max-width: 620px) {
+  .automationWorkspaceEditor .canvasView.immersive > .canvasPanel {
+    max-height: calc(100% - var(--canvas-panel-top) - var(--builder-control-height, 44px) - 64px);
+  }
+}
+.automationWorkspaceEditor .automationBuilderHud .inline { min-width: 0; }
