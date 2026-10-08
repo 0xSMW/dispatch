@@ -89,7 +89,7 @@ export function Runs({ automationId, tree, options }: { automationId: string; tr
           { header: "Contact", cell: (row) => contact(row) ?? <span className="dim">No contact</span> },
           { header: "Event", cell: (row) => <span className="mono">{eventName(row)}</span> },
           { header: "Status", cell: (row) => <Badge value={row.status ?? "running"} /> },
-          { header: "Why it ended", cell: (row) => runReason(row) ?? <span className="dim">—</span> },
+          { header: "Why it ended", cell: (row) => runReason(row, tree, options) ?? <span className="dim">—</span> },
           { header: "Started", cell: (row) => <Time value={row.created_at} /> },
           { header: "Duration", cell: (row) => (finished(row) ? elapsed(row.created_at, row.updated_at) : <span className="dim">—</span>) },
         ]}
@@ -140,7 +140,7 @@ export function RunDrawer({ automationId, runId, tree, onClose, options }: { aut
               { label: "ID", value: data.id, copy: true },
             ]}
           />
-          {runReason(data, tree) ? <div className="notice" role="status">{runReason(data, tree)}</div> : null}
+          {runReason(data, tree, options) ? <div className="notice" role="status">{runReason(data, tree, options)}</div> : null}
           {data.error ? (
             <div className="alert" role="alert">
               {data.error}
