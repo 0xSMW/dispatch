@@ -1,3 +1,4 @@
+import { changeControl, controlValue } from "../../testingControls";
 // @vitest-environment jsdom
 import { cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -83,7 +84,7 @@ describe("Contact", () => {
         ]),
       ),
     );
-    expect(screen.getByText("subscribed")).toBeTruthy();
+    expect(screen.getByText("Subscribed")).toBeTruthy();
     expect(await screen.findByLabelText("Remove from VIP")).toBeTruthy();
     expect(await screen.findByText("Opted out")).toBeTruthy();
     expect(screen.getByText("Default: opt out")).toBeTruthy();
@@ -145,9 +146,9 @@ describe("Contact", () => {
     const fetch = api();
     open();
     const seats = (await screen.findByLabelText("seats")) as HTMLInputElement;
-    fireEvent.change(seats, { target: { value: "8" } });
-    fireEvent.change(screen.getByLabelText("legacy"), { target: { value: "" } });
-    fireEvent.change(screen.getByLabelText("Last name"), { target: { value: "Lovelace" } });
+    changeControl(seats, { target: { value: "8" } });
+    changeControl(screen.getByLabelText("legacy"), { target: { value: "" } });
+    changeControl(screen.getByLabelText("Last name"), { target: { value: "Lovelace" } });
     fireEvent.click(screen.getByRole("button", { name: /^Save/ }));
     await waitFor(() => expect(calls(fetch)).toContain("PATCH /contacts/contact_ada"));
     expect(bodyOf(fetch, "PATCH /contacts/contact_ada")).toEqual({
@@ -173,15 +174,15 @@ describe("Contact", () => {
     });
     open();
     await screen.findByLabelText("active");
-    fireEvent.change(screen.getByLabelText("active"), { target: { value: "false" } });
-    fireEvent.change(screen.getByLabelText("topics"), { target: { value: "true" } });
-    fireEvent.change(screen.getByLabelText("renewed format"), { target: { value: "text" } });
-    fireEvent.change(screen.getByLabelText("renewed"), { target: { value: "2026-02-30" } });
+    changeControl(screen.getByLabelText("active"), { target: { value: "false" } });
+    changeControl(screen.getByLabelText("topics"), { target: { value: "true" } });
+    changeControl(screen.getByLabelText("renewed format"), { target: { value: "text" } });
+    changeControl(screen.getByLabelText("renewed"), { target: { value: "2026-02-30" } });
     expect(screen.getByRole("button", { name: /^Save/ })).toHaveProperty("disabled", true);
     fireEvent.submit(screen.getByLabelText("renewed").closest("form")!);
     expect(calls(fetch).some((call) => call.startsWith("PATCH"))).toBe(false);
     const date = "2026-10-05T12:34:56+05:30";
-    fireEvent.change(screen.getByLabelText("renewed"), { target: { value: date } });
+    changeControl(screen.getByLabelText("renewed"), { target: { value: date } });
     fireEvent.click(screen.getByRole("button", { name: /^Save/ }));
     await waitFor(() => expect(bodyOf(fetch, "PATCH /contacts/contact_ada")).toEqual({
       first_name: "Ada", last_name: null, properties: { active: false, topics: true, renewed: date },
@@ -200,8 +201,9 @@ describe("Contact", () => {
     const fetch = api();
     open();
     const segments = (await screen.findByText("Segments")).closest("section")!;
-    const select = (await within(segments).findByRole("option", { name: "Beta" })).closest("select")!;
-    fireEvent.change(select, { target: { value: "seg_beta" } });
+    const select = await within(segments).findByRole("combobox", { name: "Segment" });
+    await waitFor(() => expect(select.parentElement!.textContent).toContain("Beta"));
+    changeControl(select, { target: { value: "seg_beta" } });
     fireEvent.click(within(segments).getByRole("button", { name: "Add" }));
     await waitFor(() => expect(calls(fetch)).toContain("POST /contacts/contact_ada/segments/seg_beta"));
 
