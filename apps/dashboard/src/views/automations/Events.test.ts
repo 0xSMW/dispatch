@@ -1,3 +1,4 @@
+import { changeControl, controlValue } from "../../testingControls";
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -108,9 +109,9 @@ describe("Events", () => {
     render(h(Events), { wrapper });
     fireEvent.click(await screen.findByRole("button", { name: "Add event" }));
     const dialog = screen.getByRole("dialog");
-    fireEvent.change(within(dialog).getByLabelText(/Name/), { target: { value: "user.created" } });
-    fireEvent.change(within(dialog).getByLabelText("Property"), { target: { value: "trial_ends" } });
-    fireEvent.change(within(dialog).getByLabelText("Type"), { target: { value: "date" } });
+    changeControl(within(dialog).getByLabelText(/Name/), { target: { value: "user.created" } });
+    changeControl(within(dialog).getByLabelText("Property"), { target: { value: "trial_ends" } });
+    changeControl(within(dialog).getByLabelText("Type"), { target: { value: "date" } });
     fireEvent.click(within(dialog).getByRole("button", { name: /^Add\s*(Ctrl|⌘)/ }));
     await waitFor(() => expect(posted(fetch, "/events")).toEqual({ name: "user.created", schema: { trial_ends: "date" } }));
   });
@@ -124,7 +125,7 @@ describe("Events", () => {
     fireEvent.click(await screen.findByRole("menuitem", { name: "Send test event" }));
     const dialog = screen.getByRole("dialog");
     expect(String((within(dialog).getByLabelText("Payload") as HTMLTextAreaElement).value)).toContain('"seats": 1');
-    fireEvent.change(within(dialog).getByLabelText("Email"), { target: { value: "ada@example.com" } });
+    changeControl(within(dialog).getByLabelText("Email"), { target: { value: "ada@example.com" } });
     fireEvent.click(within(dialog).getByRole("button", { name: /Send/ }));
     await waitFor(() =>
       expect(posted(fetch, "/events/send")).toEqual({ event: "user.upgraded", email: "ada@example.com", payload: { plan: "text", seats: 1 } }),
@@ -155,7 +156,7 @@ describe("Events", () => {
     await screen.findByText("ada@example.com");
     fireEvent.click(screen.getByRole("button", { name: "Send test event" }));
     const dialog = screen.getByRole("dialog");
-    fireEvent.change(within(dialog).getByLabelText("Event"), { target: { value: "user.upgraded" } });
+    changeControl(within(dialog).getByLabelText("Event"), { target: { value: "user.upgraded" } });
     const send = within(dialog).getByRole("button", { name: /Send/ }) as HTMLButtonElement;
     fireEvent.click(send);
     await waitFor(() => expect(posted(fetch, "/events/send")).not.toBeNull());
