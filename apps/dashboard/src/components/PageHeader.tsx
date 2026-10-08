@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
-import { BookOpen, ChevronLeft, Code2 } from "lucide-react";
+import { ChevronLeft, Code2 } from "lucide-react";
 import { dialogOpen, shortcuts } from "../lib/shortcuts";
 import type { BadgeVariant } from "./Badge";
 
@@ -17,12 +17,10 @@ export interface PageHeaderProps {
   back?: { to: string; label: string };
   /** Functional context under the title, such as an active email scope. */
   context?: ReactNode;
-  /** Links to public documentation available in this dashboard version. */
-  learn?: Array<{ label: string; href: string }>;
 }
 
 /** Title row for list and detail pages. */
-export function PageHeader({ title, label, icon, tone = "neutral", actions, back, context, learn }: PageHeaderProps) {
+export function PageHeader({ title, label, icon, tone = "neutral", actions, back, context }: PageHeaderProps) {
   return (
     <header className="pageHeader">
       {back ? (
@@ -41,7 +39,7 @@ export function PageHeader({ title, label, icon, tone = "neutral", actions, back
         <div className="toolbar pageActions">
           <button
             type="button"
-            className="ghost small"
+            className="ghost"
             title={`API reference (${shortcuts.api.keys[0]})`}
             onClick={() => {
               // Use the shell's existing shortcut handler, including its session and dialog guards.
@@ -54,14 +52,6 @@ export function PageHeader({ title, label, icon, tone = "neutral", actions, back
           {actions}
         </div>
       </div>
-      {learn?.length ? (
-        <nav className="learnLinks" aria-label="Learn more">
-          <span className="muted"><BookOpen size={14} aria-hidden /> Learn</span>
-          {learn.map(({ label, href }) => (
-            <a key={href} className="learnChip" href={href} target="_blank" rel="noopener noreferrer">{label}</a>
-          ))}
-        </nav>
-      ) : null}
     </header>
   );
 }
