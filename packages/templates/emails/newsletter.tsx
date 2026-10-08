@@ -2,7 +2,7 @@ import { Heading, Text } from "react-email";
 import { Each, If, Layout, TextLink } from "./_components";
 import { exampleBrand, heading, text, type Brand, type EmailVariable } from "./_theme";
 
-const preview = "Short notes from the product, with sections you can read or skip.";
+const preview = "The latest product news and updates from our team.";
 
 type SectionItem = {
   title: string;
@@ -43,7 +43,7 @@ export default function Newsletter({
       <Each items={sections}>
         {(section) => (
           <>
-            <Text className="dm-text" style={{ ...text, fontWeight: "600" }}>
+            <Text className="dm-text" style={{ ...text, fontSize: "20px", fontWeight: "600", marginTop: "28px", marginBottom: "8px" }}>
               {section.title}
             </Text>
             <Text className="dm-text" style={text}>
@@ -57,7 +57,7 @@ export default function Newsletter({
       </Each>
       <If value={webVersionUrl}>
         <TextLink brand={brand} href={webVersionUrl}>
-          View this email in a browser
+          Read in your browser
         </TextLink>
       </If>
     </Layout>
