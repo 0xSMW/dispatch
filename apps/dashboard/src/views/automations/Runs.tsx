@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { RefreshCw, Zap } from "lucide-react";
 import { Badge } from "../../components/Badge";
 import { Code } from "../../components/Code";
@@ -43,6 +43,13 @@ export function Runs({ automationId, tree, options }: { automationId: string; tr
   const runs = useList<AutomationRun>(`/automations/${automationId}/runs`, { ...filters, start_date: range.start, end_date: range.end });
   const [params, setParams] = useSearchParams();
   const open = params.get("run");
+  const filtered = Boolean(filters.status || range.start || range.end || params.get("range"));
+  const empty = !runs.loading && !runs.error && runs.page === 1 && !runs.rows.length && !filtered;
+  const resetFilters = () => setParams((previous) => {
+    const next = new URLSearchParams(previous);
+    for (const key of ["status", "range", "start", "end"]) next.delete(key);
+    return next;
+  });
   const setOpen = (id: string | null) =>
     setParams((previous) => {
       const next = new URLSearchParams(previous);
@@ -53,13 +60,13 @@ export function Runs({ automationId, tree, options }: { automationId: string; tr
 
   return (
     <div className="stack">
-      <FilterBar search={false} filters={[{ param: "status", label: "Status", options: runStatuses, all: "All statuses" }]}>
+      {!empty ? <FilterBar search={false} filters={[{ param: "status", label: "Status", options: runStatuses, all: "All statuses" }]}>
         <DateRange />
         <button type="button" className="secondary small" onClick={() => void runs.reload()} disabled={runs.loading}>
           <RefreshCw size={14} />
           Refresh
         </button>
-      </FilterBar>
+      </FilterBar> : null}
       <Table
         rows={runs.rows}
         loading={runs.loading}
@@ -72,10 +79,10 @@ export function Runs({ automationId, tree, options }: { automationId: string; tr
         onPrevious={runs.previous}
         noun="runs"
         empty={
-          filters.status || range.start || range.end ? (
-            <Empty title="No runs" body="No runs match these filters." />
+          filtered ? (
+            <Empty title="No runs" body="No runs match these filters." action={<button type="button" className="secondary" onClick={resetFilters}>Clear filters</button>} />
           ) : (
-            <Empty title="No runs yet" body="A run starts each time the trigger event fires while the automation is enabled." />
+            <Empty title="No runs yet" body="A run starts each time the trigger event fires while the automation is enabled." icon={<Zap size={28} strokeWidth={1.5} />} action={<Link className="button secondary" to="/events">View events</Link>} />
           )
         }
         columns={[
