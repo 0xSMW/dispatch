@@ -1,0 +1,135 @@
+.unsubscribeSettings {
+  display: grid;
+  gap: 20px;
+}
+.unsubscribeHeading {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  align-items: center;
+}
+.unsubscribeHeading h2 {
+  margin-bottom: 8px;
+}
+.unsubscribePreviewControls {
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.unsubscribePreviewControls button[aria-pressed="true"] {
+  background: var(--surface-raised);
+  color: var(--text);
+}
+.unsubscribeCanvas {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 56px 32px;
+  min-height: 600px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.unsubscribeViewport {
+  width: 100%;
+  max-width: 640px;
+}
+.unsubscribeViewport.mobile {
+  max-width: 375px;
+}
+.unsubscribeViewport .publicCard {
+  max-width: 440px;
+}
+.unsubscribeEditor {
+  min-height: 100svh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+.unsubscribeEditorBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 16px 24px;
+  border-bottom: 1px solid var(--border);
+}
+.unsubscribeEditorBar .tabs {
+  margin: 0;
+}
+.unsubscribeEditorBody {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  flex: 1;
+}
+.unsubscribeEditorMain {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 24px;
+  min-width: 0;
+}
+.unsubscribeEditorMain .unsubscribeCanvas {
+  flex: 1;
+}
+.unsubscribeInspector {
+  border-left: 1px solid var(--border);
+  padding: 20px;
+}
+.unsubscribeInspector .stack {
+  margin-top: 24px;
+}
+.unsubscribeInspector .selected label {
+  color: var(--primary);
+}
+.unsubscribeInspector input,
+.unsubscribeInspector textarea {
+  width: 100%;
+}
+.unsubscribeEditor .prefTitle,
+.unsubscribeEditor .prefDescription,
+.unsubscribeEditor .prefDone p {
+  cursor: pointer;
+}
+@media (max-width: 900px) {
+  .unsubscribeEditorBar {
+    flex-wrap: wrap;
+    gap: 16px;
+  }
+  .unsubscribeEditorBody {
+    grid-template-columns: minmax(0, 1fr) 280px;
+  }
+  .unsubscribeEditorMain {
+    padding: 16px;
+  }
+  .unsubscribeCanvas {
+    padding: 40px 20px;
+  }
+}
+@media (max-width: 680px) {
+  .unsubscribeHeading {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .unsubscribeEditorBody {
+    display: flex;
+    flex-direction: column;
+  }
+  .unsubscribeInspector {
+    border-left: 0;
+    border-top: 1px solid var(--border);
+  }
+  .unsubscribeEditorBar {
+    padding: 16px;
+  }
+  .unsubscribeEditorBar > .toolbar {
+    width: 100%;
+    justify-content: flex-end;
+  }
+  .unsubscribeCanvas {
+    min-height: 480px;
+    padding: 28px 12px;
+  }
+}
