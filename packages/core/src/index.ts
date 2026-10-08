@@ -548,7 +548,7 @@ export function brandContext(
   brand: BrandRecord,
   fallback: { tenantName: string; domain?: string | null; from?: string | null; year?: number }
 ) {
-  const color = brand.color || "#18181b";
+  const color = brand.color || "#171717";
   const productName = brand.product_name || fallback.tenantName;
   return {
     ...themeContext(brand),
