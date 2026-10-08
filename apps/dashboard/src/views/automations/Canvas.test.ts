@@ -25,6 +25,8 @@ class ResizeObserver {
 }
 class DOMMatrixReadOnly {
   m22 = 1;
+  m41 = 0;
+  m42 = 0;
 }
 
 const graph: Graph = {
@@ -69,6 +71,58 @@ afterEach(() => {
 });
 
 describe("Canvas", () => {
+  it("shows viewport zoom in the shared HUD and keeps help Escape separate from inspector Escape", async () => {
+    // d3 caches its initial pane extent; smooth zoom needs non-zero dimensions in jsdom.
+    const originalRect = HTMLElement.prototype.getBoundingClientRect;
+    const rectangle = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains("react-flow__renderer")
+        ? { x: 0, y: 0, left: 0, top: 0, right: 800, bottom: 600, width: 800, height: 600, toJSON: () => ({}) }
+        : originalRect.call(this);
+    });
+    show({ immersive: true, actions: spies() });
+    fireEvent.click(await screen.findByRole("button", { name: "Step pause" }));
+    expect(screen.getByLabelText("Zoom 100 percent").textContent).toBe("100%");
+    expect(screen.getByRole("button", { name: "Zoom in" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Zoom out" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Fit canvas" })).toBeTruthy();
+    expect(document.querySelector(".react-flow__controls")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Zoom in" }));
+    await waitFor(() => expect(screen.getByLabelText("Zoom 120 percent").textContent).toBe("120%"));
+    fireEvent.click(screen.getByRole("button", { name: "Zoom out" }));
+    await waitFor(() => expect(screen.getByLabelText("Zoom 100 percent").textContent).toBe("100%"));
+    fireEvent.click(screen.getByRole("button", { name: "Canvas shortcuts" }));
+    const help = screen.getByRole("dialog", { name: "Canvas controls" });
+    expect(within(help).getAllByText("Pan the canvas", { selector: "dd" })[0]).toBeTruthy();
+    fireEvent.keyDown(help, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Canvas controls" })).toBeNull();
+    const inspector = screen.getByRole("region", { name: "Step pause settings" });
+    const field = within(inspector).getByLabelText("Duration");
+    fireEvent.keyDown(field, { key: "Escape" });
+    expect(screen.getByRole("region", { name: "Step pause settings" })).toBeTruthy();
+    fireEvent.keyDown(inspector, { key: "Escape" });
+    expect(screen.queryByRole("region", { name: "Step pause settings" })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Step pause" }));
+    rectangle.mockRestore();
+  });
+
+  it("searches all supported step categories including Split test, and preserves the Exit guard", async () => {
+    const actions = spies();
+    show({ actions });
+    fireEvent.click(await screen.findByRole("button", { name: "Add step after welcome" }));
+    const picker = screen.getByRole("region", { name: "Add a step" });
+    expect(within(picker).getByRole("button", { name: "Exit" })).toHaveProperty("disabled", true);
+    expect(within(picker).getByRole("button", { name: "Split test" })).toBeTruthy();
+    const search = within(picker).getByRole("searchbox", { name: "Search steps" });
+    fireEvent.change(search, { target: { value: "audience" } });
+    expect(within(picker).getByRole("group", { name: "Audience" })).toBeTruthy();
+    expect(within(picker).queryByRole("group", { name: "Flow control" })).toBeNull();
+    fireEvent.change(search, { target: { value: "does not exist" } });
+    expect(within(picker).getByRole("status").textContent).toBe("No steps match your search.");
+    fireEvent.change(search, { target: { value: "split" } });
+    fireEvent.click(within(picker).getByRole("button", { name: "Split test" }));
+    expect(actions.insert).toHaveBeenCalledWith([], 1, "split", "split_1");
+  });
+
   it("uses resource names on canvas and inspector and keeps the copyable ID only in the inspector footer", async () => {
     show({ options: { templates: [{ value: "tpl_1", label: "Welcome" }], templateNames: { tpl_1: "Welcome" }, events: [], segments: [] } });
     const card = await screen.findByRole("button", { name: "Step welcome" });
@@ -135,7 +189,7 @@ describe("Canvas", () => {
           expect(header.contains(within(panel).getByRole("button", { name: label }))).toBe(true);
         }
       } else expect(within(panel).queryByRole("button", { name: "Remove step" })).toBeNull();
-      expect(document.querySelector(".react-flow__controls")).toBeTruthy();
+      expect(document.querySelector(".canvasHud")).toBeTruthy();
       fireEvent.scroll(body, { target: { scrollTop: 200 } });
       expect(header.contains(close)).toBe(true); // Structural check; no claim of visible geometry.
       fireEvent.click(close);
@@ -185,8 +239,8 @@ describe("Canvas", () => {
     const view = show({ immersive: true, actions });
     const node = await screen.findByRole("button", { name: "Step pause" });
     expect(document.querySelector(".canvasPanel")).toBeNull();
-    const controls = document.querySelector(".react-flow__controls")!;
-    expect(within(controls as HTMLElement).getAllByRole("button")).toHaveLength(3);
+    const controls = document.querySelector(".canvasHud")!;
+    expect(within(controls as HTMLElement).getAllByRole("button")).toHaveLength(4);
     expect(document.querySelector(".react-flow__node.draggable")).toBeNull();
     fireEvent.click(node);
     let panel = screen.getByRole("region", { name: "Step pause settings" });
@@ -199,11 +253,11 @@ describe("Canvas", () => {
     fireEvent.click(within(panel).getByRole("button", { name: "Close panel" }));
     expect(document.querySelector(".canvasPanel")).toBeNull();
     expect(document.activeElement).toBe(node);
-    expect(document.querySelector(".react-flow__controls")).toBe(controls);
+    expect(document.querySelector(".canvasHud")).toBe(controls);
     fireEvent.click(node);
     panel = screen.getByRole("region", { name: "Step pause settings" });
     expect(controlValue(within(panel).getByLabelText("Duration"))).toBe("3 hours");
-    fireEvent.keyDown(within(panel).getByLabelText("Duration"), { key: "Escape" });
+    fireEvent.keyDown(panel, { key: "Escape" });
     expect(document.querySelector(".canvasPanel")).toBeNull();
     expect(document.activeElement).toBe(node);
     fireEvent.click(screen.getByRole("button", { name: "Add step after welcome" }));
@@ -255,6 +309,7 @@ describe("Canvas", () => {
       "Wait for event",
       "Condition",
       "Branch",
+      "Split test",
       "Filter",
       "Exit",
     ]);
