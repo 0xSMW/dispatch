@@ -92,7 +92,7 @@ export function FormFields({
       {value.from_email && !senders.some((sender) => sender.value === value.from_email) ? (
         <p className="fieldHint">Current sender: {value.from_email} (not in the supplied verified senders).</p>
       ) : null}
-      {!senders.length ? <p className="muted">No verified senders available.</p> : null}
+      {!senders.length ? <p className="muted">No verified senders yet.</p> : null}
       <Switch
         label="Double opt-in"
         checked={value.double_opt_in}
