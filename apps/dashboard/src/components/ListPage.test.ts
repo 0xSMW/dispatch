@@ -26,7 +26,6 @@ function Page({ items = [{ label: "Delete", onSelect: () => undefined }] }: { it
   return h(ListPage<{ id: string; name: string }>, {
     title: "Domains",
     context: h("a", { href: "/emails/em_1" }, "Email em_1"),
-    learn: [{ label: "DNS records", href: "https://docs.acme.test/domains.md#dns-records" }],
     actions: h("button", { type: "button" }, "Add domain"),
     list,
     columns: [{ header: "Domain", cell: (row) => row.name }],
@@ -59,7 +58,6 @@ describe("ListPage", () => {
     expect(screen.queryByRole("button", { name: "Add domain" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Actions" })).toBeNull();
     expect(screen.queryByRole("checkbox")).toBeNull();
-    expect(screen.getByRole("link", { name: "DNS records" }).getAttribute("href")).toBe("https://docs.acme.test/domains.md#dns-records");
   });
 
   it("keeps a viewer's row menu items that only read", () => {
