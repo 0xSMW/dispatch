@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { automationGraphSchema } from "@dispatchmail/core";
 import { describe, expect, it } from "vitest";
 import { presentEmail, presentSend, type EmailRow } from "./present.js";
+import { presentUsage, usageMonth } from "./usage.js";
 
 // Keeps docs/api/openapi.json in step with the routes the API registers. Reads the route modules
 // as text, so it needs no database and never boots the server.
@@ -177,6 +178,30 @@ describe("docs/api/openapi.json", () => {
 
   it("documents no route the code lacks", () => {
     expect(documented.filter((route) => !code.includes(route))).toEqual([]);
+  });
+
+  it("documents the monthly usage query and actual summary fields", () => {
+    expect(spec.paths["/usage/summary"].get).toMatchObject({
+      "x-scope": "full",
+      parameters: expect.arrayContaining([expect.objectContaining({
+        name: "month", in: "query", required: false,
+        schema: { type: "string", pattern: "^[1-9]\\d{3}-(0[1-9]|1[0-2])$" },
+      })]),
+      responses: { "200": { content: { "application/json": { schema: { $ref: "#/components/schemas/UsageSummary" } } } } },
+    });
+    const schemas = spec.components.schemas as unknown as Record<string, {
+      required: string[];
+      properties: Record<string, unknown>;
+    }>;
+    const period = usageMonth("2024-02");
+    const summary = presentUsage(period.month, period.start, period.end, []);
+    expect(Object.keys(schemas.UsageSummary.properties).sort()).toEqual([...Object.keys(summary), "request_id"].sort());
+    expect([...schemas.UsageSummary.required].sort()).toEqual([...Object.keys(summary), "request_id"].sort());
+    expect(schemas.UsageSummary.properties.days).toMatchObject({
+      items: { required: Object.keys(summary.days[0]) },
+    });
+    expect(schemas.UsageSummary.properties.timezone).toMatchObject({ const: "UTC" });
+    expect(schemas.UsageSummary.properties.ses_rate_per_1000_usd).toMatchObject({ const: summary.ses_rate_per_1000_usd });
   });
 
   it("has no /v1 paths", () => {
