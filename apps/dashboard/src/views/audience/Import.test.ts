@@ -6,6 +6,14 @@ import { guessMapping } from "./csv";
 import { duplicateHeader, ImportContacts, Imports, keyCollisions } from "./Import";
 import { calls, list, show, Status, stubApi } from "./stub";
 
+function chooseDropdown(label: string, value: string) {
+  const control = screen.getByRole("combobox", { name: label });
+  const native = control.parentElement!.querySelector("select")!;
+  const labelText = [...native.options].find(option => option.value === value)!.text;
+  fireEvent.click(control);
+  fireEvent.click(screen.getByRole("option", { name: labelText }));
+}
+
 const counts = { total: 3, created: 2, updated: 1, skipped: 0, failed: 0 };
 
 function api(statuses: string[] = ["completed"], triggerDefault = false, automations: unknown[] = []) {
@@ -64,14 +72,14 @@ describe("ImportContacts", () => {
     await next(dialog);
 
     // Columns mapped by header name; Company is offered as a property.
-    expect((within(dialog).getByLabelText("Email") as HTMLSelectElement).value).toBe("Email");
-    expect((within(dialog).getByLabelText("First name") as HTMLSelectElement).value).toBe("First name");
+    expect(within(dialog).getByRole("combobox", { name: "Email" }).textContent).toBe("Email");
+    expect(within(dialog).getByRole("combobox", { name: "First name" }).textContent).toBe("First name");
     fireEvent.click(within(dialog).getByLabelText("Company"));
-    fireEvent.change(within(dialog).getByLabelText("Existing contacts"), { target: { value: "skip" } });
+    chooseDropdown("Existing contacts", "skip");
     await next(dialog);
 
     fireEvent.click(await within(dialog).findByLabelText("VIP"));
-    fireEvent.change(within(dialog).getByLabelText("News subscription"), { target: { value: "opt_in" } });
+    chooseDropdown("News subscription", "opt_in");
     await next(dialog);
 
     expect(within(dialog).getByText("people.csv")).toBeTruthy();
@@ -124,14 +132,14 @@ describe("ImportContacts", () => {
     fireEvent.change(within(dialog).getByLabelText("CSV file"), { target: { files: [new File(["Email,Active,Renewed,Topics,Other\nada@example.com,false,2026-10-04,2,true\n"], "typed.csv")] } });
     await within(dialog).findByText("ada@example.com");
     await next(dialog);
-    expect(within(dialog).getByLabelText("Type for Active")).toHaveProperty("value", "boolean");
+    expect(within(dialog).getByLabelText("Type for Active")).toHaveProperty("textContent", "True or false");
     expect(within(dialog).getByLabelText("Type for Active")).toHaveProperty("disabled", true);
-    expect(within(dialog).getByLabelText("Type for Renewed")).toHaveProperty("value", "date");
-    expect(within(dialog).getByLabelText("Type for Topics")).toHaveProperty("value", "number");
+    expect(within(dialog).getByLabelText("Type for Renewed")).toHaveProperty("textContent", "Date");
+    expect(within(dialog).getByLabelText("Type for Topics")).toHaveProperty("textContent", "Number");
     fireEvent.click(within(dialog).getByLabelText("Other"));
     const other = within(dialog).getByLabelText("Type for Other");
-    expect([...other.querySelectorAll("option")].map((option) => option.value)).toEqual(["string", "number", "boolean", "date"]);
-    fireEvent.change(other, { target: { value: "boolean" } });
+    expect([...other.parentElement!.querySelectorAll("option")].map((option) => option.value)).toEqual(["string", "number", "boolean", "date"]);
+    chooseDropdown("Type for Other", "boolean");
     await next(dialog);
     await next(dialog);
     await next(dialog);
@@ -222,13 +230,13 @@ describe("ImportContacts", () => {
     const dialog = await audience();
     expect(await within(dialog).findByText("1 matching enabled automation")).toBeTruthy();
     fireEvent.click(within(dialog).getByLabelText("VIP"));
-    fireEvent.change(within(dialog).getByLabelText("News subscription"), { target: { value: "opt_in" } });
+    chooseDropdown("News subscription", "opt_in");
     expect(within(dialog).getByText("3 matching enabled automations")).toBeTruthy();
     for (const name of ["New contacts", "Newsletter welcome", "VIP welcome"]) expect(within(dialog).getByText(name)).toBeTruthy();
     for (const name of ["Other topic", "Other segment", "Contact changed", "App event", "Disabled flow", "Legacy disabled flow"]) expect(within(dialog).queryByText(name)).toBeNull();
     expect(within(dialog).getByText(/immediately or after their configured waits/)).toBeTruthy();
     expect(within(dialog).getByText(/Contact changes do not trigger automations during imports/)).toBeTruthy();
-    fireEvent.change(within(dialog).getByLabelText("News subscription"), { target: { value: "opt_out" } });
+    chooseDropdown("News subscription", "opt_out");
     expect(within(dialog).getByText("2 matching enabled automations")).toBeTruthy();
     expect(within(dialog).queryByText("Newsletter welcome")).toBeNull();
   });
