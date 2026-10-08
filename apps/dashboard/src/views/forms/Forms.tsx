@@ -167,6 +167,7 @@ function FormEditor({ form, onClose, onDone }: { form?: Form; onClose: () => voi
   const resources = [topics, properties, domains];
   const loading = resources.some((resource) => resource.loading);
   const failed = resources.some((resource) => resource.error);
+  const missingPrerequisites = !topics.rows.length || !senders.length;
   const save = useMutation(async () => {
     if (!can) throw new Error("Full permissions are required.");
     return form
@@ -189,9 +190,9 @@ function FormEditor({ form, onClose, onDone }: { form?: Form; onClose: () => voi
   return <Modal
     isOpen title={form ? "Edit form" : "Create form"} onClose={onClose} size="large"
     submitLabel={form ? "Save" : "Create"}
-    submitDisabled={!can || loading || failed} submitting={save.isLoading}
+    submitDisabled={!can || loading || failed || missingPrerequisites} submitting={save.isLoading}
     onSubmit={() => {
-      if (!can || loading || failed || save.isLoading) return;
+      if (!can || loading || failed || missingPrerequisites || save.isLoading) return;
       const next = inputErrors(draft, senders);
       setErrors(next);
       if (!Object.keys(next).length) void save.mutate();
@@ -202,6 +203,14 @@ function FormEditor({ form, onClose, onDone }: { form?: Form; onClose: () => voi
       <p role="alert">Could not load {["topics", "properties", "domains"][index]}: {resource.error}</p>
       <button type="button" onClick={() => void resource.reload()}>Retry {["topics", "properties", "domains"][index]}</button>
     </div> : null)}
+    {!loading && !failed && missingPrerequisites ? <div className="stack">
+      <p className="fieldHint">A form needs a topic and a verified sending domain. Complete setup in a new tab, then refresh here to keep your draft.</p>
+      <div className="toolbar">
+        {!topics.rows.length ? <a href="/audience/topics" target="_blank" rel="noreferrer">Create topic</a> : null}
+        {!senders.length ? <a href="/domains" target="_blank" rel="noreferrer">Verify sending domain</a> : null}
+        <button type="button" className="secondary" onClick={() => { void topics.reload(); void domains.reload(); }}>Refresh setup</button>
+      </div>
+    </div> : null}
     {save.error ? <p role="alert">{save.error.message}</p> : null}
     <FormFields
       value={draft} onChange={(next) => { setDraft(next); setErrors({}); }}
