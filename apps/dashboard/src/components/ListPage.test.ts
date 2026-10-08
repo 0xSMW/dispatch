@@ -22,6 +22,7 @@ function Page({ items = [{ label: "Delete", onSelect: () => undefined }] }: { it
   const selection = useSelection(["dom_1"]);
   return h(ListPage<{ id: string; name: string }>, {
     title: "Domains",
+    context: h("a", { href: "/emails/em_1" }, "Email em_1"),
     learn: [{ label: "DNS records", href: "https://docs.acme.test/domains.md#dns-records" }],
     actions: h("button", { type: "button" }, "Add domain"),
     list,
@@ -51,6 +52,7 @@ describe("ListPage", () => {
     signIn("sess_test", ["read"]);
     render(h(wrapper, null, h(Page)));
     expect(screen.getByText("acme.com")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Email em_1" }).getAttribute("href")).toBe("/emails/em_1");
     expect(screen.queryByRole("button", { name: "Add domain" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Actions" })).toBeNull();
     expect(screen.queryByRole("checkbox")).toBeNull();
