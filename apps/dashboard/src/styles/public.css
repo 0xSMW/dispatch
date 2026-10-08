@@ -154,14 +154,29 @@ button.outlineButton:hover:not(:disabled) {
 
 /* Public confirmation follows the visitor's system appearance, independently of dashboard preferences. */
 .confirmPage {
+  --bg: var(--neutral-50);
+  --surface: var(--neutral-0);
+  --surface-raised: var(--neutral-100);
+  --border: var(--neutral-200);
+  --border-input: var(--neutral-400);
+  --border-light: var(--neutral-100);
+  --text: var(--neutral-900);
+  --text-muted: var(--neutral-600);
+  --text-dim: var(--neutral-600);
+  --focus: var(--neutral-600);
+  --primary: var(--neutral-900);
+  --primary-hover: var(--neutral-800);
+  --primary-subtle: var(--selected);
+  --primary-border: var(--neutral-300);
+  --on-primary: var(--neutral-0);
+  --neutral-subtle: var(--selected);
+  --disabled-bg: var(--neutral-100);
+  --disabled-border: var(--neutral-200);
+  --disabled-text: var(--neutral-500);
+  --hover: var(--neutral-100);
+  --selected: var(--neutral-200);
+  --popover: var(--neutral-0);
   color-scheme: light;
-  --bg: #ffffff;
-  --surface: #ffffff;
-  --border: #e4e4e4;
-  --text: #191919;
-  --text-muted: #4d4d4d;
-  --primary: #000000;
-  --on-primary: #ffffff;
   --success: #2a7e3b;
   --success-subtle: rgba(0, 151, 0, 0.09);
   background: var(--bg);
@@ -178,7 +193,7 @@ button.outlineButton:hover:not(:disabled) {
 .confirmAction { min-height: 44px; }
 .confirmAction button, .confirmComplete, .confirmUnavailable { width: 100%; min-height: 44px; display: flex; justify-content: center; align-items: center; gap: 8px; font-size: 14px; line-height: 20px; border-radius: 8px; padding: 12px; }
 .confirmAction button { background: var(--primary); color: var(--on-primary); border: 0; box-shadow: none; }
-.confirmAction button:hover:not(:disabled) { background: var(--primary); color: var(--on-primary); opacity: 0.85; box-shadow: none; }
+.confirmAction button:hover:not(:disabled) { background: var(--primary-hover); color: var(--on-primary); box-shadow: none; }
 .confirmAction button:disabled { background: var(--primary); color: var(--on-primary); opacity: 0.65; }
 .confirmAction button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .confirmComplete { color: var(--success); background: var(--success-subtle); animation: confirmFade 180ms ease-in-out; }
@@ -188,7 +203,33 @@ button.outlineButton:hover:not(:disabled) {
 @keyframes confirmSpin { to { transform: rotate(360deg); } }
 @keyframes confirmFade { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-color-scheme: dark) {
-  .confirmPage { color-scheme: dark; --bg: #000000; --surface: #0a0b0c; --border: #212629; --text: #f0f0f0; --text-muted: #a1a4a5; --primary: #ffffff; --on-primary: #000000; --success: #3ad389; --success-subtle: rgba(34, 255, 153, 0.12); }
+  .confirmPage {
+    --bg: var(--neutral-950);
+    --surface: var(--neutral-900);
+    --surface-raised: var(--neutral-800);
+    --border: var(--neutral-800);
+    --border-input: var(--neutral-700);
+    --border-light: var(--neutral-900);
+    --text: var(--neutral-50);
+    --text-muted: var(--neutral-400);
+    --text-dim: var(--neutral-400);
+    --focus: var(--neutral-400);
+    --primary: var(--neutral-0);
+    --primary-hover: var(--neutral-200);
+    --primary-subtle: var(--selected);
+    --primary-border: var(--neutral-700);
+    --on-primary: var(--neutral-1000);
+    --neutral-subtle: var(--selected);
+    --disabled-bg: var(--neutral-800);
+    --disabled-border: var(--neutral-800);
+    --disabled-text: var(--neutral-400);
+    --hover: var(--neutral-800);
+    --selected: var(--neutral-800);
+    --popover: var(--neutral-900);
+    color-scheme: dark;
+    --success: #3ad389;
+    --success-subtle: rgba(34, 255, 153, 0.12);
+  }
 }
 @media (max-width: 480px) { .confirmCard { padding: 24px; } }
 @media (prefers-reduced-motion: reduce) { .confirmCopy, .confirmComplete, .confirmSpinner { animation: none; } }
@@ -199,33 +240,61 @@ button.outlineButton:hover:not(:disabled) {
   gap: 12px;
 }
 
-/* Preference pages use pure black/white themes, independent of the dashboard. */
+/* Public themes follow visitor appearance using the shared Neutral palette. */
 .preferenceTheme,
 .preferencePage {
+  --bg: var(--neutral-50);
+  --surface: var(--neutral-0);
+  --surface-raised: var(--neutral-100);
+  --border: var(--neutral-200);
+  --border-input: var(--neutral-400);
+  --border-light: var(--neutral-100);
+  --text: var(--neutral-900);
+  --text-muted: var(--neutral-600);
+  --text-dim: var(--neutral-600);
+  --focus: var(--neutral-600);
+  --primary: var(--neutral-900);
+  --primary-hover: var(--neutral-800);
+  --primary-subtle: var(--selected);
+  --primary-border: var(--neutral-300);
+  --on-primary: var(--neutral-0);
+  --neutral-subtle: var(--selected);
+  --disabled-bg: var(--neutral-100);
+  --disabled-border: var(--neutral-200);
+  --disabled-text: var(--neutral-500);
+  --hover: var(--neutral-100);
+  --selected: var(--neutral-200);
+  --popover: var(--neutral-0);
   color-scheme: light;
-  --bg: #fff;
-  --surface: #fff;
-  --surface-raised: #f5f5f5;
-  --text: #111;
-  --text-muted: #555;
-  --text-dim: #666;
-  --border: #e4e4e4;
-  --border-input: #ccc;
   --success: #237a38;
   --danger: #b42318;
   background: var(--bg);
   color: var(--text);
 }
 .preferenceTheme.dark {
+  --bg: var(--neutral-950);
+  --surface: var(--neutral-900);
+  --surface-raised: var(--neutral-800);
+  --border: var(--neutral-800);
+  --border-input: var(--neutral-700);
+  --border-light: var(--neutral-900);
+  --text: var(--neutral-50);
+  --text-muted: var(--neutral-400);
+  --text-dim: var(--neutral-400);
+  --focus: var(--neutral-400);
+  --primary: var(--neutral-0);
+  --primary-hover: var(--neutral-200);
+  --primary-subtle: var(--selected);
+  --primary-border: var(--neutral-700);
+  --on-primary: var(--neutral-1000);
+  --neutral-subtle: var(--selected);
+  --disabled-bg: var(--neutral-800);
+  --disabled-border: var(--neutral-800);
+  --disabled-text: var(--neutral-400);
+  --hover: var(--neutral-800);
+  --selected: var(--neutral-800);
+  --popover: var(--neutral-900);
   color-scheme: dark;
-  --bg: #000;
-  --surface: #000;
-  --surface-raised: #181818;
-  --text: #fff;
-  --text-muted: #bbb;
-  --text-dim: #aaa;
-  --border: #333;
-  --border-input: #555;
   --success: #57d390;
   --danger: #ff9085;
 }
@@ -251,15 +320,29 @@ button.outlineButton:hover:not(:disabled) {
 }
 @media (prefers-color-scheme: dark) {
   .preferencePage {
+    --bg: var(--neutral-950);
+    --surface: var(--neutral-900);
+    --surface-raised: var(--neutral-800);
+    --border: var(--neutral-800);
+    --border-input: var(--neutral-700);
+    --border-light: var(--neutral-900);
+    --text: var(--neutral-50);
+    --text-muted: var(--neutral-400);
+    --text-dim: var(--neutral-400);
+    --focus: var(--neutral-400);
+    --primary: var(--neutral-0);
+    --primary-hover: var(--neutral-200);
+    --primary-subtle: var(--selected);
+    --primary-border: var(--neutral-700);
+    --on-primary: var(--neutral-1000);
+    --neutral-subtle: var(--selected);
+    --disabled-bg: var(--neutral-800);
+    --disabled-border: var(--neutral-800);
+    --disabled-text: var(--neutral-400);
+    --hover: var(--neutral-800);
+    --selected: var(--neutral-800);
+    --popover: var(--neutral-900);
     color-scheme: dark;
-    --bg: #000;
-    --surface: #000;
-    --surface-raised: #181818;
-    --text: #fff;
-    --text-muted: #bbb;
-    --text-dim: #aaa;
-    --border: #333;
-    --border-input: #555;
     --success: #57d390;
     --danger: #ff9085;
   }
