@@ -185,7 +185,7 @@ export function Broadcast() {
           row.html ? (
             <Preview html={preview} />
           ) : (
-            <Code value={row.text ?? ""} language="text" empty={<p className="muted">No content.</p>} />
+            <Code value={row.text ?? ""} language="text" empty={<p className="muted">This broadcast has no content.</p>} />
           )
         ) : (
           <Code value={row.html ?? ""} language="html" empty={<p className="muted">No HTML.</p>} />
