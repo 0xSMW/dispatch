@@ -11,7 +11,6 @@ describe("PageHeader Learn chips", () => {
   it("renders accessible documentation chips below the title", () => {
     render(h(wrapper, null, h(PageHeader, {
       title: "Templates",
-      description: "Reusable emails",
       learn: [{ label: "Variables", href: "https://docs.acme.test/v1/templates.md#variables" }],
     })));
     const nav = screen.getByRole("navigation", { name: "Learn more" });
@@ -20,7 +19,11 @@ describe("PageHeader Learn chips", () => {
     expect(link.getAttribute("target")).toBe("_blank");
     expect(link.getAttribute("rel")).toBe("noopener noreferrer");
     expect(screen.getByRole("heading", { name: "Templates" })).toBeTruthy();
-    expect(screen.getByText("Reusable emails")).toBeTruthy();
+  });
+
+  it("preserves functional scope context below the title", () => {
+    render(h(PageHeader, { title: "Logs", context: h("a", { href: "/emails/em_1" }, "Email em_1") }));
+    expect(screen.getByRole("link", { name: "Email em_1" }).getAttribute("href")).toBe("/emails/em_1");
   });
 
   it("does not leave an empty Learn row on pages without targets", () => {
