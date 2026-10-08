@@ -27,5 +27,7 @@ output.routes = output.routes.filter(route => {
   seen.add(key);
   return true;
 });
-output.crons = JSON.parse(readFileSync(resolve(root, "vercel.json"), "utf8")).crons ?? [];
+// Vercel adds the canonical crons from vercel.json. Copying them into the
+// prebuilt manifest as well makes `vercel build` emit duplicate cron jobs.
+delete output.crons;
 writeFileSync(configuration, JSON.stringify(output, null, 2));
