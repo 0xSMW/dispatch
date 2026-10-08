@@ -38,7 +38,7 @@
   background: transparent;
   box-shadow: none;
 }
-.canvas .canvasHud button:hover:not(:disabled) { background: var(--bg); }
+.canvas .canvasHud button:hover:not(:disabled) { background: var(--hover); }
 .canvas .canvasHud button:disabled { opacity: 0.4; cursor: default; }
 .canvas .canvasHud button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .canvasZoomValue {
