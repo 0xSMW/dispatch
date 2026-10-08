@@ -557,7 +557,7 @@ export function brandContext(
     LOGO_URL: brand.logo_url || "",
     BRAND_COLOR: color,
     BRAND_TEXT_COLOR: brandTextColor(color),
-    SUPPORT_EMAIL: brand.support_email || fallback.from || "",
+    SUPPORT_EMAIL: brand.support_email || "",
     SUPPORT_URL: brand.support_url || "",
     PRIVACY_URL: brand.privacy_url || "",
     COMPANY_NAME: brand.company_name || productName,
