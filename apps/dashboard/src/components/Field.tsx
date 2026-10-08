@@ -1,4 +1,6 @@
+import { badgeLabel } from "./Badge";
 import { useId, type ReactNode } from "react";
+import { Dropdown } from "./Dropdown";
 
 type Common = {
   label: string;
@@ -110,17 +112,17 @@ export function Select({ value, onChange, options, placeholder, ...common }: Sel
   const id = useId();
   return (
     <Wrap id={id} {...common}>
-      <select id={id} value={value} onChange={(event) => onChange(event.target.value)} disabled={common.disabled} required={common.required}>
+      <Dropdown id={id} value={value} onChange={(event) => onChange(event.target.value)} disabled={common.disabled} required={common.required}>
         {placeholder !== undefined ? <option value="">{placeholder}</option> : null}
         {options.map((option) => {
-          const item = typeof option === "string" ? { value: option, label: option } : option;
+          const item = typeof option === "string" ? { value: option, label: badgeLabel(option) } : option;
           return (
             <option key={item.value} value={item.value}>
               {item.label}
             </option>
           );
         })}
-      </select>
+      </Dropdown>
     </Wrap>
   );
 }
