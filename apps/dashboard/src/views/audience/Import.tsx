@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { Badge } from "../../components/Badge";
 import { Drawer } from "../../components/Drawer";
-import { Failed } from "../../components/Empty";
+import { Empty, Failed } from "../../components/Empty";
 import { Select, Switch } from "../../components/Field";
 import { Modal } from "../../components/Modal";
 import { Skeleton } from "../../components/Skeleton";
@@ -528,7 +528,7 @@ export function ImportProgress({ id, onFinish }: { id: string; onFinish?: () => 
 }
 
 /** Past imports, newest first, with the selected one's progress. */
-export function Imports({ onClose }: { onClose: () => void }) {
+export function Imports({ onClose, onImport }: { onClose: () => void; onImport?: () => void }) {
   const list = useList<ContactImport>("/contacts/imports", {}, { limit: 10 });
   const [open, setOpen] = useState<string | null>(null);
 
@@ -550,7 +550,7 @@ export function Imports({ onClose }: { onClose: () => void }) {
             error={list.error}
             onRetry={() => void list.reload()}
             onRowClick={(row) => setOpen(row.id)}
-            empty={<p className="muted">No imports yet.</p>}
+            empty={<Empty compact title="No imports yet" body="Import a CSV to bring your contacts into Dispatch." action={onImport ? <button type="button" onClick={onImport}>Import CSV</button> : null} />}
             page={list.page}
             hasMore={list.hasMore}
             onNext={list.next}
