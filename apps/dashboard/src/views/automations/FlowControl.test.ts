@@ -1,3 +1,4 @@
+import { changeControl, controlValue } from "../../testingControls";
 // @vitest-environment jsdom
 import { useState } from "react";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -87,34 +88,34 @@ describe("flow control editors", () => {
   it("edits typed Filter scope and ordered path rules through the shared editor without wire metadata", () => {
     render(h(Builder));
     const filter = within(screen.getByRole("article", { name: "Step audience" }));
-    fireEvent.change(filter.getByLabelText("Check"), { target: { value: "following" } });
-    fireEvent.change(filter.getByLabelText("Value"), { target: { value: "true" } });
+    changeControl(filter.getByLabelText("Check"), { target: { value: "following" } });
+    changeControl(filter.getByLabelText("Value"), { target: { value: "true" } });
     expect(graph().steps[1].config).toEqual({
       rule: { type: "rule", field: "contact.activated", operator: "eq", value: true }, scope: "following",
     });
-    fireEvent.change(pathSettings(1).getByLabelText("Value"), { target: { value: "24.5" } });
+    changeControl(pathSettings(1).getByLabelText("Value"), { target: { value: "24.5" } });
     expect(graph().steps[2].config.paths[0].rule.value).toBe(24.5);
-    fireEvent.change(pathSettings(2).getByLabelText("Value"), { target: { value: "false" } });
+    changeControl(pathSettings(2).getByLabelText("Value"), { target: { value: "false" } });
     expect(graph().steps[2].config.paths[1].rule.value).toBe(false);
     expect(screen.getByTestId("graph").textContent).not.toMatch(/ruleTypes|drafts/);
   });
 
   it("keeps permanent path keys, descendants and manual types through rename, reorder and view switches", async () => {
     render(h(Builder));
-    fireEvent.change(pathSettings(1).getByLabelText("Field"), { target: { value: "event.unknown" } });
-    fireEvent.change(pathSettings(1).getByLabelText("Type"), { target: { value: "date" } });
-    fireEvent.change(pathSettings(1).getByLabelText("Operator"), { target: { value: "within" } });
-    fireEvent.change(pathSettings(1).getByLabelText("Duration"), { target: { value: "7 days" } });
-    fireEvent.change(pathSettings(1).getByLabelText("Path label"), { target: { value: "Recent <script>not markup</script>" } });
+    changeControl(pathSettings(1).getByLabelText("Field"), { target: { value: "event.unknown" } });
+    changeControl(pathSettings(1).getByLabelText("Type"), { target: { value: "date" } });
+    changeControl(pathSettings(1).getByLabelText("Operator"), { target: { value: "within" } });
+    changeControl(pathSettings(1).getByLabelText("Duration"), { target: { value: "7 days" } });
+    changeControl(pathSettings(1).getByLabelText("Path label"), { target: { value: "Recent <script>not markup</script>" } });
     fireEvent.click(pathSettings(1).getByRole("button", { name: "Move path 1 down" }));
     expect(configuredPaths(tree().steps[1]!).map((path) => path.key)).toEqual(["paid", "seats"]);
     expect(tree().steps[1]!.paths?.[1]?.steps[0]?.key).toBe("leave_large");
-    expect(pathSettings(2).getByLabelText("Type")).toHaveProperty("value", "date");
+    expect(controlValue(pathSettings(2).getByLabelText("Type"))).toBe("date");
     expect(document.querySelector("script")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Switch view" }));
     fireEvent.click(await screen.findByRole("button", { name: "Step split" }));
-    expect(pathSettings(2).getByLabelText("Type")).toHaveProperty("value", "date");
-    expect(pathSettings(2).getByLabelText("Duration")).toHaveProperty("value", "7 days");
+    expect(controlValue(pathSettings(2).getByLabelText("Type"))).toBe("date");
+    expect(controlValue(pathSettings(2).getByLabelText("Duration"))).toBe("7 days");
     expect(graph().steps[2].config.paths[1]).toEqual({
       key: "seats", label: "Recent <script>not markup</script>",
       rule: { type: "rule", field: "event.unknown", operator: "within", value: "7 days" },
@@ -160,14 +161,14 @@ describe("flow control editors", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Add step at the start of Otherwise branch of split" }));
     fireEvent.click(screen.getByRole("button", { name: "Filter" }));
     const panel = within(await screen.findByRole("region", { name: "Step filter_1 settings" }));
-    fireEvent.change(panel.getByLabelText("Choose field"), { target: { value: "event.paid" } });
-    fireEvent.change(panel.getByLabelText("Value"), { target: { value: "false" } });
-    fireEvent.change(panel.getByLabelText("Check"), { target: { value: "following" } });
+    changeControl(panel.getByLabelText("Choose field"), { target: { value: "event.paid" } });
+    changeControl(panel.getByLabelText("Value"), { target: { value: "false" } });
+    changeControl(panel.getByLabelText("Check"), { target: { value: "following" } });
     expect(graph().connections).toContainEqual({ from: "split", to: "filter_1", type: "branch", path: "otherwise" });
     expect(graph().connections).toContainEqual({ from: "filter_1", to: "leave_otherwise", type: "default" });
     expect(screen.queryByRole("button", { name: "Add step at the end of Otherwise branch of split" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Switch view" }));
-    expect(within(screen.getByRole("article", { name: "Step filter_1" })).getByLabelText("Value")).toHaveProperty("value", "false");
+    expect(controlValue(within(screen.getByRole("article", { name: "Step filter_1" })).getByLabelText("Value"))).toBe("false");
   });
 
   it("adds an explicit Exit from the list picker only at a safe endpoint, then edits it on the canvas", async () => {
@@ -228,8 +229,8 @@ describe("flow control editor and run integration", () => {
       return list();
     });
     openEditor("/automations/automation/editor?view=list");
-    fireEvent.change(await screen.findByLabelText("Check"), { target: { value: "following" } });
-    fireEvent.change(pathSettings(1).getByLabelText("Path label"), { target: { value: "Enterprise" } });
+    changeControl(await screen.findByLabelText("Check"), { target: { value: "following" } });
+    changeControl(pathSettings(1).getByLabelText("Path label"), { target: { value: "Enterprise" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(fetch.mock.calls.filter(([, init]) => init?.method === "PATCH")).toHaveLength(2));
     const requests = fetch.mock.calls.filter(([, init]) => init?.method === "PATCH");
