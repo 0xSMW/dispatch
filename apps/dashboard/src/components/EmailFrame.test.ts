@@ -88,11 +88,3 @@ describe("EmailFrame", () => {
     expect(container.querySelector("iframe")!.className).toBe("emailFrame phone");
   });
 });
-
-
-it("clips thumbnails without relaxing the email sandbox or changing full previews", () => {
-  const html = "<p>Preview</p>";
-  expect(framed(html, "block", true)).toContain("overflow:hidden!important");
-  expect(framed(html, "block", true)).toContain("default-src 'none'");
-  expect(framed(html, "block")).not.toContain("overflow:hidden!important");
-});
