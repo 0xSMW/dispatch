@@ -129,7 +129,7 @@ function CreateSegment({ onClose, onDone }: { onClose: () => void; onDone: () =>
   });
 
   return (
-    <Modal isOpen title="Create segment" onClose={onClose} onSubmit={() => void mutate()} submitLabel="Create" submitDisabled={!can || !form.name.trim() || (type === "dynamic" && !valid)} submitting={isLoading}>
+    <Modal isOpen size={type === "dynamic" ? "large" : undefined} title="Create segment" onClose={onClose} onSubmit={() => void mutate()} submitLabel="Create" submitDisabled={!can || !form.name.trim() || (type === "dynamic" && !valid)} submitting={isLoading}>
       <div className="form">
         <Field label="Name" value={form.name} onChange={(name) => setForm({ ...form, name })} required autoFocus disabled={!can || isLoading} />
         <Field label="Description" value={form.description} onChange={(description) => setForm({ ...form, description })} disabled={!can || isLoading} />
