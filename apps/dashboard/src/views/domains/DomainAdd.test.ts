@@ -19,6 +19,7 @@ describe("DomainAdd", () => {
     const fetch = api({ "POST /domains": domain(), "/domains/domain_1": domain() });
     visit(h(DomainAdd), "/domains/add");
 
+    expect(screen.getByLabelText("Custom return path").closest("details")).toBeNull();
     changeControl(screen.getByLabelText("Name"), { target: { value: " send.acme.test " } });
     changeControl(screen.getByLabelText("Region"), { target: { value: "eu-west-1" } });
     changeControl(screen.getByLabelText("Custom return path"), { target: { value: "bounce" } });
