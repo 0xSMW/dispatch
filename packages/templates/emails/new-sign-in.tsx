@@ -2,7 +2,7 @@ import { Heading, Text } from "react-email";
 import { Action, Details, If, Layout, Notice } from "./_components";
 import { exampleBrand, heading, text, type Brand, type EmailVariable } from "./_theme";
 
-const preview = "A new sign-in was recorded on your account. Revoke it if it was not you.";
+const preview = "Review the details of a new sign-in to your account.";
 
 type Props = {
   brand?: Brand;
@@ -36,7 +36,7 @@ export default function NewSignIn({
         New sign-in
       </Heading>
       <Text className="dm-text" style={text}>
-        A new sign-in to your {brand.productName} account was recorded at {signedInAt}.
+        Your {brand.productName} account was signed in to at {signedInAt}. If this was not you, revoke the sign-in below.
       </Text>
       <If value={device}>
         <Details rows={[{ label: "Device", value: device }]} />
