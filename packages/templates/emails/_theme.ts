@@ -79,7 +79,7 @@ export const text = {
 
 export const heading = {
   fontFamily: "inherit",
-  fontSize: "24px",
+  fontSize: "28px",
   lineHeight: "1.3",
   fontWeight: "600",
   color: "inherit",
@@ -89,11 +89,11 @@ export const heading = {
 
 export const muted = {
   fontFamily: "inherit",
-  fontSize: "inherit",
-  lineHeight: "1.5",
+  fontSize: "13px",
+  lineHeight: "1.6",
   color: "inherit",
   marginTop: "0",
-  marginBottom: "16px",
+  marginBottom: "12px",
 };
 
 export function linkStyle(color: string) {
