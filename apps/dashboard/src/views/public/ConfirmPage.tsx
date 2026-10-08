@@ -1,11 +1,9 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
-import { Skeleton } from "../../components/Skeleton";
 import { errorMessage } from "../../lib/client";
 import { confirmationClient } from "../../lib/confirmation";
 import type { Confirmation } from "../../types";
 import { ConfirmCard } from "./Confirm";
-import { textColor } from "./Preferences";
 import "../../styles/public.css";
 
 type State =
@@ -23,6 +21,9 @@ function ConfirmationPage({ token }: { token: string }) {
   const client = useMemo(() => confirmationClient(), []);
   const [state, setState] = useState<State>(token ? { status: "loading" } : { status: "missing" });
   const busy = useRef(false);
+  const redirectTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const [attempt, setAttempt] = useState(0);
+  const [redirecting, setRedirecting] = useState(false);
   const mounted = useRef(true);
 
   useEffect(() => {
@@ -41,8 +42,9 @@ function ConfirmationPage({ token }: { token: string }) {
     return () => {
       live = false;
       mounted.current = false;
+      clearTimeout(redirectTimer.current);
     };
-  }, [client, token]);
+  }, [client, token, attempt]);
 
   async function confirm() {
     if (state.status !== "ready" || busy.current) return;
@@ -62,51 +64,35 @@ function ConfirmationPage({ token }: { token: string }) {
           return;
         }
         if (url.protocol === "https:" && !url.username && !url.password) {
-          window.location.assign(url.href);
+          setRedirecting(true);
+          redirectTimer.current = setTimeout(() => {
+            if (mounted.current) window.location.assign(url.href);
+          }, 800);
         }
       }
     } catch (cause) {
       if (!mounted.current) return;
       busy.current = false;
-      setState({ status: "ready", data, error: errorMessage(cause) });
+      setState((cause as { statusCode?: number } | null)?.statusCode === 404
+        ? { status: "missing" }
+        : { status: "ready", data, error: errorMessage(cause) });
     }
   }
 
-  if (state.status === "loading") {
-    return <div className="publicPage"><div className="publicCard" aria-busy><Skeleton lines={4} /></div></div>;
-  }
-  if (!("data" in state)) {
-    return (
-      <div className="publicPage">
-        <div className="publicCard">
-          <h1>{state.status === "missing" ? "This link is not valid" : "Something went wrong"}</h1>
-          <p className="center muted">
-            {state.status === "error"
-              ? `${state.message} Try again in a moment.`
-              : "Use the confirmation link from the most recent email you received."}
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  const { brand, form_name } = state.data;
-  const text = textColor(brand.background_color);
-  const style = {
-    backgroundColor: brand.background_color,
-    "--surface": brand.background_color,
-    "--text": text,
-    "--text-muted": text,
-  } as CSSProperties;
+  const data = "data" in state ? state.data : undefined;
   return (
-    <div className="publicPage" style={style}>
+    <div className="publicPage confirmPage">
       <ConfirmCard
-        brand={{ ...brand, color: brand.primary_color }}
-        formName={form_name}
+        brand={data ? { ...data.brand, color: data.brand.primary_color } : undefined}
         onConfirm={() => { void confirm(); }}
+        onRetry={() => { setState({ status: "loading" }); setAttempt((value) => value + 1); }}
+        loading={state.status === "loading"}
+        missing={state.status === "missing"}
+        loadError={state.status === "error"}
         busy={state.status === "busy"}
         done={state.status === "done"}
-        error={state.error}
+        redirecting={redirecting}
+        error={"error" in state ? state.error : undefined}
       />
     </div>
   );
