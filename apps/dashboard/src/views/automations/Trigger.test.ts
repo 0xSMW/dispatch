@@ -1,3 +1,4 @@
+import { changeControl, controlValue } from "../../testingControls";
 // @vitest-environment jsdom
 import { useState } from "react";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
@@ -25,7 +26,7 @@ function Harness({ initial = { type: "event", event_name: "signup" } as TriggerC
       h("output", { "data-testid": "config" }, JSON.stringify(config)), h("output", { "data-testid": "reentry" }, reentry)));
 }
 const stored = () => JSON.parse(screen.getByTestId("config").textContent!);
-const change = (label: string, value: string) => fireEvent.change(screen.getByLabelText(label), { target: { value } });
+const change = (label: string, value: string) => changeControl(screen.getByLabelText(label), { target: { value } });
 
 afterEach(cleanup);
 
@@ -33,20 +34,20 @@ describe("TriggerForm", () => {
   it("edits re-entry separately from the trigger configuration and keeps the choice on trigger changes", () => {
     render(h(Harness));
     const selector = screen.getByLabelText<HTMLSelectElement>("Run for each contact");
-    expect([...selector.options].map((option) => option.textContent)).toEqual(["Once", "Every time"]);
-    expect(selector.value).toBe("once");
+    expect([...selector.parentElement!.querySelectorAll("option")].map((option) => option.textContent)).toEqual(["Once", "Every time"]);
+    expect(controlValue(selector)).toBe("once");
     change("Run for each contact", "every_time");
     expect(screen.getByTestId("reentry").textContent).toBe("every_time");
     expect(stored()).toEqual({ type: "event", event_name: "signup" });
     change("Trigger", "contact_created");
-    expect(selector.value).toBe("every_time");
+    expect(controlValue(selector)).toBe("every_time");
     expect(stored()).toEqual({ type: "contact_created" });
   });
 
   it("offers all five shared choices and removes fields from the previous trigger kind", () => {
     render(h(Harness));
-    expect([...screen.getByLabelText<HTMLSelectElement>("Trigger").options].map((option) => option.textContent)).toEqual(triggerChoices.map((choice) => choice.label));
-    expect(screen.getByLabelText("Event")).toHaveProperty("value", "signup");
+    expect([...screen.getByLabelText("Trigger").parentElement!.querySelectorAll("option")].map((option) => option.textContent)).toEqual(triggerChoices.map((choice) => choice.label));
+    expect(controlValue(screen.getByLabelText("Event"))).toBe("signup");
     change("Trigger", "contact_created");
     expect(screen.queryByLabelText("Event")).toBeNull();
     expect(stored()).toEqual({ type: "contact_created" });
@@ -62,9 +63,11 @@ describe("TriggerForm", () => {
 
   it("uses built-ins and properties with typed optional bounds, including empty strings, zero, false and null", () => {
     render(h(Harness, { initial: { type: "contact_updated" } }));
+    fireEvent.click(screen.getByRole("combobox", { name: "Contact field" }));
     for (const name of ["email (string)", "first_name (string)", "last_name (string)", "created_at (date)", "unsubscribed (boolean)", "plan (string)", "seats (number)", "activated (boolean)", "renewed (date)"]) {
       expect(screen.getByRole("option", { name })).toBeTruthy();
     }
+    fireEvent.keyDown(screen.getByRole("combobox", { name: "Contact field" }), { key: "Escape" });
     change("Contact field", "plan");
     change("From match", "value");
     change("From", "free");
@@ -110,14 +113,16 @@ describe("TriggerForm", () => {
     const change = vi.fn();
     render(h(TriggerForm, { config, onChange: change, options }));
     expect(screen.getByRole("status").textContent).toMatch(/was deleted/);
+    fireEvent.click(screen.getByRole("combobox", { name: config.type === "topic_subscribed" ? "Topic" : "Segment" }));
     expect(screen.getByRole("option", { name: "Deleted: gone" })).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole("combobox", { name: config.type === "topic_subscribed" ? "Topic" : "Segment" }), { key: "Escape" });
     expect(change).not.toHaveBeenCalled();
   });
 
   it("does not report deletion while a resource source is loading or failed", () => {
     const view = render(h(TriggerForm, { config: { type: "topic_subscribed", topic_id: "gone" }, onChange: vi.fn(), options: { ...options, topics: [], topicsReady: false } }));
     expect(screen.queryByRole("status")).toBeNull();
-    expect(screen.getByLabelText("Topic")).toHaveProperty("value", "gone");
+    expect(controlValue(screen.getByLabelText("Topic"))).toBe("gone");
     view.rerender(h(TriggerForm, { config: { type: "topic_subscribed", topic_id: "gone" }, onChange: vi.fn(), options: { ...options, topics: [], topicsReady: false, topicsError: "Unavailable" } }));
     expect(screen.getByRole("alert").textContent).toMatch(/Unavailable/);
     expect(screen.queryByRole("status")).toBeNull();
