@@ -111,7 +111,7 @@ describe("Contacts", () => {
   it("says when nothing matches the filters", async () => {
     api({ "GET /contacts": list([]) });
     show(h(Contacts), "/audience?q=nobody");
-    expect(await screen.findByText("No contacts found")).toBeTruthy();
+    expect(await screen.findByText("No contacts match")).toBeTruthy();
   });
 
   it("adds a contact with typed properties", async () => {
