@@ -2,7 +2,7 @@ import { Heading, Text } from "react-email";
 import { Action, If, Layout, TextLink } from "./_components";
 import { exampleBrand, heading, text, type Brand, type EmailVariable } from "./_theme";
 
-const preview = "Your trial is ending. Choose a plan if you want to keep the account.";
+const preview = "Your trial is ending. Review your plan options.";
 
 type Props = {
   brand?: Brand;
@@ -30,7 +30,7 @@ export default function TrialEnding({
         Your trial is ending
       </Heading>
       <Text className="dm-text" style={text}>
-        Your {brand.productName} trial ends on {trialEndDate}. Choose a plan if you want to keep the account.
+        Your {brand.productName} trial ends on {trialEndDate}. Choose a plan to continue using the product after your trial.
       </Text>
       <Action brand={brand} href={actionUrl}>
         Choose a plan
