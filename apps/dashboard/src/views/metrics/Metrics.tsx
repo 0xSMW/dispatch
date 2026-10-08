@@ -1,6 +1,6 @@
 import { Dropdown } from "../../components/Dropdown";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router-dom";
 import { Activity, ChevronDown, CircleHelp, RefreshCw } from "lucide-react";
 import { AreaChart } from "../../components/AreaChart";
 import type { BadgeVariant } from "../../components/Badge";
@@ -256,11 +256,11 @@ export function Metrics() {
                 title="No emails sent in this range"
                 body="Try a longer range or a different domain."
                 icon={<Activity size={28} strokeWidth={1.5} />}
-                action={
-                  <Link className="button secondary small" to="/emails/send">
-                    Send a test email
-                  </Link>
-                }
+                // action={
+                //   <Link className="button secondary small" to="/emails/send">
+                //     Send a test email
+                //   </Link>
+                // }
               />
           ) : (
             <>
