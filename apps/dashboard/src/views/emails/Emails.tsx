@@ -72,7 +72,7 @@ export function Emails() {
       list={list}
       noun="emails"
       rowHref={(row) => `/emails/${row.id}`}
-      empty={<EmptyEmails />}
+      empty={<Empty title="No emails yet" body="Send your first email through Dispatch." />}
       columns={[
         {
           header: "To",
@@ -121,18 +121,5 @@ export function Emails() {
         />
       ) : null}
     </ListPage>
-  );
-}
-
-function EmptyEmails() {
-  return (
-    <Empty
-      title="No emails"
-      body={
-        <>
-          Send one with the API, the SDK, or the <Link to="/emails/send">test form</Link>. Clear the filters to see every email.
-        </>
-      }
-    />
   );
 }
