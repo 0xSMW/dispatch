@@ -3,7 +3,7 @@ import { Layout } from "./_components";
 import { ProductAction } from "./_components/ProductAction";
 import { exampleBrand, heading, text, type Brand, type EmailVariable } from "./_theme";
 
-const preview = "One practical tip to help you get more from your new account.";
+const preview = "Try one useful task to get started in your account.";
 
 type Props = { brand?: Brand; firstName?: string; tip?: string; actionUrl?: string };
 
@@ -13,12 +13,12 @@ export default function FeatureTips({
   actionUrl,
 }: Props) {
   return (
-    <Layout brand={brand} preview={preview} title="A tip for getting started"
+    <Layout brand={brand} preview={preview} title="One tip to get started"
       reason="You received this email because you signed up for product tips." marketing>
-      <Heading as="h1" className="dm-text" style={heading}>A tip for getting started</Heading>
-      <Text className="dm-text" style={text}>Hi {firstName}, here is a way to get more from {brand.productName}.</Text>
+      <Heading as="h1" className="dm-text" style={heading}>One tip to get started</Heading>
+      <Text className="dm-text" style={text}>Hi {firstName}, try this in {brand.productName}:</Text>
       <Text className="dm-text" style={text}>{tip}</Text>
-      <ProductAction brand={brand} href={actionUrl}>Try it in your account</ProductAction>
+      <ProductAction brand={brand} href={actionUrl}>Try this tip</ProductAction>
     </Layout>
   );
 }
