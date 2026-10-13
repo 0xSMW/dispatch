@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "files": [
+    "scripts/guards.test.ts",
+    "scripts/usage.ts"
+  ]
+}

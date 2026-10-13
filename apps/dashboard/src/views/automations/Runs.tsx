@@ -11,7 +11,7 @@ import { FilterBar } from "../../components/FilterBar";
 import { Tile } from "../../components/PageHeader";
 import { Panel } from "../../components/Panel";
 import { Skeleton } from "../../components/Skeleton";
-import { Table } from "../../components/Table";
+import { Table, tableProps } from "../../components/Table";
 import { Time } from "../../components/Time";
 import { useFilters } from "../../hooks/useFilters";
 import { useList } from "../../hooks/useList";
@@ -68,15 +68,8 @@ export function Runs({ automationId, tree, options }: { automationId: string; tr
         </button>
       </FilterBar> : null}
       <Table
-        rows={runs.rows}
-        loading={runs.loading}
-        error={runs.error}
-        onRetry={() => void runs.reload()}
+        {...tableProps(runs)}
         onRowClick={(row) => setOpen(row.id)}
-        page={runs.page}
-        hasMore={runs.hasMore}
-        onNext={runs.next}
-        onPrevious={runs.previous}
         noun="runs"
         empty={
           filtered ? (

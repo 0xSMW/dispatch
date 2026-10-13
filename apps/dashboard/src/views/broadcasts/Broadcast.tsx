@@ -11,7 +11,7 @@ import { Menu } from "../../components/Menu";
 import { PageHeader } from "../../components/PageHeader";
 import { Panel } from "../../components/Panel";
 import { Skeleton } from "../../components/Skeleton";
-import { Table } from "../../components/Table";
+import { Table, tableProps } from "../../components/Table";
 import { Tabs } from "../../components/Tabs";
 import { Time } from "../../components/Time";
 import { toast } from "../../components/Toast";
@@ -310,15 +310,8 @@ function Recipients({ id }: { id: string }) {
       <Tabs label="Recipient type" value={type} onChange={setType} tabs={[...recipientTabs]} />
       <Table
         compact
-        rows={list.rows}
-        loading={list.loading}
-        error={list.error}
-        onRetry={() => void list.reload()}
+        {...tableProps(list)}
         empty={<p className="muted">No recipients {type} yet.</p>}
-        page={list.page}
-        hasMore={list.hasMore}
-        onNext={list.next}
-        onPrevious={list.previous}
         noun="recipients"
         columns={[
           {
@@ -339,15 +332,8 @@ function ClickedLinks({ id }: { id: string }) {
     <Panel title="Top clicked links">
       <Table
         compact
-        rows={list.rows}
-        loading={list.loading}
-        error={list.error}
-        onRetry={() => void list.reload()}
+        {...tableProps(list)}
         empty={<p className="muted">No clicks yet.</p>}
-        page={list.page}
-        hasMore={list.hasMore}
-        onNext={list.next}
-        onPrevious={list.previous}
         columns={[
           {
             header: "Link",

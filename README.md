@@ -57,17 +57,20 @@ curl http://localhost:3100/emails \
 
 Open the dashboard to see it arrive in the email list. To try failures, send to an address with `bounce`, `complaint`, or `delay` in it, and watch the events come in.
 
-### Build and test
+### Build and verify
 
-Install the frozen lockfile before running checks; it includes the official `@modelcontextprotocol/sdk` dependency used by MCP and its protocol tests.
+Install the frozen lockfile before running checks; it includes the official `@modelcontextprotocol/sdk` dependency used by the MCP server.
 
 ```sh
 pnpm check
 pnpm test
 pnpm build
+pnpm audit:prod
 ```
 
-See [Local development](docs/local.md) for targeted tests and checks against a running stack.
+Verification has five checks: two small Node built-in guard cases through `pnpm test`, and three real usage journeys—sending, audience/consent, and access/clients—through `pnpm verify:usage`. Run the journeys against the home-server API, worker, Postgres, Redis, and storage. Changed dashboard flows also need manual acceptance in Chrome using Computer Use. See [Local development](docs/local.md#checks) and the [usage runbook](scripts/usage/README.md) for configuration and private evidence.
+
+Hosted CI runs the guards, typecheck, build, and production dependency audit. It also waits for the trusted `usage/home-server` commit status on the exact PR SHA. A maintainer posts that status only after a successful remote usage run of that revision.
 
 ### Send from code
 
@@ -148,7 +151,7 @@ Ordinary sends are **Transactional** when you omit `topic_id` (`topicId` in Type
 
 Contacts, forms, integrations, goals, and automations are not prerequisites for a transactional send. Add them when you need lifecycle messaging.
 
-Choose one of [six lifecycle recipes](docs/automations/README.md) for newsletter welcome, onboarding, upgrades, win-back, failed payment, or reactivation. Each installs disabled using a verified sender, preserves reused templates unchanged, and documents the app-owned fields/events and review before enabling. Newsletter requires a live topic at install; other Marketing flows can defer their topics but cannot enable without them. [Offline examples](examples/lifecycle/README.md) use the actual SDKs without sending during tests.
+Choose one of [six lifecycle recipes](docs/automations/README.md) for newsletter welcome, onboarding, upgrades, win-back, failed payment, or reactivation. Each installs disabled using a verified sender, preserves reused templates unchanged, and documents the app-owned fields/events and review before enabling. Newsletter requires a live topic at install; other Marketing flows can defer their topics but cannot enable without them. [SDK examples](examples/lifecycle/README.md) provide importable functions for installation, review, and explicit enable.
 
 ### Use an agent
 

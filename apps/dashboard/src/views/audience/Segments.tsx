@@ -11,7 +11,7 @@ import { ListPage } from "../../components/ListPage";
 import { Menu } from "../../components/Menu";
 import { Modal } from "../../components/Modal";
 import { Tile } from "../../components/PageHeader";
-import { Table } from "../../components/Table";
+import { Table, tableProps } from "../../components/Table";
 import { Time } from "../../components/Time";
 import { toast } from "../../components/Toast";
 import { useList } from "../../hooks/useList";
@@ -320,15 +320,8 @@ function SegmentContacts({ segment, onClose, onChange }: { segment: Segment; onC
         ) : null}
         <Table
           compact
-          rows={members.rows}
-          loading={members.loading}
-          error={members.error}
-          onRetry={() => void members.reload()}
+          {...tableProps(members)}
           empty={<p className="muted">No contacts in this segment yet.</p>}
-          page={members.page}
-          hasMore={members.hasMore}
-          onNext={members.next}
-          onPrevious={members.previous}
           columns={[
             { header: "Email", cell: (row) => <Link to={`/audience/contacts/${row.contact_id}`}>{row.email}</Link> },
             { header: "Name", cell: (row) => fullName(row) },

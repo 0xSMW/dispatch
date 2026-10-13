@@ -65,7 +65,16 @@ Received mail has no SES path locally. Post it to `POST /emails/receiving/simula
 
 ## Checks
 
-`pnpm test` runs every vitest file. None of them needs a running service: the database, Redis, and AWS are mocked. Run single files with `pnpm vitest run path/to/file.test.ts`.
+Verification has five checks:
+
+- `pnpm test` runs two small Node built-in guards: malformed stored password digests cannot authenticate, and connection-time DNS rejects localhost.
+- `pnpm verify:usage` runs three real usage journeys: sending, audience/consent, and access/clients. They use the home-server API and worker with Postgres, Redis, and storage.
+
+Set `DISPATCH_API_URL`, `DISPATCH_API_KEY`, `USAGE_DATABASE_URL`, `USAGE_TENANT_ID`, and `USAGE_SENDER` explicitly for the usage runner. Use its isolated fixtures and fake provider; no external messages are sent. Each run records the source SHA and provider mode in a private evidence folder and creates uniquely named resources. Fake-provider success establishes local processing; SES delivery needs separate provider verification. The [usage runbook](../scripts/usage/README.md) covers setup, evidence, and the three journeys.
+
+For changed dashboard behavior, use Computer Use with Chrome for manual acceptance against the running stack. Do not introduce Playwright, per-component tests, mocks, snapshots, test matrices, or broad test discovery.
+
+Hosted CI runs the guards, typecheck, build, and production dependency audit, then waits for a trusted `usage/home-server` commit status on the exact PR SHA. Only a maintainer posts that status after a successful remote run of that revision.
 
 With the stack up, in another shell:
 

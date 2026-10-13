@@ -1,7 +1,10 @@
 import type { ContactProperty, EventDefinition, PropertyType } from "../types";
+import { isIsoDate, operatorsForType as coreOperatorsForType } from "../../../../packages/core/src/rules";
+export { isIsoDate } from "../../../../packages/core/src/rules";
 
-// Lightweight dashboard mirror of the core typed-rule contract. No engine dependency.
+// Dashboard field choices and input handling for the shared typed-rule contract.
 export type FieldType = PropertyType | "set";
+export const operatorsForType = (type: FieldType): readonly string[] => coreOperatorsForType(type);
 export type Choice = { value: string; label: string };
 export type ContextField = {
   path: string;
@@ -20,14 +23,6 @@ export type RuleSources = {
   segments?: Choice[];
 };
 
-const operators: Record<FieldType, readonly string[]> = {
-  string: ["eq", "neq", "contains", "not_contains", "starts_with", "ends_with", "exists", "is_empty"],
-  number: ["eq", "neq", "gt", "gte", "lt", "lte", "exists", "is_empty"],
-  boolean: ["eq", "neq", "exists", "is_empty"],
-  date: ["eq", "neq", "gt", "gte", "lt", "lte", "within", "not_within", "exists", "is_empty"],
-  set: ["contains", "not_contains", "exists", "is_empty"],
-};
-export const operatorsForType = (type: FieldType): readonly string[] => operators[type];
 export const propertyTypes: Choice[] = [
   { value: "string", label: "String" },
   { value: "number", label: "Number" },
@@ -55,19 +50,6 @@ export function contextFields(sources: RuleSources = {}, event = ""): ContextFie
     put({ path, label: property.key, group: "Contact", type: property.type });
   }
   return [...fields.values()];
-}
-
-export function isIsoDate(value: unknown): value is string {
-  if (typeof value !== "string") return false;
-  const match = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-](\d{2}):(\d{2})))?$/.exec(value);
-  if (!match) return false;
-  const year = Number(match[1]), month = Number(match[2]), day = Number(match[3]);
-  const leap = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
-  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
-  return month >= 1 && month <= 12 && day >= 1 && day <= days[month - 1]!
-    && (match[4] === undefined || (Number(match[4]) <= 23 && Number(match[5]) <= 59 && Number(match[6]) <= 59
-      && (match[8] === undefined || (Number(match[8]) <= 23 && Number(match[9]) <= 59))))
-    && Number.isFinite(Date.parse(value));
 }
 
 export function valueKind(value: unknown): PropertyType {

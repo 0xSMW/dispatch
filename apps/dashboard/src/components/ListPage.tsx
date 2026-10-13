@@ -7,7 +7,7 @@ import { Empty, type EmptyProps } from "./Empty";
 import { BulkBar, type BulkAction } from "./BulkBar";
 import { FilterBar, type Filter } from "./FilterBar";
 import { PageHeader } from "./PageHeader";
-import { Table, type Column } from "./Table";
+import { Table, tableProps, type Column } from "./Table";
 import { Tabs, type Tab } from "./Tabs";
 
 export interface ListPageProps<T extends { id: string }> {
@@ -89,18 +89,11 @@ export function ListPage<T extends { id: string }>({
       ) : null}
       <Table
         columns={columns}
-        rows={list.rows}
-        loading={list.loading}
-        error={list.error}
-        onRetry={() => void list.reload()}
+        {...tableProps(list)}
         empty={emptyContent}
         onRowClick={click}
         selection={selection}
         menu={menu}
-        page={list.page}
-        hasMore={list.hasMore}
-        onNext={list.next}
-        onPrevious={list.previous}
         noun={noun}
       />
       {can && selection && bulkActions ? <BulkBar count={selection.count} actions={bulkActions} onClear={selection.clear} /> : null}

@@ -13,7 +13,7 @@ import { Modal } from "../../components/Modal";
 import { PageHeader } from "../../components/PageHeader";
 import { Panel } from "../../components/Panel";
 import { Skeleton } from "../../components/Skeleton";
-import { Table } from "../../components/Table";
+import { Table, tableProps } from "../../components/Table";
 import { Time } from "../../components/Time";
 import { toast } from "../../components/Toast";
 import { useList } from "../../hooks/useList";
@@ -125,16 +125,9 @@ export function Webhook() {
         >
           <Table
             compact
-            rows={deliveries.rows}
-            loading={deliveries.loading}
-            error={deliveries.error}
-            onRetry={() => void deliveries.reload()}
+            {...tableProps(deliveries)}
             empty={<p className="muted">No deliveries yet. Send a test event from the Webhooks page.</p>}
             onRowClick={(event) => setParams({ event: event.id }, { replace: true })}
-            page={deliveries.page}
-            hasMore={deliveries.hasMore}
-            onNext={deliveries.next}
-            onPrevious={deliveries.previous}
             columns={[
               {
                 header: "Event",

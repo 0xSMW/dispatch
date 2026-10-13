@@ -602,6 +602,23 @@ class Resource {
   constructor(protected readonly client: Dispatch) {}
 }
 
+// Resources with the same paginated list, detail, and delete routes.
+abstract class Collection<T = Row, Query extends Page = Page, DeleteResult = Deleted> extends Resource {
+  protected abstract readonly path: string;
+
+  list(page: Query = {} as Query) {
+    return this.client.call<List<T>>("GET", `${this.path}${query(page)}`);
+  }
+
+  get(id: string) {
+    return this.client.call<T>("GET", `${this.path}/${seg(id)}`);
+  }
+
+  remove(id: string) {
+    return this.client.call<DeleteResult>("DELETE", `${this.path}/${seg(id)}`);
+  }
+}
+
 class EmailAttachments extends Resource {
   list({ emailId, ...page }: { emailId: string } & Page) {
     return this.client.call<List>("GET", `/emails/${seg(emailId)}/attachments${query(page)}`);
@@ -786,25 +803,15 @@ class Batch extends Resource {
   }
 }
 
-class Domains extends Resource {
+class Domains extends Collection<Row, Page & { q?: string; status?: string; region?: string }> {
+  protected readonly path = "/domains";
+
   create(payload: DomainCreate) {
     return this.client.call<Row>("POST", "/domains", wire(payload));
   }
 
-  list(page: Page & { q?: string; status?: string; region?: string } = {}) {
-    return this.client.call<List>("GET", `/domains${query(page)}`);
-  }
-
-  get(id: string) {
-    return this.client.call<Row>("GET", `/domains/${seg(id)}`);
-  }
-
   update({ id, ...payload }: DomainUpdate) {
     return this.client.call<Row>("PATCH", `/domains/${seg(id)}`, wire(payload));
-  }
-
-  remove(id: string) {
-    return this.client.call<Deleted>("DELETE", `/domains/${seg(id)}`);
   }
 
   verify(id: string) {
@@ -820,25 +827,15 @@ class Domains extends Resource {
   }
 }
 
-class ApiKeys extends Resource {
+class ApiKeys extends Collection<Row> {
+  protected readonly path = "/api-keys";
+
   create(payload: ApiKeyCreate) {
     return this.client.call<{ id: string; object: "api_key"; token: string }>("POST", "/api-keys", wire(payload));
   }
 
-  list(page: Page = {}) {
-    return this.client.call<List>("GET", `/api-keys${query(page)}`);
-  }
-
-  get(id: string) {
-    return this.client.call<Row>("GET", `/api-keys/${seg(id)}`);
-  }
-
   update(id: string, payload: { name: string }) {
     return this.client.call<Row>("PATCH", `/api-keys/${seg(id)}`, wire(payload));
-  }
-
-  remove(id: string) {
-    return this.client.call<Deleted>("DELETE", `/api-keys/${seg(id)}`);
   }
 }
 
@@ -860,27 +857,16 @@ class WebhookEvents extends Resource {
   }
 }
 
-class Webhooks extends Resource {
+class Webhooks extends Collection<Row> {
+  protected readonly path = "/webhooks";
   readonly events = new WebhookEvents(this.client);
 
   create(payload: WebhookCreate) {
     return this.client.call<Row>("POST", "/webhooks", wire(payload));
   }
 
-  get(id: string) {
-    return this.client.call<Row>("GET", `/webhooks/${seg(id)}`);
-  }
-
-  list(page: Page = {}) {
-    return this.client.call<List>("GET", `/webhooks${query(page)}`);
-  }
-
   update(id: string, payload: Partial<WebhookCreate>) {
     return this.client.call<Row>("PATCH", `/webhooks/${seg(id)}`, wire(payload));
-  }
-
-  remove(id: string) {
-    return this.client.call<Deleted>("DELETE", `/webhooks/${seg(id)}`);
   }
 
   rotateSigningSecret(id: string) {
@@ -935,7 +921,8 @@ class TemplateLibrary extends Resource {
 
 export type Chain<T> = Promise<Result<T>> & { publish(): Promise<Result<T>> };
 
-class Templates extends Resource {
+class Templates extends Collection<Template, Page & { q?: string; status?: "draft" | "published" }> {
+  protected readonly path = "/templates";
   readonly versions = new TemplateVersions(this.client);
   readonly library = new TemplateLibrary(this.client);
 
@@ -951,11 +938,7 @@ class Templates extends Resource {
   }
 
   get(idOrAlias: string) {
-    return this.client.call<Template>("GET", `/templates/${seg(idOrAlias)}`);
-  }
-
-  list(page: Page & { q?: string; status?: "draft" | "published" } = {}) {
-    return this.client.call<List<Template>>("GET", `/templates${query(page)}`);
+    return super.get(idOrAlias);
   }
 
   async update(idOrAlias: string, payload: TemplateUpdate) {
@@ -963,7 +946,7 @@ class Templates extends Resource {
   }
 
   remove(idOrAlias: string) {
-    return this.client.call<Deleted>("DELETE", `/templates/${seg(idOrAlias)}`);
+    return super.remove(idOrAlias);
   }
 
   publish(idOrAlias: string, options: { versionId?: string } = {}) {
@@ -1044,7 +1027,8 @@ class ContactImports extends Resource {
   }
 }
 
-class Contacts extends Resource {
+class Contacts extends Collection<Row, Page & { segmentId?: string; segment_id?: string; q?: string; subscribed?: boolean }, { object: "contact"; contact: string; deleted: true }> {
+  protected readonly path = "/contacts";
   readonly segments = new ContactSegments(this.client);
   readonly topics = new ContactTopics(this.client);
   readonly imports = new ContactImports(this.client);
@@ -1053,16 +1037,12 @@ class Contacts extends Resource {
     return this.client.call<Row>("POST", "/contacts", wire(payload));
   }
 
-  list(page: Page & { segmentId?: string; segment_id?: string; q?: string; subscribed?: boolean } = {}) {
-    return this.client.call<List>("GET", `/contacts${query(page)}`);
-  }
-
   stats() {
     return this.client.call<Record<string, unknown>>("GET", "/contacts/stats");
   }
 
   get(idOrEmail: string) {
-    return this.client.call<Row>("GET", `/contacts/${seg(idOrEmail)}`);
+    return super.get(idOrEmail);
   }
 
   update({ id, email, ...payload }: ContactUpdate) {
@@ -1072,7 +1052,7 @@ class Contacts extends Resource {
   }
 
   remove(idOrEmail: string) {
-    return this.client.call<{ object: "contact"; contact: string; deleted: true }>("DELETE", `/contacts/${seg(idOrEmail)}`);
+    return super.remove(idOrEmail);
   }
 
   activity(idOrEmail: string, page: Page = {}) {
@@ -1080,39 +1060,23 @@ class Contacts extends Resource {
   }
 }
 
-class ContactProperties extends Resource {
+class ContactProperties extends Collection<ContactProperty> {
+  protected readonly path = "/contact-properties";
+
   create(payload: ContactPropertyCreate) {
     return this.client.call<ContactProperty>("POST", "/contact-properties", wire(payload));
-  }
-
-  list(page: Page = {}) {
-    return this.client.call<List<ContactProperty>>("GET", `/contact-properties${query(page)}`);
-  }
-
-  get(id: string) {
-    return this.client.call<ContactProperty>("GET", `/contact-properties/${seg(id)}`);
   }
 
   update({ id, ...payload }: { id: string; fallbackValue?: PropertyValue }) {
     return this.client.call<ContactProperty>("PATCH", `/contact-properties/${seg(id)}`, wire(payload));
   }
-
-  remove(id: string) {
-    return this.client.call<Deleted>("DELETE", `/contact-properties/${seg(id)}`);
-  }
 }
 
-class Segments extends Resource {
+class Segments extends Collection<Segment> {
+  protected readonly path = "/segments";
+
   create(payload: { name: string; description?: string; rule?: Rule | null }) {
     return this.client.call<Segment>("POST", "/segments", wire(payload));
-  }
-
-  list(page: Page = {}) {
-    return this.client.call<List<Segment>>("GET", `/segments${query(page)}`);
-  }
-
-  get(id: string) {
-    return this.client.call<Segment>("GET", `/segments/${seg(id)}`);
   }
 
   update(id: string, payload: { name?: string; description?: string; rule?: Rule | null }) {
@@ -1123,52 +1087,36 @@ class Segments extends Resource {
     return this.client.call<SegmentPreview>("POST", "/segments/preview", { rule });
   }
 
-  remove(id: string) {
-    return this.client.call<Deleted>("DELETE", `/segments/${seg(id)}`);
-  }
-
   contacts(id: string, page: Page = {}) {
     return this.client.call<List>("GET", `/segments/${seg(id)}/contacts${query(page)}`);
   }
 }
 
-class Topics extends Resource {
+class Topics extends Collection<Row> {
+  protected readonly path = "/topics";
+
   create(payload: TopicCreate) {
     return this.client.call<Row>("POST", "/topics", wire(payload));
-  }
-
-  list(page: Page = {}) {
-    return this.client.call<List>("GET", `/topics${query(page)}`);
-  }
-
-  get(id: string) {
-    return this.client.call<Row>("GET", `/topics/${seg(id)}`);
   }
 
   update({ id, ...payload }: { id: string } & Partial<Omit<TopicCreate, "defaultSubscription">>) {
     return this.client.call<Row>("PATCH", `/topics/${seg(id)}`, wire(payload));
   }
-
-  remove(id: string) {
-    return this.client.call<Deleted>("DELETE", `/topics/${seg(id)}`);
-  }
 }
 
-class Suppressions extends Resource {
+class Suppressions extends Collection<Row, Page & { origin?: "bounce" | "complaint" | "manual" }> {
+  protected readonly path = "/suppressions";
+
   add(payload: { email: string; reason?: string }) {
     return this.client.call<Row>("POST", "/suppressions", wire(payload));
   }
 
-  list(page: Page & { origin?: "bounce" | "complaint" | "manual" } = {}) {
-    return this.client.call<List>("GET", `/suppressions${query(page)}`);
-  }
-
   get(idOrEmail: string) {
-    return this.client.call<Row>("GET", `/suppressions/${seg(idOrEmail)}`);
+    return super.get(idOrEmail);
   }
 
   remove(idOrEmail: string) {
-    return this.client.call<Deleted>("DELETE", `/suppressions/${seg(idOrEmail)}`);
+    return super.remove(idOrEmail);
   }
 
   batchAdd(emails: string[]) {
@@ -1180,17 +1128,15 @@ class Suppressions extends Resource {
   }
 }
 
-class Broadcasts extends Resource {
+class Broadcasts extends Collection<Row, Page & { status?: string; segmentId?: string; q?: string }> {
+  protected readonly path = "/broadcasts";
+
   async create(payload: BroadcastCreate) {
     return this.client.call<Row>("POST", "/broadcasts", wire(await content(payload)));
   }
 
   send(id: string, options: { scheduledAt?: string } = {}) {
     return this.client.call<{ id: string }>("POST", `/broadcasts/${seg(id)}/send`, wire(options));
-  }
-
-  list(page: Page & { status?: string; segmentId?: string; q?: string } = {}) {
-    return this.client.call<List>("GET", `/broadcasts${query(page)}`);
   }
 
   // Who a send would reach now: recipients, and how many are left out and why.
@@ -1201,16 +1147,8 @@ class Broadcasts extends Resource {
     );
   }
 
-  get(id: string) {
-    return this.client.call<Row>("GET", `/broadcasts/${seg(id)}`);
-  }
-
   async update(id: string, payload: Partial<BroadcastCreate>) {
     return this.client.call<Row>("PATCH", `/broadcasts/${seg(id)}`, wire(await content(payload)));
-  }
-
-  remove(id: string) {
-    return this.client.call<Deleted>("DELETE", `/broadcasts/${seg(id)}`);
   }
 
   cancel(id: string) {
@@ -1252,7 +1190,9 @@ class AutomationRuns extends Resource {
   }
 }
 
-class Automations extends Resource {
+class Automations extends Collection<Automation, Page & { status?: AutomationStatus }> {
+  protected readonly path = "/automations";
+
   splitMetrics(id: string, stepKey: string, range: { startDate?: string; endDate?: string } = {}) {
     return this.client.call<SplitReport>("GET", `/automations/${seg(id)}/steps/${seg(stepKey)}/metrics${query(range)}`);
   }
@@ -1277,14 +1217,6 @@ class Automations extends Resource {
     return this.client.call<Automation>("POST", "/automations", wire(payload));
   }
 
-  list(page: Page & { status?: AutomationStatus } = {}) {
-    return this.client.call<List<Automation>>("GET", `/automations${query(page)}`);
-  }
-
-  get(id: string) {
-    return this.client.call<Automation>("GET", `/automations/${seg(id)}`);
-  }
-
   update(id: string, payload: AutomationUpdate) {
     return this.client.call<Automation>("PATCH", `/automations/${seg(id)}`, wire(payload));
   }
@@ -1292,10 +1224,6 @@ class Automations extends Resource {
   /** Preview an ordinary update with the same validation, without saving any changes. */
   dryRun(id: string, payload: AutomationUpdate) {
     return this.client.call<AutomationDryRun>("PATCH", `/automations/${seg(id)}?dry_run=true`, wire(payload));
-  }
-
-  remove(id: string) {
-    return this.client.call<Deleted>("DELETE", `/automations/${seg(id)}`);
   }
 
   duplicate(id: string, options: { name?: string } = {}) {
@@ -1318,7 +1246,8 @@ class FiredEvents extends Resource {
   }
 }
 
-class Events extends Resource {
+class Events extends Collection<Event> {
+  protected readonly path = "/events";
   readonly fired = new FiredEvents(this.client);
 
   send(payload: EventSend) {
@@ -1330,11 +1259,7 @@ class Events extends Resource {
   }
 
   get(idOrName: string) {
-    return this.client.call<Event>("GET", `/events/${seg(idOrName)}`);
-  }
-
-  list(page: Page = {}) {
-    return this.client.call<List<Event>>("GET", `/events${query(page)}`);
+    return super.get(idOrName);
   }
 
   update(idOrName: string, payload: { schema: EventSchema }) {
@@ -1342,7 +1267,7 @@ class Events extends Resource {
   }
 
   remove(idOrName: string) {
-    return this.client.call<Deleted>("DELETE", `/events/${seg(idOrName)}`);
+    return super.remove(idOrName);
   }
 }
 
@@ -1383,12 +1308,11 @@ export type GoalMetrics = {
   data: Array<{ date: string; contacts_reached: number; converted: number; rate: number }>;
   history: { available_from: string | null; limitation: string };
 };
-class Goals extends Resource {
-  list(page: Page = {}) { return this.client.call<List<Goal>>("GET", `/goals${query(page)}`); }
-  get(id: string) { return this.client.call<Goal>("GET", `/goals/${seg(id)}`); }
+class Goals extends Collection<Goal> {
+  protected readonly path = "/goals";
+
   create(input: GoalInput) { return this.client.call<Goal>("POST", "/goals", wire(input)); }
   update(id: string, input: Partial<GoalInput>) { return this.client.call<Goal>("PATCH", `/goals/${seg(id)}`, wire(input)); }
-  remove(id: string) { return this.client.call<Deleted>("DELETE", `/goals/${seg(id)}`); }
   metrics(id: string, options: GoalMetricsOptions = {}) { return this.client.call<GoalMetrics>("GET", `/goals/${seg(id)}/metrics${query(options)}`); }
 }
 
@@ -1416,12 +1340,11 @@ export type SignupForm = Row & {
   object: "form"; name: string; key: string; topic_ids: string[]; properties: string[];
   double_opt_in: boolean; from_email: string; allowed_origins: string[]; redirect_url: string | null;
 };
-class Forms extends Resource {
-  list(page: Page = {}) { return this.client.call<List<SignupForm>>("GET", `/forms${query(page)}`); }
-  get(id: string) { return this.client.call<SignupForm>("GET", `/forms/${seg(id)}`); }
+class Forms extends Collection<SignupForm> {
+  protected readonly path = "/forms";
+
   create(input: FormInput) { return this.client.call<SignupForm>("POST", "/forms", wire(input)); }
   update(id: string, input: Partial<FormInput>) { return this.client.call<SignupForm>("PATCH", `/forms/${seg(id)}`, wire(input)); }
-  remove(id: string) { return this.client.call<Deleted>("DELETE", `/forms/${seg(id)}`); }
 }
 export type IntegrationSettings = {
   mapPlan?: boolean; deleteContact?: boolean; secretHeader?: string; stripeRestrictedKey?: string | null;
@@ -1444,12 +1367,11 @@ export type InboundDelivery = Row & {
 function integrationWire(input: IntegrationInput | IntegrationUpdate) {
   return { ...wire(input), ...(input.settings === undefined ? {} : { settings: wire(input.settings) }) };
 }
-class Integrations extends Resource {
-  list(page: Page = {}) { return this.client.call<List<Integration>>("GET", `/integrations${query(page)}`); }
-  get(id: string) { return this.client.call<Integration>("GET", `/integrations/${seg(id)}`); }
+class Integrations extends Collection<Integration> {
+  protected readonly path = "/integrations";
+
   create(input: IntegrationInput) { return this.client.call<CreatedIntegration>("POST", "/integrations", integrationWire(input)); }
   update(id: string, input: IntegrationUpdate) { return this.client.call<Integration>("PATCH", `/integrations/${seg(id)}`, integrationWire(input)); }
-  remove(id: string) { return this.client.call<Deleted>("DELETE", `/integrations/${seg(id)}`); }
   rotate(id: string) { return this.client.call<CreatedIntegration>("POST", `/integrations/${seg(id)}/rotate`, {}); }
   deliveries(id: string, options: { limit?: number } = {}) {
     return this.client.call<List<InboundDelivery>>("GET", `/integrations/${seg(id)}/deliveries${query(options)}`);

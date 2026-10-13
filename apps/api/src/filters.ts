@@ -39,6 +39,43 @@ function flag(value: string, name: string) {
   throw new ApiError("validation_error", 400, `${name} must be true or false`);
 }
 
+export type EmailQuery = {
+  status?: string;
+  from?: string;
+  to?: string;
+  api_key_id?: string;
+  q?: string;
+};
+
+// The list shows Resend's last_event names. Map them back to stored statuses.
+const emailStatuses: Record<string, string[]> = {
+  canceled: ["cancelled"],
+  cancelled: ["cancelled"],
+  sent: ["sent", "submitted"],
+};
+
+// Builds the where fragment for GET /emails. Parameters number from $2, after the tenant.
+export function emailWhere(query: EmailQuery) {
+  const filter = builder();
+  if (query.status) {
+    filter.clauses.push(`e.status = any(${filter.bind(Object.hasOwn(emailStatuses, query.status) ? emailStatuses[query.status] : [query.status])}::text[])`);
+  }
+  if (query.from) filter.clauses.push(`e.created_at >= ${filter.bind(date(query.from, "from"))}`);
+  if (query.to) filter.clauses.push(`e.created_at <= ${filter.bind(date(query.to, "to"))}`);
+  if (query.api_key_id) filter.clauses.push(`e.api_key_id = ${filter.bind(query.api_key_id)}`);
+  const q = query.q?.trim();
+  if (q) {
+    const pattern = filter.like(q);
+    filter.clauses.push(
+      `(e.subject ilike ${pattern} or exists (
+        select 1 from email_recipients rq
+        where rq.tenant_id = e.tenant_id and rq.email_id = e.id and rq.email ilike ${pattern}
+      ))`,
+    );
+  }
+  return filter.done();
+}
+
 export type TemplateQuery = { q?: string; status?: string };
 
 export function automationWhere(query: { q?: string; status?: string }) {

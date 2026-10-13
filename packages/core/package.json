@@ -7,7 +7,10 @@
   "exports": {
     ".": "./src/index.ts",
     "./env": "./src/env.ts",
-    "./brand": "./src/brand.ts"
+    "./brand": "./src/brand.ts",
+    "./rules": "./src/rules.ts",
+    "./automations": "./src/automations.ts",
+    "./render": "./src/render.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

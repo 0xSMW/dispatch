@@ -4,12 +4,13 @@ Vite and React 19. Every page is a route in `src/main.tsx`. Read this before you
 
 ```sh
 pnpm --filter @dispatchmail/dashboard dev         # http://127.0.0.1:5173
-pnpm vitest run apps/dashboard                 # component and hook tests
 pnpm --filter @dispatchmail/dashboard typecheck
 pnpm --filter @dispatchmail/dashboard build
 ```
 
 Build settings are read at build time: `VITE_API_URL` (the API's URL, required when the API is on another host than the dashboard, because the public unsubscribe and shared pages have no session to take it from), `VITE_ALLOW_REMOTE_API`, and `VITE_DOCS_URL`.
+
+The repository has five verification checks: two small Node built-in guards via `pnpm test`, and three real usage journeys (sending, audience/consent, access/clients) via `pnpm verify:usage` against the home-server stack. Changed UI flows require manual acceptance with Computer Use in Chrome. Follow the [usage runbook](../../scripts/usage/README.md); keep per-run evidence private. Do not add per-component tests, mocks, snapshots, test matrices, broad discovery, or Playwright.
 
 `VITE_DOCS_URL` is the public docs directory URL (for example, `https://docs.example.org/dispatch/0.1.0/`). Learn chips append guide paths and anchors to it. Without it, they use `https://github.com/0xSMW/dispatch/blob/v<dashboard-version>/docs/`, with the version from this package's `package.json`. Only targets present in the public docs shipped with the build appear; lifecycle recipes stay hidden until their index ships. Rebuild after changing the URL or the docs.
 
@@ -22,7 +23,6 @@ src/
   main.tsx            the router, nothing else. One route per row of the 5.3 table.
   styles.css          tokens (dark and light) and every class the components use
   types.ts            response shapes: List<T>, Deleted, and one type per resource
-  testing.ts          test helpers: h, signIn, mockFetch, callAt, wrapper
   shell/
     Root.tsx          SessionProvider, <Toaster />, the M key
     Shell.tsx         sidebar, top bar, account menu, onboarding banner, <Outlet />, the A and ? keys
@@ -246,11 +246,11 @@ The template and broadcast editors have Code and Visual modes (`views/templates/
 
 The automation editor has List and Canvas views (`views/automations/Canvas.tsx`, `Flow.tsx`, `layout.ts`). The canvas is a second view of the same tree. `layout()` is a pure function from the tree to nodes and edges, and every edit goes through the same `StepActions` and `graph.ts` functions the list uses. New step keys get a random suffix, so a key is never reused: a run finds its steps by key.
 
-Neither has been opened in a browser. Layout, pan and zoom, menus, and paste behavior are untested there.
+For changes to either editor, verify layout, pan and zoom, menus, paste behavior, pending edits, save, and navigation manually in Chrome against the running API and worker.
 
 ## API reference drawer
 
-`A`, or the API button in the top bar, opens a drawer listing the calls behind the page on screen, with a cURL and a Node.js snippet for each. The data lives in `references` in `lib/reference.ts`, keyed by the route pattern from `main.tsx`. `:id` in a path is replaced with the id in the URL. `lib/reference.test.ts` reads `main.tsx` and fails when a signed-in route has no entry, so a new page needs one. Set `sdk` to null for a call the TypeScript SDK has no method for.
+`A`, or the API button in the top bar, opens a drawer listing the calls behind the page on screen, with a cURL and a Node.js snippet for each. The data lives in `references` in `lib/reference.ts`, keyed by the route pattern from `main.tsx`. `:id` in a path is replaced with the id in the URL. A new signed-in route needs a reference entry; verify its drawer in Chrome. Set `sdk` to null for a call the TypeScript SDK has no method for.
 
 ## Naming
 
@@ -259,4 +259,4 @@ Neither has been opened in a browser. Layout, pan and zoom, menus, and paste beh
 - Hooks are `useThing` in `hooks/useThing.ts`. Response types in `types.ts` are named after the resource, without `Row` or `Response` suffixes.
 - Class names are camelCase in `styles.css`. Do not add inline `style` objects for colors; they cannot follow the theme. Use the tokens (`--surface`, `--text-muted`, `--primary`, `--danger`, `--warning`, `--info`, `--accent`, and their `-subtle` and `-border` forms). Check any new text and background pair for 4.5 to 1 contrast in both themes.
 - Toasts are short and past tense. Empty states say what goes there and how to add one.
-- Tests are `*.test.ts` next to the file, with `// @vitest-environment jsdom` for anything that renders. The root vitest config does not pick up `.test.tsx`, so build elements with `h` from `src/testing.ts`. `signIn("sess_test", ["read"])` starts a test as a viewer.
+- Verify changed flows as both an Admin and a Viewer in Chrome, including visible controls, keyboard actions, errors, and saved state after reload.

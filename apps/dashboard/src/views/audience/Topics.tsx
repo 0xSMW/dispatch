@@ -11,7 +11,7 @@ import { Field, Select, TextArea } from "../../components/Field";
 import { Menu } from "../../components/Menu";
 import { Modal } from "../../components/Modal";
 import { PageHeader, Tile } from "../../components/PageHeader";
-import { Table } from "../../components/Table";
+import { Table, tableProps } from "../../components/Table";
 import { Tabs } from "../../components/Tabs";
 import { Time } from "../../components/Time";
 import { toast } from "../../components/Toast";
@@ -59,15 +59,8 @@ export function Topics() {
       <Tabs tabs={audienceTabs} />
       <div className={empty ? "emptyPage" : "splitLayout"}>
         <Table
-          rows={list.rows}
-          loading={list.loading}
-          error={list.error}
-          onRetry={() => void list.reload()}
+          {...tableProps(list)}
           onRowClick={setOpen}
-          page={list.page}
-          hasMore={list.hasMore}
-          onNext={list.next}
-          onPrevious={list.previous}
           noun="topics"
           empty={<Empty title="No topics yet" body="Topics let contacts choose which emails they get. Create your first one."
             action={can ? <button type="button" onClick={() => setCreating(true)}>Create topic</button> : null} />}
@@ -275,15 +268,8 @@ function Subscriptions({ topic, onClose }: { topic: Topic; onClose: () => void }
         ) : null}
         <Table
           compact
-          rows={subscriptions.rows}
-          loading={subscriptions.loading}
-          error={subscriptions.error}
-          onRetry={() => void subscriptions.reload()}
+          {...tableProps(subscriptions)}
           empty={<p className="muted">Nobody has chosen yet, so everyone gets the default: {defaultLabel(topic.default_subscription).toLowerCase()}.</p>}
-          page={subscriptions.page}
-          hasMore={subscriptions.hasMore}
-          onNext={subscriptions.next}
-          onPrevious={subscriptions.previous}
           columns={[
             { header: "Email", cell: (row) => <Link to={`/audience/contacts/${row.contact_id}`}>{row.email}</Link> },
             { header: "Status", cell: (row) => <Badge value={row.subscription} label={defaultLabel(row.subscription)} /> },
