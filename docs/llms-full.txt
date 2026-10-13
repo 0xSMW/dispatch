@@ -67,17 +67,20 @@ curl http://localhost:3100/emails \
 
 Open the dashboard to see it arrive in the email list. To try failures, send to an address with `bounce`, `complaint`, or `delay` in it, and watch the events come in.
 
-### Build and test
+### Build and verify
 
-Install the frozen lockfile before running checks; it includes the official `@modelcontextprotocol/sdk` dependency used by MCP and its protocol tests.
+Install the frozen lockfile before running checks; it includes the official `@modelcontextprotocol/sdk` dependency used by the MCP server.
 
 ```sh
 pnpm check
 pnpm test
 pnpm build
+pnpm audit:prod
 ```
 
-See [Local development](local.md) for targeted tests and checks against a running stack.
+Verification has five checks: two small Node built-in guard cases through `pnpm test`, and three real usage journeys—sending, audience/consent, and access/clients—through `pnpm verify:usage`. Run the journeys against the home-server API, worker, Postgres, Redis, and storage. Changed dashboard flows also need manual acceptance in Chrome using Computer Use. See [Local development](local.md#checks) and the [usage runbook](../scripts/usage/README.md) for configuration and private evidence.
+
+Hosted CI runs the guards, typecheck, build, and production dependency audit. It also waits for the trusted `usage/home-server` commit status on the exact PR SHA. A maintainer posts that status only after a successful remote usage run of that revision.
 
 ### Send from code
 
@@ -158,7 +161,7 @@ Ordinary sends are **Transactional** when you omit `topic_id` (`topicId` in Type
 
 Contacts, forms, integrations, goals, and automations are not prerequisites for a transactional send. Add them when you need lifecycle messaging.
 
-Choose one of [six lifecycle recipes](automations/README.md) for newsletter welcome, onboarding, upgrades, win-back, failed payment, or reactivation. Each installs disabled using a verified sender, preserves reused templates unchanged, and documents the app-owned fields/events and review before enabling. Newsletter requires a live topic at install; other Marketing flows can defer their topics but cannot enable without them. [Offline examples](../examples/lifecycle/README.md) use the actual SDKs without sending during tests.
+Choose one of [six lifecycle recipes](automations/README.md) for newsletter welcome, onboarding, upgrades, win-back, failed payment, or reactivation. Each installs disabled using a verified sender, preserves reused templates unchanged, and documents the app-owned fields/events and review before enabling. Newsletter requires a live topic at install; other Marketing flows can defer their topics but cannot enable without them. [SDK examples](../examples/lifecycle/README.md) provide importable functions for installation, review, and explicit enable.
 
 ### Use an agent
 
@@ -5090,7 +5093,16 @@ Received mail has no SES path locally. Post it to `POST /emails/receiving/simula
 
 ## Checks
 
-`pnpm test` runs every vitest file. None of them needs a running service: the database, Redis, and AWS are mocked. Run single files with `pnpm vitest run path/to/file.test.ts`.
+Verification has five checks:
+
+- `pnpm test` runs two small Node built-in guards: malformed stored password digests cannot authenticate, and connection-time DNS rejects localhost.
+- `pnpm verify:usage` runs three real usage journeys: sending, audience/consent, and access/clients. They use the home-server API and worker with Postgres, Redis, and storage.
+
+Set `DISPATCH_API_URL`, `DISPATCH_API_KEY`, `USAGE_DATABASE_URL`, `USAGE_TENANT_ID`, and `USAGE_SENDER` explicitly for the usage runner. Use its isolated fixtures and fake provider; no external messages are sent. Each run records the source SHA and provider mode in a private evidence folder and creates uniquely named resources. Fake-provider success establishes local processing; SES delivery needs separate provider verification. The [usage runbook](../scripts/usage/README.md) covers setup, evidence, and the three journeys.
+
+For changed dashboard behavior, use Computer Use with Chrome for manual acceptance against the running stack. Do not introduce Playwright, per-component tests, mocks, snapshots, test matrices, or broad test discovery.
+
+Hosted CI runs the guards, typecheck, build, and production dependency audit, then waits for a trusted `usage/home-server` commit status on the exact PR SHA. Only a maintainer posts that status after a successful remote run of that revision.
 
 With the stack up, in another shell:
 

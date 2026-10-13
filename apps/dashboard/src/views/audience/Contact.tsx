@@ -15,7 +15,7 @@ import { Menu } from "../../components/Menu";
 import { PageHeader } from "../../components/PageHeader";
 import { Panel } from "../../components/Panel";
 import { Skeleton } from "../../components/Skeleton";
-import { Table } from "../../components/Table";
+import { Table, tableProps } from "../../components/Table";
 import { Time } from "../../components/Time";
 import { toast } from "../../components/Toast";
 import { useHotkey } from "../../hooks/useHotkey";
@@ -402,15 +402,8 @@ function Activity({ contactId }: { contactId: string }) {
     <Panel title="Activity">
       <Table
         compact
-        rows={list.rows}
-        loading={list.loading}
-        error={list.error}
-        onRetry={() => void list.reload()}
+        {...tableProps(list)}
         empty={<p className="muted">No activity yet.</p>}
-        page={list.page}
-        hasMore={list.hasMore}
-        onNext={list.next}
-        onPrevious={list.previous}
         columns={[
           {
             header: "Event",

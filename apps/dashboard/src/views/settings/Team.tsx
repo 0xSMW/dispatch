@@ -12,7 +12,7 @@ import { Menu } from "../../components/Menu";
 import { Modal } from "../../components/Modal";
 import { PageHeader } from "../../components/PageHeader";
 import { Panel } from "../../components/Panel";
-import { Table, type Column } from "../../components/Table";
+import { Table, tableProps, type Column } from "../../components/Table";
 import { Tabs } from "../../components/Tabs";
 import { Time } from "../../components/Time";
 import { toast } from "../../components/Toast";
@@ -217,16 +217,9 @@ export function Team() {
           {audit.loading || audit.error || audit.rows.length || audit.page > 1 || filters.action ? <FilterBar search="Filter by action, such as domain" searchParam="action" /> : null}
           <Table
             compact
-            rows={audit.rows}
-            loading={audit.loading}
-            error={audit.error}
-            onRetry={() => void audit.reload()}
+            {...tableProps(audit)}
             onRowClick={setEntry}
             empty={<Empty compact title={filters.action ? "No matching entries" : "No changes logged yet"} body={filters.action ? "Try a different action." : "Changes to your team and settings show up here."} icon={<Inbox size={28} strokeWidth={1.5} />} />}
-            page={audit.page}
-            hasMore={audit.hasMore}
-            onNext={audit.next}
-            onPrevious={audit.previous}
             columns={[
               { header: "Action", cell: (row) => <span className="mono">{row.action}</span> },
               { header: "Actor", cell: (row) => row.actor_email ?? <span className="dim">API key</span> },
@@ -299,16 +292,9 @@ function Section<T extends { id: string }>({
       <Table
         compact
         empty={<Empty compact title={`No ${title.toLowerCase()} yet`} body={emptyBody} action={emptyAction ?? action} />}
-        rows={list.rows}
-        loading={list.loading}
-        error={list.error}
-        onRetry={() => void list.reload()}
+        {...tableProps(list)}
         columns={columns}
         menu={menu}
-        page={list.page}
-        hasMore={list.hasMore}
-        onNext={list.next}
-        onPrevious={list.previous}
       />
   );
   const actions = list.loading || list.error || list.rows.length || list.page > 1 ? action : null;

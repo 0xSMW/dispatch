@@ -5,7 +5,7 @@ import { Facts } from "../../components/Facts";
 import { PageHeader } from "../../components/PageHeader";
 import { Panel } from "../../components/Panel";
 import { Skeleton } from "../../components/Skeleton";
-import { Table } from "../../components/Table";
+import { Table, tableProps } from "../../components/Table";
 import { Tabs } from "../../components/Tabs";
 import { Time } from "../../components/Time";
 import { useList } from "../../hooks/useList";
@@ -164,17 +164,10 @@ export function Usage() {
           {usage.loading || usage.error || usage.rows.length || usage.page > 1 ? <p className="note">Counters for this tenant.</p> : null}
           <Table
             compact
-            rows={usage.rows}
-            loading={usage.loading}
-            error={usage.error}
-            onRetry={() => void usage.reload()}
+            {...tableProps(usage)}
             empty={<Empty compact title="No usage yet" body="Your usage shows up here after your first API call."
               // action={<Link to="/emails/send">Send a test email</Link>}
             />}
-            page={usage.page}
-            hasMore={usage.hasMore}
-            onNext={usage.next}
-            onPrevious={usage.previous}
             columns={[
               { header: "Counter", cell: (row) => <span className="mono">{row.name}</span> },
               { header: "Period", cell: (row) => row.period },

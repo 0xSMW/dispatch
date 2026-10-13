@@ -1,9 +1,30 @@
 import { Command } from "@commander-js/extra-typings";
 import type { Result } from "@dispatchmail/sdk";
-import { runDelete, runGet } from "./actions.js";
+import { runDelete, runGet, runList, type List } from "./actions.js";
 import type { Api } from "./client.js";
 import { helpText } from "./help.js";
+import { pageOptions, type Page } from "./pagination.js";
 import type { Globals } from "./tty.js";
+
+// `<group> list`, for paginated resources with no extra arguments or filters.
+export function listCommand<T>(spec: {
+  description: string;
+  output: string;
+  examples: string[];
+  call: (api: Api, page: Page) => Promise<Result<List<T>>>;
+  columns: string[];
+  row: (item: T) => unknown[];
+  empty: string;
+}) {
+  const { description, output, examples, ...list } = spec;
+  return pageOptions(new Command("list"))
+    .alias("ls")
+    .description(description)
+    .addHelpText("after", helpText({ output, codes: ["invalid_limit", "invalid_pagination", "list_error"], examples }))
+    .action(async (_options, command) => {
+      await runList<T>(command, list);
+    });
+}
 
 type Spec = {
   noun: string;

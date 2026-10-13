@@ -22,7 +22,7 @@ import { useResource } from "../../hooks/useResource";
 import { ApiError } from "../../lib/client";
 import { kindLabels, templateKind } from "../../lib/emailKind";
 import { useCan, useClient } from "../../shell/session";
-import type { Automation, AutomationPreview, ContactProperty, EventDefinition, Segment, Template, Topic } from "../../types";
+import type { Automation, AutomationPreview, Template } from "../../types";
 import {
   descendants,
   insertStep,
@@ -55,6 +55,7 @@ import { StopAutomation, isEnabled } from "./Stop";
 import { countsByStep, useEmailMetrics } from "./EmailMetrics";
 import { Enroll, canEnroll } from "./Enroll";
 import { pickWinner } from "./winner";
+import { useOptions } from "./useOptions";
 import "../../styles/automation-workspace.css";
 
 type Draft = { name: string; tree: Tree; reentry: Reentry };
@@ -141,37 +142,24 @@ export function AutomationEditor() {
   }, [row, stored]);
 
   const templates = useList<Template>("/templates", {}, { all: true });
-  const segments = useList<Segment>("/segments", {}, { all: true });
-  const events = useList<EventDefinition>("/events", {}, { all: true });
-  const topics = useList<Topic>("/topics", {}, { all: true });
-  const properties = useList<ContactProperty>("/contact-properties", {}, { all: true });
+  const { events, options: triggerOptions } = useOptions();
   const options: StepOptions = useMemo(
     () => ({
+      ...triggerOptions,
       templatesReady: !templates.loading && !templates.error,
       templatesError: templates.error,
       templates: templates.rows.map((item) => {
         const kind = item.kind ?? (item.html !== undefined || item.text !== undefined ? templateKind(item) : undefined);
         return { value: item.id, label: `${item.alias ? `${item.name} (${item.alias})` : item.name}${kind ? ` · ${kindLabels[kind]}` : ""}`, kind };
       }),
-      segments: segments.rows.map((item) => ({ value: item.id, label: item.name })),
-      staticSegments: segments.rows.filter((item) => item.type !== "dynamic").map((item) => ({ value: item.id, label: item.name })),
-      events: events.rows.map((item) => item.name),
-      topics: topics.rows.map((item) => ({ value: item.id, label: item.name })),
       eventDefinitions: events.rows,
-      contactProperties: properties.rows,
-      topicsReady: !topics.loading && !topics.error,
-      segmentsReady: !segments.loading && !segments.error,
-      propertiesReady: !properties.loading && !properties.error,
-      topicsError: topics.error,
-      segmentsError: segments.error,
-      propertiesError: properties.error,
       eventName: draft?.tree.event ?? stored?.tree.event,
       templateNames: Object.fromEntries(templates.rows.flatMap((item) => [
         [item.id, item.name], ...(item.alias ? [[item.alias, item.name]] : []),
       ])),
       emailCounts: emailMetrics.data && !emailMetrics.error ? countsByStep(emailMetrics.data) : undefined,
     }),
-    [templates.rows, templates.loading, templates.error, segments.rows, segments.loading, segments.error, events.rows, topics.rows, topics.loading, topics.error, properties.rows, properties.loading, properties.error, draft?.tree.event, stored?.tree.event, emailMetrics.data, emailMetrics.error],
+    [triggerOptions, templates.rows, templates.loading, templates.error, events.rows, draft?.tree.event, stored?.tree.event, emailMetrics.data, emailMetrics.error],
   );
 
   const enabled = row ? isEnabled(row) : false;

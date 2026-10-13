@@ -1,4 +1,5 @@
 import type { MouseEvent, ReactNode } from "react";
+import type { ListState } from "../hooks/useList";
 import type { Selection } from "../hooks/useSelection";
 import { useCan } from "../shell/session";
 import { ReadOnlyMenus } from "./Menu";
@@ -37,6 +38,19 @@ export interface TableProps<T> {
   /** Noun for the footer, such as "domains". */
   noun?: string;
   compact?: boolean;
+}
+
+export function tableProps<T>(list: ListState<T>) {
+  return {
+    rows: list.rows,
+    loading: list.loading,
+    error: list.error,
+    onRetry: () => void list.reload(),
+    page: list.page,
+    hasMore: list.hasMore,
+    onNext: list.next,
+    onPrevious: list.previous,
+  };
 }
 
 export function rowCountLabel(count: number, noun: string): string {

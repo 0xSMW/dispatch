@@ -1,27 +1,19 @@
 // Client-side preview fill for template and broadcast HTML. It matches `renderTemplate` in
 // packages/core, blocks included, and a test compares the two. The server is the source of truth at send time; this only feeds EmailFrame.
 import type { Brand, TemplateVariable } from "../../types";
-import { brandTextColor, themeContext, themeVariables, type BrandRecord } from "../../../../../packages/core/src/brand";
+import { reservedVariables, escapeHtml, own, renderBlocks, type BlockNode } from "../../../../../packages/core/src/render";
+export { reservedVariables, contactField, escapeHtml } from "../../../../../packages/core/src/render";
+import { brandTextColor, themeContext, type BrandRecord } from "../../../../../packages/core/src/brand";
 
 export type VariableType = "string" | "number" | "list";
 
 export type Variable = { key: string; type: VariableType; fallback_value: string | number | null };
-
-/** Names a template cannot declare: contact fields, unsubscribe URLs, and brand values. */
-export const reservedVariables = [
-  "FIRST_NAME", "LAST_NAME", "EMAIL", "UNSUBSCRIBE_URL",
-  "RESEND_UNSUBSCRIBE_URL", "DISPATCH_UNSUBSCRIBE_URL", "contact", "this",
-  "PRODUCT_NAME", "PRODUCT_URL", "LOGO_URL", "BRAND_COLOR", "BRAND_TEXT_COLOR",
-  "SUPPORT_EMAIL", "SUPPORT_URL", "PRIVACY_URL", "COMPANY_NAME", "COMPANY_ADDRESS", "CURRENT_YEAR",
-  ...themeVariables,
-];
 
 const placeholder = /\{\{\{\s*([A-Za-z0-9_.]+)\s*(?:\|([^}]*))?\}\}\}|\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}/g;
 const blockToken = () => /\{\{\{(?:#(each|if|unless)\s+([A-Za-z0-9_.]+)|\/(each|if|unless))\s*\}\}\}/g;
 
 type Scope = Record<string, unknown>;
 type BlockKind = "if" | "unless" | "each";
-type BlockNode = string | { kind: BlockKind; key: string; children: BlockNode[] };
 
 /** Accepts the old string array and the object array. */
 export function normalizeVariables(variables: TemplateVariable[] | null | undefined): Variable[] {
@@ -48,27 +40,12 @@ export function declarable(key: string) {
   return /^[A-Za-z0-9_]{1,50}$/.test(key) && !unsafeVariables.includes(key);
 }
 
-export function escapeHtml(value: string) {
-  return value.replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]!);
-}
-
-// Own properties only, as on the server, so a placeholder named `constructor` prints nothing.
-function own(value: unknown, key: string): unknown {
-  return value !== null && typeof value === "object" && Object.prototype.hasOwnProperty.call(value, key) ? (value as Scope)[key] : undefined;
-}
-
 function lookup(key: string, values: Scope): unknown {
   if (Object.prototype.hasOwnProperty.call(values, key)) return values[key];
   return key.split(".").reduce<unknown>((value, part) => own(value, part), values);
 }
 
-function present(value: unknown) {
-  return !(value === undefined || value === null || value === "" || value === false || (Array.isArray(value) && value.length === 0));
-}
-
-// The same parser as `parseBlocks` in @dispatchmail/core, which cannot be imported into the browser.
-// Blocks nest, so tags are matched with a stack. Keep the two in step: render.test.ts runs the
-// library templates through both.
+// Preview block errors keep their concise messages while the server uses API errors.
 function parseBlocks(source: string): BlockNode[] {
   const root: BlockNode[] = [];
   const stack: Array<{ kind: BlockKind; key: string; children: BlockNode[] }> = [];
@@ -107,11 +84,6 @@ export function blockProblem(...sources: Array<string | null | undefined>): stri
 }
 
 export type Filled = { subject: string; html: string; text: string; missing: string[]; problem: string | null };
-
-/** A field of the contact a broadcast goes to, as `contactField` in @dispatchmail/core. A broadcast prints a blank for one the contact lacks. */
-export function contactField(key: string) {
-  return key.startsWith("contact.") || key === "FIRST_NAME" || key === "LAST_NAME";
-}
 
 /**
  * Fills `{{{KEY}}}`, `{{{KEY|fallback}}}`, `{{key}}`, `{{{#if}}}`, `{{{#unless}}}`, and `{{{#each}}}` the way
@@ -159,26 +131,6 @@ export function fill(
       return escape ? escapeHtml(value) : value;
     });
 
-  const render = (nodes: BlockNode[], scope: Scope, put: (text: string, scope: Scope) => string): string => {
-    let out = "";
-    for (const node of nodes) {
-      if (typeof node === "string") {
-        out += put(node, scope);
-        continue;
-      }
-      const value = peek(node.key, scope);
-      if (node.kind === "if" || node.kind === "unless") {
-        if (present(value) === (node.kind === "if")) out += render(node.children, scope, put);
-        continue;
-      }
-      if (!Array.isArray(value)) continue;
-      for (const item of value.slice(0, 200)) {
-        out += render(node.children, { ...scope, ...(item && typeof item === "object" ? (item as Scope) : {}) }, put);
-      }
-    }
-    return out;
-  };
-
   const run = (source: string | null | undefined, escape: boolean) => {
     if (!source) return "";
     let nodes: BlockNode[];
@@ -188,7 +140,7 @@ export function fill(
       problem ??= error instanceof Error ? error.message : "Blocks are not balanced";
       nodes = [source];
     }
-    return render(nodes, {}, substitute(escape));
+    return renderBlocks(nodes, {}, peek, substitute(escape));
   };
 
   const filled = { subject: run(fields.subject, false), html: run(fields.html, true), text: run(fields.text, false) };

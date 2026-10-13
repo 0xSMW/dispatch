@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { hasEngagement, ruleSchema, type Rule } from "./index.js";
+import { hasEngagement, ruleSchema, type Rule } from "./rules.js";
 
 const contactRule = z.lazy(() => ruleSchema).refine((rule) => {
   const pending = [rule];

@@ -11,7 +11,7 @@ import { Menu } from "../../components/Menu";
 import { Modal } from "../../components/Modal";
 import { Tile } from "../../components/PageHeader";
 import { Panel } from "../../components/Panel";
-import { Table } from "../../components/Table";
+import { Table, tableProps } from "../../components/Table";
 import { Time } from "../../components/Time";
 import { toast } from "../../components/Toast";
 import { useList } from "../../hooks/useList";
@@ -133,15 +133,8 @@ export function Events() {
       >
         <Table
           compact
-          rows={fired.rows}
-          loading={fired.loading}
-          error={fired.error}
-          onRetry={() => void fired.reload()}
+          {...tableProps(fired)}
           onRowClick={setViewing}
-          page={fired.page}
-          hasMore={fired.hasMore}
-          onNext={fired.next}
-          onPrevious={fired.previous}
           noun="events"
           empty={<Empty title="No events yet" body="Events your app sends, or that you send with Send test event, show up here." />}
           columns={[

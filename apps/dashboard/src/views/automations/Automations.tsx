@@ -20,12 +20,13 @@ import { useSelection } from "../../hooks/useSelection";
 import { each } from "../../lib/bulk";
 import { errorMessage } from "../../lib/client";
 import { useCan, useClient } from "../../shell/session";
-import type { Automation, ContactProperty, EventDefinition, Segment, Topic } from "../../types";
+import type { Automation, Segment, Topic } from "../../types";
 import { Presets } from "./Presets";
 import { automationTrigger, triggerIssues, triggerLabels, triggerSummary, triggerWarning, type TriggerConfig } from "./graph";
 import { ReentryContext, TriggerForm, triggerLoading, triggerSources, type Reentry } from "./Trigger";
 import { StopAutomation, isEnabled } from "./Stop";
 import { Enroll, canEnroll } from "./Enroll";
+import { useOptions } from "./useOptions";
 
 export const automationCsv: Array<CsvColumn<Automation>> = [
   { header: "id", value: (row) => row.id },
@@ -190,28 +191,11 @@ export function Automations() {
 function CreateAutomation({ onClose, onBack }: { onClose: () => void; onBack: () => void }) {
   const client = useClient();
   const navigate = useNavigate();
-  const events = useList<EventDefinition>("/events", {}, { all: true });
-  const topics = useList<Topic>("/topics", {}, { all: true });
-  const segments = useList<Segment>("/segments", {}, { all: true });
-  const properties = useList<ContactProperty>("/contact-properties", {}, { all: true });
+  const { topics, segments, options } = useOptions();
   const [name, setName] = useState("");
   const [trigger, setTrigger] = useState<TriggerConfig>({ type: "event", event_name: "" });
   const [reentryChoice, setReentryChoice] = useState<Reentry | null>(null);
   const reentry = reentryChoice ?? (trigger.type === "event" ? "every_time" : "once");
-  const options = {
-    templates: [],
-    events: events.rows.map((row) => row.name),
-    topics: topics.rows.map((row) => ({ value: row.id, label: row.name })),
-    segments: segments.rows.map((row) => ({ value: row.id, label: row.name })),
-    staticSegments: segments.rows.filter((row) => row.type !== "dynamic").map((row) => ({ value: row.id, label: row.name })),
-    contactProperties: properties.rows,
-    topicsReady: !topics.loading && !topics.error,
-    segmentsReady: !segments.loading && !segments.error,
-    propertiesReady: !properties.loading && !properties.error,
-    topicsError: topics.error,
-    segmentsError: segments.error,
-    propertiesError: properties.error,
-  };
   const issues = triggerIssues(trigger, triggerSources(options));
   const valid = name.trim() && !Object.keys(issues).length && !triggerLoading(trigger, options);
   const create = useMutation(

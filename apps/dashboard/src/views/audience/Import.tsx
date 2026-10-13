@@ -6,7 +6,7 @@ import { Empty, Failed } from "../../components/Empty";
 import { Select, Switch } from "../../components/Field";
 import { Modal } from "../../components/Modal";
 import { Skeleton } from "../../components/Skeleton";
-import { Table } from "../../components/Table";
+import { Table, tableProps } from "../../components/Table";
 import { Time } from "../../components/Time";
 import { useList } from "../../hooks/useList";
 import { useMutation } from "../../hooks/useMutation";
@@ -546,16 +546,9 @@ export function Imports({ onClose, onImport }: { onClose: () => void; onImport?:
         ) : (
           <Table
             compact
-            rows={list.rows}
-            loading={list.loading}
-            error={list.error}
-            onRetry={() => void list.reload()}
+            {...tableProps(list)}
             onRowClick={(row) => setOpen(row.id)}
             empty={<Empty compact title="No imports yet" body="Import a CSV to add all your contacts at once." action={onImport ? <button type="button" onClick={onImport}>Import CSV</button> : null} />}
-            page={list.page}
-            hasMore={list.hasMore}
-            onNext={list.next}
-            onPrevious={list.previous}
             columns={[
               { header: "Status", cell: (row) => <Badge value={row.status} variant={importTone(row.status)} label={row.status.replace("_", " ")} /> },
               { header: "Rows", cell: (row) => row.counts.total.toLocaleString() },

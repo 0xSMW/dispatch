@@ -24,20 +24,18 @@
     "lint": "pnpm -r lint",
     "load": "tsx scripts/load.ts",
     "audit:prod": "node scripts/audit-production.mjs",
-    "test": "vitest run",
-    "test:unit": "vitest run --exclude apps/api/src/accept.test.ts",
+    "test": "tsx --test --test-reporter=tap scripts/guards.test.ts",
     "llms": "tsx scripts/llms.ts",
-    "test:llms": "tsx --test scripts/llms.test.ts",
-    "typecheck": "pnpm -r typecheck",
-    "build:vercel": "node scripts/build-vercel.mjs"
+    "typecheck": "pnpm -r typecheck && tsc -p tsconfig.usage.json --noEmit",
+    "build:vercel": "node scripts/build-vercel.mjs",
+    "verify:usage": "tsx scripts/usage.ts"
   },
   "devDependencies": {
     "@types/node": "^24.19.1",
     "dotenv": "^16.5.0",
     "prettier": "^3.5.3",
     "tsx": "^4.19.4",
-    "typescript": "^5.8.3",
-    "vitest": "^3.1.4"
+    "typescript": "^5.8.3"
   },
   "volta": {
     "node": "24.21.0"

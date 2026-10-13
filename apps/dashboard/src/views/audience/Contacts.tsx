@@ -9,7 +9,7 @@ import { Field } from "../../components/Field";
 import { BulkBar } from "../../components/BulkBar";
 import { FilterBar } from "../../components/FilterBar";
 import { PageHeader } from "../../components/PageHeader";
-import { Table, type Column } from "../../components/Table";
+import { Table, tableProps, type Column } from "../../components/Table";
 import { Tabs } from "../../components/Tabs";
 import { Menu } from "../../components/Menu";
 import { Modal } from "../../components/Modal";
@@ -182,10 +182,7 @@ export function Contacts() {
       </FilterBar> : null}
       <Table
         columns={columns}
-        rows={list.rows}
-        loading={list.loading}
-        error={list.error}
-        onRetry={() => void list.reload()}
+        {...tableProps(list)}
         onRowClick={(row) => navigate(`/audience/contacts/${row.id}`)}
         selection={selection}
         menu={(row) => (
@@ -198,10 +195,6 @@ export function Contacts() {
             ]}
           />
         )}
-        page={list.page}
-        hasMore={list.hasMore}
-        onNext={list.next}
-        onPrevious={list.previous}
         noun="contacts"
         empty={
           filtered ? (
