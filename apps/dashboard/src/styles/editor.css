@@ -446,6 +446,25 @@ button.cardLink:hover:not(:disabled) {
   grid-column: span 2;
 }
 
+.editorHead > .editorNote,
+.editorHead > .editorTemplate {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.editorTemplate {
+  display: grid;
+  gap: 6px;
+}
+
+.editorTemplate p {
+  margin: 0;
+}
+
+.editorTemplate .toolbar {
+  align-items: flex-end;
+}
+
 .editorPanes {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
