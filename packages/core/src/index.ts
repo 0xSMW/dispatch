@@ -1,6 +1,8 @@
 export { parseAddress } from "./addresses.js";
 export * from "./rules.js";
 export * from "./automations.js";
+export * from "./broadcasts.js";
+export * from "./events.js";
 export {
   reservedVariables,
   assertBlocks,
@@ -14,6 +16,7 @@ export {
 export * from "./crypto.js";
 export * from "./network.js";
 import { address, addresses, templateRef } from "./addresses.js";
+import { emailEvents, type EventType } from "./events.js";
 import { segmentRuleSchema } from "./rules.js";
 import { reservedVariables } from "./render.js";
 import { id } from "./crypto.js";
@@ -30,80 +33,6 @@ import { propertyTypes, propertyValueMatches } from "./properties.js";
 import { z } from "zod";
 
 export type Scope = "full" | "send";
-export type EmailStatus =
-  | "scheduled"
-  | "queued"
-  | "submitted"
-  | "sent"
-  | "delivery_delayed"
-  | "delivered"
-  | "bounced"
-  | "complained"
-  | "opened"
-  | "clicked"
-  | "suppressed"
-  | "failed"
-  | "cancelled";
-
-export type EventType =
-  | "email.scheduled"
-  | "email.sent"
-  | "email.delivered"
-  | "email.delivery_delayed"
-  | "email.bounced"
-  | "email.complained"
-  | "email.failed"
-  | "email.opened"
-  | "email.clicked"
-  | "email.suppressed"
-  | "email.received"
-  | "email.unsubscribed"
-  | "automation.run.started"
-  | "automation.run.completed"
-  | "automation.run.failed"
-  | "contact.created"
-  | "contact.updated"
-  | "contact.deleted"
-  | "contact.topics.updated"
-  | "domain.created"
-  | "domain.updated"
-  | "domain.deleted"
-  | "suppression.added"
-  | "suppression.removed"
-  | "topic.created"
-  | "topic.updated"
-  | "topic.deleted";
-
-export const emailEvents: EventType[] = [
-  "email.scheduled",
-  "email.sent",
-  "email.delivered",
-  "email.delivery_delayed",
-  "email.bounced",
-  "email.complained",
-  "email.failed",
-  "email.opened",
-  "email.clicked",
-  "email.suppressed",
-  "email.received",
-  "email.unsubscribed",
-  "automation.run.started",
-  "automation.run.completed",
-  "automation.run.failed",
-  "contact.created",
-  "contact.updated",
-  "contact.deleted",
-  "contact.topics.updated",
-  "domain.created",
-  "domain.updated",
-  "domain.deleted",
-  "suppression.added",
-  "suppression.removed",
-  "topic.created",
-  "topic.updated",
-  "topic.deleted"
-];
-
 const attachmentPayloadLimit = 40 * 1024 * 1024;
 const htmlRequired = { message: "html or text is required", path: ["html"] };
 const subjectRequired = { message: "subject is required without a template", path: ["subject"] };
@@ -900,21 +829,6 @@ export function prepareTracking(html: string, options: string | { baseUrl: strin
     nextHtml = /<\/body>/i.test(nextHtml) ? nextHtml.replace(/<\/body>/i, `${pixel}</body>`) : `${nextHtml}${pixel}`;
   }
   return { html: nextHtml, tokens };
-}
-
-export function statusFor(type: EventType): EmailStatus {
-  switch (type) {
-    case "email.sent": return "sent";
-    case "email.delivered": return "delivered";
-    case "email.delivery_delayed": return "delivery_delayed";
-    case "email.bounced": return "bounced";
-    case "email.complained": return "complained";
-    case "email.failed": return "failed";
-    case "email.opened": return "opened";
-    case "email.clicked": return "clicked";
-    case "email.suppressed": return "suppressed";
-    default: return "queued";
-  }
 }
 
 export function webhookUrl(url: string): string {
