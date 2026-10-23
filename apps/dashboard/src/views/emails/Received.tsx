@@ -11,7 +11,7 @@ import { Tile } from "../../components/PageHeader";
 import { Time } from "../../components/Time";
 import { useFilters } from "../../hooks/useFilters";
 import { useList } from "../../hooks/useList";
-import { useMutation } from "../../hooks/useMutation";
+import { finish, useMutation } from "../../hooks/useMutation";
 import { inboundBody } from "../../lib/utils";
 import { useClient } from "../../shell/session";
 import type { ReceivedEmail } from "../../types";
@@ -81,10 +81,7 @@ function Simulate({ onClose, onDone }: { onClose: () => void; onDone: () => void
   const set = (key: keyof typeof blank) => (value: string) => setForm({ ...form, [key]: value });
   const { mutate, isLoading } = useMutation(() => client.post("/emails/receiving/simulate", inboundBody(form)), {
     success: "Inbound email simulated.",
-    onSuccess: () => {
-      onDone();
-      onClose();
-    },
+    onSuccess: finish(onDone, onClose),
   });
 
   return (
