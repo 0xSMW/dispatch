@@ -1,4 +1,5 @@
 import { ApiError } from "@dispatchmail/core";
+import { broadcastStates } from "@dispatchmail/core/broadcasts";
 
 // Builds a `where` fragment for paginate(). Its parameters start at $2, after the tenant.
 function builder(start = 2) {
@@ -101,15 +102,6 @@ export function templateWhere(query: TemplateQuery) {
   else if (query.status) throw new ApiError("validation_error", 400, "status must be draft or published");
   return filter.done();
 }
-
-// The stored states behind each status the API shows.
-const broadcastStates: Record<string, string[]> = {
-  draft: ["draft"],
-  scheduled: ["scheduled"],
-  queued: ["sending", "paused"],
-  sent: ["sent"],
-  canceled: ["cancelled"],
-};
 
 export type BroadcastQuery = { status?: string; segment_id?: string; q?: string };
 
