@@ -136,7 +136,7 @@ export function SegmentFilter({ rule, onChange, disabled = false, onValidityChan
         {result?.error ? <p className="fieldError" role="alert">{result.error}</p> : null}
         {result?.data ? <>
           <p role="status">{result.data.count.toLocaleString()} matching contacts</p>
-          <p className="muted">Sample of up to 10 contacts. Membership changes as contacts and email activity change.</p>
+          <p className="muted">Showing up to 10 of them. Contacts join and leave this filter as their data and email activity change.</p>
           <ul>{result.data.sample.map((contact) => <li key={contact.id}><Link to={`/audience/contacts/${contact.id}`}>{contact.email}</Link></li>)}</ul>
         </> : null}
       </section>
