@@ -43,7 +43,7 @@ export function Timeline() {
   const navigate = useNavigate();
   return (
     <ListPage
-      title="Timeline"
+      title="Activity"
       list={list}
       noun="items"
       onRowClick={(row) => {
