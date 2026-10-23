@@ -1,21 +1,28 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import { CheckCircle2, Circle } from "lucide-react";
+import { CheckCircle2, Circle, CircleAlert } from "lucide-react";
+import { badgeLabel } from "../../components/Badge";
+import { Facts } from "../../components/Facts";
 import { Field } from "../../components/Field";
 import { Modal } from "../../components/Modal";
 import { PageHeader } from "../../components/PageHeader";
 import { Panel } from "../../components/Panel";
+import { Skeleton } from "../../components/Skeleton";
 import { Status } from "../../components/Status";
-import { useMutation } from "../../hooks/useMutation";
+import { finish, useMutation } from "../../hooks/useMutation";
 import { useSetup } from "../../shell/Onboarding";
 import { useCan, useClient } from "../../shell/session";
+import { Unavailable } from "./FirstSend";
+import "../../styles/setup.css";
 
 /** Onboarding checklist. Ported from SetupView; reached from the account menu. */
 export function Setup() {
-  const { setup, steps, reload } = useSetup();
+  const { setup, emails, steps, reload } = useSetup();
   const can = useCan();
   const [sending, setSending] = useState(false);
   const data = setup.data;
+  // A failed request with nothing loaded leaves its facts unknown, not missing.
+  const setupFailed = !setup.loading && Boolean(setup.error) && !data;
 
   return (
     <div className="page">
@@ -25,11 +32,15 @@ export function Setup() {
         <ol className="steps">
           {steps.map((step) => (
             <li key={step.label} className={step.done ? "done" : undefined}>
-              {step.done ? <CheckCircle2 size={18} /> : <Circle size={18} />}
+              {step.unknown ? <CircleAlert size={18} /> : step.done ? <CheckCircle2 size={18} /> : <Circle size={18} />}
               <Link to={step.to}>{step.label}</Link>
             </li>
           ))}
         </ol>
+        {setupFailed ? <Unavailable what="Domain and API key status" error={setup.error!} onRetry={() => void setup.reload()} /> : null}
+        {!emails.loading && emails.error && !emails.data ? (
+          <Unavailable what="First email status" error={emails.error} onRetry={() => void emails.reload()} />
+        ) : null}
         {/* {can ? (
           <div className="toolbar">
             <button type="button" onClick={() => setSending(true)}>
@@ -55,23 +66,45 @@ export function Setup() {
         </div>
       </Panel>
 
-      <div className="grid">
-        <Panel title="Tenant">
-          <Status ok={Boolean(data?.tenant)} text={data?.tenant?.name ?? "Run pnpm db:seed"} />
-        </Panel>
-        <Panel title="API key">
-          <Status ok={Boolean(data?.api_key)} text={data?.api_key?.prefix ?? "Missing"} />
-        </Panel>
-        <Panel title="User">
-          <Status ok={Boolean(data?.user)} text={data?.user ? `${data.user.name} ${data.user.email}` : "Missing"} />
-        </Panel>
-        <Panel title="Domain">
-          <Status
-            ok={data?.domain?.status === "verified"}
-            text={data?.domain ? `${data.domain.name} ${data.domain.status}` : "Missing"}
+      <section className="stack setupSection">
+        <h2>Workspace details</h2>
+        {setupFailed ? (
+          <Unavailable what="Workspace details" error={setup.error!} onRetry={() => void setup.reload()} />
+        ) : !data ? (
+          <Skeleton lines={2} />
+        ) : (
+          <Facts
+            items={[
+              {
+                label: "Workspace",
+                value: <Status ok={Boolean(data.tenant)} text={data.tenant?.name ?? "Not found. The operator must finish installing Dispatch."} />,
+              },
+              {
+                label: "First domain",
+                value: (
+                  <Status
+                    ok={data.domain?.status === "verified"}
+                    text={data.domain ? `${data.domain.name} · ${badgeLabel(data.domain.status)}` : "None added"}
+                  />
+                ),
+              },
+              {
+                label: "First API key",
+                value: (
+                  <Status
+                    ok={Boolean(data.api_key)}
+                    text={data.api_key ? `${data.api_key.name} · ${data.api_key.prefix} · ${data.api_key.scope} access` : "None created"}
+                  />
+                ),
+              },
+              {
+                label: "First user",
+                value: <Status ok={Boolean(data.user)} text={data.user ? `${data.user.name} · ${data.user.email}` : "None found"} />,
+              },
+            ]}
           />
-        </Panel>
-      </div>
+        )}
+      </section>
 
       {sending ? (
         <TestSend
@@ -92,10 +125,7 @@ function TestSend({ from, to, onClose, onDone }: { from: string; to: string; onC
     () => client.post("/emails", { ...form, subject: "Dispatch test", text: "Sent from the Dispatch dashboard." }),
     {
       success: "Test email queued.",
-      onSuccess: () => {
-        onDone();
-        onClose();
-      },
+      onSuccess: finish(onDone, onClose),
     },
   );
 
