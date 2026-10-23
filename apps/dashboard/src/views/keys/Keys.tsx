@@ -14,7 +14,7 @@ import { Tile } from "../../components/PageHeader";
 import { Time } from "../../components/Time";
 import { toast } from "../../components/Toast";
 import { useList } from "../../hooks/useList";
-import { useMutation } from "../../hooks/useMutation";
+import { finish, useMutation } from "../../hooks/useMutation";
 import { useClient } from "../../shell/session";
 import type { ApiKey, CreatedApiKey, Domain } from "../../types";
 
@@ -197,10 +197,7 @@ export function RenameKey({ apiKey, onClose, onDone }: { apiKey: Pick<ApiKey, "i
   const [name, setName] = useState(apiKey.name);
   const { mutate, isLoading } = useMutation(() => client.patch(`/api-keys/${apiKey.id}`, { name: name.trim() }), {
     success: "API key renamed.",
-    onSuccess: () => {
-      onDone();
-      onClose();
-    },
+    onSuccess: finish(onDone, onClose),
   });
 
   return (
