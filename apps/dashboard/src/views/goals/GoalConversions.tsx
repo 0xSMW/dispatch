@@ -52,10 +52,17 @@ export function GoalConversions(scope: GoalConversionsProps) {
     <div className="stack">
       {goals.error ? <Failed message={goals.error} onRetry={() => void goals.reload()} /> : goals.loading ? <Skeleton lines={2} /> : goals.data?.has_more ? <p role="alert">Not all goals could be loaded. Retry before choosing a goal.</p> : rows.length ? <>
         <Select label="Goal" value={goal?.id ?? ""} onChange={setPicked} options={rows.map((row) => ({ value: row.id, label: row.name }))} />
-        {goal ? <p className="muted">{"event" in goal.target ? `Event: ${goal.target.event}` : "Recorded contact-state entry"} · {goal.window_days}-day conversion window</p> : null}
+        {goal ? <p className="muted">{"event" in goal.target ? `Event: ${goal.target.event}` : "Contact fields match a rule, from recorded changes"} · {goal.window_days}-day conversion window</p> : null}
         {issue ? <p role="alert">{issue}</p> : path ? <ConversionResults key={path} path={path} /> : null}
       </> : <Empty title="No goals yet" body="Create a goal to see how many people convert after your emails." action={<Link className="button secondary" to="/goals">Go to goals</Link>} />}
-      {rows.length ? <p className="muted">The date range selects first-send cohorts: start inclusive, end exclusive. Conversion can happen through the inclusive window after that first scoped send, even after the range ends. Days are UTC. Eligibility uses current contact state. Sandbox sends are excluded; later sandbox activity does not replace prior real-send attribution.</p> : null}
+      {rows.length ? (
+        <ul className="muted goalNotes" aria-label="How conversions are counted">
+          <li>The date range picks contacts by the day of their first email in this report. The start day is included and the end day is not. Days are in UTC.</li>
+          <li>A contact converts if they reach the goal within the conversion window after that first email, even after the range ends. A conversion at the very end of the window still counts.</li>
+          <li>Eligibility is checked against each contact as they are now.</li>
+          <li>Sandbox sends never count. A later sandbox send does not take credit away from an earlier real send.</li>
+        </ul>
+      ) : null}
     </div>
   </Panel>;
 }
