@@ -15,7 +15,7 @@ import { toast } from "../../components/Toast";
 import { useFilters } from "../../hooks/useFilters";
 import { useBulkKeys } from "../../hooks/useBulkKeys";
 import { useList } from "../../hooks/useList";
-import { useMutation } from "../../hooks/useMutation";
+import { finish, useMutation } from "../../hooks/useMutation";
 import { useSelection } from "../../hooks/useSelection";
 import { addresses } from "../../lib/utils";
 import { useClient } from "../../shell/session";
@@ -149,10 +149,7 @@ function AddSuppressions({ onClose, onDone }: { onClose: () => void; onDone: () 
     },
     {
       success: (count) => (count === 1 ? "Address suppressed." : `${count} addresses suppressed.`),
-      onSuccess: () => {
-        onDone();
-        onClose();
-      },
+      onSuccess: finish(onDone, onClose),
     },
   );
 
