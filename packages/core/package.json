@@ -10,7 +10,9 @@
     "./brand": "./src/brand.ts",
     "./rules": "./src/rules.ts",
     "./automations": "./src/automations.ts",
-    "./render": "./src/render.ts"
+    "./render": "./src/render.ts",
+    "./events": "./src/events.ts",
+    "./broadcasts": "./src/broadcasts.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
