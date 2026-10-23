@@ -218,6 +218,31 @@ a.fileChip:hover {
   margin-left: auto;
 }
 
+/* "Required", "Recommended", "On": plain text, so the group header stays a single surface. */
+.recordTag {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.checkSummary {
+  display: grid;
+  gap: 4px;
+}
+
+.checkSummary p,
+.checkSummary ul {
+  margin: 0;
+}
+
+.verificationState {
+  display: grid;
+  gap: 6px;
+}
+
+.verificationState p {
+  margin: 0;
+}
+
 .recordValue {
   display: grid;
   gap: 4px;
