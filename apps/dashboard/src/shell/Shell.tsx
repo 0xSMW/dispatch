@@ -21,10 +21,10 @@ import {
   Settings,
   Sun,
   Target,
-  Tag,
   Users,
   Webhook,
   Zap,
+  type LucideIcon,
 } from "lucide-react";
 import { CommandMenu } from "./CommandMenu";
 import { Menu } from "../components/Menu";
@@ -47,24 +47,46 @@ const iconMotion: Record<string, IconMotion> = {
   "/events": "bolt", "/settings": "gear",
 };
 
-/** One shared menu for desktop, mobile, and every role. */
-export const nav = [
-  { to: "/emails", label: "Emails", icon: Mail },
-  { to: "/metrics", label: "Metrics", icon: BarChart3 },
-  { to: "/broadcasts", label: "Broadcasts", icon: Megaphone },
-  { to: "/automations", label: "Automations", icon: GitBranch },
-  { to: "/templates", label: "Templates", icon: FileText },
-  { to: "/audience", label: "Audience", icon: Users },
-  { to: "/audience/topics", label: "Topics", icon: Tag },
-  { to: "/goals", label: "Goals", icon: Target },
-  { to: "/domains", label: "Domains", icon: Globe2 },
-  { to: "/logs", label: "Logs", icon: ScrollText },
-  { to: "/api-keys", label: "API keys", icon: KeyRound },
-  { to: "/webhooks", label: "Webhooks", icon: Webhook },
-  { to: "/timeline", label: "Timeline", icon: Activity },
-  { to: "/events", label: "Events", icon: Zap },
-  { to: "/settings", label: "Settings", icon: Settings },
-] as const;
+/**
+ * One shared menu for desktop, mobile, and every role, in fixed groups. Every link is always
+ * visible: a group is a heading and spacing, never a toggle. Topics lives in Audience's tabs.
+ */
+export type NavItem = { to: string; label: string; icon: LucideIcon };
+
+export const navGroups: Array<{ label: string; items: NavItem[] }> = [
+  {
+    label: "Messaging",
+    items: [
+      { to: "/emails", label: "Emails", icon: Mail },
+      { to: "/metrics", label: "Metrics", icon: BarChart3 },
+      { to: "/broadcasts", label: "Broadcasts", icon: Megaphone },
+      { to: "/automations", label: "Automations", icon: GitBranch },
+      { to: "/templates", label: "Templates", icon: FileText },
+    ],
+  },
+  {
+    label: "Contacts",
+    items: [
+      { to: "/audience", label: "Audience", icon: Users },
+      { to: "/goals", label: "Goals", icon: Target },
+    ],
+  },
+  {
+    label: "Developers",
+    items: [
+      { to: "/domains", label: "Domains", icon: Globe2 },
+      { to: "/api-keys", label: "API keys", icon: KeyRound },
+      { to: "/webhooks", label: "Webhooks", icon: Webhook },
+      { to: "/events", label: "Custom events", icon: Zap },
+      { to: "/logs", label: "API logs", icon: ScrollText },
+      { to: "/timeline", label: "Activity", icon: Activity },
+    ],
+  },
+  { label: "Workspace", items: [{ to: "/settings", label: "Settings", icon: Settings }] },
+];
+
+/** Every sidebar link in order, for the command menu. */
+export const nav = navGroups.flatMap((group) => group.items);
 
 /** Compatibility route retains query state without adding a history entry. */
 export function EventsRedirect() {
@@ -101,11 +123,16 @@ export function Shell() {
       {!workspace ? <aside className="sidebar">
         <Account />
         <nav aria-label="Main">
-          {nav.map(({ to, label, icon: Icon }) => (
-            <NavLink key={to} to={to} end={to === "/audience" && location.pathname.startsWith("/audience/topics")} className={({ isActive }) => (isActive ? "navItem active" : "navItem")}>
-              <NavIcon icon={Icon} motion={iconMotion[to]} />
-              <span>{label}</span>
-            </NavLink>
+          {navGroups.map((group) => (
+            <div key={group.label} className="navGroup" role="group" aria-labelledby={`nav-${group.label}`}>
+              <span id={`nav-${group.label}`} className="navHeading">{group.label}</span>
+              {group.items.map(({ to, label, icon: Icon }) => (
+                <NavLink key={to} to={to} className={({ isActive }) => (isActive ? "navItem active" : "navItem")}>
+                  <NavIcon icon={Icon} motion={iconMotion[to]} />
+                  <span>{label}</span>
+                </NavLink>
+              ))}
+            </div>
           ))}
         </nav>
         <div className="sidebarFoot">
