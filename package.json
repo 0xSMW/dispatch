@@ -54,7 +54,7 @@
       "@babel/core@7": "7.29.7",
       "browserslist@4": "4.29.3",
       "baseline-browser-mapping@2": "2.11.27",
-      "vite@6": "6.4.3"
+      "vite@6": "6.4.4"
     }
   }
 }
