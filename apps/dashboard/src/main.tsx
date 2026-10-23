@@ -43,6 +43,7 @@ import { Integrations } from "./views/settings/Integrations";
 import { Team } from "./views/settings/Team";
 import { UnsubscribeEditor, UnsubscribePage } from "./views/settings/UnsubscribePage";
 import { Usage } from "./views/settings/Usage";
+import { FirstSendPage } from "./views/setup/FirstSend";
 import { Setup } from "./views/setup/Setup";
 import { Template } from "./views/templates/Template";
 import { TemplateEditor } from "./views/templates/TemplateEditor";
@@ -68,6 +69,7 @@ export const routes = [
         children: [
           { index: true, element: <Navigate to="/emails" replace /> },
           { path: "setup", element: <Setup /> },
+          { path: "setup/send", element: <FirstSendPage /> },
 
           { path: "emails", element: <Emails /> },
           { path: "emails/:id", element: <Email /> },
@@ -113,7 +115,7 @@ export const routes = [
           { path: "webhooks", element: <Webhooks /> },
           { path: "webhooks/:id", element: <Webhook /> },
 
-          { path: "settings", element: <Navigate to="/settings/usage" replace /> },
+          { path: "settings", element: <Navigate to="/settings/general" replace /> },
           { path: "settings/usage", element: <Usage /> },
           { path: "settings/general", element: <General /> },
           { path: "settings/team", element: <Team /> },
