@@ -14,25 +14,41 @@ import { Modal } from "../../components/Modal";
 import { PageHeader } from "../../components/PageHeader";
 import { Panel } from "../../components/Panel";
 import { Skeleton } from "../../components/Skeleton";
-import { Table } from "../../components/Table";
+import { Table, type Column } from "../../components/Table";
 import { Tabs } from "../../components/Tabs";
 import { Time } from "../../components/Time";
 import { toast } from "../../components/Toast";
-import { useMutation } from "../../hooks/useMutation";
+import { finish, useMutation } from "../../hooks/useMutation";
 import { useAll, useResource } from "../../hooks/useResource";
 import { usable, useWhen, whenHint } from "../../lib/when";
 import { useCan, useClient } from "../../shell/session";
 import type { Attachment, Email as EmailRow, EmailEvent, EmailInsights, List } from "../../types";
 import { cancelable, retryable } from "./Emails";
 import { Preview } from "./Preview";
-import { problemOf, ProblemBanner } from "./Problem";
+import { FailureBanner, failureOf, failureText, problemOf, ProblemBanner } from "./Problem";
 import { Share } from "./Share";
 import { Sandbox, sandboxHint } from "./Sandbox";
 import "../../styles/operations.css";
 
 type Body = "preview" | "text" | "html" | "attachments" | "insights";
 
-/** One timeline node per event. Bounces and failures carry their reason on hover. */
+/** The File and Type columns of a sent or received email's attachments. */
+export const fileColumns: Column<Attachment>[] = [
+  {
+    header: "File",
+    cell: (file) =>
+      file.download_url ? (
+        <a href={file.download_url} rel="noreferrer" download={file.filename}>
+          {file.filename}
+        </a>
+      ) : (
+        file.filename
+      ),
+  },
+  { header: "Type", cell: (file) => <span className="mono">{file.content_type}</span> },
+];
+
+/** One timeline node per event. Bounces and failures show their reason under the node. */
 export function timeline(events: EmailEvent[]): TimelineEvent[] {
   return events.map((event) => {
     const data = event.data ?? {};
@@ -43,13 +59,15 @@ export function timeline(events: EmailEvent[]): TimelineEvent[] {
     const click = data.click as { link?: string } | undefined;
     const detail = bounce
       ? [bounce.type, bounce.subType, bounce.message].filter(Boolean).join(" · ")
-      : (failed?.reason ?? suppressed?.message ?? click?.link ?? (Array.isArray(data.recipients) ? `To ${(data.recipients as string[]).join(", ")}` : undefined));
+      : ((failed?.reason ? failureText(failed.reason) : undefined) ?? suppressed?.message ?? click?.link ?? (Array.isArray(data.recipients) ? `To ${(data.recipients as string[]).join(", ")}` : undefined));
     return {
       id: event.id,
       label: badgeLabel(event.type.replace(/^email\./, "")) + (simulated ? " (simulated)" : ""),
       status: event.type,
       time: event.created_at,
-      detail: simulated ? [sandboxHint, detail].filter(Boolean).join(" ") : detail || undefined,
+      detail: detail || undefined,
+      // The page already says the email is simulated, so each node only repeats it on hover.
+      hint: simulated ? sandboxHint : undefined,
     };
   });
 }
@@ -84,6 +102,8 @@ export function Email() {
   const files = attachments.data?.data ?? [];
   const last = [...list].reverse().find((event) => event.type === "email.bounced" || event.type === "email.suppressed");
   const problem = row && last && ["bounced", "suppressed"].includes(row.last_event) ? problemOf(last, row.to) : null;
+  // Only the current state: an email retried after a failure no longer shows the old reason.
+  const failure = row?.last_event === "failed" && events.data ? (failureOf(list) ?? { reason: "Dispatch did not record a reason.", recipient: null }) : null;
 
   return (
     <div className="page">
@@ -114,6 +134,9 @@ export function Email() {
       />
 
       {problem ? <ProblemBanner problem={problem} /> : null}
+      {failure && row ? (
+        <FailureBanner failure={failure} onRetry={can && retryable(row) ? () => void retry.mutate() : undefined} retrying={retry.isLoading} />
+      ) : null}
 
       {row?.sandbox ? <p className="muted">{sandboxHint}</p> : row?.recipients?.some((recipient) => recipient.sandbox) ? (
         <p className="muted">Sandbox recipients are simulated and are never sent externally. Other recipients follow normal delivery.</p>
@@ -210,18 +233,7 @@ export function Email() {
             onRetry={attachments.reload}
             empty={<p className="muted">No attachments.</p>}
             columns={[
-              {
-                header: "File",
-                cell: (file) =>
-                  file.download_url ? (
-                    <a href={file.download_url} rel="noreferrer" download={file.filename}>
-                      {file.filename}
-                    </a>
-                  ) : (
-                    file.filename
-                  ),
-              },
-              { header: "Type", cell: (file) => <span className="mono">{file.content_type}</span> },
+              ...fileColumns,
               { header: "Size", cell: (file) => size(file.size) },
               { header: "Link expires", cell: (file) => <Time value={file.expires_at} /> },
             ]}
@@ -258,10 +270,7 @@ function Reschedule({ email, onClose, onDone }: { email: EmailRow; onClose: () =
   const schedule = useWhen(when);
   const save = useMutation(() => client.patch(`/emails/${email.id}`, { scheduled_at: schedule.when!.date.toISOString() }), {
     success: "Schedule updated.",
-    onSuccess: () => {
-      onDone();
-      onClose();
-    },
+    onSuccess: finish(onDone, onClose),
   });
   return (
     <Modal isOpen title="Edit schedule" onClose={onClose} onSubmit={() => void save.mutate()} submitLabel="Save" submitDisabled={!usable(schedule)} submitting={save.isLoading} size="small">
