@@ -52,6 +52,49 @@ export function adviceFor(problem: Pick<Problem, "type" | "subType">) {
   return advice[`${problem.type}/${problem.subType}`] ?? advice[problem.type] ?? advice.Undetermined;
 }
 
+// Reasons Dispatch and SES record as codes. Anything else is the provider's own message.
+const failures: Record<string, string> = {
+  opted_out: "The recipient unsubscribed or is not subscribed to this email's topic, so Dispatch did not send to them.",
+  Reject: "SES rejected the message, which usually means it contained a virus.",
+  "Rendering Failure": "SES could not render the template with the data it was given.",
+};
+
+/** A readable sentence for an `email.failed` reason. */
+export function failureText(reason: string) {
+  return failures[reason] ?? reason;
+}
+
+/** The reason and recipient from the last `email.failed` event, or null when there is none. */
+export function failureOf(events: EmailEvent[]): Failure | null {
+  const event = [...events].reverse().find((item) => item.type === "email.failed");
+  if (!event) return null;
+  const data = event.data ?? {};
+  const reason = (data.failed as { reason?: unknown } | undefined)?.reason;
+  return {
+    reason: typeof reason === "string" && reason.trim() ? failureText(reason) : "Dispatch did not record a reason.",
+    recipient: typeof data.email === "string" ? data.email : null,
+  };
+}
+
+export type Failure = { reason: string; recipient: string | null };
+
+/** The red banner on a failed email: the latest reason, and Retry where the email allows it. */
+export function FailureBanner({ failure, onRetry, retrying }: { failure: Failure; onRetry?: () => void; retrying?: boolean }) {
+  return (
+    <div className="problem" role="alert">
+      <CircleAlert size={16} aria-hidden />
+      <span>
+        <strong>{failure.recipient ? `This email failed for ${failure.recipient}.` : "This email failed."}</strong> {failure.reason}
+      </span>
+      {onRetry ? (
+        <button type="button" className="secondary small" disabled={retrying} onClick={onRetry}>
+          Retry
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
 /** The red banner on a bounced or suppressed email, with the "See details" drawer. */
 export function ProblemBanner({ problem }: { problem: Problem }) {
   const client = useClient();
