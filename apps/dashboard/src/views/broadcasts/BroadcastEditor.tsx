@@ -161,7 +161,7 @@ export function BroadcastEditor() {
     <EditorScreen
       crumb={{ to: "/broadcasts", label: "Broadcasts" }}
       title={row?.name ?? "Loading"}
-      status={row ? <><Badge value={row.status} /><Badge value="marketing" label="Marketing" /></> : null}
+      status={row ? <Badge value={row.status} /> : null}
       save={editable ? draft.state : undefined}
       actions={
         <>
@@ -197,8 +197,9 @@ export function BroadcastEditor() {
       ) : (
         <>
           <div className="editorHead">
-            <Field label="Email kind" value="Marketing" onChange={() => undefined} disabled className="wide"
-              hint="Broadcasts are always Marketing. They respect contact and topic opt-outs and add an unsubscribe header." />
+            <p className="dim editorNote">
+              Broadcasts are marketing email: Dispatch skips contacts who unsubscribed or opted out of the topic, and adds an unsubscribe header.
+            </p>
             <Field label="Name" value={form.name} onChange={set("name")} disabled={!editable} />
             <Field label="From" value={form.from} onChange={set("from")} placeholder="Acme <news@acme.com>" disabled={!editable} />
             <Field label="Reply-To" value={form.reply_to} onChange={set("reply_to")} placeholder="support@acme.com" disabled={!editable} />
@@ -210,6 +211,26 @@ export function BroadcastEditor() {
               options={(segments.data?.data ?? []).map((segment) => ({ value: segment.id, label: segment.name }))}
               disabled={!editable}
             />
+            {editable ? (
+              <div className="editorTemplate">
+                <div className="toolbar">
+                  <Select
+                    label="Start from a template"
+                    value={template}
+                    onChange={setTemplate}
+                    placeholder={published.length ? "Choose a published template" : "No published templates"}
+                    options={published.map((item) => ({ value: item.id, label: item.name }))}
+                  />
+                  <button type="button" className="secondary" disabled={!template || applyTemplate.isLoading} onClick={() => void applyTemplate.mutate()}>
+                    Use template
+                  </button>
+                </div>
+                <p className="dim">
+                  Replaces this draft's subject, HTML, and plain text with the template's published version. Name, From, Reply-To, segment,
+                  preview text, and topic stay as they are.
+                </p>
+              </div>
+            ) : null}
             <Field label="Subject" value={form.subject} onChange={set("subject")} className="wide" disabled={!editable} />
             <Field label="Preview text" value={form.preview_text} onChange={set("preview_text")} placeholder="Shown after the subject in the inbox" disabled={!editable} />
             <Select
@@ -236,19 +257,6 @@ export function BroadcastEditor() {
                   <p className="dim">
                     Inserts at the cursor. Contact fields take a fallback after a bar, as in <span className="mono">{"{{{contact.first_name|there}}}"}</span>.
                   </p>
-                  <div className="toolbar">
-                    <Select
-                      label="Start from a template"
-                      value={template}
-                      onChange={setTemplate}
-                      placeholder={published.length ? "Choose a published template" : "No published templates"}
-                      options={published.map((item) => ({ value: item.id, label: item.name }))}
-                    />
-                    <button type="button" className="secondary" disabled={!template || applyTemplate.isLoading} onClick={() => void applyTemplate.mutate()}>
-                      Use template
-                    </button>
-                  </div>
-                  <p className="dim">Replaces the subject and content with the template's published version.</p>
                 </Panel>
               ) : null}
             </div>
