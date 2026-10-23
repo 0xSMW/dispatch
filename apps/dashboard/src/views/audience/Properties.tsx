@@ -13,7 +13,7 @@ import { Tile } from "../../components/PageHeader";
 import { Time } from "../../components/Time";
 import { toast } from "../../components/Toast";
 import { useList } from "../../hooks/useList";
-import { useMutation } from "../../hooks/useMutation";
+import { finish, useMutation } from "../../hooks/useMutation";
 import { useCan, useClient } from "../../shell/session";
 import type { ContactProperty, PropertyType } from "../../types";
 import { propertyTypes, typedValue, valueIssue } from "../../lib/rules";
@@ -122,10 +122,7 @@ function CreateProperty({ onClose, onDone }: { onClose: () => void; onDone: () =
     },
     {
       success: "Property added.",
-      onSuccess: () => {
-        onDone();
-        onClose();
-      },
+      onSuccess: finish(onDone, onClose),
     },
   );
 
@@ -181,10 +178,7 @@ function EditFallback({ property, onClose, onDone }: { property: ContactProperty
     () => client.patch(`/contact-properties/${property.id}`, { fallback_value: fallbackValue(property.type, fallback) }),
     {
       success: "Fallback saved.",
-      onSuccess: () => {
-        onDone();
-        onClose();
-      },
+      onSuccess: finish(onDone, onClose),
     },
   );
 
