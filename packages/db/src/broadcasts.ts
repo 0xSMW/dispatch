@@ -1,4 +1,7 @@
 import { ApiError, assertBlocks, brandContext, contactField, id, missingVariables, parseAddress, renderTemplate } from "@dispatchmail/core";
+import { broadcastStatus } from "@dispatchmail/core/broadcasts";
+import type { Broadcast, BroadcastSummary } from "@dispatchmail/sdk/contracts";
+export { broadcastStatus } from "@dispatchmail/core/broadcasts";
 import type { Queryable } from "./index.js";
 import { publishedTemplate } from "./index.js";
 import { loadBrand } from "./emails.js";
@@ -75,17 +78,11 @@ export function broadcastColumnsOf(alias: string) {
   return columnNames.map((name) => `${alias}.${name}`).join(", ");
 }
 
-export function broadcastStatus(status: string) {
-  if (status === "sending" || status === "paused") return "queued";
-  if (status === "cancelled") return "canceled";
-  return status;
-}
-
 function sender(row: Pick<BroadcastRow, "from_email" | "from_name">) {
   return row.from_name ? `${row.from_name} <${row.from_email}>` : row.from_email;
 }
 
-export function presentBroadcastSummary(row: BroadcastRow) {
+export function presentBroadcastSummary(row: BroadcastRow): BroadcastSummary<string | Date> {
   return {
     object: "broadcast" as const,
     id: row.id,
@@ -99,7 +96,7 @@ export function presentBroadcastSummary(row: BroadcastRow) {
   };
 }
 
-export function presentBroadcast(row: BroadcastRow) {
+export function presentBroadcast(row: BroadcastRow): Broadcast<string | Date> {
   return {
     object: "broadcast" as const,
     id: row.id,
@@ -126,6 +123,37 @@ export function presentBroadcast(row: BroadcastRow) {
   };
 }
 
+// $1 is the tenant, $2 the segment, and $3 the topic; segmentFilter owns later binds.
+// Preview prefers an eligible contact per mailbox; snapshot filters before sorting.
+// Both break ties by the oldest contact and its id.
+function audienceQuery(predicate: string, eligibleOnly = false): string {
+  const eligible = "not unsubscribed and not suppressed and topic_ok";
+  return `select distinct on (mailbox) * from (
+    select
+      lower(c.email) as mailbox, c.created_at, c.id, c.email,
+      coalesce(trim(c.first_name), '') = '' as no_first_name,
+      coalesce(trim(c.last_name), '') = '' as no_last_name,
+      c.unsubscribed_at is not null as unsubscribed,
+      exists (
+        select 1 from suppressions sup
+        where sup.tenant_id = c.tenant_id and lower(sup.email) = lower(c.email) and sup.removed_at is null
+      ) as suppressed,
+      coalesce((
+        $3::text is null
+        or (t.default_status = 'subscribed' and coalesce(s.status, 'subscribed') = 'subscribed')
+        or (t.default_status = 'unsubscribed' and s.status = 'subscribed')
+      ), false) as topic_ok
+    from contacts c
+    left join topics t on t.tenant_id = c.tenant_id and t.id = $3 and t.deleted_at is null
+    left join topic_subscriptions s on s.tenant_id = c.tenant_id and s.topic_id = t.id and s.contact_id = c.id
+    where c.tenant_id = $1
+      and c.deleted_at is null
+      and ($2::text is null or (${predicate}))
+  ) candidates
+  ${eligibleOnly ? `where ${eligible}` : ""}
+  order by mailbox, ${eligibleOnly ? "" : `(${eligible}) desc, `}created_at, id`;
+}
+
 // Who a send would reach right now, and why the rest are left out. Uses the same rules as
 // snapshotBroadcast, so the number on the review step is the number that gets queued.
 // `no_first_name` and `no_last_name` count the recipients who would see a blank for that field.
@@ -142,28 +170,7 @@ export async function broadcastAudience(db: Queryable, tenantId: string, filter:
        count(*) filter (where not unsubscribed and not suppressed and topic_ok)::integer as recipients,
        count(*) filter (where not unsubscribed and not suppressed and topic_ok and no_first_name)::integer as no_first_name,
        count(*) filter (where not unsubscribed and not suppressed and topic_ok and no_last_name)::integer as no_last_name
-     from (select distinct on (mailbox) * from (
-       select
-         lower(c.email) as mailbox, c.created_at, c.id,
-         coalesce(trim(c.first_name), '') = '' as no_first_name,
-         coalesce(trim(c.last_name), '') = '' as no_last_name,
-         c.unsubscribed_at is not null as unsubscribed,
-         exists (
-           select 1 from suppressions sup
-           where sup.tenant_id = c.tenant_id and lower(sup.email) = lower(c.email) and sup.removed_at is null
-         ) as suppressed,
-         coalesce((
-           $3::text is null
-           or (t.default_status = 'subscribed' and coalesce(s.status, 'subscribed') = 'subscribed')
-           or (t.default_status = 'unsubscribed' and s.status = 'subscribed')
-         ), false) as topic_ok
-       from contacts c
-       left join topics t on t.tenant_id = c.tenant_id and t.id = $3 and t.deleted_at is null
-       left join topic_subscriptions s on s.tenant_id = c.tenant_id and s.topic_id = t.id and s.contact_id = c.id
-       where c.tenant_id = $1
-         and c.deleted_at is null
-         and ($2::text is null or (${predicate}))
-     ) candidates order by mailbox, (not unsubscribed and not suppressed and topic_ok) desc, created_at, id) audience`,
+     from (${audienceQuery(predicate)}) audience`,
     params,
   );
   const counts = row.rows[0] ?? { total: 0, recipients: 0, unsubscribed: 0, suppressed: 0, opted_out: 0, no_first_name: 0, no_last_name: 0 };
@@ -556,27 +563,8 @@ export async function snapshotBroadcast(client: Queryable, tenantId: string, bro
   // `distinct on` keeps one row per mailbox when two contacts differ only by letter case.
   const inserted = await client.query(
     `insert into broadcast_recipients (id, tenant_id, broadcast_id, contact_id, email, status)
-     select 'br_' || md5($4 || ':' || picked.contact_id), $1, $4, picked.contact_id, picked.email, 'queued'
-     from (
-     select distinct on (lower(c.email)) c.id as contact_id, c.email, c.created_at
-     from contacts c
-     left join topics t on t.tenant_id = c.tenant_id and t.id = $3 and t.deleted_at is null
-     left join topic_subscriptions s on s.tenant_id = c.tenant_id and s.topic_id = t.id and s.contact_id = c.id
-     where c.tenant_id = $1
-       and c.deleted_at is null
-       and c.unsubscribed_at is null
-       and not exists (
-         select 1 from suppressions sup
-         where sup.tenant_id = c.tenant_id and lower(sup.email) = lower(c.email) and sup.removed_at is null
-       )
-       and ($2::text is null or (${predicate}))
-       and (
-         $3::text is null
-         or (t.default_status = 'subscribed' and coalesce(s.status, 'subscribed') = 'subscribed')
-         or (t.default_status = 'unsubscribed' and s.status = 'subscribed')
-       )
-     order by lower(c.email), c.created_at, c.id
-     ) picked
+     select 'br_' || md5($4 || ':' || picked.id), $1, $4, picked.id, picked.email, 'queued'
+     from (${audienceQuery(predicate, true)}) picked
      on conflict (tenant_id, broadcast_id, contact_id)
      do update set email = excluded.email, status = 'queued', updated_at = now()`,
     params,
