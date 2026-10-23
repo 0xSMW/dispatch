@@ -82,9 +82,9 @@ export function Goals() {
     empty={<Empty title="No goals" body="Set a goal based on an event or a contact's status. You'll see how many contacts reach it after receiving your email." />}
     columns={[
       { header: "Name", cell: (row) => <strong>{row.name}</strong> },
-      { header: "Target", cell: (row) => "event" in row.target ? row.target.event : "Contact state" },
+      { header: "Target", cell: (row) => "event" in row.target ? row.target.event : "Contact fields" },
       { header: "Window", cell: (row) => `${row.window_days} days` },
-      { header: "Eligibility", cell: (row) => row.eligibility ? "Current contact filter" : "All contacts" },
+      { header: "Eligibility", cell: (row) => row.eligibility ? "Contacts who match a filter now" : "All contacts" },
       { header: "Created", cell: (row) => <Time value={row.created_at} /> },
     ]}
     menu={(row) => <Menu items={[
@@ -137,16 +137,23 @@ function GoalForm({ goal, onClose, onDone }: { goal?: Goal; onClose: () => void;
     submitLabel={goal ? "Save" : "Create"} submitDisabled={!can || Boolean(issue)} submitting={save.isLoading}>
     <div className="stack">
       <Field label="Name" value={name} onChange={setName} required autoFocus disabled={disabled} />
-      <Select label="Target" value={kind} onChange={setKind} disabled={disabled} options={[{ value: "event", label: "Custom event" }, { value: "rule", label: "Contact state" }]} />
+      <Select label="Target" value={kind} onChange={setKind} disabled={disabled} options={[{ value: "event", label: "Custom event" }, { value: "rule", label: "Contact fields match a rule" }]} />
       {kind === "event" ? <Field label="Event name" value={event} onChange={setEvent} required disabled={disabled} /> : <>
         <RuleEditor rule={rule} onChange={setRule} fields={targetFields} disabled={disabled} />
-        <p className="muted">A rule target counts entry into recorded contact state. Historical events, email engagement, topics and segment membership are not supported as rule targets. Earlier unrecorded transitions cannot be inferred.</p>
+        <p className="muted">
+          A contact converts when Dispatch records a change that makes their contact fields match this rule. Changes Dispatch did not
+          record, including any from before it kept contact history, are not counted. Past events, email engagement, topics, and segment
+          membership cannot be targets.
+        </p>
       </>}
-      <Field label="Conversion window (days)" type="number" value={window} onChange={setWindow} required disabled={disabled} hint="1–365 days after the first scoped send; default 30. The window endpoint is inclusive." />
+      <Field label="Conversion window (days)" type="number" value={window} onChange={setWindow} required disabled={disabled} hint="How long after the contact's first email in the report a conversion counts: 1 to 365 days, 30 by default. A conversion at the very end of the window still counts." />
       <Select label="Eligibility" value={eligibility ? "rule" : "all"} disabled={disabled} onChange={(next) => setEligibility(next === "rule" ? blankRule() : null)}
-        options={[{ value: "all", label: "All contacts" }, { value: "rule", label: "Current contact filter" }]} />
+        options={[{ value: "all", label: "All contacts" }, { value: "rule", label: "Contacts who match a filter now" }]} />
       {eligibility ? <RuleEditor rule={eligibility} onChange={setEligibility} fields={fields} disabled={disabled} /> : null}
-      <p className="muted">Eligibility uses current live contact state, including current topics and static segment membership, not state at send time. Sandbox sends never count.</p>
+      <p className="muted">
+        Eligibility is checked against each contact as they are now, including their current topics and static segments, not as they were
+        when the email was sent. Sandbox sends never count toward a goal.
+      </p>
       {issue ? <p role={sources.some((source) => source.loading) ? "status" : "alert"} className="fieldError">{issue}</p> : null}
       {sources.some((source) => source.error) ? <button type="button" className="secondary" onClick={() => { for (const source of sources) void source.reload(); }}>Retry choices</button> : null}
     </div>
