@@ -39,7 +39,7 @@ export function Log() {
   return (
     <div className="page">
       <PageHeader
-        back={{ to: "/logs", label: "Logs" }}
+        back={{ to: "/logs", label: "API logs" }}
         icon={<ScrollText size={20} />}
         tone={row ? statusToVariant(row.response_status) : "neutral"}
         label="Log"
