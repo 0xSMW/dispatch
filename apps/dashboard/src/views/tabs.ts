@@ -18,11 +18,11 @@ export const audienceTabs: Tab[] = [
 ];
 
 export const settingsTabs: Tab[] = [
-  { id: "usage", label: "Usage", to: "/settings/usage" },
   { id: "general", label: "General", to: "/settings/general" },
   { id: "team", label: "Team", to: "/settings/team" },
-  { id: "smtp", label: "SMTP", to: "/settings/smtp" },
-  { id: "integrations", label: "Integrations", to: "/settings/integrations" },
   { id: "brand", label: "Brand", to: "/settings/brand" },
   { id: "unsubscribe-page", label: "Unsubscribe page", to: "/settings/unsubscribe-page" },
+  { id: "smtp", label: "SMTP", to: "/settings/smtp" },
+  { id: "integrations", label: "Integrations", to: "/settings/integrations" },
+  { id: "usage", label: "Usage", to: "/settings/usage" },
 ];
