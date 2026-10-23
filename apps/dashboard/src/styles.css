@@ -597,8 +597,24 @@ button.switch.on {
 
 .sidebar nav {
   display: grid;
-  gap: 2px;
+  align-content: start;
+  gap: 16px;
   overflow-y: auto;
+}
+
+/* A static group: a small heading over its links. Nothing collapses. */
+.navGroup {
+  display: grid;
+  gap: 2px;
+}
+
+.navHeading {
+  padding: 0 10px 4px;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .navItem {
@@ -995,6 +1011,13 @@ button.switch.on {
 
 .steps li.done {
   color: var(--success);
+}
+
+.goalNotes {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 18px;
 }
 
 .alert {
@@ -1504,6 +1527,14 @@ tbody tr.clickable a:hover {
   font-size: 12px;
 }
 
+.eventDetail {
+  max-width: 240px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
 /* Overlays: modal and drawer */
 
 .overlay {
@@ -1581,6 +1612,7 @@ tbody tr.clickable a:hover {
 }
 
 .modalFooter > :first-child:not(:only-child) { margin-inline-end: auto; }
+.modalFooter > .modalNote { flex: 1 1 220px; margin: 0; color: var(--text-muted); font-size: 13px; line-height: 1.45; }
 
 .drawerOverlay {
   place-items: stretch end;
@@ -1981,7 +2013,28 @@ button.menuItem.danger:hover:not(:disabled) {
 
   .sidebar nav {
     display: flex;
+    gap: 2px;
     overflow-x: auto;
+  }
+
+  /* One scrolling row on a phone, as before; group names stay as the groups' labels only. */
+  .navGroup {
+    display: flex;
+    flex: none;
+    gap: 2px;
+  }
+
+  .navGroup + .navGroup {
+    margin-left: 10px;
+  }
+
+  .navHeading {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
   }
 
   .navItem {
