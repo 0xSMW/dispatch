@@ -1,6 +1,7 @@
 import { webhookDeliveryStatus } from "@dispatchmail/core";
+import type { Email, EmailRecipient as Recipient } from "@dispatchmail/sdk/contracts";
 
-export type EmailRecipient = { email: string; kind: string; status?: string; sandbox?: boolean };
+export type EmailRecipient = Pick<Recipient, "email" | "kind" | "status"> & { sandbox?: boolean };
 
 export type EmailRow = {
   id: string;
@@ -19,7 +20,7 @@ export type EmailRow = {
   recipients?: EmailRecipient[];
 };
 
-export function presentEmail(row: EmailRow) {
+export function presentEmail(row: EmailRow): Email<string | Date> {
   const ofKind = (kind: string) =>
     (row.recipients ?? []).filter((recipient) => recipient.kind === kind).map((recipient) => recipient.email);
   return {
@@ -30,7 +31,7 @@ export function presentEmail(row: EmailRow) {
       email: recipient.email,
       kind: recipient.kind,
       sandbox: recipient.sandbox === true,
-      ...(recipient.status ? { status: recipient.status } : {}),
+      status: recipient.status,
     })),
     message_id: row.message_id ?? null,
     to: ofKind("to"),

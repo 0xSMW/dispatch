@@ -1,3 +1,4 @@
+import { presentEvent } from "./logs.js";
 import "@dispatchmail/core/env";
 import cors from "@fastify/cors";
 import { ConfirmSubscriptionCommand, SNSClient } from "@aws-sdk/client-sns";
@@ -266,7 +267,13 @@ const telemetryTimer = vercelRuntime ? null : setInterval(
 );
 telemetryTimer?.unref();
 
-app.addHook("preHandler", async (request, reply) => {
+app.addHook("onRequest", async (request, reply) => {
+  if (request.url.split("?")[0] !== "/health") {
+    await publicRateLimit(request, reply, request.routeOptions.url ?? "public");
+  }
+});
+
+app.addHook("onRequest", async (request, reply) => {
   const path = request.url.split("?")[0];
   if (path === "/internal/reconcile" || path === "/internal/events") return;
   if (
@@ -285,7 +292,6 @@ app.addHook("preHandler", async (request, reply) => {
   ) {
     // Keyed on the route pattern. Keyed on the path, every token in /unsubscribe/:token or
     // /click/:token would get its own bucket and the limit would never apply.
-    await publicRateLimit(request, reply, request.routeOptions.url ?? path);
     return;
   }
   await authenticate(request);
@@ -416,7 +422,7 @@ app.addContentTypeParser("text/plain", { parseAs: "string" }, (_request, body, d
   catch { done(new ApiError("validation_error", 400, "Invalid notification JSON")); }
 });
 const snsValidator = new MessageValidator();
-app.post("/internal/events", async (request) => {
+app.post("/internal/events", { bodyLimit: 1024 * 1024 }, async (request) => {
   const body = request.body;
   if (!body || typeof body !== "object" || Array.isArray(body)) throw new ApiError("validation_error", 400, "Invalid notification");
   const notification = body as Record<string, unknown>;
@@ -750,7 +756,10 @@ app.post("/domains/:id/publish-route53", async (request) => {
     request.auth!.tenant_id,
     (request.params as { id: string }).id,
   );
-  return publishRoute53(route53Client(), { name: domain.name, records: domain.records ?? [] });
+  const zones = JSON.parse(process.env.ROUTE53_TENANT_ZONES || "{}") as Record<string, string[]>;
+  const zoneIds = zones[request.auth!.tenant_id];
+  if (!Array.isArray(zoneIds) || !zoneIds.every((id) => typeof id === "string")) throw new ApiError("forbidden", 403, "No hosted zones are assigned to this tenant");
+  return publishRoute53(route53Client(), { name: domain.name, records: domain.records ?? [], zoneIds });
 });
 
 app.delete("/domains/:id", async (request) => {
@@ -981,6 +990,7 @@ app.post(
       publicUrl,
       unsubscribe: { secret: appSecret, appUrl, publicUrl },
       storeAttachment: writeBlob,
+      reserveAttachment: reserveBlob,
     });
     reply.status(200);
     return presentSend({ ...response.email, ...(response.emails ? { emails: response.emails } : {}) });
@@ -1004,6 +1014,7 @@ app.post(
       publicUrl,
       unsubscribe: { secret: appSecret, appUrl, publicUrl },
       storeAttachment: writeBlob,
+      reserveAttachment: reserveBlob,
     });
     reply.status(200);
     return { ...response, data: response.data.map(presentSend) };
@@ -1757,6 +1768,10 @@ function presentReceived(row: Record<string, unknown>) {
   return { object: "email" as const, ...rest, attachments };
 }
 
+async function reserveBlob(storageKey: string) {
+  await db.query("insert into pending_blobs (storage_key) values ($1) on conflict do nothing", [storageKey]);
+}
+
 async function writeBlob(storageKey: string, bytes: Buffer) {
   await storage.put(storageKey, bytes);
 }
@@ -1777,11 +1792,13 @@ async function useTrackingToken(
       url: string | null;
       used_at: string | null;
     }>(
-      "select token, tenant_id, email_id, recipient_id, kind, url, used_at from tracking_tokens where token = $1 and kind = $2",
+      "select token, tenant_id, email_id, recipient_id, kind, url, used_at from tracking_tokens where token = $1 and kind = $2 for update",
       [token, kind],
     );
     const tracking = row.rows[0];
     if (!tracking) return null;
+    if (tracking.used_at) return tracking;
+    await client.query("update tracking_tokens set used_at = now() where token = $1", [token]);
     const timestamp = new Date().toISOString();
     const event = await appendEvent(client, {
       tenantId: tracking.tenant_id,
@@ -1869,11 +1886,11 @@ async function authenticate(request: FastifyRequest) {
   }
 }
 
-export async function validKey(secret: string) {
+export async function validKey(secret: string, client: Pick<typeof db, "query"> = db) {
   const prefix = secret.slice(0, 12);
   const expected = keyHash(secret, pepper);
   // Persisted revocation must take effect across API instances on the next authentication.
-  const row = await db.query<ApiKeyRow>(
+  const row = await client.query<ApiKeyRow>(
     `select k.id, k.tenant_id, k.hash, k.scope, k.last_used_at, k.domain_id, d.name as domain_name
      from api_keys k
      left join domains d on d.id = k.domain_id and d.tenant_id = k.tenant_id
@@ -1886,21 +1903,7 @@ export async function validKey(secret: string) {
   return apiKey;
 }
 
-// Event payloads can contain bearer tracking credentials and credential-bearing URLs.
-export function presentEvent(value: unknown, viewer: boolean): unknown {
-  if (!viewer) return value;
-  if (Array.isArray(value)) return value.map((child) => presentEvent(child, true));
-  if (value instanceof Date) return value;
-  if (typeof value === "string") {
-    return hideLinks(value).replace(/https?:\/\/[^\s"'<>()]+/gi, (url) => hostOnly(url));
-  }
-  if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(Object.entries(value).map(([key, child]) => [
-    key,
-    key === "response" || key === "response_body" || /pass|secret|token|api_?key|authorization/i.test(key)
-      ? "[redacted]" : presentEvent(child, true),
-  ]));
-}
+export { presentEvent } from "./logs.js";
 
 // Counts a request and sets the key's expiry in one round trip, so a process that stops between
 // the two cannot leave a key behind with no expiry.
@@ -2175,6 +2178,7 @@ async function flushTelemetryNow() {
 }
 
 function securityHeaders(reply: FastifyReply) {
+  reply.header("cache-control", "private, no-store");
   reply.header("x-content-type-options", "nosniff");
   reply.header("x-frame-options", "DENY");
   reply.header("referrer-policy", "no-referrer");
@@ -2190,6 +2194,7 @@ function securityHeaders(reply: FastifyReply) {
 
 function allowedOrigin(origin?: string) {
   if (!origin) return true;
+  if (process.env.VERCEL_URL && origin === `https://${process.env.VERCEL_URL}`) return true;
   const allowed = new Set(
     (process.env.CORS_ORIGINS ?? "http://localhost:5173,http://127.0.0.1:5173")
       .split(",")

@@ -26,7 +26,7 @@ export const login = () =>
         codes: ["missing_flags", "invalid_api_url", "auth_error"],
         examples: [
           "dispatch login",
-          "dispatch login --api-url https://mail.example.com --key sk_... --name prod",
+          "dispatch login --api-url https://mail.example.com --key - --name prod",
           "echo $KEY | dispatch login --api-url https://mail.example.com --key -",
         ],
       }),
@@ -47,6 +47,7 @@ export const login = () =>
           throw new CliError("invalid_api_url", `Invalid API URL: ${apiUrl}`);
         }
         let key = options.key ?? globals.apiKey;
+        if (options.key && options.key !== "-") throw new CliError("auth_error", "Read the key from stdin with --key -, or use the masked prompt");
         if (key === "-") key = (await read("-")).trim();
         const asked = await promptMissing({ key }, [{ key: "key", flag: "--key", label: "API key", secret: true }], globals);
         const me = await withSpinner(

@@ -33,36 +33,7 @@ export type Confirmed = { object: "confirmation"; confirmed: true; redirect_url:
 
 // Emails
 
-export type Tag = { name: string; value: string };
-
-export type EmailRecipient = {
-  id?: string;
-  email: string;
-  kind: "to" | "cc" | "bcc";
-  status: string;
-  sandbox: boolean;
-  created_at?: string;
-};
-
-export type Email = {
-  object: "email";
-  id: string;
-  sandbox: boolean;
-  recipients?: EmailRecipient[];
-  message_id: string | null;
-  from: string;
-  to: string[];
-  cc: string[];
-  bcc: string[];
-  reply_to: string[];
-  subject: string;
-  html: string | null;
-  text: string | null;
-  last_event: string;
-  scheduled_at: string | null;
-  tags: Tag[];
-  created_at: string;
-};
+export type { Tag, EmailRecipient, Email } from "@dispatchmail/sdk/contracts";
 
 export type Attachment = {
   id: string;
@@ -378,32 +349,8 @@ export type Suppression = {
 
 // Broadcasts
 
-export type Broadcast = {
-  object?: "broadcast";
-  id: string;
-  name: string;
-  from: string;
-  reply_to?: string[];
-  subject: string | null;
-  preview_text?: string | null;
-  topic_id: string | null;
-  segment_id: string | null;
-  status: string;
-  recipient_count?: number;
-  sent_count?: number;
-  scheduled_at?: string | null;
-  sent_at?: string | null;
-  created_at: string;
-  updated_at?: string;
-};
-
-export type BroadcastDetail = Broadcast & {
-  html?: string | null;
-  text?: string | null;
-  variables?: Record<string, unknown>;
-  paused?: boolean;
-  template_id?: string | null;
-};
+export type { BroadcastSummary, Broadcast } from "@dispatchmail/sdk/contracts";
+export type BroadcastDetail = import("@dispatchmail/sdk/contracts").Broadcast;
 
 /** `GET /broadcasts/:id/audience`: who the saved segment and topic reach. `recipients` is the number sent to. */
 export type BroadcastAudience = {

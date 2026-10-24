@@ -52,6 +52,7 @@ export function CommandMenu({ pages, onClose, onApi, onKeys }: {
     { id: "api", label: "API reference", detail: "For this page", group: "Actions", action: onApi },
     { id: "shortcuts", label: "Keyboard shortcuts", detail: "All shortcuts", group: "Actions", action: onKeys },
     { id: "theme", label: theme === "dark" ? "Switch to light theme" : "Switch to dark theme", detail: "Appearance", group: "Actions", action: () => { onClose(); toggleTheme(); } },
+    { id: "first-send", label: "Send your first email", detail: "API guide with a curl command", group: "Actions", to: "/setup/send" },
     // ...(can ? [{ id: "send", label: "Send email", detail: "Open the test send form", group: "Actions", to: "/emails/send" }] : []),
   ];
   const trimmed = query.trim();
@@ -93,7 +94,7 @@ export function CommandMenu({ pages, onClose, onApi, onKeys }: {
     if (command.id === "api") return Code2;
     if (command.id === "shortcuts") return Keyboard;
     if (command.id === "theme") return theme === "dark" ? Sun : Moon;
-    if (command.id === "send" || command.id === "filtered-emails") return Mail;
+    if (command.id === "send" || command.id === "first-send" || command.id === "filtered-emails") return Mail;
     const page = pages.find((page) => command.to?.split("?")[0] === page.to);
     if (page) return page.icon;
     if (command.to?.startsWith("/emails")) return Mail;

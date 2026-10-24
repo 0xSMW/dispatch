@@ -1,11 +1,11 @@
 # Verification
 
-Dispatch has five named checks: two small guards and three real usage journeys.
+Dispatch has five named usage checks: two small guards and three real usage journeys.
 Keep this set fixed. Change an existing journey when behavior changes; add a check only by replacing one. Keep executable verification code below 800 physical lines across `scripts/guards.test.ts`, `scripts/usage.ts`, and this directory. Avoid mocks, snapshots, parameter matrices, whole-response golden files, and private API/worker calls.
 
-`pnpm test` runs the two Node guards: malformed password digests fail authentication, and connection-time DNS blocks localhost. `pnpm verify:usage` runs both guards plus sending, audience/consent, and access/clients. The latter uses real curl commands, the product CLI, all three public SDKs, a listening API/worker, Postgres, Redis, file storage, and a loopback webhook receiver. Its SQL connection is read-only.
+`pnpm test` runs the two Node guards plus security regression tests. CI supplies disposable PostgreSQL so the database cases run too. `pnpm verify:usage` runs both guards plus sending, audience/consent, and access/clients. The latter uses real curl commands, the product CLI, all three public SDKs, a listening API/worker, Postgres, Redis, file storage, and a loopback webhook receiver. Its SQL connection is read-only.
 
-## Run on home-server
+## Run in an isolated environment
 
 Use an explicitly configured disposable environment. Never load production credentials. Python 3.11+ and Go 1.22+ must be installed alongside the repository's Node/pnpm versions. Supply these variables through the environment's private launcher:
 
@@ -32,6 +32,6 @@ Deploy the exact source, compare its hashes, run the five checks, and inspect th
 
 Before retiring a verification path, prove the replacement rejects an actual bad outcome as well as accepting a good run. For example, a sending-only key must make the usage command fail at the first denied setup operation; it must never print success or publish a green status.
 
-CI runs guards, typecheck, build and dependency audit. Its usage job waits for a trusted maintainer's `usage/home-server` commit status on the exact PR head SHA. A maintainer publishes `success` only after that source matches the running environment and `summary.json` records five passed checks. Publish `pending` at the start and `failure`/`error` after an unsuccessful run. The hosted job has no private network credentials; it trusts repository status writers and fails when the receipt is absent or unsuccessful.
+CI uses one job and one dependency install for the production audit, tests, typecheck, and build. PRs run once; pushes run on `master`, and newer runs cancel stale ones. Checks use the PR merge tree. The five usage checks can run in any suitable isolated environment; CI does not require a host-specific commit-status receipt.
 
 Fake-provider and sandbox outcomes do not prove SES/SNS delivery. Controlled real-provider acceptance, including raw MIME/CID handling when relevant, is a separate explicitly authorized release exercise in `us-west-2`.

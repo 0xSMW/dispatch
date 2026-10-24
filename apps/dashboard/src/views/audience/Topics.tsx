@@ -16,7 +16,7 @@ import { Tabs } from "../../components/Tabs";
 import { Time } from "../../components/Time";
 import { toast } from "../../components/Toast";
 import { useList } from "../../hooks/useList";
-import { useMutation } from "../../hooks/useMutation";
+import { finish, useMutation } from "../../hooks/useMutation";
 import { useResource } from "../../hooks/useResource";
 import { emptyBody } from "../../lib/utils";
 import { useCan, useClient } from "../../shell/session";
@@ -136,10 +136,7 @@ function CreateTopic({ onClose, onDone }: { onClose: () => void; onDone: () => v
   const set = (key: keyof typeof blank) => (value: string) => setForm({ ...form, [key]: value });
   const { mutate, isLoading } = useMutation(() => client.post("/topics", emptyBody(form)), {
     success: "Topic created.",
-    onSuccess: () => {
-      onDone();
-      onClose();
-    },
+    onSuccess: finish(onDone, onClose),
   });
 
   return (
@@ -194,10 +191,7 @@ function EditTopic({ topic, onClose, onDone }: { topic: Topic; onClose: () => vo
       }),
     {
       success: "Topic saved.",
-      onSuccess: () => {
-        onDone();
-        onClose();
-      },
+      onSuccess: finish(onDone, onClose),
     },
   );
 

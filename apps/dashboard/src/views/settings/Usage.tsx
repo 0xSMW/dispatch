@@ -134,7 +134,8 @@ export function Usage() {
         {system.error ? <Failed message={system.error} onRetry={system.reload} /> : !data ? <Skeleton lines={2} /> : <Quota sending={data.sending ?? null} />}
       </Panel>
 
-      <Panel title="System details">
+      <Panel title="Operator details">
+        <p className="note">How this Dispatch install is running: its email provider, worker, queues, and API traffic. Operators use these to check the install's health.</p>
         {system.error ? (
           <Failed message={system.error} onRetry={system.reload} />
         ) : !data ? (

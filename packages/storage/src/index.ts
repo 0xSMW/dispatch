@@ -211,7 +211,7 @@ export async function readSignedFile(token: string, storage: Storage, secret: st
   } catch {
     throw new ApiError("not_found", 404, "File not found");
   }
-  const bytes = await storage.get(payload.key);
+  const bytes = await storage.stream(payload.key);
   return { filename: payload.filename ?? "file", bytes };
 }
 

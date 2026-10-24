@@ -10,6 +10,12 @@ export interface UseMutationOptions<TData, TVariables> {
   success?: string | ((data: TData) => string);
 }
 
+/** `onSuccess` for a modal form that refreshes its page, then closes. */
+export const finish = (onDone: () => unknown, onClose: () => void) => () => {
+  onDone();
+  onClose();
+};
+
 /**
  * Wraps one write. `mutate` never throws: errors land in `error` and, by default, in a toast.
  * Disable submit buttons with `isLoading`.

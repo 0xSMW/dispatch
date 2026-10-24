@@ -19,7 +19,7 @@ import { toast } from "../../components/Toast";
 import { useFilters } from "../../hooks/useFilters";
 import { useBulkKeys } from "../../hooks/useBulkKeys";
 import { useList } from "../../hooks/useList";
-import { useMutation } from "../../hooks/useMutation";
+import { finish, useMutation } from "../../hooks/useMutation";
 import { useAll, useResource } from "../../hooks/useResource";
 import { useSelection } from "../../hooks/useSelection";
 import { each } from "../../lib/bulk";
@@ -316,10 +316,7 @@ function AddContact({ onClose, onDone }: { onClose: () => void; onDone: () => vo
     () => client.post("/contacts", contactBody(form, values, properties.data?.data ?? [], segmentIds, topicIds)),
     {
       success: "Contact added.",
-      onSuccess: () => {
-        onDone();
-        onClose();
-      },
+      onSuccess: finish(onDone, onClose),
     },
   );
 
@@ -412,10 +409,7 @@ function AddToSegment({
   const toggle = (id: string) => setChosen((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]));
   const { mutate, isLoading } = useMutation(() => addToSegments(client, ids, chosen), {
     success: `${ids.length === 1 ? "Contact" : `${ids.length} contacts`} added to ${chosen.length === 1 ? "segment" : `${chosen.length} segments`}.`,
-    onSuccess: () => {
-      onDone();
-      onClose();
-    },
+    onSuccess: finish(onDone, onClose),
   });
 
   return (

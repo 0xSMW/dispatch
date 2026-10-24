@@ -5,7 +5,8 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./contracts": "./src/contracts.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -23,6 +24,10 @@
       ".": {
         "types": "./dist/index.d.ts",
         "import": "./dist/index.js"
+      },
+      "./contracts": {
+        "types": "./dist/contracts.d.ts",
+        "import": "./dist/contracts.js"
       }
     }
   },
@@ -31,8 +36,12 @@
     "react-email": ">=6.0.0"
   },
   "peerDependenciesMeta": {
-    "@react-email/render": { "optional": true },
-    "react-email": { "optional": true }
+    "@react-email/render": {
+      "optional": true
+    },
+    "react-email": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@dispatchmail/core": "workspace:*",

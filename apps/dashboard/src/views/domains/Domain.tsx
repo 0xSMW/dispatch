@@ -1,11 +1,10 @@
 import { useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { Globe2 } from "lucide-react";
-import { Badge, statusToVariant, type BadgeVariant } from "../../components/Badge";
+import { Badge, statusToVariant } from "../../components/Badge";
 import { ConfirmPhrase } from "../../components/ConfirmPhrase";
 import { saveFile } from "../../components/CsvExport";
 import { Failed } from "../../components/Empty";
-import { EventTimeline, type TimelineEvent } from "../../components/EventTimeline";
 import { Facts } from "../../components/Facts";
 import { Field, Select, Switch } from "../../components/Field";
 import { Menu } from "../../components/Menu";
@@ -21,7 +20,8 @@ import { useCan, useClient } from "../../shell/session";
 import type { Domain as DomainRow, DomainDoctor } from "../../types";
 import { Region } from "./Domains";
 import { Publish } from "./Publish";
-import { Records } from "./Records";
+import { CheckSummary, Records } from "./Records";
+import { verificationState, verifyLabel } from "./verification";
 import { toZone } from "./zone";
 import "../../styles/operations.css";
 
@@ -29,21 +29,6 @@ type Tab = "records" | "configuration";
 type Update = Partial<Pick<DomainRow, "open_tracking" | "click_tracking" | "tracking_subdomain" | "tls">> & {
   capabilities?: Partial<DomainRow["capabilities"]>;
 };
-
-const failing = ["failed", "temporary_failure", "partially_failed"];
-
-/** The five verification steps, colored by how far the domain has got. */
-export function verification(domain: Pick<DomainRow, "status" | "created_at" | "checked_at">): TimelineEvent[] {
-  const labels = ["Created", "Checking DNS", "Records validated", "Internal verification", "Verified"];
-  const reached: Record<string, number> = { not_started: 1, pending: 2, partially_verified: 4, verified: 5 };
-  const failed = failing.includes(domain.status);
-  const done = failed ? 1 : (reached[domain.status] ?? 1);
-  return labels.map((label, index) => {
-    const variant: BadgeVariant = index < done ? "success" : failed && index === 1 ? "danger" : index === done ? "info" : "neutral";
-    const time = index === 0 ? domain.created_at : (index === 4 && domain.status === "verified") || (index === 1 && done >= 2) ? domain.checked_at : null;
-    return { label, variant, time: time ?? null, status: label };
-  });
-}
 
 export function Domain() {
   const { id } = useParams<{ id: string }>();
@@ -58,17 +43,13 @@ export function Domain() {
   const current: Tab = tab ?? (row?.status === "verified" ? "configuration" : "records");
 
   const can = useCan();
+  // Verifying (POST) asks SES to verify again. Checking DNS (GET) only reads what DNS returns now.
   const verify = useMutation(() => client.post(`/domains/${id}/verify`), {
     success: "Verification started.",
     onSuccess: () => domain.reload(),
   });
   const doctor = useMutation(() => client.get<DomainDoctor>(`/domains/${id}/doctor`), {
-    onSuccess: (data) => {
-      const bad = data.checks.filter((check) => check.status !== "ok").length;
-      if (bad === 0) toast.success("Every record checks out.");
-      else toast.error(bad === 1 ? "1 record needs a fix." : `${bad} records need a fix.`);
-      setTab("records");
-    },
+    onSuccess: () => setTab("records"),
   });
   const update = useMutation((changes: Update) => client.patch<DomainRow>(`/domains/${id}`, changes), {
     success: "Domain updated.",
@@ -76,7 +57,7 @@ export function Domain() {
   });
 
   if (domain.error) return <Failed message={domain.error} onRetry={domain.reload} />;
-  const restart = row && (row.status === "pending" || failing.includes(row.status));
+  const state = row ? verificationState(row) : null;
 
   return (
     <div className="page">
@@ -94,12 +75,12 @@ export function Domain() {
               </button>
               {can && row.status !== "verified" ? (
                 <button type="button" className="secondary" disabled={verify.isLoading} onClick={() => void verify.mutate()}>
-                  {restart ? "Restart" : "Verify DNS"}
+                  {verifyLabel(row.status)}
                 </button>
               ) : null}
               <button type="button" className="secondary" disabled={doctor.isLoading} onClick={() => void doctor.mutate()}>
                 {doctor.isLoading ? <span className="spinner" aria-hidden /> : null}
-                Doctor
+                Check DNS
               </button>
               {can ? <Menu label="Domain actions" items={[{ label: "Delete domain", danger: true, onSelect: () => setDeleting(true) }]} /> : null}
             </>
@@ -111,10 +92,8 @@ export function Domain() {
         <Facts
           items={[
             { label: "Created", value: <Time value={row.created_at} mode="absolute" /> },
-            { label: "Status", value: <Badge value={row.status} /> },
             { label: "Provider", value: row.dns_provider ?? <span className="dim">Not detected</span> },
             { label: "Region", value: <Region code={row.region} /> },
-            { label: "Last checked", value: <Time value={row.checked_at} /> },
             { label: "ID", value: row.id, copy: true },
           ]}
         />
@@ -122,9 +101,27 @@ export function Domain() {
         <Skeleton lines={2} />
       )}
 
-      {row ? (
+      {row && state ? (
         <Panel title="Verification">
-          <EventTimeline events={verification(row)} />
+          <div className="verificationState">
+            <p className="inline">
+              <Badge value={row.status} variant={state.tone} />
+              <strong>{state.summary}</strong>
+            </p>
+            <p className="muted">{state.next}</p>
+            <p className="muted">{row.checked_at ? <>Last checked <Time value={row.checked_at} mode="absolute" />.</> : "Not checked yet."}</p>
+            {state.ready ? (
+              <p>
+                <Link to={`/setup/send?domain=${row.id}`}>Next: send your first email</Link>
+              </p>
+            ) : row.status === "verified" ? (
+              <div className="toolbar">
+                <button type="button" className="secondary small" onClick={() => setTab("configuration")}>
+                  Open configuration
+                </button>
+              </div>
+            ) : null}
+          </div>
         </Panel>
       ) : null}
 
@@ -143,18 +140,15 @@ export function Domain() {
         ) : current === "records" ? (
           <div className="stack">
             <div className="toolbar">
-              <p className="muted grow">Click a value to copy it. Run Doctor to check what DNS returns for each record.</p>
+              <p className="muted grow">Click a value to copy it. Check DNS to see what DNS returns for each record.</p>
               {can ? <Publish domainId={row.id} onDone={() => void domain.reload()} /> : null}
             </div>
+            {doctor.data ? <CheckSummary records={row.records} checks={doctor.data.checks} /> : null}
             <Records
               records={row.records}
               checks={doctor.data?.checks}
               tracking={row.open_tracking || row.click_tracking}
-              receiving={{
-                enabled: row.capabilities.receiving === "enabled",
-                busy: !can || update.isLoading,
-                onChange: (on) => void update.mutate({ capabilities: { receiving: on ? "enabled" : "disabled" } }),
-              }}
+              receiving={{ enabled: row.capabilities.receiving === "enabled", onConfigure: () => setTab("configuration") }}
             />
           </div>
         ) : (

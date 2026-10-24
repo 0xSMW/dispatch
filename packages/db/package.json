@@ -23,6 +23,7 @@
     "pg": "^8.16.0"
   },
   "devDependencies": {
+    "@dispatchmail/sdk": "workspace:*",
     "@types/html-to-text": "^9.0.4",
     "@types/pg": "^8.15.2",
     "tsx": "^4.19.4",

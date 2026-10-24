@@ -5,6 +5,7 @@
   },
   "files": [
     "scripts/guards.test.ts",
+    "scripts/security.test.ts",
     "scripts/usage.ts"
   ]
 }

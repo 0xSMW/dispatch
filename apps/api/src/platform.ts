@@ -13,7 +13,7 @@ import {
   userSchema,
   userUpdateSchema,
 } from "@dispatchmail/core";
-import { paginate, presentPage, settings, updateSettings, softDelete, type Db, type PagingParams } from "@dispatchmail/db";
+import { tx, type Queryable, paginate, presentPage, settings, updateSettings, softDelete, type Db, type PagingParams } from "@dispatchmail/db";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { Signins } from "./rate.js";
 
@@ -150,7 +150,7 @@ export function registerPlatform(
     db: Db;
     paging: (request: FastifyRequest) => PagingParams;
     flushTelemetry: () => Promise<void>;
-    validKey: (secret: string) => Promise<{ tenant_id: string; scope: string } | null>;
+    validKey: (secret: string, client?: Queryable) => Promise<{ tenant_id: string; scope: string } | null>;
     sessionsEnabled: () => boolean;
     signins: Signins;
     quota?: (region: string) => Promise<{ max_24_hour: number; max_per_second: number; sent_24_hour: number; sandbox: boolean }>;
@@ -163,17 +163,17 @@ export function registerPlatform(
 
   // A deactivated user must lose access at once, not when their session runs out in 30 days.
   // A password change ends every session but the one that made it.
-  async function revokeSessions(tenantId: string, userId: string, keep = "") {
-    await db.query("update sessions set revoked_at = now() where tenant_id = $1 and user_id = $2 and revoked_at is null and id <> $3", [
+  async function revokeSessions(tenantId: string, userId: string, keep = "", client: Queryable = db) {
+    await client.query("update sessions set revoked_at = now() where tenant_id = $1 and user_id = $2 and revoked_at is null and id <> $3", [
       tenantId,
       userId,
       keep,
     ]);
   }
 
-  async function startSession(tenantId: string, user: Row & { id: string }) {
+  async function startSession(tenantId: string, user: Row & { id: string }, client: Queryable = db) {
     const token = `sess_${makeKey().secret}`;
-    const row = await db.query(
+    const row = await client.query(
       `insert into sessions (id, tenant_id, user_id, token_hash, expires_at)
        values ($1, $2, $3, $4, now() + interval '30 days')
        returning id, user_id, expires_at, created_at`,
@@ -211,10 +211,11 @@ export function registerPlatform(
 
   // Signs in with an email and password. A wrong password and an unknown email get the same
   // error, and both pay for one scrypt derivation.
-  app.post("/sessions", async (request) => {
+  app.post("/sessions", { bodyLimit: 16 * 1024 }, async (request) => {
     const input = sessionSchema.parse(request.body);
     if (!input.password) return keySession(input.email, input.api_key!);
-    const reservation = await signins.take(input.email);
+    const signinIdentity = `${request.ip}:${input.email}`;
+    const reservation = await signins.take(signinIdentity);
     if (!reservation) throw tooMany();
     const users = await db.query<{ id: string; tenant_id: string; email: string; name: string; role: string; permissions: string[]; password_hash: string }>(
       `select u.id, u.tenant_id, u.email, u.name, r.name as role, r.permissions, u.password_hash
@@ -235,9 +236,14 @@ export function registerPlatform(
     }
     if (!users.rows.length) await checkPassword(input.password, null);
     if (!found) throw new ApiError("invalid_credentials", 401, "Invalid email or password");
-    await signins.release(input.email, reservation);
+    await signins.release(signinIdentity, reservation);
     const { tenant_id: tenantId, password_hash: _hash, ...user } = found;
-    return startSession(tenantId, user);
+    return tx(db, async (client) => {
+      await client.query("select pg_advisory_xact_lock(hashtextextended($1, 19))", [tenantId]);
+      const current = await client.query("select password_hash from users where tenant_id = $1 and id = $2 and deactivated_at is null", [tenantId, user.id]);
+      if (current.rows[0]?.password_hash !== found.password_hash) throw new ApiError("invalid_credentials", 401, "Invalid email or password");
+      return startSession(tenantId, user, client);
+    });
   });
 
   // The old exchange of an email and a full-access key, for local development and tests only.
@@ -245,19 +251,23 @@ export function registerPlatform(
     if (!sessionsEnabled()) {
       throw new ApiError("forbidden", 403, "Passwordless local sessions are disabled");
     }
-    const apiKey = await validKey(secret);
-    if (!apiKey || apiKey.scope !== "full") throw new ApiError("invalid_api_key", 403, "Invalid API key");
-    const user = await db.query(
-      `select u.id, u.email, u.name, r.name as role, r.permissions
-       from users u
-       join memberships m on m.user_id = u.id and m.disabled_at is null
-       join roles r on r.id = m.role_id and r.deleted_at is null
-       where u.tenant_id = $1 and u.email = $2 and u.deactivated_at is null
-       limit 1`,
-      [apiKey.tenant_id, email],
-    );
-    if (!user.rows[0]) throw new ApiError("not_found", 404, "User not found");
-    return startSession(apiKey.tenant_id, user.rows[0] as Row & { id: string });
+    return tx(db, async (client) => {
+      await client.query("lock table api_keys in share mode");
+      const apiKey = await validKey(secret, client);
+      if (!apiKey || apiKey.scope !== "full") throw new ApiError("invalid_api_key", 403, "Invalid API key");
+      await client.query("select pg_advisory_xact_lock(hashtextextended($1, 19))", [apiKey.tenant_id]);
+      const user = await client.query(
+        `select u.id, u.email, u.name, r.name as role, r.permissions
+         from users u
+         join memberships m on m.user_id = u.id and m.disabled_at is null
+         join roles r on r.id = m.role_id and r.deleted_at is null
+         where u.tenant_id = $1 and u.email = $2 and u.deactivated_at is null
+         limit 1`,
+        [apiKey.tenant_id, email],
+      );
+      if (!user.rows[0]) throw new ApiError("not_found", 404, "User not found");
+      return startSession(apiKey.tenant_id, user.rows[0] as Row & { id: string }, client);
+    });
   }
 
   // A sending key can read who it is. The CLI signs in and checks keys through this route.
@@ -277,28 +287,31 @@ export function registerPlatform(
 
   // The signed-in user changes their own password. Open to every role, a viewer included.
   app.post("/me/password", async (request) => {
-    const auth = request.auth!;
-    if (!auth.user_id) throw new ApiError("forbidden", 403, "Sign in as a user to change a password");
-    const input = passwordChangeSchema.parse(request.body);
-    const current = await db.query<{ email: string; password_hash: string | null }>(
-      "select email, password_hash from users where tenant_id = $1 and id = $2",
-      [auth.tenant_id, auth.user_id],
-    );
-    const email = current.rows[0]?.email ?? auth.user_id;
-    const reservation = await signins.take(email);
-    if (!reservation) throw tooMany();
-    if (!(await checkPassword(input.current_password, current.rows[0]?.password_hash))) {
-      throw new ApiError("validation_error", 422, "The current password is wrong");
-    }
-    await signins.release(email, reservation);
-    const row = await db.query(
-      `update users set password_hash = $3, updated_at = now()
-       where tenant_id = $1 and id = $2
-       returning id, email, name, created_at, updated_at, deactivated_at`,
-      [auth.tenant_id, auth.user_id, await hashPassword(input.password)],
-    );
-    await revokeSessions(auth.tenant_id, auth.user_id, auth.session_id);
-    return presentUser(row.rows[0]);
+    return tx(db, async (db) => {
+      await db.query("select pg_advisory_xact_lock(hashtextextended($1, 19))", [request.auth!.tenant_id]);
+      const auth = request.auth!;
+      if (!auth.user_id) throw new ApiError("forbidden", 403, "Sign in as a user to change a password");
+      const input = passwordChangeSchema.parse(request.body);
+      const current = await db.query<{ email: string; password_hash: string | null }>(
+        "select email, password_hash from users where tenant_id = $1 and id = $2",
+        [auth.tenant_id, auth.user_id],
+      );
+      const email = current.rows[0]?.email ?? auth.user_id;
+      const reservation = await signins.take(`${request.ip}:${email}`, db);
+      if (!reservation) throw tooMany();
+      if (!(await checkPassword(input.current_password, current.rows[0]?.password_hash))) {
+        throw new ApiError("validation_error", 422, "The current password is wrong");
+      }
+      await signins.release(`${request.ip}:${email}`, reservation, db);
+      const row = await db.query(
+        `update users set password_hash = $3, updated_at = now()
+         where tenant_id = $1 and id = $2
+         returning id, email, name, created_at, updated_at, deactivated_at`,
+        [auth.tenant_id, auth.user_id, await hashPassword(input.password)],
+      );
+      await revokeSessions(auth.tenant_id, auth.user_id, auth.session_id, db);
+      return presentUser(row.rows[0]);
+    });
   });
 
   app.get("/users", async (request) => {
@@ -336,47 +349,53 @@ export function registerPlatform(
   });
 
   app.patch("/users/:id", async (request) => {
-    const userId = (request.params as { id: string }).id;
-    const input = userUpdateSchema.parse(request.body);
-    const current = await db.query("select * from users where tenant_id = $1 and id = $2", [request.auth!.tenant_id, userId]);
-    if (!current.rows[0]) throw new ApiError("not_found", 404, "User not found");
-    if (input.active === false) await assertFullAccessRemains(db, request.auth!.tenant_id, { user: userId });
-    // A new password is how an admin resets a forgotten one.
-    const row = await db.query(
-      `update users set email = $3, name = $4,
-         deactivated_at = case
-           when $5::boolean is null then deactivated_at
-           when $5 then null
-           else coalesce(deactivated_at, now())
-         end,
-         password_hash = coalesce($6, password_hash),
-         updated_at = now()
-       where tenant_id = $1 and id = $2
-       returning id, email, name, created_at, updated_at, deactivated_at`,
-      [
-        request.auth!.tenant_id,
-        userId,
-        input.email ?? current.rows[0].email,
-        input.name ?? current.rows[0].name,
-        input.active ?? null,
-        input.password ? await hashPassword(input.password) : null,
-      ],
-    );
-    if (input.active === false) await revokeSessions(request.auth!.tenant_id, userId);
-    else if (input.password) await revokeSessions(request.auth!.tenant_id, userId, request.auth!.session_id);
-    return presentUser(row.rows[0]);
+    return tx(db, async (db) => {
+      await db.query("select pg_advisory_xact_lock(hashtextextended($1, 19))", [request.auth!.tenant_id]);
+      const userId = (request.params as { id: string }).id;
+      const input = userUpdateSchema.parse(request.body);
+      const current = await db.query("select * from users where tenant_id = $1 and id = $2", [request.auth!.tenant_id, userId]);
+      if (!current.rows[0]) throw new ApiError("not_found", 404, "User not found");
+      if (input.active === false) await assertFullAccessRemains(db, request.auth!.tenant_id, { user: userId });
+      // A new password is how an admin resets a forgotten one.
+      const row = await db.query(
+        `update users set email = $3, name = $4,
+           deactivated_at = case
+             when $5::boolean is null then deactivated_at
+             when $5 then null
+             else coalesce(deactivated_at, now())
+           end,
+           password_hash = coalesce($6, password_hash),
+           updated_at = now()
+         where tenant_id = $1 and id = $2
+         returning id, email, name, created_at, updated_at, deactivated_at`,
+        [
+          request.auth!.tenant_id,
+          userId,
+          input.email ?? current.rows[0].email,
+          input.name ?? current.rows[0].name,
+          input.active ?? null,
+          input.password ? await hashPassword(input.password) : null,
+        ],
+      );
+      if (input.active === false) await revokeSessions(request.auth!.tenant_id, userId, "", db);
+      else if (input.password) await revokeSessions(request.auth!.tenant_id, userId, request.auth!.session_id, db);
+      return presentUser(row.rows[0]);
+    });
   });
 
   app.delete("/users/:id", async (request) => {
-    const userId = (request.params as { id: string }).id;
-    await assertFullAccessRemains(db, request.auth!.tenant_id, { user: userId });
-    const row = await db.query(
-      "update users set deactivated_at = coalesce(deactivated_at, now()), updated_at = now() where tenant_id = $1 and id = $2 returning id",
-      [request.auth!.tenant_id, userId],
-    );
-    if (!row.rows[0]) throw new ApiError("not_found", 404, "User not found");
-    await revokeSessions(request.auth!.tenant_id, userId);
-    return removed("user", userId);
+    return tx(db, async (db) => {
+      await db.query("select pg_advisory_xact_lock(hashtextextended($1, 19))", [request.auth!.tenant_id]);
+      const userId = (request.params as { id: string }).id;
+      await assertFullAccessRemains(db, request.auth!.tenant_id, { user: userId });
+      const row = await db.query(
+        "update users set deactivated_at = coalesce(deactivated_at, now()), updated_at = now() where tenant_id = $1 and id = $2 returning id",
+        [request.auth!.tenant_id, userId],
+      );
+      if (!row.rows[0]) throw new ApiError("not_found", 404, "User not found");
+      await revokeSessions(request.auth!.tenant_id, userId, "", db);
+      return removed("user", userId);
+    });
   });
 
   app.get("/roles", async (request) => {
@@ -394,50 +413,59 @@ export function registerPlatform(
   });
 
   app.post("/roles", async (request) => {
-    const input = roleSchema.parse(request.body);
-    const row = await db.query(
-      `insert into roles (id, tenant_id, name, permissions)
-       values ($1, $2, $3, $4)
-       on conflict (tenant_id, name) do update set permissions = excluded.permissions, deleted_at = null, updated_at = now()
-       where roles.deleted_at is not null
-       returning id, name, permissions, created_at, updated_at`,
-      [id("role"), request.auth!.tenant_id, input.name, JSON.stringify(input.permissions)],
-    );
-    // A live role of that name is changed with PATCH, which guards the last full-access member.
-    // Overwriting it here let a create turn Admin read-only.
-    if (!row.rows[0]) throw new ApiError("conflict", 409, `A role named ${input.name} already exists`);
-    return present("role", row.rows[0]);
+    return tx(db, async (db) => {
+      await db.query("select pg_advisory_xact_lock(hashtextextended($1, 19))", [request.auth!.tenant_id]);
+      const input = roleSchema.parse(request.body);
+      const row = await db.query(
+        `insert into roles (id, tenant_id, name, permissions)
+         values ($1, $2, $3, $4)
+         on conflict (tenant_id, name) do update set permissions = excluded.permissions, deleted_at = null, updated_at = now()
+         where roles.deleted_at is not null
+         returning id, name, permissions, created_at, updated_at`,
+        [id("role"), request.auth!.tenant_id, input.name, JSON.stringify(input.permissions)],
+      );
+      // A live role of that name is changed with PATCH, which guards the last full-access member.
+      // Overwriting it here let a create turn Admin read-only.
+      if (!row.rows[0]) throw new ApiError("conflict", 409, `A role named ${input.name} already exists`);
+      return present("role", row.rows[0]);
+    });
   });
 
   app.patch("/roles/:id", async (request) => {
-    const roleId = (request.params as { id: string }).id;
-    const input = roleUpdateSchema.parse(request.body);
-    const current = await db.query("select * from roles where tenant_id = $1 and id = $2 and deleted_at is null", [
-      request.auth!.tenant_id,
-      roleId,
-    ]);
-    if (!current.rows[0]) throw new ApiError("not_found", 404, "Role not found");
-    if (input.permissions && !input.permissions.includes("full")) await assertFullAccessRemains(db, request.auth!.tenant_id, { role: roleId });
-    const row = await db.query(
-      `update roles set name = $3, permissions = $4, updated_at = now()
-       where tenant_id = $1 and id = $2
-       returning id, name, permissions, created_at, updated_at`,
-      [
+    return tx(db, async (db) => {
+      await db.query("select pg_advisory_xact_lock(hashtextextended($1, 19))", [request.auth!.tenant_id]);
+      const roleId = (request.params as { id: string }).id;
+      const input = roleUpdateSchema.parse(request.body);
+      const current = await db.query("select * from roles where tenant_id = $1 and id = $2 and deleted_at is null", [
         request.auth!.tenant_id,
         roleId,
-        input.name ?? current.rows[0].name,
-        JSON.stringify(input.permissions ?? current.rows[0].permissions),
-      ],
-    );
-    return present("role", row.rows[0]);
+      ]);
+      if (!current.rows[0]) throw new ApiError("not_found", 404, "Role not found");
+      if (input.permissions && !input.permissions.includes("full")) await assertFullAccessRemains(db, request.auth!.tenant_id, { role: roleId });
+      const row = await db.query(
+        `update roles set name = $3, permissions = $4, updated_at = now()
+         where tenant_id = $1 and id = $2
+         returning id, name, permissions, created_at, updated_at`,
+        [
+          request.auth!.tenant_id,
+          roleId,
+          input.name ?? current.rows[0].name,
+          JSON.stringify(input.permissions ?? current.rows[0].permissions),
+        ],
+      );
+      return present("role", row.rows[0]);
+    });
   });
 
   app.delete("/roles/:id", async (request) => {
-    const roleId = (request.params as { id: string }).id;
-    await assertFullAccessRemains(db, request.auth!.tenant_id, { role: roleId });
-    const result = await softDelete(db, "roles", request.auth!.tenant_id, roleId);
-    if (!result.rowCount) throw new ApiError("not_found", 404, "Role not found");
-    return removed("role", roleId);
+    return tx(db, async (db) => {
+      await db.query("select pg_advisory_xact_lock(hashtextextended($1, 19))", [request.auth!.tenant_id]);
+      const roleId = (request.params as { id: string }).id;
+      await assertFullAccessRemains(db, request.auth!.tenant_id, { role: roleId });
+      const result = await softDelete(db, "roles", request.auth!.tenant_id, roleId);
+      if (!result.rowCount) throw new ApiError("not_found", 404, "Role not found");
+      return removed("role", roleId);
+    });
   });
 
   app.get("/memberships", async (request) => {
@@ -459,40 +487,46 @@ export function registerPlatform(
   });
 
   app.post("/memberships", async (request) => {
-    const input = membershipSchema.parse(request.body);
-    const refs = await db.query(
-      `select
-         exists(select 1 from users where tenant_id = $1 and id = $2 and deactivated_at is null) as user_exists,
-         exists(select 1 from roles where tenant_id = $1 and id = $3 and deleted_at is null) as role_exists`,
-      [request.auth!.tenant_id, input.user_id, input.role_id],
-    );
-    if (!refs.rows[0]?.user_exists || !refs.rows[0]?.role_exists) {
-      throw new ApiError("not_found", 404, "User or role not found");
-    }
-    // Moving the last full-access member to a lesser role would lock the dashboard too.
-    const lesser = await db.query("select 1 from roles where tenant_id = $1 and id = $2 and not (permissions ? 'full')", [request.auth!.tenant_id, input.role_id]);
-    if (lesser.rows[0]) await assertFullAccessRemains(db, request.auth!.tenant_id, { user: input.user_id });
-    const row = await db.query(
-      `insert into memberships (id, tenant_id, user_id, role_id)
-       values ($1, $2, $3, $4)
-       on conflict (tenant_id, user_id) do update set role_id = excluded.role_id, disabled_at = null, updated_at = now()
-       returning id, user_id, role_id, created_at, updated_at`,
-      [id("member"), request.auth!.tenant_id, input.user_id, input.role_id],
-    );
-    return present("membership", row.rows[0]);
+    return tx(db, async (db) => {
+      await db.query("select pg_advisory_xact_lock(hashtextextended($1, 19))", [request.auth!.tenant_id]);
+      const input = membershipSchema.parse(request.body);
+      const refs = await db.query(
+        `select
+           exists(select 1 from users where tenant_id = $1 and id = $2 and deactivated_at is null) as user_exists,
+           exists(select 1 from roles where tenant_id = $1 and id = $3 and deleted_at is null) as role_exists`,
+        [request.auth!.tenant_id, input.user_id, input.role_id],
+      );
+      if (!refs.rows[0]?.user_exists || !refs.rows[0]?.role_exists) {
+        throw new ApiError("not_found", 404, "User or role not found");
+      }
+      // Moving the last full-access member to a lesser role would lock the dashboard too.
+      const lesser = await db.query("select 1 from roles where tenant_id = $1 and id = $2 and not (permissions ? 'full')", [request.auth!.tenant_id, input.role_id]);
+      if (lesser.rows[0]) await assertFullAccessRemains(db, request.auth!.tenant_id, { user: input.user_id });
+      const row = await db.query(
+        `insert into memberships (id, tenant_id, user_id, role_id)
+         values ($1, $2, $3, $4)
+         on conflict (tenant_id, user_id) do update set role_id = excluded.role_id, disabled_at = null, updated_at = now()
+         returning id, user_id, role_id, created_at, updated_at`,
+        [id("member"), request.auth!.tenant_id, input.user_id, input.role_id],
+      );
+      return present("membership", row.rows[0]);
+    });
   });
 
   app.delete("/memberships/:id", async (request) => {
-    const membershipId = (request.params as { id: string }).id;
-    await assertFullAccessRemains(db, request.auth!.tenant_id, { membership: membershipId });
-    const row = await db.query(
-      "update memberships set disabled_at = coalesce(disabled_at, now()), updated_at = now() where tenant_id = $1 and id = $2 returning id, user_id",
-      [request.auth!.tenant_id, membershipId],
-    );
-    if (!row.rows[0]) throw new ApiError("not_found", 404, "Membership not found");
-    // Otherwise adding the membership back would bring back every session the user had.
-    await revokeSessions(request.auth!.tenant_id, String(row.rows[0].user_id));
-    return removed("membership", membershipId);
+    return tx(db, async (db) => {
+      await db.query("select pg_advisory_xact_lock(hashtextextended($1, 19))", [request.auth!.tenant_id]);
+      const membershipId = (request.params as { id: string }).id;
+      await assertFullAccessRemains(db, request.auth!.tenant_id, { membership: membershipId });
+      const row = await db.query(
+        "update memberships set disabled_at = coalesce(disabled_at, now()), updated_at = now() where tenant_id = $1 and id = $2 returning id, user_id",
+        [request.auth!.tenant_id, membershipId],
+      );
+      if (!row.rows[0]) throw new ApiError("not_found", 404, "Membership not found");
+      // Otherwise adding the membership back would bring back every session the user had.
+      await revokeSessions(request.auth!.tenant_id, String(row.rows[0].user_id), "", db);
+      return removed("membership", membershipId);
+    });
   });
 
   app.get("/sessions", async (request) => {

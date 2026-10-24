@@ -1,34 +1,4 @@
-// Webhook event types, mirrored from `emailEvents` in packages/core. The dashboard does not
-// import core, which pulls in Node modules.
-export const webhookEvents = [
-  "email.scheduled",
-  "email.sent",
-  "email.delivered",
-  "email.delivery_delayed",
-  "email.bounced",
-  "email.complained",
-  "email.failed",
-  "email.opened",
-  "email.clicked",
-  "email.suppressed",
-  "email.received",
-  "email.unsubscribed",
-  "automation.run.started",
-  "automation.run.completed",
-  "automation.run.failed",
-  "contact.created",
-  "contact.updated",
-  "contact.deleted",
-  "contact.topics.updated",
-  "domain.created",
-  "domain.updated",
-  "domain.deleted",
-  "suppression.added",
-  "suppression.removed",
-  "topic.created",
-  "topic.updated",
-  "topic.deleted",
-] as const;
+export { eventTypes as webhookEvents } from "../../../../packages/core/src/events";
 
 export const emailStatuses = [
   "queued",

@@ -1,3 +1,5 @@
+import { presentEvent } from "./logs.js";
+import { readOnly } from "./platform.js";
 import { ApiError, automationEnrollSchema, automationGraphSchema, automationSchema, automationStopSchema, automationUpdateSchema, splitWinnerSchema, id, type Rule, type TriggerConfig, type SplitConfig } from "@dispatchmail/core";
 import {
   activeStates,
@@ -171,12 +173,12 @@ export function presentStep(row: StepRow) {
   };
 }
 
-export function presentRunDetail(row: RunRow, steps: StepRow[]) {
+export function presentRunDetail(row: RunRow, steps: StepRow[], viewer = false) {
   const run = presentRun(row);
   return {
     ...run,
-    event: { ...run.event, payload: row.event_data ?? {} },
-    steps: steps.map(presentStep),
+    event: { ...run.event, payload: presentEvent(row.event_data ?? {}, viewer) },
+    steps: steps.map((step) => presentEvent(presentStep(step), viewer)),
   };
 }
 
@@ -502,7 +504,7 @@ export function registerAutomations(
        order by created_at, id`,
       [tenantId, params.run_id],
     );
-    return presentRunDetail(run.rows[0], steps.rows);
+    return presentRunDetail(run.rows[0], steps.rows, readOnly(request.auth));
   });
 }
 

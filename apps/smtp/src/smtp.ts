@@ -155,6 +155,7 @@ export async function handleMessage(
       },
       {
         publicUrl: deps.publicUrl,
+        reserveAttachment: async (storageKey) => { await deps.db.query("insert into pending_blobs (storage_key) values ($1) on conflict do nothing", [storageKey]); },
         storeAttachment: (storageKey, bytes) => deps.storage.put(storageKey, bytes),
       },
     );
@@ -289,6 +290,9 @@ export function smtpReply(error: unknown): Reply {
   return { code: 451, message: "4.3.0 Temporary server error, try again later" };
 }
 
+const dataTenants = new Set<string>();
+const dataLimit = 1;
+
 export function createServer(
   deps: Deps,
   options: { secure?: boolean; key?: Buffer; cert?: Buffer; allowInsecureAuth?: boolean } = {},
@@ -319,8 +323,16 @@ export function createServer(
     },
     onData(stream, session, callback) {
       const auth = session.user as unknown as Auth;
+      if (dataTenants.size >= dataLimit || dataTenants.has(auth.tenant_id)) {
+        stream.on("end", () => callback(toError({ code: 451, message: "Message capacity is busy; try again" })));
+        stream.on("error", (error) => callback(replyError(error)));
+        stream.resume();
+        return;
+      }
+      dataTenants.add(auth.tenant_id);
       read(stream)
         .then((raw) => handleMessage(deps, auth, raw, session.envelope))
+        .finally(() => { dataTenants.delete(auth.tenant_id); })
         .then(
           (emailId) => callback(null, `Queued as ${emailId}`),
           (error) => callback(replyError(error)),
@@ -358,6 +370,7 @@ function read(stream: SMTPServerDataStream) {
       else resolve(Buffer.concat(chunks));
     });
     stream.on("error", reject);
+    stream.once("close", () => reject(new Error("SMTP DATA stream closed")));
   });
 }
 

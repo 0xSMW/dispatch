@@ -15,7 +15,7 @@ import { Table, tableProps } from "../../components/Table";
 import { Time } from "../../components/Time";
 import { toast } from "../../components/Toast";
 import { useList } from "../../hooks/useList";
-import { useMutation } from "../../hooks/useMutation";
+import { finish, useMutation } from "../../hooks/useMutation";
 import { shortJson } from "../../lib/utils";
 import { useCan, useClient } from "../../shell/session";
 import type { EventDefinition, FiredEvent } from "../../types";
@@ -31,13 +31,13 @@ function payloadOf(event: FiredEvent) {
   return event.payload ?? event.data ?? {};
 }
 
-/** A payload that passes the event's schema, to start the test event from. */
+/** A payload that passes the event's schema, to start a sent event from. */
 export function samplePayload(schema: EventDefinition["schema"]): Record<string, unknown> {
   const samples: Record<FieldType, unknown> = { string: "text", number: 1, boolean: true, date: new Date().toISOString() };
   return Object.fromEntries(Object.entries(schema).map(([name, type]) => [name, samples[type] ?? ""]));
 }
 
-/** `/events`: event definitions, fired events, and test sends. */
+/** `/events`: event definitions, fired events, and sending an event by hand. */
 export function Events() {
   const client = useClient();
   const can = useCan();
@@ -58,11 +58,11 @@ export function Events() {
 
   return (
     <ListPage
-      title="Events"
+      title="Custom events"
       actions={
         <>
           <button type="button" className="secondary" onClick={() => setSending("")}>
-            Send test event
+            Send event
           </button>
           <button type="button" onClick={() => setCreating(true)}>
             Add event
@@ -76,7 +76,7 @@ export function Events() {
         <Empty
           title="No events set up yet"
           body="Define an event so Dispatch can check what your app sends and track how often it fires."
-          action={can ? <><button type="button" onClick={() => setCreating(true)}>Define your first event</button><button type="button" className="secondary" onClick={() => setSending("")}>Send test event</button></> : null}
+          action={can ? <><button type="button" onClick={() => setCreating(true)}>Define your first event</button><button type="button" className="secondary" onClick={() => setSending("")}>Send event</button></> : null}
         />
       }
       columns={[
@@ -115,7 +115,7 @@ export function Events() {
         <Menu
           items={[
             { label: "Edit fields", onSelect: () => setEditing(row) },
-            { label: "Send test event", onSelect: () => setSending(row.name) },
+            { label: "Send event", onSelect: () => setSending(row.name) },
             "divider",
             { label: "Delete", danger: true, onSelect: () => setDeleting(row) },
           ]}
@@ -136,7 +136,7 @@ export function Events() {
           {...tableProps(fired)}
           onRowClick={setViewing}
           noun="events"
-          empty={<Empty title="No events yet" body="Events your app sends, or that you send with Send test event, show up here." />}
+          empty={<Empty title="No events yet" body="Events your app sends, or that you send from this page, show up here." />}
           columns={[
             { header: "Event", cell: (row) => <span className="mono">{row.name}</span> },
             { header: "Contact", cell: (row) => row.email ?? <span className="dim">No contact</span> },
@@ -225,10 +225,7 @@ function DefinitionForm({ definition, onClose, onDone }: { definition?: EventDef
         : client.post<EventDefinition>("/events", { name: name.trim(), schema: toSchema(rows) }),
     {
       success: definition ? "Event updated." : "Event added.",
-      onSuccess: () => {
-        onDone();
-        onClose();
-      },
+      onSuccess: finish(onDone, onClose),
     },
   );
   const setRow = (index: number, change: Partial<Row>) => setRows(rows.map((row, at) => (at === index ? { ...row, ...change } : row)));
@@ -345,20 +342,18 @@ function SendEvent({
       }),
     {
       success: "Event sent.",
-      onSuccess: () => {
-        onDone();
-        onClose();
-      },
+      onSuccess: finish(onDone, onClose),
     },
   );
 
   return (
     <Modal
       isOpen
-      title="Send test event"
+      title="Send event"
       onClose={onClose}
       onSubmit={() => void send.mutate()}
-      submitLabel="Send"
+      submitLabel="Send event"
+      note="This sends a real event. Enabled automations that match it can start a run."
       submitDisabled={!event.trim() || parsed === null}
       submitting={send.isLoading}
     >
@@ -371,7 +366,6 @@ function SendEvent({
             if (!touched) setPayload(sample(value));
           }}
           events={definitions.map((item) => item.name)}
-          hint="Enabled automations with this trigger start a run."
         />
         <div className="form two">
           <Select

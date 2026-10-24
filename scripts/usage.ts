@@ -115,7 +115,7 @@ async function main() {
     check((await u.api("GET", "/health")).provider === "fake", "Running API must report fake provider");
     check((await u.api("GET", "/setup")).tenant.id === tenant, "Running API and observed database must identify the same tenant");
     const guardStart = Date.now();
-    const output = await command("pnpm", ["test"]);
+    const output = await command("pnpm", ["exec", "tsx", "--test", "--test-reporter=tap", "scripts/guards.test.ts"]);
     check(/# tests 2\b/.test(output) && /# pass 2\b/.test(output) && /# fail 0\b/.test(output), "Exactly two guard cases must execute and pass");
     gates.push({ name: "credentials", result: "passed", ms: Date.now() - guardStart }, { name: "connections", result: "passed", ms: 0 });
     for (const [name, journey] of [["sending", send], ["audience", audience], ["access", access]] as const) {

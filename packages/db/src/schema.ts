@@ -1122,4 +1122,10 @@ create index if not exists emails_automation_run_idx on emails (tenant_id, autom
   where automation_run_id is not null;
 create index if not exists automation_steps_split_idx on automation_steps (tenant_id, step_key, run_id, created_at)
   where type = 'split' and state = 'done';
+
+create table if not exists pending_blobs (
+  storage_key text primary key,
+  created_at timestamptz not null default now()
+);
+alter table contact_imports add column if not exists source_deleted_at timestamptz;
 `;

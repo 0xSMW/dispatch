@@ -42,6 +42,8 @@ const defaults = {
 };
 
 const running = { count: 0 };
+const active = new Set<Promise<unknown>>();
+export async function drainImports() { await Promise.allSettled([...active]); }
 
 // Claims queued imports up to the concurrency cap and runs them in the background,
 // so a large file never holds up send jobs in the same tick.
@@ -63,11 +65,13 @@ export async function startImports(
   }
   for (const job of imports) {
     state.count += 1;
-    void runImport(db, storage, job)
+    const task = runImport(db, storage, job)
       .catch((error) => console.error(error))
       .finally(() => {
         state.count -= 1;
+        active.delete(task);
       });
+    active.add(task);
   }
   return imports.length;
 }
@@ -98,6 +102,7 @@ export async function runImport(
     const header: { columns?: Columns } = {};
     const broken: { message?: string } = {};
     parser = parse({
+      max_record_size: 64 * 1024,
       bom: true,
       trim: true,
       skip_empty_lines: true,
@@ -109,6 +114,7 @@ export async function runImport(
         return trimmed;
       },
       on_skip: (error) => {
+        if ((error as { code?: string })?.code === "CSV_MAX_RECORD_SIZE") { parser?.destroy(error); return; }
         counts.total += 1;
         counts.failed += 1;
         // An unclosed quote swallows every row after it into one bad record. That is a broken

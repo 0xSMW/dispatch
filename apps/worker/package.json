@@ -19,7 +19,7 @@
     "@dispatchmail/storage": "workspace:*",
     "csv-parse": "^7.0.3",
     "dotenv": "^16.5.0",
-    "postal-mime": "^4.0.2"
+    "postal-mime": "^4.0.8"
   },
   "devDependencies": {
     "@types/node": "^24.19.1",

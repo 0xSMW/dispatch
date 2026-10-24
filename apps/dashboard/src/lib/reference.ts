@@ -37,6 +37,10 @@ const pages: Record<string, Omit<Reference, "prompt">> = {
     ],
   },
   "/setup": { title: "Setup", calls: [get("/setup", "Onboarding progress", "dispatch.setup.get()")] },
+  "/setup/send": {
+    title: "First send",
+    calls: [get("/setup", "Onboarding progress", "dispatch.setup.get()"), post("/emails", "Send an email", `dispatch.emails.send(${JSON.stringify(email)})`, email)],
+  },
 
   "/emails": {
     title: "Emails",
@@ -358,6 +362,7 @@ const pages: Record<string, Omit<Reference, "prompt">> = {
 const goals: Record<string, string> = {
   Goals: "Help me define retroactive event or contact-state goals and compare real-send conversion cohorts. Explain current eligibility and retained-history limits.",
   Setup: "Help me complete Dispatch setup: verify a sending domain, create an API key, and send a first transactional email.",
+  "First send": "Help me send my first transactional email through the Dispatch API from a verified domain, reading the key from DISPATCH_API_KEY.",
   Emails: "Help me send and inspect transactional email with Dispatch.",
   Email: "Help me inspect an email's delivery events, attachments, and deliverability checks.",
   "Received emails": "Help me list received emails and test inbound email handling with Dispatch.",

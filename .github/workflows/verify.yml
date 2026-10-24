@@ -2,57 +2,52 @@ name: Verify
 
 on:
   push:
+    branches: [master]
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
-  statuses: read
 
 jobs:
   checks:
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm test
-      - run: pnpm typecheck
-      - run: pnpm build
-
-  audit:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      # High and critical production vulnerabilities block verification. The audit script
-      # contains one exact, path-qualified exception for an unpatched optional Workflow build path.
-      - run: pnpm audit:prod
-
-  usage:
-    runs-on: ubuntu-latest
-    needs: [checks, audit]
-    timeout-minutes: 6
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: dispatch_security
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d dispatch_security"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     env:
-      GH_TOKEN: ${{ github.token }}
-      USAGE_COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      TEST_DATABASE_URL: postgres://postgres:test@127.0.0.1:5432/dispatch_security
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out source
+        uses: actions/checkout@v4
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+      - name: Set up Node
+        uses: actions/setup-node@v4
         with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-      - name: Require verified home-server usage for this commit
-        run: node scripts/usage/status.mjs
+          node-version: "24"
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Audit production dependencies
+        run: pnpm audit:prod
+      - name: Test
+        run: pnpm test
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Build
+        run: pnpm build

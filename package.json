@@ -24,7 +24,7 @@
     "lint": "pnpm -r lint",
     "load": "tsx scripts/load.ts",
     "audit:prod": "node scripts/audit-production.mjs",
-    "test": "tsx --test --test-reporter=tap scripts/guards.test.ts",
+    "test": "tsx --test --test-reporter=tap scripts/guards.test.ts scripts/security.test.ts",
     "llms": "tsx scripts/llms.ts",
     "typecheck": "pnpm -r typecheck && tsc -p tsconfig.usage.json --noEmit",
     "build:vercel": "node scripts/build-vercel.mjs",
@@ -54,7 +54,11 @@
       "@babel/core@7": "7.29.7",
       "browserslist@4": "4.29.3",
       "baseline-browser-mapping@2": "2.11.27",
-      "vite@6": "6.4.3"
+      "vite@6": "6.4.4",
+      "zod@4": "4.6.6",
+      "body-parser@2": "2.4.0",
+      "happy-dom": "21.0.4",
+      "undici@7": "7.30.1"
     }
   }
 }

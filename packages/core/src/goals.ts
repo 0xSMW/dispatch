@@ -20,7 +20,7 @@ export const goalSchema = z.object({
   eligibility: contactRule.nullable().optional(),
   window_days: z.number().int().min(1).max(365).default(30),
 }).strict();
-export const goalUpdateSchema = goalSchema.partial();
+export const goalUpdateSchema = goalSchema.partial().extend({ window_days: goalSchema.shape.window_days.removeDefault().optional() });
 export const goalMetricsSchema = z.object({
   automation_id: z.string().min(1).optional(),
   broadcast_id: z.string().min(1).optional(),

@@ -15,6 +15,7 @@ import { Time } from "../../components/Time";
 import { useResource } from "../../hooks/useResource";
 import { useCan } from "../../shell/session";
 import type { ReceivedEmailDetail } from "../../types";
+import { fileColumns } from "./Email";
 import { Preview } from "./Preview";
 import { Share } from "./Share";
 import "../../styles/operations.css";
@@ -131,18 +132,7 @@ export function ReceivedEmail() {
             rows={files}
             empty={<p className="muted">No attachments.</p>}
             columns={[
-              {
-                header: "File",
-                cell: (file) =>
-                  file.download_url ? (
-                    <a href={file.download_url} rel="noreferrer" download={file.filename}>
-                      {file.filename}
-                    </a>
-                  ) : (
-                    file.filename
-                  ),
-              },
-              { header: "Type", cell: (file) => <span className="mono">{file.content_type}</span> },
+              ...fileColumns,
               { header: "Size", cell: (file) => `${file.size ?? 0} bytes` },
             ]}
           />

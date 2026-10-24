@@ -9,8 +9,10 @@ export type TimelineEvent = {
   status?: string;
   time?: string | null;
   icon?: ReactNode;
-  /** Shown on hover, for example a bounce reason. */
+  /** Shown under the time, for example a bounce or failure reason. */
   detail?: string;
+  /** Shown on hover, for context that the page already states, such as sandbox delivery. */
+  hint?: string;
   variant?: BadgeVariant;
 };
 
@@ -27,7 +29,7 @@ export function EventTimeline({ events, empty = null }: EventTimelineProps) {
       {events.map((event, index) => {
         const variant = event.variant ?? statusToVariant(event.status ?? event.label);
         return (
-          <li key={event.id ?? `${event.label}-${index}`} className={`eventNode ${variant}`} title={event.detail}>
+          <li key={event.id ?? `${event.label}-${index}`} className={`eventNode ${variant}`} title={event.hint}>
             <span className="eventDot" aria-hidden>
               {event.icon}
             </span>
@@ -35,6 +37,7 @@ export function EventTimeline({ events, empty = null }: EventTimelineProps) {
             <span className="eventTime">
               <Time value={event.time} mode="absolute" />
             </span>
+            {event.detail ? <span className="eventDetail">{event.detail}</span> : null}
           </li>
         );
       })}

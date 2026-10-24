@@ -1,0 +1,45 @@
+/* Onboarding and the first-send guide. Tokens come from styles.css, so both themes work. */
+
+.firstSendSteps li {
+  align-items: flex-start;
+  color: var(--text);
+}
+
+.firstSendSteps li > svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--text-dim);
+}
+
+.firstSendSteps li.done > svg {
+  color: var(--success);
+}
+
+.firstSendSteps p {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.setupWarning {
+  margin: 0;
+  color: var(--warning);
+}
+
+/* Unboxed sections: a heading over its content, spaced apart instead of bordered. */
+.setupSection > h2 {
+  font-size: 15px;
+}
+
+.unavailable {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 0;
+  color: var(--danger);
+}
+
+.steps li .unavailable {
+  color: var(--danger);
+}

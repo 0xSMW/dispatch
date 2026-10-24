@@ -15,7 +15,7 @@ import { Table, tableProps } from "../../components/Table";
 import { Time } from "../../components/Time";
 import { toast } from "../../components/Toast";
 import { useList } from "../../hooks/useList";
-import { useMutation } from "../../hooks/useMutation";
+import { finish, useMutation } from "../../hooks/useMutation";
 import { errorMessage } from "../../lib/client";
 import { listAll } from "../../lib/pages";
 import { emptyBody, fullName } from "../../lib/utils";
@@ -122,10 +122,7 @@ function CreateSegment({ onClose, onDone }: { onClose: () => void; onDone: () =>
     return client.post("/segments", { ...emptyBody(form), ...(type === "dynamic" ? { rule } : {}) });
   }, {
     success: "Segment created.",
-    onSuccess: () => {
-      onDone();
-      onClose();
-    },
+    onSuccess: finish(onDone, onClose),
   });
 
   return (
@@ -149,10 +146,7 @@ function RenameSegment({ segment, onClose, onDone }: { segment: Segment; onClose
     return client.patch(`/segments/${segment.id}`, { name: name.trim() });
   }, {
     success: "Segment renamed.",
-    onSuccess: () => {
-      onDone();
-      onClose();
-    },
+    onSuccess: finish(onDone, onClose),
   });
 
   return (
@@ -247,20 +241,26 @@ function SegmentDraft({ segment, onClose, onDone }: { segment: Segment; onClose:
     <Modal isOpen size="large" title={can ? "Edit segment" : "View segment"} onClose={onClose} onSubmit={can ? () => { setError(null); void save.mutate(); } : undefined} submitDisabled={!ready} submitting={save.isLoading}>
       <div className="stack">
         <p>{segment.type === "dynamic" ? "Filter" : "Static list"} · {(segment.contacts ?? 0).toLocaleString()} contacts</p>
-        <p className="muted">Detail counts may be up to 30 seconds old. Filter previews are uncached.</p>
+        <p className="muted">This count can be up to 30 seconds old. The filter preview below is always current.</p>
         <Field label="Name" value={name} onChange={setName} disabled={!can || save.isLoading || Boolean(confirmation)} required />
         <Field label="Description" value={description} onChange={setDescription} disabled={!can || save.isLoading || Boolean(confirmation)} />
         <Select label="Type" value={type} onChange={(next) => setType(next as Segment["type"])} options={[{ value: "static", label: "Static list" }, { value: "dynamic", label: "Filter" }]} disabled={!can || save.isLoading || Boolean(confirmation)} />
         {type === "dynamic" ? <SegmentFilter rule={rule} onChange={setRule} disabled={!can || save.isLoading || Boolean(confirmation)} onValidityChange={setValid} /> : null}
-        {converting ? <p className="muted">Saving requires explicit conversion confirmation{segment.type === "static" ? " and removal of existing list members first" : "; the new static list starts empty"}.</p> : null}
+        {converting ? (
+          <p className="muted">
+            {segment.type === "static"
+              ? "Changing a static list to a filter first removes every contact from the list, and that removal cannot be undone. You confirm this before anything changes."
+              : "Changing a filter to a static list leaves the new list empty: matching contacts are not copied. You confirm this before anything changes."}
+          </p>
+        ) : null}
         {error ? <p role="alert" className="fieldError">{error}</p> : null}
       </div>
     </Modal>
     {confirmation && can ? <ConfirmPhrase
       title="Convert segment"
       body={confirmation.type === "static"
-        ? `Remove all ${(confirmation.contacts ?? 0).toLocaleString()} existing list members before converting to a filter. Contacts stay in your audience. Removal is not undone if conversion fails.`
-        : `Convert this filter with ${(confirmation.contacts ?? 0).toLocaleString()} matching contacts to an empty static list. Matching contacts are not copied.`}
+        ? `Remove all ${(confirmation.contacts ?? 0).toLocaleString()} existing list members before converting to a filter. The contacts stay in your audience. If the conversion then fails, they are not added back.`
+        : `Convert this filter, which matches ${(confirmation.contacts ?? 0).toLocaleString()} contacts, to an empty static list. Matching contacts are not copied into it.`}
       phrase={confirmation.type === "static" ? `Remove ${(confirmation.contacts ?? 0).toLocaleString()} contacts` : `Convert ${confirmation.name}`}
       action="Confirm conversion"
       onConfirm={convert}
@@ -309,7 +309,7 @@ function SegmentContacts({ segment, onClose, onChange }: { segment: Segment; onC
     <Drawer isOpen title={segment.name} label="Segment" onClose={onClose}>
       <div className="stack">
         {detail.data ? <><p>{detail.data.type === "dynamic" ? "Filter" : "Static list"} · {(detail.data.contacts ?? 0).toLocaleString()} contacts</p>
-          {detail.data.type === "dynamic" ? <p className="muted">Count may be up to 30 seconds old. Filter membership updates automatically.</p> : null}</> : detail.error ? <><p role="alert">{detail.error}</p><button type="button" onClick={detail.reload}>Retry count</button></> : <p role="status">Loading count…</p>}
+          {detail.data.type === "dynamic" ? <p className="muted">This count can be up to 30 seconds old. Contacts join and leave the filter on their own as their data changes.</p> : null}</> : detail.error ? <><p role="alert">{detail.error}</p><button type="button" onClick={detail.reload}>Retry count</button></> : <p role="status">Loading count…</p>}
         {manual ? (
           <form className="inlineForm" onSubmit={submit}>
             <input type="email" aria-label="Email" placeholder="Email" value={email} onChange={(event) => setEmail(event.target.value)} required />

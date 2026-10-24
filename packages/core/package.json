@@ -10,7 +10,9 @@
     "./brand": "./src/brand.ts",
     "./rules": "./src/rules.ts",
     "./automations": "./src/automations.ts",
-    "./render": "./src/render.ts"
+    "./render": "./src/render.ts",
+    "./events": "./src/events.ts",
+    "./broadcasts": "./src/broadcasts.ts"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -21,8 +23,8 @@
   "dependencies": {
     "@vercel/oidc-aws-credentials-provider": "^3.3.11",
     "dotenv": "^16.5.0",
-    "undici": "^7.30.0",
-    "zod": "^3.25.42"
+    "undici": "^7.30.1",
+    "zod": "^4.6.6"
   },
   "devDependencies": {
     "standardwebhooks": "^1.1.1",

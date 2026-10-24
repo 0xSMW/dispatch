@@ -1,3 +1,5 @@
+import { presentEvent } from "./logs.js";
+import { readOnly } from "./platform.js";
 import { ApiError, eventSchema, eventSendSchema, eventUpdateSchema, id, payloadIssues } from "@dispatchmail/core";
 import {
   findBy,
@@ -26,13 +28,13 @@ export function presentDefinition(row: DefinitionRow) {
   return { object: "event", ...row, schema: row.schema ?? {} };
 }
 
-export function presentFired(row: FiredEvent) {
+export function presentFired(row: FiredEvent, viewer = false) {
   return {
     object: "fired_event",
     id: row.id,
     name: row.name,
     email: row.email,
-    payload: row.data ?? {},
+    payload: presentEvent(row.data ?? {}, viewer),
     request_id: row.request_id,
     created_at: row.created_at,
   };
@@ -152,7 +154,7 @@ export function registerEvents(
       deletedCol: "deleted_at",
       where: "name not like '@%'",
     });
-    return { object: page.object, has_more: page.has_more, data: page.data.map(presentFired) };
+    return { object: page.object, has_more: page.has_more, data: page.data.map((row) => presentFired(row, readOnly(request.auth))) };
   });
 
   app.get("/fired-events/:id", async (request) => {
@@ -161,6 +163,6 @@ export function registerEvents(
       errorMessage: "Event not found",
     });
     if (row.name.startsWith("@")) throw new ApiError("not_found", 404, "Event not found");
-    return presentFired(row);
+    return presentFired(row, readOnly(request.auth));
   });
 }

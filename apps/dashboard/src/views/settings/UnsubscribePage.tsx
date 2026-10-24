@@ -15,6 +15,8 @@ import {
   preferenceText,
   previewBrand,
   type Done,
+  type PreferenceBrand,
+  type PreferenceCardProps,
 } from "../public/Preferences";
 import { LeaveGuard } from "../templates/editor";
 import { settingsTabs } from "../tabs";
@@ -98,73 +100,124 @@ function PageTabs({
     />
   );
 }
-function OutcomeTabs({
+type Outcome = Exclude<Done, null>;
+/**
+ * The outcome tabs, width and theme controls, and the page preview, shared by the settings page
+ * and the editor. `landmark` renders the canvas as an `aside`, as the settings page does.
+ */
+function Preview({
+  data,
+  brand,
+  page,
   outcome,
-  onChange,
+  onPage,
+  onOutcome,
+  landmark = false,
+  busy,
+  onSelect,
 }: {
-  outcome: Exclude<Done, null>;
-  onChange: (value: Exclude<Done, null>) => void;
+  data: ReturnType<typeof usePageData>;
+  brand: PreferenceBrand;
+  page: "preferences" | "success";
+  outcome: Outcome;
+  onPage: (page: "preferences" | "success") => void;
+  onOutcome: (outcome: Outcome) => void;
+  landmark?: boolean;
+  busy?: boolean;
+  onSelect?: PreferenceCardProps["onSelect"];
 }) {
+  const [width, setWidth] = useState<"desktop" | "mobile">("desktop");
+  const [theme, setTheme] = useState<"light" | "dark">("light");
+  const Canvas = landmark ? "aside" : "div";
+  const { topics, visible } = data;
+  const settings = data.brand;
   return (
-    <Tabs
-      label="Success outcome"
-      value={outcome}
-      onChange={onChange}
-      tabs={[
-        { id: "updated", label: "Preferences updated" },
-        { id: "unsubscribed", label: "Unsubscribed" },
-      ]}
-    />
-  );
-}
-function PreviewControls({
-  width,
-  theme,
-  onWidth,
-  onTheme,
-}: {
-  width: string;
-  theme: string;
-  onWidth: (v: "desktop" | "mobile") => void;
-  onTheme: (v: "light" | "dark") => void;
-}) {
-  return (
-    <div className="unsubscribePreviewControls">
-      <div className="segmented" role="group" aria-label="Preview width">
-        {(["desktop", "mobile"] as const).map((value) => (
-          <button
-            type="button"
-            key={value}
-            aria-pressed={width === value}
-            onClick={() => onWidth(value)}
-          >
-            {value === "desktop" ? "Desktop" : "Mobile"}
-          </button>
-        ))}
+    <>
+      {page === "success" ? (
+        <Tabs
+          label="Success outcome"
+          value={outcome}
+          onChange={onOutcome}
+          tabs={[
+            { id: "updated", label: "Preferences updated" },
+            { id: "unsubscribed", label: "Unsubscribed" },
+          ]}
+        />
+      ) : null}
+      <div className="unsubscribePreviewControls">
+        <div className="segmented" role="group" aria-label="Preview width">
+          {(["desktop", "mobile"] as const).map((value) => (
+            <button
+              type="button"
+              key={value}
+              aria-pressed={width === value}
+              onClick={() => setWidth(value)}
+            >
+              {value === "desktop" ? "Desktop" : "Mobile"}
+            </button>
+          ))}
+        </div>
+        <div className="segmented" role="group" aria-label="Preview theme">
+          {(["light", "dark"] as const).map((value) => (
+            <button
+              type="button"
+              key={value}
+              aria-pressed={theme === value}
+              onClick={() => setTheme(value)}
+            >
+              {value === "light" ? "Light" : "Dark"}
+            </button>
+          ))}
+        </div>
       </div>
-      <div className="segmented" role="group" aria-label="Preview theme">
-        {(["light", "dark"] as const).map((value) => (
-          <button
-            type="button"
-            key={value}
-            aria-pressed={theme === value}
-            onClick={() => onTheme(value)}
-          >
-            {value === "light" ? "Light" : "Dark"}
-          </button>
-        ))}
-      </div>
-    </div>
+      <Canvas
+        className={`unsubscribeCanvas preferenceTheme ${theme}`}
+        aria-label="Preference page preview"
+      >
+        {settings.error || topics.error ? (
+          <Failed
+            message={settings.error || topics.error || "Could not load preview."}
+            onRetry={() =>
+              void Promise.all([settings.reload(), topics.reload()])
+            }
+          />
+        ) : !settings.data || topics.loading ? (
+          <Skeleton lines={5} />
+        ) : (
+          <div className={`unsubscribeViewport ${width}`}>
+            <PreferenceCard
+              brand={brand}
+              email="contact@example.com"
+              topics={visible}
+              checked={Object.fromEntries(
+                visible.map((topic) => [
+                  topic.id,
+                  topic.subscription === "opt_in",
+                ]),
+              )}
+              done={page === "success" ? outcome : null}
+              busy={busy}
+              preview
+              onSelect={onSelect}
+              onDoneChange={(done) => {
+                if (done) {
+                  onOutcome(done);
+                  onPage("success");
+                } else onPage("preferences");
+              }}
+            />
+          </div>
+        )}
+      </Canvas>
+    </>
   );
 }
 
 export function UnsubscribePage() {
   const can = useCan();
-  const { brand, topics, visible } = usePageData();
+  const data = usePageData();
   const [page, setPage] = useState<"preferences" | "success">("preferences");
-  const [outcome, setOutcome] = useState<Exclude<Done, null>>("updated");
-  const [width, setWidth] = useState<"desktop" | "mobile">("desktop");
-  const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [outcome, setOutcome] = useState<Outcome>("updated");
   return (
     <div className="page settingsPage">
       <PageHeader title="Settings" />
@@ -189,52 +242,15 @@ export function UnsubscribePage() {
           </div>
         </div>
         <PageTabs page={page} onChange={setPage} />
-        {page === "success" ? (
-          <OutcomeTabs outcome={outcome} onChange={setOutcome} />
-        ) : null}
-        <PreviewControls
-          width={width}
-          theme={theme}
-          onWidth={setWidth}
-          onTheme={setTheme}
+        <Preview
+          data={data}
+          brand={previewBrand(data.brand.data)}
+          page={page}
+          outcome={outcome}
+          onPage={setPage}
+          onOutcome={setOutcome}
+          landmark
         />
-        <aside
-          className={`unsubscribeCanvas preferenceTheme ${theme}`}
-          aria-label="Preference page preview"
-        >
-          {brand.error || topics.error ? (
-            <Failed
-              message={brand.error || topics.error || "Could not load preview."}
-              onRetry={() =>
-                void Promise.all([brand.reload(), topics.reload()])
-              }
-            />
-          ) : !brand.data || topics.loading ? (
-            <Skeleton lines={5} />
-          ) : (
-            <div className={`unsubscribeViewport ${width}`}>
-              <PreferenceCard
-                brand={previewBrand(brand.data)}
-                email="contact@example.com"
-                topics={visible}
-                checked={Object.fromEntries(
-                  visible.map((topic) => [
-                    topic.id,
-                    topic.subscription === "opt_in",
-                  ]),
-                )}
-                done={page === "success" ? outcome : null}
-                onDoneChange={(done) => {
-                  if (done) {
-                    setOutcome(done);
-                    setPage("success");
-                  } else setPage("preferences");
-                }}
-                preview
-              />
-            </div>
-          )}
-        </aside>
         <p className="note">
           Every broadcast includes a link here and supports one-click
           unsubscribe. Public topics are shown, along with private topics a
@@ -250,7 +266,8 @@ export function UnsubscribeEditor() {
   const can = useCan();
   const client = useClient();
   const navigate = useNavigate();
-  const { brand, topics, visible } = usePageData();
+  const data = usePageData();
+  const { brand } = data;
   const saved = toForm(brand.data);
   const [draft, setDraft] = useState<Form | null>(null);
   const [cancelled, setCancelled] = useState(false);
@@ -259,13 +276,11 @@ export function UnsubscribeEditor() {
   }, [cancelled, navigate]);
   const form = draft ?? saved;
   const [page, setPage] = useState<"preferences" | "success">("preferences");
-  const [outcome, setOutcome] = useState<Exclude<Done, null>>("updated");
+  const [outcome, setOutcome] = useState<Outcome>("updated");
   const [inspector, setInspector] = useState<"content" | "appearance">(
     "content",
   );
   const [selected, setSelected] = useState<Key | null>(null);
-  const [width, setWidth] = useState<"desktop" | "mobile">("desktop");
-  const [theme, setTheme] = useState<"light" | "dark">("light");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedMessage, setSavedMessage] = useState(false);
@@ -435,56 +450,16 @@ export function UnsubscribeEditor() {
       </header>
       <div className="unsubscribeEditorBody">
         <main className="unsubscribeEditorMain">
-          {page === "success" ? (
-            <OutcomeTabs outcome={outcome} onChange={setOutcome} />
-          ) : null}
-          <PreviewControls
-            width={width}
-            theme={theme}
-            onWidth={setWidth}
-            onTheme={setTheme}
+          <Preview
+            data={data}
+            brand={preview}
+            page={page}
+            outcome={outcome}
+            onPage={setPage}
+            onOutcome={setOutcome}
+            busy={saving}
+            onSelect={can && !saving ? select : undefined}
           />
-          <div
-            className={`unsubscribeCanvas preferenceTheme ${theme}`}
-            aria-label="Preference page preview"
-          >
-            {brand.error || topics.error ? (
-              <Failed
-                message={
-                  brand.error || topics.error || "Could not load preview."
-                }
-                onRetry={() =>
-                  void Promise.all([brand.reload(), topics.reload()])
-                }
-              />
-            ) : !brand.data || topics.loading ? (
-              <Skeleton lines={5} />
-            ) : (
-              <div className={`unsubscribeViewport ${width}`}>
-                <PreferenceCard
-                  brand={preview}
-                  email="contact@example.com"
-                  topics={visible}
-                  checked={Object.fromEntries(
-                    visible.map((topic) => [
-                      topic.id,
-                      topic.subscription === "opt_in",
-                    ]),
-                  )}
-                  done={page === "success" ? outcome : null}
-                  busy={saving}
-                  preview
-                  onSelect={can && !saving ? select : undefined}
-                  onDoneChange={(done) => {
-                    if (done) {
-                      setOutcome(done);
-                      setPage("success");
-                    } else setPage("preferences");
-                  }}
-                />
-              </div>
-            )}
-          </div>
         </main>
         <aside className="unsubscribeInspector" aria-label="Page inspector">
           <Tabs

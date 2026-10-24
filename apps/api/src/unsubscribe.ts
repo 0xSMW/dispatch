@@ -37,7 +37,7 @@ export function registerUnsubscribe(app: FastifyInstance, deps: { db: Db; secret
       return page(db, payload);
     });
 
-    scope.post("/unsubscribe/:token", async (request) => {
+    scope.post("/unsubscribe/:token", { bodyLimit: 16 * 1024 }, async (request) => {
       const payload = readToken(request, secret);
       const action = unsubscribeAction(request.body);
       await retryTx(db, async (client) => {

@@ -72,7 +72,13 @@ export function Emails() {
       list={list}
       noun="emails"
       rowHref={(row) => `/emails/${row.id}`}
-      empty={<Empty title="No emails yet" body="Emails you send through Dispatch show up here." />}
+      empty={
+        <Empty
+          title="No emails yet"
+          body="Emails you send through the Dispatch API show up here."
+          action={<Link className="button" to="/setup/send">Send your first email</Link>}
+        />
+      }
       columns={[
         {
           header: "To",
@@ -87,7 +93,7 @@ export function Emails() {
         },
         { header: "Status", cell: (row) => <span className="inline"><Badge value={row.last_event} />{row.sandbox ? <Sandbox /> : null}</span> },
         { header: "Subject", cell: (row) => <span className="truncate">{row.subject}</span> },
-        { header: "Sent", cell: (row) => <Time value={row.created_at} /> },
+        { header: "Created", cell: (row) => <Time value={row.created_at} /> },
       ]}
       menu={(row) => (
         <Menu

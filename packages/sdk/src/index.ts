@@ -1,3 +1,5 @@
+import type { Broadcast, BroadcastSummary, Email, Tag } from "./contracts.js";
+export type { Broadcast, BroadcastSummary, Email, EmailRecipient, Tag } from "./contracts.js";
 import { render } from "./render.js";
 import { verifyWebhook, type VerifyInput } from "./verify.js";
 
@@ -31,20 +33,6 @@ export type ContactActivity = Row & {
 };
 export type Deleted = { object: string; id: string; deleted: true };
 
-export type EmailRecipient = {
-  id?: string;
-  email: string;
-  kind: "to" | "cc" | "bcc";
-  status: string;
-  sandbox: boolean;
-  created_at?: string;
-};
-export type Email = Row & {
-  /** True only when every original recipient is sandbox; no email is sent externally. */
-  sandbox: boolean;
-  last_event: string;
-  recipients: EmailRecipient[];
-};
 export type EmailDetail = Email;
 
 type Body = Record<string, unknown>;
@@ -59,8 +47,6 @@ export type Attachment = {
   contentId?: string;
   disposition?: "attachment" | "inline";
 };
-
-export type Tag = { name: string; value: string };
 
 export type SendOptions = {
   from: string;
@@ -1128,11 +1114,15 @@ class Suppressions extends Collection<Row, Page & { origin?: "bounce" | "complai
   }
 }
 
-class Broadcasts extends Collection<Row, Page & { status?: string; segmentId?: string; q?: string }> {
+class Broadcasts extends Collection<BroadcastSummary, Page & { status?: string; segmentId?: string; q?: string }> {
   protected readonly path = "/broadcasts";
 
+  get(id: string) {
+    return this.client.call<Broadcast>("GET", `/broadcasts/${seg(id)}`);
+  }
+
   async create(payload: BroadcastCreate) {
-    return this.client.call<Row>("POST", "/broadcasts", wire(await content(payload)));
+    return this.client.call<Broadcast>("POST", "/broadcasts", wire(await content(payload)));
   }
 
   send(id: string, options: { scheduledAt?: string } = {}) {
@@ -1148,15 +1138,15 @@ class Broadcasts extends Collection<Row, Page & { status?: string; segmentId?: s
   }
 
   async update(id: string, payload: Partial<BroadcastCreate>) {
-    return this.client.call<Row>("PATCH", `/broadcasts/${seg(id)}`, wire(await content(payload)));
+    return this.client.call<Broadcast>("PATCH", `/broadcasts/${seg(id)}`, wire(await content(payload)));
   }
 
   cancel(id: string) {
-    return this.client.call<Row>("POST", `/broadcasts/${seg(id)}/cancel`, {});
+    return this.client.call<Broadcast>("POST", `/broadcasts/${seg(id)}/cancel`, {});
   }
 
   duplicate(id: string, options: { name?: string } = {}) {
-    return this.client.call<Row>("POST", `/broadcasts/${seg(id)}/duplicate`, wire(options));
+    return this.client.call<Broadcast>("POST", `/broadcasts/${seg(id)}/duplicate`, wire(options));
   }
 
   recipients(id: string, { type, ...rest }: { type: RecipientType; email?: string; bounceType?: string } & Page) {
@@ -1168,11 +1158,11 @@ class Broadcasts extends Collection<Row, Page & { status?: string; segmentId?: s
   }
 
   pause(id: string) {
-    return this.client.call<Row>("POST", `/broadcasts/${seg(id)}/pause`, {});
+    return this.client.call<Broadcast>("POST", `/broadcasts/${seg(id)}/pause`, {});
   }
 
   resume(id: string) {
-    return this.client.call<Row>("POST", `/broadcasts/${seg(id)}/resume`, {});
+    return this.client.call<Broadcast>("POST", `/broadcasts/${seg(id)}/resume`, {});
   }
 }
 

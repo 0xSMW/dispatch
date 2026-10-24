@@ -17,6 +17,8 @@ export interface ModalProps {
   submitDisabled?: boolean;
   /** Shows a spinner in the submit button and disables it. */
   submitting?: boolean;
+  /** What submitting does, shown in the footer next to the submit button and read with it. */
+  note?: ReactNode;
   danger?: boolean;
   size?: "small" | "medium" | "large" | "wide";
 }
@@ -32,11 +34,13 @@ export function Modal({
   submitLabel = "Save",
   submitDisabled = false,
   submitting = false,
+  note,
   danger = false,
   size = "medium",
 }: ModalProps) {
   const ref = useRef<HTMLDivElement>(null);
   const titleId = useId();
+  const noteId = useId();
   useDialog(ref, isOpen, onClose);
 
   if (!isOpen) return null;
@@ -51,10 +55,11 @@ export function Modal({
     actions ??
     (onSubmit ? (
       <>
+        {note ? <p id={noteId} className="modalNote">{note}</p> : null}
         <button type="button" className="secondary" onClick={onClose}>
           Cancel <span className="keyHints">{shortcuts.dismiss.keys.map((key) => <Kbd key={key}>{key}</Kbd>)}</span>
         </button>
-        <button type="submit" className={danger ? "danger" : undefined} disabled={blocked} aria-busy={submitting}>
+        <button type="submit" className={danger ? "danger" : undefined} disabled={blocked} aria-busy={submitting} aria-describedby={note ? noteId : undefined}>
           {submitting ? <span className="spinner" aria-hidden /> : null}
           {submitLabel} <span className="keyHints">{shortcuts.submit.keys.map((key) => <Kbd key={key}>{key}</Kbd>)}</span>
         </button>

@@ -18,7 +18,7 @@ import { Time } from "../../components/Time";
 import { toast } from "../../components/Toast";
 import { useFilters } from "../../hooks/useFilters";
 import { useList, type ListState } from "../../hooks/useList";
-import { useMutation } from "../../hooks/useMutation";
+import { finish, useMutation } from "../../hooks/useMutation";
 import { useAll } from "../../hooks/useResource";
 import { ApiError, type Client } from "../../lib/client";
 import { listAll } from "../../lib/pages";
@@ -340,10 +340,7 @@ function Invite({ onClose, onDone }: { onClose: () => void; onDone: () => void }
     },
     {
       success: "Member added.",
-      onSuccess: () => {
-        onDone();
-        onClose();
-      },
+      onSuccess: finish(onDone, onClose),
     },
   );
 
@@ -391,10 +388,7 @@ function ChangeRole({ member, onClose, onDone }: { member: Membership; onClose: 
   const [roleId, setRoleId] = useState(member.role_id);
   const { mutate, isLoading } = useMutation(() => client.post("/memberships", { user_id: member.user_id, role_id: roleId }), {
     success: "Role changed.",
-    onSuccess: () => {
-      onDone();
-      onClose();
-    },
+    onSuccess: finish(onDone, onClose),
   });
 
   return (
@@ -429,10 +423,7 @@ function SetPassword({ user, onClose, onDone }: { user: User; onClose: () => voi
   const [password, setPassword] = useState("");
   const { mutate, isLoading } = useMutation(() => client.patch(`/users/${user.id}`, { password }), {
     success: "Password set.",
-    onSuccess: () => {
-      onDone();
-      onClose();
-    },
+    onSuccess: finish(onDone, onClose),
   });
 
   return (
@@ -467,10 +458,7 @@ function AddRole({ onClose, onDone }: { onClose: () => void; onDone: () => void 
   const [form, setForm] = useState({ name: "", permissions: "full" });
   const { mutate, isLoading } = useMutation(() => client.post("/roles", { name: form.name, permissions: [form.permissions] }), {
     success: "Role added.",
-    onSuccess: () => {
-      onDone();
-      onClose();
-    },
+    onSuccess: finish(onDone, onClose),
   });
   return (
     <Modal isOpen title="Add role" onClose={onClose} onSubmit={() => void mutate()} submitLabel="Add" submitting={isLoading}>
