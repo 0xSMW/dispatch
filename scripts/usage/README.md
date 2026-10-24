@@ -1,9 +1,9 @@
 # Verification
 
-Dispatch has five named checks: two small guards and three real usage journeys.
+Dispatch has five named usage checks: two small guards and three real usage journeys.
 Keep this set fixed. Change an existing journey when behavior changes; add a check only by replacing one. Keep executable verification code below 800 physical lines across `scripts/guards.test.ts`, `scripts/usage.ts`, and this directory. Avoid mocks, snapshots, parameter matrices, whole-response golden files, and private API/worker calls.
 
-`pnpm test` runs the two Node guards: malformed password digests fail authentication, and connection-time DNS blocks localhost. `pnpm verify:usage` runs both guards plus sending, audience/consent, and access/clients. The latter uses real curl commands, the product CLI, all three public SDKs, a listening API/worker, Postgres, Redis, file storage, and a loopback webhook receiver. Its SQL connection is read-only.
+`pnpm test` runs the two Node guards plus security regression tests. CI supplies disposable PostgreSQL so the database cases run too. `pnpm verify:usage` runs both guards plus sending, audience/consent, and access/clients. The latter uses real curl commands, the product CLI, all three public SDKs, a listening API/worker, Postgres, Redis, file storage, and a loopback webhook receiver. Its SQL connection is read-only.
 
 ## Run in an isolated environment
 
