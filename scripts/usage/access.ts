@@ -12,7 +12,7 @@ export async function access(u: Usage): Promise<void> {
     const rows = await u.sql("select first_name, deleted_at from contacts where id=$1 and tenant_id=$2", [id, u.tenant]);
     u.check(rows.length === 1 && rows[0].first_name === name && Boolean(rows[0].deleted_at) === removed, `${name} contact persisted${removed ? " and deleted" : ""}`);
   };
-  const cli = async (...args: string[]) => JSON.parse(await u.command("pnpm", ["exec", "tsx", "apps/cli/src/cli.ts", "--api-url", u.url, "--api-key", u.key, "--json", "contacts", ...args], { cwd: root }));
+  const cli = async (...args: string[]) => JSON.parse(await u.command("pnpm", ["exec", "tsx", "apps/cli/src/cli.ts", "--api-url", u.url, "--json", "contacts", ...args], { cwd: root, env: { DISPATCH_API_KEY: u.key } }));
   const segment = await u.api("POST", "/segments", { name: `${u.run} CLI contacts` });
   u.clean(`/segments/${segment.id}`);
   const cliEmail = `usage-${u.run}-cli@example.net`;
@@ -53,7 +53,7 @@ export async function access(u: Usage): Promise<void> {
 
   const boundary = await u.api("POST", "/contacts", { email: `usage-${u.run}-boundary@example.net`, first_name: "Boundary", last_name: u.run });
   u.clean(`/contacts/${boundary.id}`);
-  const bootstrap = await u.command("pnpm", ["db:bootstrap", "--name", `${u.run} foreign tenant`, "--email", `usage-${u.run}-admin@example.net`, "--password", randomBytes(24).toString("base64url"), "--user-name", "Usage foreign admin"], { cwd: root });
+  const bootstrap = await u.command("pnpm", ["db:bootstrap", "--name", `${u.run} foreign tenant`, "--email", `usage-${u.run}-admin@example.net`, "--password", randomBytes(24).toString("base64url"), "--user-name", "Usage foreign admin"], { cwd: root, env: { DISPATCH_API_KEY: u.key } });
   const foreignKey = bootstrap.match(/^DISPATCH_API_KEY=(.+)$/m)?.[1] ?? "";
   u.check(foreignKey, "Product bootstrap returns a separate fixture key");
   const foreignKeys = await u.api("GET", "/api-keys?limit=100", undefined, 200, foreignKey);
