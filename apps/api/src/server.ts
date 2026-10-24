@@ -990,6 +990,7 @@ app.post(
       publicUrl,
       unsubscribe: { secret: appSecret, appUrl, publicUrl },
       storeAttachment: writeBlob,
+      reserveAttachment: reserveBlob,
     });
     reply.status(200);
     return presentSend({ ...response.email, ...(response.emails ? { emails: response.emails } : {}) });
@@ -1013,6 +1014,7 @@ app.post(
       publicUrl,
       unsubscribe: { secret: appSecret, appUrl, publicUrl },
       storeAttachment: writeBlob,
+      reserveAttachment: reserveBlob,
     });
     reply.status(200);
     return { ...response, data: response.data.map(presentSend) };
@@ -1766,8 +1768,11 @@ function presentReceived(row: Record<string, unknown>) {
   return { object: "email" as const, ...rest, attachments };
 }
 
-async function writeBlob(storageKey: string, bytes: Buffer) {
+async function reserveBlob(storageKey: string) {
   await db.query("insert into pending_blobs (storage_key) values ($1) on conflict do nothing", [storageKey]);
+}
+
+async function writeBlob(storageKey: string, bytes: Buffer) {
   await storage.put(storageKey, bytes);
 }
 
@@ -1881,11 +1886,11 @@ async function authenticate(request: FastifyRequest) {
   }
 }
 
-export async function validKey(secret: string) {
+export async function validKey(secret: string, client: Pick<typeof db, "query"> = db) {
   const prefix = secret.slice(0, 12);
   const expected = keyHash(secret, pepper);
   // Persisted revocation must take effect across API instances on the next authentication.
-  const row = await db.query<ApiKeyRow>(
+  const row = await client.query<ApiKeyRow>(
     `select k.id, k.tenant_id, k.hash, k.scope, k.last_used_at, k.domain_id, d.name as domain_name
      from api_keys k
      left join domains d on d.id = k.domain_id and d.tenant_id = k.tenant_id
