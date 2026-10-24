@@ -119,7 +119,8 @@ export function FirstSend({ domain }: { domain?: string | null }) {
                 <p>
                   Use the full value of a key allowed to send from {sender?.name ?? "your sending domain"}: a full-access key, or a
                   sending-access key that is not limited to another domain. This page does not check which of your keys qualify. Dispatch
-                  shows a key only once, when it is created. If you did not save it, <Link to="/api-keys">create another key</Link>.
+                  shows a key only once, when it is created. If you did not save it,{" "}
+                  {can ? <Link to="/api-keys">create another key</Link> : "ask a team member with full access to create another key"}.
                 </p>
               ) : can ? (
                 <p>
