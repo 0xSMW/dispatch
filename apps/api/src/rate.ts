@@ -1,3 +1,4 @@
+import type { Queryable } from "@dispatchmail/db";
 import type { Redis } from "ioredis";
 
 // The bucket rule lives in core so the SMTP relay counts into the same buckets.
@@ -34,6 +35,6 @@ export function signins(redis: Pick<Redis, "multi" | "eval">) {
 // Successful PostgreSQL reservations carry their window token through the password check.
 // Redis adapters keep their boolean result for local use.
 export type Signins = {
-  take(email: string): Promise<boolean | string>;
-  release(email: string, reservation?: boolean | string): Promise<void>;
+  take(email: string, client?: Queryable): Promise<boolean | string>;
+  release(email: string, reservation?: boolean | string, client?: Queryable): Promise<void>;
 };
