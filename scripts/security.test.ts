@@ -127,6 +127,21 @@ test("database security boundaries", { skip: !process.env.TEST_DATABASE_URL }, a
       const response=await app.inject({method:"POST",url:"/sessions",payload:{email:"x@example.com",password:"x".repeat(17000)}});
       assert.equal(response.statusCode,413);
     });
+    await t.test("real API rejects spoofed authorization before parsing and limits public bodies", async()=>{
+      Object.assign(process.env,{DATABASE_URL:process.env.TEST_DATABASE_URL,COUNTER_BACKEND:"postgres",SES_PROVIDER:"fake",ALLOW_FAKE_PROVIDER:"true",APP_SECRET:"security fixture secret with enough entropy",API_KEY_PEPPER:"security fixture pepper with enough entropy"});
+      const {app:api,close}=await import("../apps/api/src/server.js");
+      try {
+        const denied=await api.inject({method:"POST",url:"/emails",headers:{authorization:"Bearer invalid"},payload:"not valid JSON",});
+        assert.equal(denied.statusCode,403);
+        for(const url of ["/sessions","/unsubscribe/invalid"]){
+          const result=await api.inject({method:"POST",url,payload:{value:"x".repeat(17000)}});
+          assert.equal(result.statusCode,413);
+          assert.equal(result.headers["cache-control"],"private, no-store");
+        }
+        const sns=await api.inject({method:"POST",url:"/internal/events",headers:{authorization:"Bearer fake"},payload:{value:"x".repeat(1024*1024)}});
+        assert.equal(sns.statusCode,413);
+      } finally { await api.close();await close(); }
+    });
     await t.test("invalid sends perform no object writes", async () => {
       const f=await fixture();let puts=0;
       await assert.rejects(acceptEmail(db,{from:"sender@unverified.example",to:"to@example.com",subject:"Fixture",text:"Hello",attachments:[{filename:"a.txt",content:Buffer.from("fixture").toString("base64")}]},{tenant_id:f.tenant,request_id:"test"},{storeAttachment:async()=>{puts++;}}));
