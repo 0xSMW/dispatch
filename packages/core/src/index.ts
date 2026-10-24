@@ -225,7 +225,11 @@ export const settingsSchema = z.object({
     z.string().trim().toLowerCase().refine((value) => hostnamePattern.test(value), "Use a hostname"),
   ).max(50).default([]),
 }).strict();
-export const settingsUpdateSchema = settingsSchema.partial();
+export const settingsUpdateSchema = settingsSchema.partial().extend({
+  import_trigger_automations: settingsSchema.shape.import_trigger_automations.removeDefault().optional(),
+  confirmation_daily_limit: settingsSchema.shape.confirmation_daily_limit.removeDefault().optional(),
+  sandbox_domains: settingsSchema.shape.sandbox_domains.removeDefault().optional()
+});
 export type Settings = z.infer<typeof settingsSchema>;
 
 export const domainSchema = z.object({
@@ -317,7 +321,7 @@ export const roleSchema = z.object({
   permissions: z.array(z.string().min(1).max(120)).default(["full"])
 });
 
-export const roleUpdateSchema = roleSchema.partial();
+export const roleUpdateSchema = roleSchema.partial().extend({ permissions: roleSchema.shape.permissions.removeDefault().optional() });
 
 export const membershipSchema = z.object({
   user_id: z.string().min(1),
@@ -447,7 +451,7 @@ export const templateVersionSchema = baseTemplateSchema.omit({ name: true, alias
 
 // `draft: true` renders the latest version, published or not. Without it the published one is used.
 export const renderSchema = z.object({
-  variables: z.record(z.unknown()).default({}),
+  variables: z.record(z.string(), z.unknown()).default({}),
   draft: z.boolean().optional()
 });
 
@@ -458,7 +462,7 @@ export const contactSchema = z.object({
   email: z.string().email().transform((value) => value.toLowerCase()),
   first_name: z.string().max(120).optional(),
   last_name: z.string().max(120).optional(),
-  properties: z.record(z.unknown()).optional(),
+  properties: z.record(z.string(), z.unknown()).optional(),
   unsubscribed: z.boolean().optional(),
   segments: z.array(z.object({ id: z.string().min(1) })).optional(),
   topics: z.array(z.object({
@@ -471,7 +475,7 @@ export type ContactInput = z.input<typeof contactSchema>;
 export const contactUpdateSchema = z.object({
   first_name: z.string().max(120).nullable().optional(),
   last_name: z.string().max(120).nullable().optional(),
-  properties: z.record(z.unknown()).optional(),
+  properties: z.record(z.string(), z.unknown()).optional(),
   unsubscribed: z.boolean().optional()
 });
 
@@ -645,7 +649,7 @@ export const broadcastSchema = z
     ...broadcastFields,
     from: address,
     reply_to: replyTo.optional(),
-    variables: z.record(z.unknown()).default({}),
+    variables: z.record(z.string(), z.unknown()).default({}),
     send: z.boolean().optional(),
     scheduled_at: z.string().min(1).max(120).optional()
   })
@@ -661,7 +665,7 @@ export const broadcastUpdateSchema = z
     ...broadcastFields,
     from: address.optional(),
     reply_to: replyTo.nullable().optional(),
-    variables: z.record(z.unknown()).optional()
+    variables: z.record(z.string(), z.unknown()).optional()
   })
   .strict()
   .transform(segmentAlias);
@@ -672,7 +676,7 @@ export const broadcastSendSchema = z.object({ scheduled_at: z.string().min(1).ma
 export const broadcastRecipientTypes = ["sent", "delivered", "opened", "clicked", "bounced", "complained", "unsubscribed", "suppressed"] as const;
 
 export const broadcastRecipientsSchema = z.object({
-  type: z.enum(broadcastRecipientTypes, { errorMap: () => ({ message: `type must be one of ${broadcastRecipientTypes.join(", ")}` }) }),
+  type: z.enum(broadcastRecipientTypes, { error: `type must be one of ${broadcastRecipientTypes.join(", ")}` }),
   email: z.string().min(1).max(320).optional(),
   bounce_type: z.string().min(1).max(40).optional()
 });
@@ -688,11 +692,11 @@ export type UnsubscribeInput = z.input<typeof unsubscribeSchema>;
 export const customEventSchema = z.object({
   name: z.string().min(1).max(120),
   email: z.string().email().optional(),
-  data: z.record(z.unknown()).default({})
+  data: z.record(z.string(), z.unknown()).default({})
 });
 export type CustomEventInput = z.input<typeof customEventSchema>;
 
-export const customEventUpdateSchema = customEventSchema.partial();
+export const customEventUpdateSchema = customEventSchema.partial().extend({ data: customEventSchema.shape.data.removeDefault().optional() });
 
 export { templateKind, type SendKind } from "./email-kind.js";
 
@@ -707,7 +711,7 @@ export const inboundSchema = z
     subject: z.string().min(1).max(998),
     html: z.string().max(1_000_000).optional(),
     text: z.string().max(1_000_000).optional(),
-    headers: z.record(z.string()).default({}),
+    headers: z.record(z.string(), z.string()).default({}),
     attachments: z
       .array(
         z.object({
