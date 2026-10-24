@@ -155,10 +155,8 @@ export async function handleMessage(
       },
       {
         publicUrl: deps.publicUrl,
-        storeAttachment: async (storageKey, bytes) => {
-          await deps.db.query("insert into pending_blobs (storage_key) values ($1) on conflict do nothing", [storageKey]);
-          await deps.storage.put(storageKey, bytes);
-        },
+        reserveAttachment: async (storageKey) => { await deps.db.query("insert into pending_blobs (storage_key) values ($1) on conflict do nothing", [storageKey]); },
+        storeAttachment: (storageKey, bytes) => deps.storage.put(storageKey, bytes),
       },
     );
     ids.push(result.email.id);
