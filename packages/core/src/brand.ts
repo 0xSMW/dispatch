@@ -2,7 +2,7 @@ import { z } from "zod";
 import { ApiError } from "./errors.js";
 import { themeDefaults, themeSchema, type ThemeTokens } from "./theme.js";
 export * from "./theme.js";
-const httpsUrl = z.string().url().refine((value) => value.startsWith("https://"), "must be an https url");
+const httpsUrl = z.string().refine((value) => value.startsWith("https://"), "must be an https url").url();
 export const brandSchema = z.object({
   product_name: z.string().min(1).max(120).optional(), product_url: httpsUrl.optional(),
   logo_url: httpsUrl.nullable().optional(), color: z.string().regex(/^#[0-9a-fA-F]{6}$/).optional(),
