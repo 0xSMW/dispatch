@@ -2,8 +2,13 @@ name: Verify
 
 on:
   push:
+    branches: [master]
   pull_request:
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -21,38 +26,12 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - run: pnpm audit:prod
       - run: pnpm test
       - run: pnpm typecheck
       - run: pnpm build
-
-  audit:
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-      - run: pnpm install --frozen-lockfile
-      # High and critical production vulnerabilities block verification. The audit script
-      # contains one exact, path-qualified exception for an unpatched optional Workflow build path.
-      - run: pnpm audit:prod
-
-  usage:
-    runs-on: ubuntu-latest
-    needs: [checks, audit]
-    timeout-minutes: 6
-    env:
-      GH_TOKEN: ${{ github.token }}
-      USAGE_COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.sha }}
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 24
       - name: Require verified home-server usage for this commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          USAGE_COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: node scripts/usage/status.mjs
