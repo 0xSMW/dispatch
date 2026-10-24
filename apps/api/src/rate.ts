@@ -3,10 +3,8 @@ import type { Redis } from "ioredis";
 // The bucket rule lives in core so the SMTP relay counts into the same buckets.
 export { rateKey, rateLimitValue, sessionRateKey, sessionRateLimitValue } from "@dispatchmail/core";
 
-// After 10 failed sign-ins for one email within 15 minutes, every attempt for that email is
-// refused until the window ends. The window starts at the first attempt. Nothing clears it early:
-// one email can belong to several tenants, and a clear from one would reset the count that
-// guards another.
+// Failed sign-ins are counted per source and email by the caller, so another source cannot
+// impose an account-wide lockout. Public request limits also apply before password work.
 export const signinLimit = 10;
 export const signinWindow = 15 * 60;
 
