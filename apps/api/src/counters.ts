@@ -25,8 +25,8 @@ export async function countHit(db: Queryable, key: string) {
 
 export function postgresSignins(db: Queryable): Signins {
   return {
-    async take(email) {
-      const result = await db.query<Counter>(
+    async take(email, client = db) {
+      const result = await client.query<Counter>(
         `insert into counters (key, value, expires_at, window_id)
          values ($1, 1, statement_timestamp() + $2 * interval '1 second', $3)
          on conflict (key) do update set
@@ -41,11 +41,11 @@ export function postgresSignins(db: Queryable): Signins {
       if (!row?.window_id || !Number.isSafeInteger(count) || count < 1) throw new Error("sign-in counter unavailable");
       return count <= signinLimit ? row.window_id : false;
     },
-    async release(email, reservation) {
+    async release(email, reservation, client = db) {
       if (typeof reservation !== "string") return;
       // A password check may finish after the original window_id expired. Its token
       // cannot give back a slot from a later window_id, even on a different replica.
-      await db.query(
+      await client.query(
         `update counters set value = greatest(value - 1, 0)
          where key = $1 and window_id = $2 and expires_at > clock_timestamp()`,
         [signinKey(email), reservation],
