@@ -13,7 +13,9 @@ export const integrationSchema = z.object({
   secret: z.string().min(1).max(4096),
   settings: integrationSettingsSchema.default({}),
 }).strict();
-export const integrationUpdateSchema = integrationSchema.omit({ provider: true, slug: true }).partial();
+export const integrationUpdateSchema = integrationSchema.omit({ provider: true, slug: true }).partial().extend({
+  settings: integrationSchema.shape.settings.removeDefault().optional()
+});
 export type IntegrationInput = z.infer<typeof integrationSchema>;
 export type IntegrationUpdate = z.infer<typeof integrationUpdateSchema>;
 export type IntegrationRecord = {
