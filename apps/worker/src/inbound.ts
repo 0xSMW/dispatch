@@ -88,6 +88,7 @@ export async function applyInbound(
   const messageId = notification.mail?.messageId;
   const dedupeKey = messageId ? `ses:${messageId}:received` : undefined;
   if (dedupeKey) {
+    await db.query("select pg_advisory_xact_lock(hashtextextended($1, 23))", [dedupeKey]);
     const seen = await db.query("select 1 from email_events where provider_event_id = $1", [dedupeKey]);
     if (seen.rows[0]) return null;
   }
@@ -98,7 +99,7 @@ export async function applyInbound(
   } catch (error) {
     // Match PostalMime's bounded deterministic errors only. Storage, DB and unexpected parser
     // failures retain the notification for retry; sender-controlled malformed MIME cannot loop.
-    if (error instanceof Error && (/^Maximum MIME nesting depth of \d+ levels exceeded$/.test(error.message) ||
+    if (error instanceof Error && (/^Maximum (?:MIME nesting depth|MIME part count|forwarded address count) of? ?\d+.*exceeded$/.test(error.message) ||
         /^Maximum header size of \d+ bytes exceeded$/.test(error.message) || error.message === "Unknown attachment encoding")) {
       throw new PermanentMessageError(error.message);
     }
