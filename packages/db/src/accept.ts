@@ -30,6 +30,7 @@ export type AcceptEmailOptions = {
   client?: Queryable;
   publicUrl?: string;
   unsubscribe?: { secret: string; appUrl: string; publicUrl: string };
+  reserveAttachment?: (storageKey: string) => Promise<void>;
   storeAttachment?: (storageKey: string, bytes: Buffer) => Promise<void>;
   fetchAttachment?: (path: string, remaining: number) => Promise<Buffer>;
 };
@@ -146,18 +147,6 @@ export async function acceptEmail(
     parsed.attachments ?? [],
     options.fetchAttachment,
   );
-
-  const run = async (client: Queryable) => {
-    if (idemKey && requestHash) {
-      const claim = await claimIdempotency(
-        client,
-        context.tenant_id,
-        idemKey,
-        requestHash,
-      );
-      if (claim) return claim.replay as AcceptedEmail;
-    }
-
     const addresses = [
       ...toArray(parsed.to).map((email) => ({ email, role: "to" })),
       ...toArray(parsed.cc).map((email) => ({ email, role: "cc" })),
@@ -178,9 +167,31 @@ export async function acceptEmail(
     });
     const split = Boolean(parsed.topic_id) && addresses.length > 1;
     const recipients = parsed.topic_id ? unique : [null];
-    const accepted: IngestEmailResult[] = [];
-    for (const recipient of recipients) {
+
+    const prototypes = prepareAttachments(context.tenant_id, "pending", attachments);
+    const plans = recipients.map(() => {
       const emailId = id("email");
+      return { emailId, stored: prototypes.map((attachment) => {
+        const attachmentId = id("att");
+        return { ...attachment, id: attachmentId, storage_key: `attachments/${context.tenant_id}/${emailId}/${attachmentId}` };
+      }) };
+    });
+    for (const plan of plans) for (const attachment of plan.stored) await options.reserveAttachment?.(attachment.storage_key);
+
+  const run = async (client: Queryable) => {
+    if (idemKey && requestHash) {
+      const claim = await claimIdempotency(
+        client,
+        context.tenant_id,
+        idemKey,
+        requestHash,
+      );
+      if (claim) return claim.replay as AcceptedEmail;
+    }
+
+    const accepted: IngestEmailResult[] = [];
+    for (const [index, recipient] of recipients.entries()) {
+      const { emailId, stored } = plans[index]!;
       let contactId: string | null = null;
       let subscription: ReturnType<typeof subscriptionLinks> | undefined;
       if (parsed.topic_id && recipient) {
@@ -198,13 +209,6 @@ export async function acceptEmail(
           ...options.unsubscribe,
         });
       }
-      const stored = prepareAttachments(
-        context.tenant_id,
-        emailId,
-        attachments,
-      );
-
-
       const { email } = await ingestEmail(client, {
         tenantId: context.tenant_id,
         requestId: context.request_id,
@@ -254,6 +258,10 @@ export async function acceptEmail(
       for (const attachment of stored) {
         if (options.storeAttachment) {
           await client.query("select pg_advisory_xact_lock(hashtextextended($1, 29))", [attachment.storage_key]);
+          if (options.reserveAttachment) {
+            const reservation = await client.query("select 1 from pending_blobs where storage_key = $1", [attachment.storage_key]);
+            if (!reservation.rows[0]) throw new ApiError("service_unavailable", 503, "Upload reservation expired; retry the request");
+          }
           await options.storeAttachment(
             attachment.storage_key,
             attachment.bytes,
