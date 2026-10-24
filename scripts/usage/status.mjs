@@ -26,7 +26,7 @@ async function latest() {
     }
     if (!Array.isArray(statuses)) throw new Error("Invalid GitHub status response");
     // GitHub returns newest first, including across pages.
-    const receipt = statuses.find(status => status?.context === context);
+    const receipt = statuses.find(status => status?.context === context && status?.creator?.id === Number(process.env.USAGE_STATUS_CREATOR_ID));
     if (receipt) return receipt;
     if (statuses.length < 100) return null;
   }
@@ -34,6 +34,7 @@ async function latest() {
 }
 
 async function main() {
+  if (!/^[1-9][0-9]*$/.test(process.env.USAGE_STATUS_CREATOR_ID ?? "")) throw new Error("USAGE_STATUS_CREATOR_ID is required");
   if (!token) throw new Error("GH_TOKEN is required");
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(repo ?? "")) {
     throw new Error("GITHUB_REPOSITORY must be owner/repository");
