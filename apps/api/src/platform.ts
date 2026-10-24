@@ -150,7 +150,7 @@ export function registerPlatform(
     db: Db;
     paging: (request: FastifyRequest) => PagingParams;
     flushTelemetry: () => Promise<void>;
-    validKey: (secret: string) => Promise<{ tenant_id: string; scope: string } | null>;
+    validKey: (secret: string, client?: Queryable) => Promise<{ tenant_id: string; scope: string } | null>;
     sessionsEnabled: () => boolean;
     signins: Signins;
     quota?: (region: string) => Promise<{ max_24_hour: number; max_per_second: number; sent_24_hour: number; sandbox: boolean }>;
@@ -253,7 +253,7 @@ export function registerPlatform(
     }
     return tx(db, async (client) => {
       await client.query("lock table api_keys in share mode");
-      const apiKey = await validKey(secret);
+      const apiKey = await validKey(secret, client);
       if (!apiKey || apiKey.scope !== "full") throw new ApiError("invalid_api_key", 403, "Invalid API key");
       await client.query("select pg_advisory_xact_lock(hashtextextended($1, 19))", [apiKey.tenant_id]);
       const user = await client.query(
@@ -297,12 +297,12 @@ export function registerPlatform(
         [auth.tenant_id, auth.user_id],
       );
       const email = current.rows[0]?.email ?? auth.user_id;
-      const reservation = await signins.take(`${request.ip}:${email}`);
+      const reservation = await signins.take(`${request.ip}:${email}`, db);
       if (!reservation) throw tooMany();
       if (!(await checkPassword(input.current_password, current.rows[0]?.password_hash))) {
         throw new ApiError("validation_error", 422, "The current password is wrong");
       }
-      await signins.release(`${request.ip}:${email}`, reservation);
+      await signins.release(`${request.ip}:${email}`, reservation, db);
       const row = await db.query(
         `update users set password_hash = $3, updated_at = now()
          where tenant_id = $1 and id = $2
