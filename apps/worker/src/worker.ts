@@ -1,3 +1,4 @@
+import { cleanStorage } from "./storage.js";
 import "@dispatchmail/core/env";
 import { realpathSync } from "node:fs";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -38,7 +39,7 @@ import { deliverJob, handleSendFailure, type Job } from "./deliver.js";
 import { verifyDueDomains } from "./domains.js";
 import { applySesEvent, consumeOnce, type SesEvent } from "./events.js";
 import { applyInbound, type SesReceipt } from "./inbound.js";
-import { startImports } from "./imports.js";
+import { startImports, drainImports } from "./imports.js";
 import { pruneLogs, pruneLogsIfDue, pruneContactChanges, pruneContactChangesIfDue } from "./logs.js";
 
 const db = connect();
@@ -56,11 +57,16 @@ const pollState = { last: 0 };
 const logPrune = { last: 0 };
 const changesPrune = { last: 0 };
 const inboundPrune = { last: 0 };
+let stopping = false;
+const queueTasks: Promise<void>[] = [];
 const claimCursor = { normal: "", bulk: "" };
 
 export async function tick(options: { durable?: boolean } = {}) {
+  await db.query(`update send_jobs j set state = case when e.provider_message_id is null then 'uncertain' else 'ready' end,
+    error = case when e.provider_message_id is null then 'SES acceptance is uncertain after an interrupted send' else j.error end,
+    updated_at = now() from emails e where e.id = j.email_id and j.state = 'sending' and j.locked_at < now() - interval '5 minutes'`);
   const jobs = await claimJobs();
-  await Promise.all(jobs.map((job) => processJob(job, options.durable)));
+  await Promise.all(jobs.map((job) => processJob(job, true)));
   const runs = await claimAutomationRuns(db, concurrency, claimCursor);
   await Promise.all(
     runs.map((run) => executeAutomationRun(db, run.tenant_id, run.id, { publicUrl, appUrl, secret: appSecret })),
@@ -77,6 +83,7 @@ export async function tick(options: { durable?: boolean } = {}) {
     }),
   );
   const imports = await alone("imports", () => startImports(db, storage, undefined, undefined, { bounded: options.durable }));
+  await alone("storage cleanup", () => cleanStorage(db, storage));
   const enrollments = await alone("enrollments", () => processEnrollmentJobs(db));
   await alone("log pruning", () => options.durable ? pruneLogs(db, undefined, undefined, 1) : pruneLogsIfDue(db, logPrune));
   await alone("contact change pruning", () => options.durable ? pruneContactChanges(db, undefined, undefined, 1) : pruneContactChangesIfDue(db, changesPrune));
@@ -104,10 +111,12 @@ async function pollDomains() {
 }
 
 export async function close() {
+  await drainImports();
   await db.end();
 }
 
 if (runningAsEntry()) {
+  for (const signal of ["SIGTERM", "SIGINT"] as const) process.once(signal, () => { stopping = true; });
   console.log(`worker started concurrency=${concurrency}`);
   const eventsUrl = process.env.SES_EVENTS_QUEUE_URL;
   const inboundUrl = process.env.SES_INBOUND_QUEUE_URL;
@@ -118,11 +127,11 @@ if (runningAsEntry()) {
     // An empty value, as an env file may leave it, means unset. Read as a region it matched no
     // domain, and every inbound message was dropped.
     const inboundRegion = process.env.SES_INBOUND_REGION || process.env.AWS_REGION || null;
-    if (eventsUrl) void watchQueue(() => consumeOnce(sqs, eventsUrl, async (body) => { await tx(db, (client) => applySesEvent(client, body as SesEvent)); }));
-    if (inboundUrl) void watchQueue(() => consumeOnce(sqs, inboundUrl, async (body) => { await tx(db, (client) => applyInbound(client, storage, body as SesReceipt, { region: inboundRegion })); }));
+    if (eventsUrl) queueTasks.push(watchQueue(() => consumeOnce(sqs, eventsUrl, async (body) => { await tx(db, (client) => applySesEvent(client, body as SesEvent)); })));
+    if (inboundUrl) queueTasks.push(watchQueue(() => consumeOnce(sqs, inboundUrl, async (body) => { await tx(db, (client) => applyInbound(client, storage, body as SesReceipt, { region: inboundRegion })); })));
   }
-  if ((process.env.SES_PROVIDER ?? "fake") === "ses") void watchQueue(pollDomains);
-  while (true) {
+  if ((process.env.SES_PROVIDER ?? "fake") === "ses") queueTasks.push(watchQueue(pollDomains));
+  while (!stopping) {
     try {
       const result = await tick();
       if (result.jobs === 0 && result.runs === 0 && result.attempts === 0)
@@ -132,6 +141,8 @@ if (runningAsEntry()) {
       await sleep(1_000);
     }
   }
+  await Promise.all(queueTasks);
+  await close();
 }
 
 function runningAsEntry() {
@@ -159,7 +170,7 @@ async function claimJobs() {
        order by (e.broadcast_id is not null), j.available_at, j.id
        limit $1
        for update of j skip locked`,
-      [concurrency],
+      [1],
     );
 
     if (rows.rowCount === 0) return [];
@@ -174,7 +185,7 @@ async function claimJobs() {
   });
 }
 
-async function processJob(job: Job, durable = false) {
+async function processJob(job: Job, durable = true) {
   try {
     await deliverJob(db, storage, provider, job, { durable });
   } catch (error) {
@@ -183,7 +194,7 @@ async function processJob(job: Job, durable = false) {
 }
 
 async function watchQueue(run: () => Promise<unknown>) {
-  while (true) {
+  while (!stopping) {
     try {
       await run();
     } catch (error) {
