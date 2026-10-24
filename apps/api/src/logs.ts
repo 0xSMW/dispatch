@@ -95,7 +95,7 @@ export function logBodies(input: {
   body: unknown;
   responseText: string | null;
 }) {
-  if (input.route === "/inbound/:token" || input.route?.startsWith("/integrations")
+  if (input.route === "/shared/:token" || input.route === "/unsubscribe/:token" || input.route === "/inbound/:token" || input.route?.startsWith("/integrations")
     || input.route === "/confirm/:token" || (input.route === "/forms/:id" && input.method === "POST"))
     return { request_body: null, response_body: null };
   const response = parseJson(input.responseText);
@@ -151,7 +151,7 @@ export function presentLog(row: StoredLog, detail = false, readOnly = false) {
     user_agent: row.user_agent ?? null,
   };
   if (!detail) return log;
-  const shown = (body: unknown) => (readOnly ? hideAll(redact(body ?? null, linkFields)) : (body ?? null));
+  const shown = (body: unknown) => (readOnly ? presentEvent(body ?? null, true) : (body ?? null));
   return {
     ...log,
     request_body: shown(row.request_body),
@@ -206,4 +206,20 @@ function timestamp(value: string, name: string) {
     throw new ApiError("validation_error", 400, `${name} must be a date`);
   }
   return date.toISOString();
+}
+
+// Event payloads can contain bearer tracking credentials and credential-bearing URLs.
+export function presentEvent(value: unknown, viewer: boolean): unknown {
+  if (!viewer) return value;
+  if (Array.isArray(value)) return value.map((child) => presentEvent(child, true));
+  if (value instanceof Date) return value;
+  if (typeof value === "string") {
+    return hideLinks(value).replace(/https?:\/\/[^\s"'<>()]+/gi, (url) => hostOnly(url));
+  }
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([key, child]) => [
+    key,
+    key === "response" || key === "response_body" || /pass|secret|token|api_?key|authorization/i.test(key)
+      ? "[redacted]" : presentEvent(child, true),
+  ]));
 }
