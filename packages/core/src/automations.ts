@@ -67,8 +67,8 @@ export const stepConfigs = {
       subject: z.string().min(1).max(998).optional(),
       reply_to: addresses.optional(),
       template: templateRef,
-      variables: z.record(z.unknown()).optional(),
-      variable_mapping: z.record(z.string().regex(/^(event|contact)\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/, "Use an event or contact field")).optional()
+      variables: z.record(z.string(), z.unknown()).optional(),
+      variable_mapping: z.record(z.string(), z.string().regex(/^(event|contact)\.[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+)*$/, "Use an event or contact field")).optional()
     })
     .superRefine((value, ctx) => {
       if (value.kind === "transactional" && value.topic_id) {
@@ -129,7 +129,7 @@ export const stepConfigs = {
     first_name: z.string().max(200).optional(),
     last_name: z.string().max(200).optional(),
     unsubscribed: z.boolean().optional(),
-    properties: z.record(z.unknown()).optional(),
+    properties: z.record(z.string(), z.unknown()).optional(),
     email: stepEmail
   }),
   contact_delete: z.object({ email: stepEmail })
@@ -142,7 +142,7 @@ export type StepType = (typeof stepTypes)[number];
 export const stepSchema = z.object({
   key: z.string().regex(/^[A-Za-z0-9_-]{1,60}$/, "key must be 1 to 60 letters, digits, underscores, or dashes"),
   type: z.enum(stepTypes),
-  config: z.record(z.unknown()).default({})
+  config: z.record(z.string(), z.unknown()).default({})
 });
 export type Step = z.infer<typeof stepSchema>;
 export type AutomationStep = Step;
@@ -285,7 +285,7 @@ export function automationIssues(steps: Step[], connections: Connection[]) {
 
 const graphFields = {
   trigger: eventName.optional(),
-  steps: z.array(z.record(z.unknown())).min(1).max(100),
+  steps: z.array(z.record(z.string(), z.unknown())).min(1).max(100),
   connections: z.array(z.unknown()).max(200).optional()
 };
 
@@ -318,7 +318,7 @@ export const automationSchema = z
   });
 export type AutomationInput = z.input<typeof automationSchema>;
 export const automationInstallSchema = z.object({
-  name: automationSchema.innerType().shape.name.optional(),
+  name: automationSchema.in.shape.name.optional(),
   from: address,
   topic_id: z.string().min(1).optional(),
 });
@@ -361,7 +361,7 @@ export const eventSendSchema = z
     event: eventName,
     contact_id: z.string().min(1).optional(),
     email: z.string().email().transform((value) => value.toLowerCase()).optional(),
-    payload: z.record(z.unknown()).default({})
+    payload: z.record(z.string(), z.unknown()).default({})
   })
   .refine((value) => !(value.contact_id && value.email), { message: "Use contact_id or email, not both", path: ["contact_id"] });
 export type EventSendInput = z.input<typeof eventSendSchema>;
