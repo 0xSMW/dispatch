@@ -65,7 +65,7 @@ function ruleDepth(value: unknown) {
   return deepest;
 }
 
-export const ruleSchema: z.ZodType<Rule, z.ZodTypeDef, unknown> = z
+export const ruleSchema: z.ZodType<Rule, unknown> = z
   .custom<unknown>((value) => ruleDepth(value) <= maxRuleDepth, `Rules can nest at most ${maxRuleDepth} levels`)
   .pipe(nestedRule);
 
