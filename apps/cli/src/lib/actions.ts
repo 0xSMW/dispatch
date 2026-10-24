@@ -1,3 +1,5 @@
+import { CliError } from "./errors.js";
+import { read } from "./files.js";
 import type { CommandUnknownOpts } from "@commander-js/extra-typings";
 import type { Result } from "@dispatchmail/sdk";
 import pc from "picocolors";
@@ -21,6 +23,8 @@ export function globalsOf(command: CommandUnknownOpts): Flags {
 export async function guard(command: CommandUnknownOpts, code: string, work: (globals: Flags) => Promise<void>) {
   const globals = globalsOf(command);
   try {
+    if (globals.apiKey && globals.apiKey !== "-") throw new CliError("auth_error", "Read the key from stdin with --api-key -, or use DISPATCH_API_KEY or a saved profile");
+    if (globals.apiKey === "-") globals.apiKey = (await read("-")).trim();
     await work(globals);
   } catch (error) {
     fail(error, code, globals);
