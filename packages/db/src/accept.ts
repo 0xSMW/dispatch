@@ -203,13 +203,7 @@ export async function acceptEmail(
         emailId,
         attachments,
       );
-      for (const attachment of stored) {
-        if (options.storeAttachment)
-          await options.storeAttachment(
-            attachment.storage_key,
-            attachment.bytes,
-          );
-      }
+
 
       const { email } = await ingestEmail(client, {
         tenantId: context.tenant_id,
@@ -257,6 +251,15 @@ export async function acceptEmail(
         publicUrl: options.publicUrl,
         restrictDomain: context.domain_name,
       });
+      for (const attachment of stored) {
+        if (options.storeAttachment) {
+          await client.query("select pg_advisory_xact_lock(hashtextextended($1, 29))", [attachment.storage_key]);
+          await options.storeAttachment(
+            attachment.storage_key,
+            attachment.bytes,
+          );
+        }
+      }
       if (stored.length > 0) {
         await client.query(
           `insert into email_attachments (
