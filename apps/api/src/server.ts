@@ -268,12 +268,12 @@ const telemetryTimer = vercelRuntime ? null : setInterval(
 telemetryTimer?.unref();
 
 app.addHook("onRequest", async (request, reply) => {
-  if (!request.headers.authorization && request.url.split("?")[0] !== "/health") {
+  if (request.url.split("?")[0] !== "/health") {
     await publicRateLimit(request, reply, request.routeOptions.url ?? "public");
   }
 });
 
-app.addHook("preHandler", async (request, reply) => {
+app.addHook("onRequest", async (request, reply) => {
   const path = request.url.split("?")[0];
   if (path === "/internal/reconcile" || path === "/internal/events") return;
   if (
@@ -292,7 +292,6 @@ app.addHook("preHandler", async (request, reply) => {
   ) {
     // Keyed on the route pattern. Keyed on the path, every token in /unsubscribe/:token or
     // /click/:token would get its own bucket and the limit would never apply.
-    if (request.headers.authorization) await publicRateLimit(request, reply, request.routeOptions.url ?? path);
     return;
   }
   await authenticate(request);
