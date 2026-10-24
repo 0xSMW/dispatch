@@ -63,10 +63,14 @@ async function skipReason(client: Route53Sender, zoneId: string, record: DnsReco
   return "The zone already has MX records. Replacing them would stop mail to the existing mailboxes.";
 }
 
-export async function publishRoute53(client: Route53Sender, input: { name: string; records: DnsRecord[] }) {
+export async function publishRoute53(client: Route53Sender, input: { name: string; records: DnsRecord[]; zoneIds?: string[] }) {
   const listed = await client.send(new ListHostedZonesByNameCommand({ DNSName: input.name, MaxItems: 1 }));
   const zone = (listed.HostedZones ?? []).find((item) => item.Name === input.name || item.Name === `${input.name}.`);
   if (!zone?.Id) throw new ApiError("not_found", 404, "Hosted zone not found");
+  const zoneId = zone.Id.replace(/^\/hostedzone\//, "");
+  if (!input.zoneIds?.some((id) => id.replace(/^\/hostedzone\//, "") === zoneId)) {
+    throw new ApiError("forbidden", 403, "Hosted zone is not assigned to this tenant");
+  }
   const publish: DnsRecord[] = [];
   const skipped: SkippedRecord[] = [];
   for (const record of input.records) {
