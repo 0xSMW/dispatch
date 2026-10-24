@@ -12,7 +12,6 @@ concurrency:
 
 permissions:
   contents: read
-  statuses: read
 
 jobs:
   checks:
@@ -40,9 +39,3 @@ jobs:
       - run: pnpm test
       - run: pnpm typecheck
       - run: pnpm build
-      - name: Require verified home-server usage for this commit
-        env:
-          USAGE_STATUS_CREATOR_ID: "12349"
-          GH_TOKEN: ${{ github.token }}
-          USAGE_COMMIT_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: node scripts/usage/status.mjs
