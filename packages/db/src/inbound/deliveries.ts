@@ -45,7 +45,7 @@ export async function pruneInboundDeliveries(
     const result = await db.query(
       `delete from inbound_deliveries where id in (
          select id from inbound_deliveries
-         where created_at < now() - ($1::int * interval '1 day')
+         where provider_event_id like 'attempt:%' and created_at < now() - ($1::int * interval '1 day')
          order by created_at, id limit $2
        )`,
       [retention, size],
