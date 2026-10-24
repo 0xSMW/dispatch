@@ -204,7 +204,17 @@ export async function loadProviderEmail(
   };
 }
 
-export async function deliverJob(
+let deliveryTail: Promise<void> = Promise.resolve();
+
+export async function deliverJob(...args: Parameters<typeof deliverOne>) {
+  const previous = deliveryTail;
+  let release!: () => void;
+  deliveryTail = new Promise<void>((resolve) => { release = resolve; });
+  await previous;
+  try { return await deliverOne(...args); } finally { release(); }
+}
+
+async function deliverOne(
   db: Db,
   storage: Storage,
   provider: Provider,
