@@ -2,12 +2,12 @@ import { z } from "zod";
 
 export const formHoneypot = "website";
 export const formSuccess = { object: "form_submission" as const, message: "Thank you. Check your email if confirmation is needed." };
-const origin = z.string().url().refine((value) => {
+const origin = z.string().refine((value) => {
   try {
     const url = new URL(value);
     return ["https:", "http:"].includes(url.protocol) && url.origin === value && !url.username && !url.password;
   } catch { return false; }
-}, "Use an exact HTTP or HTTPS origin");
+}, "Use an exact HTTP or HTTPS origin").url();
 const redirect = z.string().url().refine((value) => {
   try {
     const url = new URL(value);
@@ -25,7 +25,11 @@ const fields = z.object({
   redirect_url: redirect.nullable().optional().default(null),
 }).strict();
 export const formSchema = fields;
-export const formUpdateSchema = fields.partial();
+export const formUpdateSchema = fields.partial().extend({
+  properties: fields.shape.properties.removeDefault().optional(),
+  double_opt_in: fields.shape.double_opt_in.removeDefault().optional(),
+  redirect_url: fields.shape.redirect_url.removeDefault().optional()
+});
 export const formSubmissionSchema = z.object({
   email: z.string().email().max(320).transform((value) => value.toLowerCase()),
   first_name: z.string().max(120).optional(), last_name: z.string().max(120).optional(),
