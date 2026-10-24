@@ -33,7 +33,7 @@ import { helpText } from "./lib/help.js";
 export const program = new Command("dispatch")
   .description("Dispatch CLI: send and manage email through your Dispatch API")
   .version(`dispatch-cli v${version}`, "-v, --version")
-  .option("--api-key <key>", "API key (overrides env and saved profile)")
+  .option("--api-key <key>", "Read API key from stdin with - (or use env and saved profile)")
   .option("--api-url <url>", "API base URL (overrides env and saved profile)")
   .option("-p, --profile <name>", "Profile to use (overrides DISPATCH_PROFILE)")
   .option("--json", "Force JSON output")
